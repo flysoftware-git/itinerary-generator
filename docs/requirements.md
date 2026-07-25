@@ -1,5 +1,16 @@
 # Road Trip Itinerary Generator — Requirements Document
-**Version 0.17 · July 23, 2026**
+**Version 0.18 · July 24, 2026**
+
+### Changelog from v0.18
+| # | Section | Change |
+|---|---|---|
+| 1 | §4, §5 | Arrival-destination attractions and schedules must not repeat CAN'T-MISS ENROUTE stops; restaurant normalization now excludes obvious chain / fast-food picks |
+| 2 | §4.3, §5 | Cultural-event rendering now allows at most one outbound link per item, and AllTrails hike acceptance now rejects localized soft-404 pages instead of trusting URL shape alone |
+| 3 | §5 | Non-hike attractions must not resolve to AllTrails; hike links may use AllTrails only when page-body validation confirms the trail page is real and relevant |
+| 4 | §6, §12 | Local image references must be emitted as portable relative `./images/...` paths for both gallery images and hero backgrounds |
+| 5 | §6 | Image ranking must penalize off-theme marine / coral / underwater imagery for inland and desert destinations |
+| 6 | §9, §12 | Output environment subdirectories are opt-in via `--environment`; default output writes directly to the requested output directory |
+| 7 | §9, §11, §13 | Requirements updated for current multi-provider LLM setup, `--env-file` / `--refresh-image-cache` CLI options, and standalone-safe PWA degradation under `file://` |
 
 ### Changelog from v0.17
 | # | Section | Change |
@@ -86,9 +97,9 @@ Migrated from Brave Search (v1.2) → Bing Web Search (v1.3). Fully superseded b
 
 ## 1. Purpose & Scope
 
-A Python command-line program that accepts a minimal user-defined trip manifest and produces a single self-contained `index.html` file that is visually, structurally, and functionally identical to the Southwest Road Trip Itinerary v2.5 — but with AI-generated content tailored to any set of destinations worldwide.
+A Python command-line program that accepts a minimal user-defined trip manifest and produces a portable `index.html` itinerary that is visually, structurally, and functionally aligned with the Southwest Road Trip Itinerary v2.5 — but with AI-generated content tailored to any set of destinations worldwide.
 
-The output file must be deployable to GitHub Pages or any static host with zero additional dependencies.
+The output file must remain usable when opened directly from disk (`file://`) and must also be deployable to GitHub Pages or any static host with zero server-side dependencies.
 
 ---
 
@@ -112,11 +123,14 @@ The output file must be deployable to GitHub Pages or any static host with zero 
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────┐
-│  STAGE 2: AI Content Generation (Azure OpenAI)          │
+│  STAGE 2: AI Content Generation (Configured LLM)        │
 │  • Per-destination content: environment, attractions,   │
 │    en-route stops, schedule, restaurants (NO URLS)      │
 │  • Post-normalization grounds monthly temperatures       │
 │    from climate normals and rewrites weather narrative   │
+│  • Post-normalization removes chain / fast-food dining   │
+│    and avoids duplicating en-route stops as destination  │
+│    arrival attractions or schedule items                │
 │  • Scenic drives + viewpoints (fully AI-discovered)     │
 │  • Cultural events via Grok semantic search + AI synthesis│
 └────────────────────┬────────────────────────────────────┘
@@ -130,14 +144,16 @@ The output file must be deployable to GitHub Pages or any static host with zero 
 │    Pass 1: Google Maps (top-rated, hours)               │
 │    Pass 2: TripAdvisor (diversity, local favorites)     │
 │  • 4-variant fallback query sequence per item           │
-│  • HTTP HEAD verification of every discovered URL       │
+│  • HTTP verification + page-body relevance checks        │
+│  • AllTrails soft-404 rejection for hike links          │
 └────────────────────┬────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────────────┐
 │  STAGE 4: Image Fetching                                │
 │  • NPS API for national parks (park code required)      │
-│  • Wikimedia Commons MediaSearch for all destinations   │
+│  • Unsplash, then Wikimedia fallback for all destinations│
+│  • Local iterative image cache with TTL + refresh flag  │
 │  • THUMB_WIDTH = 960px always                           │
 │  • 4-attempt automatic fallback on verification fail    │
 │  • Hard fail if < min_per_destination verified images   │
@@ -265,6 +281,8 @@ Seeds are lightweight hints that anchor AI content generation to specific user i
 
 **Restaurant requirements:** 5–6 per destination. Must include 3+ distinct cuisine types and 2+ price tiers. Coverage must include both top-rated and local/casual options.
 
+Restaurants that are clearly chain or fast-food picks must be removed during normalization even if they appear in model output.
+
 **Dinner price filtering logic:**
 - If trip budget indicates budget/economy/value, recommendations should be centered on `$`/`$$` with at most one splurge (`$$$`/`$$$$`).
 - If trip budget indicates premium/luxury/upscale, recommendations should be centered on `$$$`/`$$$$` with at most one casual option (`$`/`$$`).
@@ -274,6 +292,7 @@ Seeds are lightweight hints that anchor AI content generation to specific user i
 - Multi-day destination schedules must account for arrival-driving impact on Day 1.
 - Final day should account for onward departure preparation to the next destination.
 - Day-level sequencing should remain feasible given same-day drive and activity load.
+- Activities proposed after arrival to a destination must not duplicate CAN'T-MISS ENROUTE stops from that inbound leg.
 
 ### 4.2 Scenic Drives & Viewpoints Schema
 
@@ -312,7 +331,7 @@ Seeds are lightweight hints that anchor AI content generation to specific user i
 }
 ```
 
-Each identified event should render a "More info" link. If a source event URL is unavailable after verification, renderer may fall back to a query-based search link using event name + venue + destination.
+Each identified event may expose at most one outbound link. If the event name is already linked, the renderer must not add a redundant separate "More info" link. If a source event URL is unavailable after verification, the event name itself may fall back to a query-based search link using event name + venue + destination.
 
 **Format B — Honest fallback (no invented events):**
 ```json
@@ -323,7 +342,7 @@ Each identified event should render a "More info" link. If a source event URL is
 }
 ```
 
-If `local_tip` references a specific weekday (for example, Friday or Saturday), that weekday must be within the destination itinerary date window; otherwise `local_tip` is omitted.
+If `local_tip` references a specific weekday (for example, Friday or Saturday), that weekday must be within the destination itinerary date window; otherwise `local_tip` is omitted. Honest-fallback local tips may include one query-based outbound link when that link adds actionable context.
 
 The AI must NEVER invent events. Remote national parks almost always return Format B.
 
@@ -337,15 +356,17 @@ After AI content is generated, the URL Discoverer uses xAI Grok semantic search 
 
 1. **Hike attractions:** Resolve via AllTrails domain filter (primary policy)
 2. **Non-hike attractions in NPS parks:** Prefer `site:nps.gov` domain filter
-3. **Non-hike attractions:** Fall back to official/specific pages from broader search
-3. **Restaurants:** Two-pass — Google Maps domain filter, then TripAdvisor
-4. **All items:** 4-variant fallback query sequence (most specific → broadest)
-5. **Final fallback:** Empty string stored (no fabricated URLs)
+3. **Non-hike attractions:** Fall back to official/specific pages from broader search, but must not resolve to AllTrails
+4. **Restaurants:** Two-pass — Google Maps domain filter, then TripAdvisor
+5. **All items:** 4-variant fallback query sequence (most specific → broadest)
+6. **Final fallback:** Empty string stored (no fabricated URLs)
 
-Every discovered URL is HTTP-verified before storage, and strict candidates must also pass relevance checks against item/destination tokens. Live-but-generic search pages are rejected.
+Every discovered URL is verified before storage, and strict candidates must also pass relevance checks against item/destination tokens. Live-but-generic search pages are rejected.
 
-Exception for hike links:
-- For specific AllTrails trail pages (`alltrails.com/trail/...`), URL acceptance may bypass strict liveness checks when provider-side bot protections reject automated HEAD/GET requests.
+AllTrails-specific acceptance rules:
+- Non-hike attractions must reject AllTrails results even if those pages appear live.
+- Hike links may use `alltrails.com/trail/...`, but acceptance must require both URL-shape relevance and page-body validation.
+- Known AllTrails soft-404 content, including localized "We've reached the end of the trail" / replacement-link pages, must be rejected even when the HTTP status is 200.
 
 Fallback policy for unresolved links:
 - If strict discovery does not produce a verified attraction/en-route/scenic URL, render a Google Maps query link so cards still resolve to actionable context.
@@ -357,12 +378,16 @@ Fallback policy for unresolved links:
 | Priority | Source | Condition |
 |---|---|---|
 | 1st | NPS API | `nps_park_code` present |
-| 2nd | Wikimedia Commons MediaSearch | Always attempted |
+| 2nd | Unsplash search | Preferred broad source for non-NPS destinations |
+| 3rd | Wikimedia Commons MediaSearch | Fallback / supplemental source |
 | Fallback | Broader Wikimedia queries (4 attempts) | If < min_per_destination verified |
 | Hard fail | RuntimeError raised | If still < min_per_destination |
 
 - `THUMB_WIDTH = 960` always
-- Images saved to `output/images/` with MD5-hashed filenames
+- Images saved to a sibling `images/` directory beside the generated `index.html`, using MD5-hashed filenames
+- Generated HTML must reference local images with relative `./images/{filename}` paths for both `<img>` tags and hero `background-image` styles
+- Image selection should strongly prefer location-relevant landscape / landmark photography and penalize obvious theme mismatches such as marine or coral imagery for inland desert parks
+- A local image cache index at `.cache/images/cache_index.json` may be reused until TTL expiry; `--refresh-image-cache` must bypass that cache on demand
 - Image metadata (source, license, author) stored for attribution footer
 
 ---
@@ -411,6 +436,8 @@ A collapsible `<details>` block is appended before `</body>` containing:
 3. Cultural events disclaimer: *"Event information was auto-discovered and may not be current."*
 4. Generator credit line with repository link, generator version, and generation timestamp (UTC)
 
+Scenic-drive popups and other in-page modal content must not leak generator-version strings or attribution-table boilerplate into their visible body copy.
+
 ---
 
 ## 9. CLI Interface
@@ -422,14 +449,23 @@ Options:
   --manifest PATH          Trip manifest YAML (required)
   --output PATH            Output directory [default: output/]
   --config PATH            Config YAML [default: config.yaml]
+  --llm-provider TEXT      Override LLM provider for this run
+  --environment TEXT       Optional environment folder override (dev/test/prod)
+  --env-file PATH          Optional .env file loaded before env resolution
+  --llm-model TEXT         Override LLM model for this run
   --dry-run                Parse & validate manifest only; no AI calls
   --skip-images            Skip image fetching
+  --refresh-image-cache    Force refresh image-provider queries, bypassing local cache
   --skip-events            Skip cultural events discovery
   --skip-url-discovery     Skip URL discovery (AI content only)
-    --noschedule             Suppress schedule rendering in output HTML
+  --noschedule             Suppress schedule rendering in output HTML
   --destination TEXT       Limit to specific destination id (repeatable)
   --verbose                Enable debug logging
 ```
+
+Output path policy:
+- By default, generated files write directly under the requested `--output` directory.
+- An environment subdirectory is created only when `--environment` is provided explicitly on the CLI.
 
 ---
 
@@ -452,13 +488,25 @@ Key configurable values:
 
 | Variable | Required | Description |
 |---|---|---|
-| `AZURE_OPENAI_ENDPOINT` | ✅ | Azure OpenAI resource URL |
-| `AZURE_OPENAI_API_KEY` | ✅ | Azure OpenAI API key |
-| `AZURE_OPENAI_DEPLOYMENT` | ✅ | Model deployment name |
-| `AZURE_OPENAI_API_VERSION` | ❌ | API version (default: `2024-02-01`) |
-| `XAI_API_KEY` | ✅ | xAI Grok API key |
-| `XAI_MODEL` | ❌ | Grok model name (default: `grok-2-latest`; set to `grok-4.5` or later as available) |
+| `OPENAI_API_KEY` | Cond. | Required when `openai` is the selected content-generation provider |
+| `OPENAI_MODEL` | ❌ | Optional default OpenAI model override |
+| `OPENAI_BASE_URL` | ❌ | Optional OpenAI-compatible base URL override |
+| `DEEPSEEK_API_KEY` | Cond. | Required when `deepseek` is the selected content-generation provider |
+| `DEEPSEEK_BASE_URL` | ❌ | Optional DeepSeek-compatible base URL override |
+| `ANTHROPIC_API_KEY` | Cond. | Required when `anthropic` is the selected content-generation provider |
+| `GEMINI_API_KEY` | Cond. | Required when `gemini` is the selected content-generation provider |
+| `AZURE_OPENAI_ENDPOINT` | Cond. | Required when `azure_openai` is the selected content-generation provider |
+| `AZURE_OPENAI_API_KEY` | Cond. | Required when `azure_openai` is the selected content-generation provider |
+| `AZURE_OPENAI_DEPLOYMENT` | Cond. | Required deployment name when `azure_openai` is selected |
+| `AZURE_OPENAI_API_VERSION` | ❌ | Azure API version (default: `2024-02-01`) |
+| `XAI_API_KEY` | ✅ | Required for Grok semantic search URL discovery and Grok provider usage |
+| `XAI_MODEL` | ❌ | Optional Grok model override |
 | `NPS_API_KEY` | ❌ | NPS API key (default: `DEMO_KEY`, rate-limited) |
+
+API requirements summary:
+- Content generation requires one configured LLM provider with its matching credentials.
+- URL discovery currently requires `XAI_API_KEY` because Grok semantic search is the active discovery engine.
+- Image enrichment may use NPS and third-party image sources; `NPS_API_KEY` is optional but improves park coverage.
 
 Cost accounting note:
 - LLM usage/cost summary includes OpenAI (content/drives), plus xAI Grok usage from URL discovery and cultural-event search requests.
@@ -470,12 +518,16 @@ Cost accounting note:
 
 ```
 output/
-├── index.html              ← Self-contained itinerary (deploy to GitHub Pages)
+├── index.html              ← Portable itinerary entry point
 ├── images/
 │   ├── {md5hash}.jpg       ← Downloaded destination images
 │   └── ...
+├── manifest.webmanifest    ← PWA companion asset
+├── sw.js                   ← Service worker asset
 └── validation_report.json  ← Post-assembly validation results
 ```
+
+When `--environment` is provided explicitly, the above structure is created under `output/{environment}/` instead.
 
 ---
 
@@ -484,6 +536,8 @@ output/
 - Output HTML must include installable web app metadata (manifest + app icons).
 - A service worker must be registered best-effort for offline shell behavior and static asset caching.
 - Install prompt UX should be exposed when browser eligibility allows.
+- Direct `file://` usage must remain functional even when service worker registration is unavailable or blocked.
+- PWA enhancements must degrade gracefully on insecure contexts and must not break the standalone HTML experience.
 
 ---
 

@@ -30,6 +30,11 @@ from generator.url_validator import URLValidator
 
 logger = logging.getLogger(__name__)
 MAX_FALLBACK_ATTEMPTS = 4
+ALLTRAILS_404_MARKERS = (
+    "we've reached the end of the trail",
+    "the page you're looking for either doesn't exist",
+    "find your next trail",
+)
 
 # ── URL Search Cache ────────────────────────────────────────────────────
 _url_cache: dict[tuple[str, str, str], str | None] = {}
@@ -247,8 +252,10 @@ class URLDiscoverer:
                 if not allow_alltrails and "alltrails.com" in url.lower():
                     continue
                 if self._is_alltrails_trail_url(url):
-                    logger.debug("  URL fallback (alltrails): %s -> %s", full_query[:70], url[:120])
-                    return url
+                    if self._is_relevant_result(url, item_name, dest_name):
+                        logger.debug("  URL fallback (alltrails): %s -> %s", full_query[:70], url[:120])
+                        return url
+                    continue
                 ok, _ = self._url_validator.verify_url(url)
                 if ok:
                     logger.debug("  URL fallback: %s -> %s", full_query[:70], url[:120])
@@ -299,7 +306,21 @@ class URLDiscoverer:
             item_tokens = self._significant_tokens(item_name)
             if item_tokens and not any(t in lower_url for t in item_tokens[:3]):
                 return False
-            return True
+            try:
+                resp = self._url_validator.session.get(url, timeout=8)
+                if resp.status_code >= 400:
+                    return False
+                text = (resp.text or "").lower()
+                if any(marker in text for marker in ALLTRAILS_404_MARKERS):
+                    return False
+                if item_tokens and not any(t in text for t in item_tokens[:3]):
+                    return False
+                dest_tokens = self._significant_tokens(dest_name)
+                if dest_tokens and not any(t in text for t in dest_tokens[:2]):
+                    return False
+                return True
+            except Exception:
+                return False
         try:
             resp = self._url_validator.session.get(url, timeout=8)
             if resp.status_code >= 400:

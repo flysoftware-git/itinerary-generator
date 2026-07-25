@@ -99,18 +99,27 @@ def test_restaurant_discovery_two_pass():
     assert ai["dinner_recommendations"][0]["url"] == "https://www.tripadvisor.com/Restaurant_Test"
 
 
-def test_alltrails_trail_url_bypasses_liveness_check():
+def test_alltrails_trail_url_requires_matching_page_content():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="Navajo Loop Trail Bryce Canyon hike details and reviews",
+    )
 
     url = "https://www.alltrails.com/trail/us/utah/navajo-loop-trail"
     assert discoverer._is_alltrails_trail_url(url)
     assert discoverer._is_relevant_result(url, "Navajo Loop Trail", "Bryce Canyon National Park")
 
 
-def test_search_strict_accepts_alltrails_trail_without_verify_url():
+def test_search_strict_accepts_live_alltrails_trail_with_matching_content():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._search = MagicMock()
     discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="Navajo Loop Trail in Bryce Canyon National Park hiking guide",
+    )
     discoverer._search.search.return_value = [
         {"url": "https://www.alltrails.com/trail/us/utah/navajo-loop-trail"}
     ]
@@ -126,6 +135,30 @@ def test_search_strict_accepts_alltrails_trail_without_verify_url():
 
     assert result == "https://www.alltrails.com/trail/us/utah/navajo-loop-trail"
     discoverer._url_validator.verify_url.assert_not_called()
+
+
+def test_search_strict_rejects_alltrails_soft_404_and_falls_back_to_none():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._search = MagicMock()
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="404 We've reached the end of the trail. The page you're looking for either doesn't exist or has a new link.",
+    )
+    discoverer._search.search.return_value = [
+        {"url": "https://www.alltrails.com/trail/us/utah/st-george-dinosaur-discovery-site"}
+    ]
+
+    result = discoverer._search_first_strict(
+        query_variants=['"St. George Dinosaur Discovery Site" St. George Utah trail hiking'],
+        site_filter="alltrails.com",
+        site_hint=None,
+        item_name="St. George Dinosaur Discovery Site",
+        dest_name="St. George, Utah",
+        allow_alltrails=True,
+    )
+
+    assert result is None
 
 
 def test_non_hike_attractions_disallow_alltrails_results():
