@@ -121,7 +121,31 @@ def test_search_strict_accepts_alltrails_trail_without_verify_url():
         site_hint=None,
         item_name="Navajo Loop Trail",
         dest_name="Bryce Canyon National Park",
+        allow_alltrails=True,
     )
 
     assert result == "https://www.alltrails.com/trail/us/utah/navajo-loop-trail"
     discoverer._url_validator.verify_url.assert_not_called()
+
+
+def test_non_hike_attractions_disallow_alltrails_results():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._search = MagicMock()
+    discoverer._url_validator = MagicMock()
+
+    discoverer._search.search.return_value = [
+        {"url": "https://www.alltrails.com/trail/us/utah/st-george-dinosaur-discovery-site"},
+        {"url": "https://utahdinosaurtracks.com/discovery-site"},
+    ]
+    discoverer._url_validator.verify_url.return_value = (True, None)
+
+    result = discoverer._search_first_strict(
+        query_variants=['"St. George Dinosaur Discovery Site" St. George Utah attraction'],
+        site_filter=None,
+        site_hint=None,
+        item_name="St. George Dinosaur Discovery Site",
+        dest_name="St. George, Utah",
+        allow_alltrails=False,
+    )
+
+    assert result == "https://utahdinosaurtracks.com/discovery-site"

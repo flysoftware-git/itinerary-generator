@@ -109,14 +109,15 @@ class URLDiscoverer:
                 site_hint=site_hint,
                 item_name=attr_name,
                 dest_name=dest_name,
+                allow_alltrails=False,
             )
-            # Fallback: AllTrails
+            # Fallback: broad non-hike search, still disallowing AllTrails.
             if not url:
                 url = self._search_first(
-                    _build_query_variants(attr_name, dest_name, "trail hiking"),
-                    site_filter="alltrails.com",
+                    _build_query_variants(attr_name, dest_name, "attraction landmark museum viewpoint"),
                     item_name=attr_name,
                     dest_name=dest_name,
+                    allow_alltrails=False,
                 )
             attr["url"] = url or f"https://www.google.com/maps/search/?api=1&query={quote(f'{attr_name} {dest_name}') }"
             logger.info("  attraction link: %s -> %s", attr_name, (url or "(none)"))
@@ -180,9 +181,10 @@ class URLDiscoverer:
         site_hint: str | None = None,
         item_name: str = "",
         dest_name: str = "",
+        allow_alltrails: bool = True,
     ) -> str | None:
         # Check cache first
-        cache_key = (item_name, dest_name, site_filter or "")
+        cache_key = (item_name, dest_name, site_filter or "", "alltrails" if allow_alltrails else "no-alltrails")
         if cache_key in _url_cache:
             logger.info("  cache hit: %s (%s) -> %s", item_name, site_filter or "any", _url_cache[cache_key] or "(none)")
             return _url_cache[cache_key]
@@ -194,6 +196,7 @@ class URLDiscoverer:
             site_hint=site_hint,
             item_name=item_name,
             dest_name=dest_name,
+            allow_alltrails=allow_alltrails,
         )
         _url_cache[cache_key] = result
         logger.info("  resolved: %s (%s) -> %s", item_name, site_filter or "any", result or "(none)")
@@ -207,6 +210,7 @@ class URLDiscoverer:
         site_hint: str | None,
         item_name: str,
         dest_name: str,
+        allow_alltrails: bool,
     ) -> str | None:
         for query in query_variants[:MAX_FALLBACK_ATTEMPTS]:
             full_query = f"{site_hint} {query}" if site_hint else (f"site:{site_filter} {query}" if site_filter else query)
@@ -218,6 +222,8 @@ class URLDiscoverer:
                 if not url:
                     continue
                 if site_filter and site_filter not in url:
+                    continue
+                if not allow_alltrails and "alltrails.com" in url.lower():
                     continue
                 if not self._is_specific_result_url(url, item_name, dest_name):
                     continue
@@ -237,6 +243,8 @@ class URLDiscoverer:
                 if not url:
                     continue
                 if site_filter and site_filter not in url:
+                    continue
+                if not allow_alltrails and "alltrails.com" in url.lower():
                     continue
                 if self._is_alltrails_trail_url(url):
                     logger.debug("  URL fallback (alltrails): %s -> %s", full_query[:70], url[:120])

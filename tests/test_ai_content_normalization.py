@@ -109,3 +109,27 @@ def test_remove_enroute_stops_from_attractions() -> None:
 
     assert "Goblin Valley State Park" not in names
     assert "Capitol Reef Scenic Drive" in names
+
+
+def test_normalize_restaurants_filters_chain_and_fast_food() -> None:
+    g = _gen()
+    restaurants = [
+        {
+            "name": "Chick-fil-A",
+            "cuisine": "Fast Food",
+            "price_range": "$",
+            "description": "Popular quick service chicken chain.",
+        },
+        {
+            "name": "The Painted Pony",
+            "cuisine": "Contemporary American",
+            "price_range": "$$$",
+            "description": "Independent downtown fine dining spot.",
+        },
+    ]
+
+    normalized = g._normalize_restaurants(restaurants)
+    names = [r.get("name") for r in normalized]
+
+    assert "Chick-fil-A" not in names
+    assert "The Painted Pony" in names

@@ -22,6 +22,39 @@ PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 
 class AIContentGenerator:
+    _CHAIN_NAME_TOKENS = {
+        "mcdonald",
+        "burger king",
+        "chick-fil-a",
+        "chick fil a",
+        "taco bell",
+        "subway",
+        "kfc",
+        "wendy",
+        "domino",
+        "pizza hut",
+        "papa john",
+        "little caesars",
+        "starbucks",
+        "dunkin",
+        "chipotle",
+        "panera",
+        "arby",
+        "sonic",
+        "jack in the box",
+        "dairy queen",
+        "popeyes",
+    }
+
+    _FAST_FOOD_TOKENS = {
+        "fast food",
+        "quick service",
+        "drive-thru",
+        "drive thru",
+        "fried chicken chain",
+        "chain restaurant",
+    }
+
     def __init__(
         self,
         config_path: Path | str = "config.yaml",
@@ -607,6 +640,12 @@ class AIContentGenerator:
         for restaurant in restaurants:
             item = dict(restaurant)
             item["price_range"] = item.get("price_range") or item.get("price") or ""
+            name = str(item.get("name", "") or "")
+            cuisine = str(item.get("cuisine", "") or "")
+            description = str(item.get("description", "") or "")
+            if self._is_chain_or_fast_food(name, cuisine, description):
+                continue
+
             tier = str(item.get("price_range", "")).strip()
 
             if low_budget and tier in {"$$$", "$$$$"}:
@@ -630,3 +669,11 @@ class AIContentGenerator:
             )
         )
         return normalized
+
+    def _is_chain_or_fast_food(self, name: str, cuisine: str, description: str) -> bool:
+        hay = " ".join([name, cuisine, description]).lower()
+        if any(token in hay for token in self._FAST_FOOD_TOKENS):
+            return True
+        if any(token in hay for token in self._CHAIN_NAME_TOKENS):
+            return True
+        return False

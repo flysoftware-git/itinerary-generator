@@ -1,10 +1,10 @@
 # Road Trip Itinerary Generator
 
-A Python CLI tool that transforms a minimal YAML trip manifest into a single self-contained `index.html` road trip itinerary — visually and functionally identical to the [Southwest Road Trip Itinerary v2.5](https://swiftsure-pro.github.io/Travel-apps/), with AI-generated content tailored to any destinations worldwide.
+A Python CLI tool that transforms a minimal YAML trip manifest into a single self-contained `index.html` road trip itinerary — visually and functionally identical to the [Southwest Road Trip Itinerary v2.5](https://swiftsure-pro.github.io/Travel-apps/dev), with AI-generated content tailored to any destinations worldwide.
 
 Write a manifest in minutes. Get a polished, deployable trip guide with:
 - AI-generated environment descriptions, attraction writeups, en-route stops, and daily schedules
-- Auto-discovered cultural events (via Bing Search + AI synthesis — never hallucinated)
+- Auto-discovered cultural events (via Search + AI synthesis — never hallucinated)
 - 5–6 restaurant recommendations per destination with cuisine and price diversity
 - 2–4 scenic drives/viewpoints per destination (fully AI-discovered, not user-seeded)
 - Verified URLs for every attraction, restaurant, and stop
@@ -111,7 +111,7 @@ Seeds are **name hints only** — attractions, hikes, or experiences you specifi
 python -m generator.main --manifest trip_manifest.yaml --output output/
 ```
 
-Your itinerary is at `output/index.html`. Open it in any browser or deploy to GitHub Pages.
+Your itinerary is at `output/index.html` by default. If you explicitly pass `--environment`, output is nested at `output/<environment>/index.html`.
 
 ---
 
@@ -126,6 +126,8 @@ python -m generator.main [OPTIONS]
   --llm-provider [openai|anthropic|deepseek|gemini|grok|azure_openai]
                            Override LLM provider for this run
   --llm-model TEXT         Override LLM model for this run
+  --environment [dev|test|prod]
+                           Optional environment override (also enables output/<environment>/ nesting)
   --dry-run                Parse & validate manifest only; no AI calls
   --skip-images            Skip image fetching (faster iteration)
   --refresh-image-cache    Force refresh image provider queries (bypass local image cache)

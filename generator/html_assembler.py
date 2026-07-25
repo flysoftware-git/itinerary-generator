@@ -23,16 +23,15 @@ logger = logging.getLogger(__name__)
 TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "v2.5_template.html"
 CHECKSUM_PATH = Path(__file__).parent.parent / "templates" / "checksums.txt"
 
-def _path_to_file_url(path_str: str) -> str:
-    """Convert a local filesystem path to a file:// URL.
-    
-    Handles both absolute and relative paths.
-    Example: 'output\\images\\xyz.jpg' or '/full/path/to/xyz.jpg' → 'file:///C:/...' or 'file://localhost/C:/...'
+def _portable_image_href(path_str: str) -> str:
+    """Return a portable image href relative to the generated index.html.
+
+    Using absolute file:// URLs makes output brittle when the folder is moved.
+    Images are written under the sibling images/ directory, so we emit
+    ./images/<filename> for both local and hosted usage.
     """
-    p = Path(path_str).resolve()  # Resolve to absolute path
-    # Convert to file:// URL
-    url = p.as_uri()
-    return url
+    name = Path(path_str).name
+    return f"./images/{quote(name)}"
 
 def sanitize_dest_id(name: str) -> str:
     """
@@ -317,9 +316,9 @@ class HTMLAssembler:
         nps_code: str | None,
     ) -> str:
         hero_img = images[0]["local_path"] if images else ""
-        # Convert to file:// URL for browser
+        # Use portable relative paths so moved/exported folders still work.
         if hero_img:
-            hero_img = _path_to_file_url(hero_img)
+            hero_img = _portable_image_href(hero_img)
         credit = self._build_image_caption(images[0]) if images else ""
         header_links = self._build_header_links(planning_links, nps_code, dest)
         return (
@@ -422,7 +421,7 @@ class HTMLAssembler:
             local_path = img.get("local_path", "")
             caption = self._build_image_caption(img)
 
-            file_url = _path_to_file_url(local_path)
+            file_url = _portable_image_href(local_path)
             dest_escaped = html_escape.escape(dest_name)
             
             html += '  <div class="photo-item">\n'

@@ -235,8 +235,13 @@ def main(
     # Add environment tag to logger name
     logger.name = f"{logger.name}[{environment_selected}]"
 
-    # Environment-aware output directory
-    output_dir = Path(output) / environment_selected
+    # Output directory behavior:
+    # - default: write directly to --output path
+    # - only nest by environment when explicitly requested via CLI
+    if env_from_cli:
+        output_dir = Path(output) / environment_selected
+    else:
+        output_dir = Path(output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     click.echo()

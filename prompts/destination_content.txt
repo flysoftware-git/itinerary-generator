@@ -130,6 +130,7 @@ dinner_recommendations:
   - Include 4–6 restaurants total
   - Span at least 3 distinct cuisine types
   - Span at least 2 price tiers: at least one at $ or $$ AND at least one at $$$ or $$$$
+  - Exclude chain restaurants and fast-food entries; prioritize local, independent, or regionally distinctive dinner spots
   - Respect the budget guidance above when selecting the center-of-gravity of options
     (e.g., mostly $$ for moderate budget, mostly $$$ for premium budget)
   - Include at least one recognisably casual / local option ($ or $$)
