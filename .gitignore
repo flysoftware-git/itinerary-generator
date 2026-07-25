@@ -30,5 +30,8 @@ Thumbs.db
 htmlcov/
 .mypy_cache/
 
+# Local cache
+.cache/
+
 # Local manifests
 sw-trip_manifest.yaml
