@@ -10,6 +10,7 @@ Flags:
   --config          Path to config.yaml (default: config.yaml)
     --llm-provider    Override LLM provider for this run
     --llm-model       Override LLM model for this run
+    --log-level       Console logging threshold (DEBUG, INFO, WARNING, ERROR, CRITICAL)
   --dry-run         Parse + validate manifest only; no AI calls, no output
   --skip-images     Skip image fetching (useful for fast content iteration)
   --skip-events     Skip cultural events discovery
@@ -19,6 +20,7 @@ Flags:
 """
 
 from __future__ import annotations
+import atexit
 import json
 import logging, os, sys
 from datetime import datetime, timezone
@@ -27,6 +29,49 @@ import click
 from generator import __version__, __template_version__
 
 logger = logging.getLogger(__name__)
+LOG_LEVEL_CHOICES = ["debug", "info", "warning", "error", "critical"]
+
+
+def _append_run_ledger(ledger_path: Path, record: dict) -> None:
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with ledger_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _filter_destinations(
+    trip: dict,
+    destination_ids: tuple[str, ...],
+    *,
+    first_destination_only: bool,
+) -> None:
+    destinations = list(trip.get("destinations", []))
+    if destination_ids:
+        destinations = [d for d in destinations if d["id"] in destination_ids]
+        if not destinations:
+            raise click.ClickException(f"None of {destination_ids} matched any destination id.")
+    if first_destination_only and destinations:
+        destinations = destinations[:1]
+    trip["destinations"] = destinations
+
+
+def _is_us_coordinates(lat: object, lng: object) -> bool:
+    """Return True when coordinates are in US regions where NPS codes are relevant."""
+    try:
+        lat_f = float(lat)
+        lng_f = float(lng)
+    except (TypeError, ValueError):
+        return False
+
+    # Continental US
+    if 24.0 <= lat_f <= 49.5 and -125.0 <= lng_f <= -66.5:
+        return True
+    # Alaska
+    if 51.0 <= lat_f <= 72.0 and -170.0 <= lng_f <= -129.0:
+        return True
+    # Hawaii
+    if 18.0 <= lat_f <= 23.0 and -161.0 <= lng_f <= -154.0:
+        return True
+    return False
 
 
 def _write_pwa_assets(output_dir: Path, trip: dict) -> None:
@@ -133,13 +178,15 @@ self.addEventListener('fetch', (event) => {
         (output_dir / "sw.js").write_text(sw_js, encoding="utf-8")
 
 
-def _setup_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.INFO
+def _setup_logging(verbose: bool, log_level: str) -> str:
+    selected = "debug" if verbose else (log_level or "info").lower()
+    level = getattr(logging, selected.upper(), logging.INFO)
     logging.basicConfig(
         level=level,
         format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
         datefmt="%H:%M:%S",
     )
+    return selected.upper()
 
 
 @click.command()
@@ -169,6 +216,14 @@ def _setup_logging(verbose: bool) -> None:
 @click.option("--skip-url-discovery", is_flag=True, help="Skip URL discovery")
 @click.option("--noschedule", is_flag=True, help="Suppress schedule card rendering in output HTML")
 @click.option("--destination", "destinations", multiple=True, help="Limit to specific destination ids")
+@click.option("--first-destination", "first_destination_only", is_flag=True, help="Process only the first destination after any destination filtering")
+@click.option(
+    "--log-level",
+    type=click.Choice(LOG_LEVEL_CHOICES, case_sensitive=False),
+    default="info",
+    show_default=True,
+    help="Console logging threshold. Ignored when --verbose is set.",
+)
 @click.option("--verbose", is_flag=True, help="Enable debug logging")
 def main(
     manifest: str,
@@ -185,15 +240,63 @@ def main(
     skip_url_discovery: bool,
     noschedule: bool,
     destinations: tuple[str, ...],
+    first_destination_only: bool,
+    log_level: str,
     verbose: bool,
 ) -> None:
-    _setup_logging(verbose)
+    run_started_at = datetime.now(timezone.utc)
+    run_id = run_started_at.strftime("%Y%m%dT%H%M%S.%fZ")
+    ledger_path = Path(output) / "dev" / "run_ledger.jsonl"
+    finalized = False
+
+    def _finalize_run(status: str, exit_code: int, error: str | None = None) -> None:
+        nonlocal finalized
+        if finalized:
+            return
+        ended_at = datetime.now(timezone.utc)
+        duration_s = max(0.0, (ended_at - run_started_at).total_seconds())
+        record = {
+            "run_id": run_id,
+            "status": status,
+            "exit_code": int(exit_code),
+            "error": str(error or "").strip() or None,
+            "started_at_utc": run_started_at.isoformat(),
+            "ended_at_utc": ended_at.isoformat(),
+            "duration_seconds": round(duration_s, 3),
+            "manifest": manifest,
+            "output": output,
+            "config": config_path,
+            "environment": environment,
+            "env_file": env_file,
+            "llm_provider": llm_provider,
+            "llm_model": llm_model,
+            "dry_run": bool(dry_run),
+            "skip_images": bool(skip_images),
+            "skip_events": bool(skip_events),
+            "skip_url_discovery": bool(skip_url_discovery),
+            "first_destination_only": bool(first_destination_only),
+            "destinations": list(destinations),
+        }
+        try:
+            _append_run_ledger(ledger_path, record)
+        except Exception as exc:  # pragma: no cover - defensive only
+            logger.warning("Failed to append run ledger entry: %s", exc)
+        finalized = True
+
+    def _finalize_if_unfinished() -> None:
+        if not finalized:
+            _finalize_run("terminated_without_finalize", 1, "Process exited before normal completion")
+
+    atexit.register(_finalize_if_unfinished)
+
+    effective_log_level = _setup_logging(verbose, log_level)
     output_dir = Path(output)
 
     click.echo(f"🗺  Road Trip Itinerary Generator")
     click.echo(f"   Manifest : {manifest}")
     click.echo(f"   Output   : {output_dir.resolve()}")
     click.echo(f"   Config   : {config_path}")
+    click.echo(f"   Logging  : {effective_log_level}")
 
     if llm_provider:
         click.echo(f"   LLM      : provider override = {llm_provider.lower()}")
@@ -246,19 +349,22 @@ def main(
 
     click.echo()
 
-    if destinations:
-        # Filter to requested destination ids
-        trip["destinations"] = [
-            d for d in trip["destinations"] if d["id"] in destinations
-        ]
-        if not trip["destinations"]:
-            click.echo(f"  ERROR: None of {destinations} matched any destination id.", err=True)
-            sys.exit(1)
+    try:
+        _filter_destinations(
+            trip,
+            destinations,
+            first_destination_only=first_destination_only,
+        )
+    except click.ClickException as exc:
+        click.echo(f"  ERROR: {exc}", err=True)
+        _finalize_run("input_error", 1, str(exc))
+        sys.exit(1)
 
     click.echo(f"  ✓ {len(trip['destinations'])} destination(s) loaded")
 
     if dry_run:
         click.echo("\n✅ Dry run complete — manifest valid.")
+        _finalize_run("dry_run_completed", 0)
         return
 
     # ── Stage 2: Geocode + auto-enrich ──────────────────────────────────────
@@ -287,6 +393,9 @@ def main(
         trip["trip"]["return_lng"] = rlng
     # NPS resolution is independent — run in parallel
     def _resolve_nps(dest: dict) -> None:
+        if not _is_us_coordinates(dest.get("lat"), dest.get("lng")):
+            dest["nps_park_code"] = None
+            return
         dest["nps_park_code"] = nps.resolve(dest["name"])
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {pool.submit(_resolve_nps, d): d for d in trip["destinations"]}
@@ -384,7 +493,9 @@ def main(
         if not skip_url_discovery:
             click.echo("Stage 5b — URL discovery…")
             from generator.url_discovery import URLDiscoverer
-            URLDiscoverer(config_path, llm_client=llm_client).discover_all(trip)
+            url_discoverer = URLDiscoverer(config_path, llm_client=llm_client)
+            url_discoverer.discover_all(trip)
+            url_discoverer.audit_discovered_urls(trip)
             click.echo("  ✓ URLs discovered and verified")
         else:
             click.echo("Stage 5b — URL discovery SKIPPED")
@@ -397,7 +508,6 @@ def main(
 
     # ── Stage 6: Assemble HTML ───────────────────────────────────────────────
     click.echo("Stage 6/6 — Assembling HTML…")
-    from generator.attribution_builder import AttributionBuilder
     from generator.html_assembler import HTMLAssembler
     trip["_meta"] = {
         "generator_version": __version__,
@@ -410,9 +520,8 @@ def main(
             "usage": llm_client.usage_summary(),
         },
     }
-    attr_block = AttributionBuilder().build(trip)
     assembler = HTMLAssembler(config_path)
-    html = assembler.assemble(trip, attr_block)
+    html = assembler.assemble(trip)
 
     output_file = output_dir / "index.html"
     output_file.write_text(html, encoding="utf-8")
@@ -451,8 +560,10 @@ def main(
         click.echo(f"\n⚠️  {report['error_count']} validation error(s) found:", err=True)
         for e in report["errors"]:
             click.echo(f"   ✗ {e}", err=True)
+        _finalize_run("validation_failed", 2, f"{report['error_count']} validation errors")
         sys.exit(2)
 
+    _finalize_run("completed", 0)
     click.echo(f"\n✅ Done! Open {output_file.resolve()} in your browser.")
 
 
