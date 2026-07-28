@@ -10,6 +10,7 @@ This directory captures behavior-oriented design notes for major pipeline compon
 - `html-assembly-pipeline.md`: how structured trip data is assembled into final HTML.
 - `restaurant-discovery-ranking-linkage.md`: how restaurant URLs are discovered, ranked, and selected for final links.
 - `url-quality-pr-backlog.md`: staged PR plan for URL-state semantics, fallback confidence, audit reason codes, and cost-quality reporting.
+- `v2-issue-6-kickoff-checklist.md`: branch/setup checklist for starting Issue #6 on v2 while preserving v1.4 baseline behavior.
 
 ## Conventions
 - Focus on runtime behavior, not just intent.
