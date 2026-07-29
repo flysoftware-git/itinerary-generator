@@ -1016,6 +1016,13 @@ class AIContentGenerator:
             if self._is_chain_or_fast_food(name, cuisine, description):
                 continue
 
+            # AI-side closure signal: skip if description explicitly references closed status.
+            desc_lower = description.lower()
+            if any(phrase in desc_lower for phrase in (
+                "permanently closed", "has closed", "is closed", "no longer open", "closed its doors"
+            )):
+                continue
+
             tier = str(item.get("price_range", "")).strip()
 
             if low_budget and tier in {"$$$", "$$$$"}:

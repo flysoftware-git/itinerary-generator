@@ -1,6 +1,8 @@
 # PR-030: Not-yet-open restaurants should be excluded from highly-rated recommendations (La Casa Sena)
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:high`, `area:restaurant-linking`, `area:content-freshness`, `area:rating-policy`, `area:url-validation`, `area:html-output`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:high`, `area:restaurant-linking`, `area:content-freshness`, `area:rating-policy`, `area:url-validation`, `area:html-output`
+
+**Fixed in:** v1.4.4 — `La Casa Sena` added to `restaurant_name_denylist` in `config.yaml`. General mechanism: page-text pre-opening marker detection (`RESTAURANT_PRE_OPENING_MARKERS`) removes venues when fetched page contains “opening soon”, “not yet open”, or equivalent phrases. Venues without a valid review/rating provenance are ineligible by definition.
 
 Manifest: `trip_manifest.yaml`
 Output Artifact: `output/index.html`

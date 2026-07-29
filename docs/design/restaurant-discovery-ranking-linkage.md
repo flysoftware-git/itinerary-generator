@@ -44,8 +44,28 @@ For restaurants:
 - Generic or non-relevant URLs are stripped in audit
 - `maps_url` remains available as deterministic fallback
 
-## Final Link Selection in HTML
-Restaurant links are rendered by `HTMLAssembler._build_restaurants`.
+## Restaurant Freshness Gate
+Restaurant entries are eligible for final recommendations only when the venue is
+currently open and operational. The following mechanisms apply:
+
+**Name denylist** (`url_discovery.restaurant_name_denylist` in `config.yaml`):
+- Config-driven list of known-closed or not-yet-open venue names.
+- Applied in `audit_discovered_urls`: matching entries are removed from
+  `dinner_recommendations` entirely (not just URL-stripped).
+- Case-insensitive match against normalized restaurant name.
+
+**Page-text closure/pre-opening detection** (`_is_restaurant_ineligible`):
+- When a restaurant has a non-fallback discovered URL, the page text is fetched.
+- Presence of any `RESTAURANT_CLOSURE_MARKERS` phrase (e.g., “permanently closed”)
+  or `RESTAURANT_PRE_OPENING_MARKERS` phrase (e.g., “opening soon”) causes the
+  entry to be removed from `dinner_recommendations`.
+- Fallback/search URLs are skipped for this check (no meaningful status page).
+
+**AI-side description filtering** (`_normalize_restaurants` in `ai_content.py`):
+- Restaurant entries whose AI-generated description contains explicit closure
+  language are skipped before URL discovery runs.
+
+
 
 Current selection order:
 1. Prefer normalized discovered `url`

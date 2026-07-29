@@ -170,6 +170,22 @@ DEFAULT_ALLTRAILS_RATING_BOOST = 8
 DEFAULT_RESTAURANT_RATING_MIN = 4.4
 DEFAULT_RESTAURANT_RATING_MIN_VOTES = 100
 DEFAULT_RESTAURANT_RATING_BOOST = 6
+DEFAULT_RESTAURANT_NAME_DENYLIST: tuple[str, ...] = ()
+RESTAURANT_CLOSURE_MARKERS: tuple[str, ...] = (
+    "permanently closed",
+    "this business is permanently closed",
+    "closed permanently",
+    "no longer in business",
+    "this location is closed",
+    "this restaurant is closed",
+    "this place is closed",
+)
+RESTAURANT_PRE_OPENING_MARKERS: tuple[str, ...] = (
+    "opening soon",
+    "coming soon",
+    "not yet open",
+    "grand opening coming",
+)
 DEFAULT_URL_POLICY_MODE = "monitor"
 DEFAULT_ALLTRAILS_SLUG_DENYLIST: tuple[str, ...] = ()
 DEFAULT_URL_POLICY_BLOCKED_CLASSES = (
@@ -279,6 +295,7 @@ class URLDiscoverer:
         self._restaurant_rating_min: float = DEFAULT_RESTAURANT_RATING_MIN
         self._restaurant_rating_min_votes: int = DEFAULT_RESTAURANT_RATING_MIN_VOTES
         self._restaurant_rating_boost: int = DEFAULT_RESTAURANT_RATING_BOOST
+        self._restaurant_name_denylist: frozenset[str] = frozenset(DEFAULT_RESTAURANT_NAME_DENYLIST)
         self._url_policy_mode: str = DEFAULT_URL_POLICY_MODE
         self._url_policy_blocked_classes: set[str] = set(DEFAULT_URL_POLICY_BLOCKED_CLASSES)
         self._url_policy_allowlist_path: str = DEFAULT_URL_POLICY_ALLOWLIST_PATH
@@ -535,6 +552,14 @@ class URLDiscoverer:
                     for v in raw_slug_denylist
                     if str(v or "").strip()
                 )
+
+            raw_restaurant_denylist = url_cfg.get("restaurant_name_denylist", [])
+            if isinstance(raw_restaurant_denylist, list):
+                self._restaurant_name_denylist = frozenset(
+                    str(v or "").strip().lower()
+                    for v in raw_restaurant_denylist
+                    if str(v or "").strip()
+                )
         except Exception:
             # Keep defaults when config loading is unavailable in tests or runtime.
             return
@@ -657,6 +682,7 @@ class URLDiscoverer:
                     else:
                         stop.pop("url", None)
 
+            eligible_restaurants: list[dict[str, Any]] = []
             for rest in ai.get("dinner_recommendations", []) or []:
                 rest_name = str(rest.get("name", "") or "")
                 url = str(rest.get("url", "") or "").strip()
@@ -673,6 +699,15 @@ class URLDiscoverer:
                         rest["url"] = cleaned
                     else:
                         rest.pop("url", None)
+                if self._is_restaurant_ineligible(rest, dest_name):
+                    logger.info(
+                        "  Restaurant freshness gate removed '%s' in '%s'",
+                        rest_name, dest_name,
+                    )
+                    continue
+                eligible_restaurants.append(rest)
+            if len(eligible_restaurants) != len(ai.get("dinner_recommendations", []) or []):
+                ai["dinner_recommendations"] = eligible_restaurants
 
             for drive in dest.get("scenic_drives", []) or []:
                 drive_name = str(drive.get("title", "") or "")
@@ -846,6 +881,47 @@ class URLDiscoverer:
             return "low"
 
         return "low"
+
+    def _is_restaurant_ineligible(self, rest: dict[str, Any], dest_name: str) -> bool:
+        """Return True when a restaurant entry should be excluded from recommendations.
+
+        Checks, in order:
+        1. Name-based denylist (known-closed / pre-opening venues from config)
+        2. Page-text closure and pre-opening markers from the discovered URL
+        """
+        name = str(rest.get("name", "") or "").strip()
+        name_lower = name.lower()
+
+        if name_lower in getattr(self, "_restaurant_name_denylist", frozenset()):
+            logger.info("  Restaurant name denylist hit: '%s' (%s)", name, dest_name)
+            return True
+
+        url = str(rest.get("url", "") or "").strip()
+        if not url or any(url.lower().startswith(p) for p in SAFE_FALLBACK_URL_PREFIXES):
+            return False  # Cannot check status from a fallback/search URL
+
+        try:
+            ok, _status, text = self._fetch_page_text(url, timeout=6)
+            if not ok or not text:
+                return False
+            text_lower = text.lower()
+            for marker in RESTAURANT_CLOSURE_MARKERS:
+                if marker in text_lower:
+                    logger.info(
+                        "  Restaurant closure marker '%s' found for '%s' (%s): %s",
+                        marker, name, dest_name, url,
+                    )
+                    return True
+            for marker in RESTAURANT_PRE_OPENING_MARKERS:
+                if marker in text_lower:
+                    logger.info(
+                        "  Restaurant pre-opening marker '%s' found for '%s' (%s): %s",
+                        marker, name, dest_name, url,
+                    )
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _deduplicate_within_destination(self, dest: dict[str, Any]) -> None:
         """Remove scenic_drives entries whose name tokens duplicate a top_attractions entry.

@@ -1701,6 +1701,93 @@ def test_is_relevant_result_rejects_alltrails_redirect_to_different_entity():
     assert result is False
 
 
+# ── Epic 4: Restaurant freshness gate ────────────────────────────────────────
+
+def test_is_restaurant_ineligible_via_name_denylist():
+    """PR-026/030: Restaurant name in denylist is immediately ineligible."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_name_denylist = frozenset({"nello's bistro", "la casa sena"})
+    assert discoverer._is_restaurant_ineligible({"name": "Nello's Bistro"}, "Pagosa Springs")
+    assert discoverer._is_restaurant_ineligible({"name": "La Casa Sena"}, "Santa Fe")
+    assert not discoverer._is_restaurant_ineligible({"name": "Pagosa Brewing"}, "Pagosa Springs")
+
+
+def test_is_restaurant_ineligible_via_closure_page_text():
+    """Restaurant with closure marker in page text is ineligible."""
+    from unittest.mock import MagicMock
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_name_denylist = frozenset()
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="<html><body>Nello's Bistro — this business is permanently closed.</body></html>",
+        url="https://www.tripadvisor.com/Restaurant_Review-123",
+    )
+    rest = {"name": "Nello's Bistro", "url": "https://www.tripadvisor.com/Restaurant_Review-123"}
+    assert discoverer._is_restaurant_ineligible(rest, "Pagosa Springs")
+
+
+def test_is_restaurant_ineligible_via_pre_opening_page_text():
+    """Restaurant with pre-opening marker in page text is ineligible."""
+    from unittest.mock import MagicMock
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_name_denylist = frozenset()
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="Welcome to La Casa Sena. Opening soon — stay tuned for our grand opening!",
+        url="https://www.lacasasena.com",
+    )
+    rest = {"name": "La Casa Sena", "url": "https://www.lacasasena.com"}
+    assert discoverer._is_restaurant_ineligible(rest, "Santa Fe")
+
+
+def test_is_restaurant_ineligible_skips_fallback_urls():
+    """Restaurants with only a fallback maps URL skip page-text check (returns False)."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_name_denylist = frozenset()
+    rest = {
+        "name": "Some Restaurant",
+        "url": "https://www.google.com/maps/search/?api=1&query=Some+Restaurant+Pagosa",
+    }
+    assert not discoverer._is_restaurant_ineligible(rest, "Pagosa Springs")
+
+
+def test_audit_removes_ineligible_restaurant_from_destination():
+    """Full audit pass removes restaurant matching denylist from dinner_recommendations."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_name_denylist = frozenset({"nello's bistro"})
+    discoverer._url_policy_mode = "off"
+    discoverer._url_policy_blocked_classes = set()
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._alltrails_slug_denylist = frozenset()
+    discoverer._max_trail_miles = 10.0
+    discoverer._allow_blocked_alltrails = True
+    discoverer._alltrails_min_confidence_for_publish = "low"
+
+    trip = {
+        "destinations": [
+            {
+                "name": "Pagosa Springs",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [
+                        {"name": "Nello's Bistro", "url": ""},
+                        {"name": "Pagosa Brewing", "url": ""},
+                    ],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"has_events": False, "events": []},
+            }
+        ]
+    }
+    discoverer.audit_discovered_urls(trip)
+    names = [r["name"] for r in trip["destinations"][0]["ai_content"]["dinner_recommendations"]]
+    assert "Nello's Bistro" not in names
+    assert "Pagosa Brewing" in names
+
+
 # ── Epic 3: Content deduplication ────────────────────────────────────────────
 
 def test_retain_url_rejects_compound_entity_name():

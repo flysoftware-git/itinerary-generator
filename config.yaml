@@ -187,6 +187,9 @@ url_discovery:
   alltrails_slug_denylist:
     - "ajax-peak-trail"
     - "jud-wiebe-trail"
+  restaurant_name_denylist:
+    - "Nello's Bistro"
+    - "La Casa Sena"
   uninterested_attraction_keywords:
     - "golf course"
     - "country club"

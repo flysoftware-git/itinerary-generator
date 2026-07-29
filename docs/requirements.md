@@ -1,5 +1,13 @@
 # Road Trip Itinerary Generator — Requirements Document
-**Version 0.28 · July 29, 2026**
+**Version 0.29 · July 29, 2026**
+
+### Changelog for v0.29
+| # | Section | Change |
+|---|---|---|
+| 1 | §4 | Added restaurant freshness gate: permanently closed venues and not-yet-open venues must be excluded from `dinner_recommendations` before final output |
+| 2 | §4 | Added restaurant name denylist (`url_discovery.restaurant_name_denylist`): config-driven list of known-closed or ineligible venue names rejected during URL discovery audit |
+| 3 | §4 | Added page-text closure and pre-opening marker detection: when a restaurant's discovered URL is fetched, presence of closure or pre-opening phrases causes the entire restaurant entry to be removed from recommendations |
+| 4 | §4 | Added AI-side closure signal rejection: `_normalize_restaurants` skips restaurant entries whose AI-generated description contains explicit closure language |
 
 ### Changelog for v0.28
 | # | Section | Change |

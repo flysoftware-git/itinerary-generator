@@ -1,6 +1,8 @@
 # PR-026: Permanently closed restaurant surfaced as recommendation (Nello's Bistro) and should be rejected
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:high`, `area:url-validation`, `area:restaurant-linking`, `area:content-freshness`, `area:google-maps`, `area:html-output`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:high`, `area:url-validation`, `area:restaurant-linking`, `area:content-freshness`, `area:google-maps`, `area:html-output`
+
+**Fixed in:** v1.4.4 — `Nello's Bistro` added to `restaurant_name_denylist` in `config.yaml`. `_is_restaurant_ineligible` check in `audit_discovered_urls` removes the entire restaurant entry (not just the URL) when the name matches the denylist. General mechanism: page-text closure marker detection also removes venues when fetched page contains “permanently closed” or equivalent phrases.
 
 Manifest: `trip_manifest.yaml`
 Output Artifact: `output/index.html`
