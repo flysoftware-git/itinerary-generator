@@ -1,6 +1,8 @@
 # PR-018: Bear Creek Trail link resolves to different entity (Penrose Trail), violating promise-to-target match
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:high`, `area:url-validation`, `area:url-discovery`, `area:content-linking`, `area:hiking`, `area:redirect-validation`, `area:html-output`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:high`, `area:url-validation`, `area:url-discovery`, `area:content-linking`, `area:hiking`, `area:redirect-validation`, `area:html-output`
+
+**Fixed in:** v1.4.2 — Redirect entity-match check added: `_fetch_page_text_uncached` records `response.url` (final URL after redirect) into `_fetch_final_url_cache`. `_is_relevant_result` reads the cache after a successful AllTrails fetch and rejects if the final slug no longer matches the item. Note: when AllTrails blocks with 403, the redirect is not observable; the denylist mechanism covers such cases when identified.
 
 Manifest: `trip_manifest.yaml`
 Output Artifact: `output/index.html`

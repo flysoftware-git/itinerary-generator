@@ -1,6 +1,8 @@
 # PR-009: Mammoth Cave links to generic Bryce Canyon page instead of entity-specific information
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:high`, `area:url-discovery`, `area:content-linking`, `area:html-output`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:high`, `area:url-discovery`, `area:content-linking`, `area:html-output`
+
+**Fixed in:** v1.4.2 — Wikipedia entity-path check added to `_retain_discovered_url`: item name tokens are matched against the `/wiki/` slug; a Bryce Canyon Wikipedia URL for the item “Mammoth Cave” fails this check and is rejected before any page fetch.
 
 Manifest: `C:/Dev/Sandbox/sw_manifest.yaml`
 Output Artifact: `output/index.html`

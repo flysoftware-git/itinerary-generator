@@ -1,6 +1,8 @@
 # PR-016: More info link promises specific live-event verification but resolves to unvalidated claim-text search query
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:high`, `area:ai-content`, `area:content-linking`, `area:url-validation`, `area:hallucination-risk`, `area:html-output`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:high`, `area:ai-content`, `area:content-linking`, `area:url-validation`, `area:hallucination-risk`, `area:html-output`
+
+**Fixed in:** v1.4.1 — `google_search` URL class blocked in enforce mode; prose-derived search-query `More info` links matching `google.com/search?q=...` are now dropped by `_retain_discovered_url` before publication.
 
 Manifest: `trip_manifest.yaml`
 Output Artifact: `output/index.html`

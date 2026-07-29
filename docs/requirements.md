@@ -1,5 +1,12 @@
 # Road Trip Itinerary Generator — Requirements Document
-**Version 0.26 · July 29, 2026**
+**Version 0.27 · July 29, 2026**
+
+### Changelog for v0.27
+| # | Section | Change |
+|---|---|---|
+| 1 | §5 | Added entity-path integrity requirement for encyclopedic URLs: when the entity name is structurally encoded in the URL path (for example Wikipedia `/wiki/` slugs), item tokens must appear in that path; mismatches are rejected before any page fetch |
+| 2 | §5 | Added redirect entity-match requirement: when an AllTrails URL follows a redirect, the final URL slug must still match the requested item name; silent redirects to different trail entities must be rejected |
+| 3 | §5 | Added configurable AllTrails slug denylist (`url_discovery.alltrails_slug_denylist`): known-invalid or dead AllTrails slugs (detectable only via browser, not automation due to bot-blocking) may be explicitly excluded from discovery and audit |
 
 ### Changelog for v0.26
 | # | Section | Change |
@@ -487,6 +494,21 @@ URL class blocklist (structural prohibition):
   - Any URL on a social-media domain (`facebook.com`, `instagram.com`, `tiktok.com`, `twitter.com`, `x.com`)
 - These URL classes must be rejected in the audit retention pass regardless of HTTP liveness or token overlap scores.
 - Implementation must support configuration-driven class blocking so the blocklist can be extended without code changes.
+
+Entity-path integrity for encyclopedic URLs:
+- For URLs where the subject entity is structurally encoded in the URL path by convention (Wikipedia `/wiki/` pages, similar encyclopedic sources), item name tokens must appear in the URL path segment.
+- A Wikipedia URL whose path encodes a different entity from the item being linked must be rejected at audit time, before any page fetch.
+- This applies to the audit pass (`audit_discovered_urls`) as a pre-fetch gate.
+
+Redirect entity-match requirement:
+- When a URL fetch follows a redirect (HTTP 3xx or server-side canonical redirect), the final resolved URL slug must still match the item name tokens.
+- If the final URL identifies a materially different entity from the requested item (for example an AllTrails URL for Trail A redirects to Trail B), the link must be rejected.
+- This applies to AllTrails trail URLs where redirect-to-different-slug mismatches are detectable when the page is accessible.
+
+AllTrails slug denylist:
+- A configurable list of known-invalid AllTrails URL slugs must be supported (`url_discovery.alltrails_slug_denylist`).
+- Any AllTrails URL whose final path segment matches a denylist entry must be rejected regardless of HTTP status, page text, or slug-token match.
+- Rationale: AllTrails bot-blocking (HTTP 403) prevents automated detection of 404/dead trails; the denylist provides a manual escape hatch for cases observed in browser but not detectable in automation.
 
 Fail-closed policy for named-entity links:
 - A link published for a named entity (attraction, restaurant, en-route stop, event) must resolve to a deterministic, entity-specific target — one that refers to that single entity and not a list, a search query, or an area-level reference.

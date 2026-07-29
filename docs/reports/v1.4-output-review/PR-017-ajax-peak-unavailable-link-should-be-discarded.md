@@ -1,6 +1,8 @@
 # PR-017: Ajax Peak points to unavailable AllTrails URL and should be discarded when target is invalid
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:high`, `area:url-validation`, `area:url-discovery`, `area:content-linking`, `area:hiking`, `area:html-output`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:high`, `area:url-validation`, `area:url-discovery`, `area:content-linking`, `area:hiking`, `area:html-output`
+
+**Fixed in:** v1.4.2 — AllTrails slug denylist added to `config.yaml` (`alltrails_slug_denylist`); `ajax-peak-trail` is explicitly denied, causing `_retain_discovered_url` and `_is_relevant_result` to reject the URL before any network fetch. Rationale: AllTrails bot-blocking (403) prevents automated 404 detection; the denylist is the correct escape hatch for known-invalid slugs verified in browser.
 
 Manifest: `trip_manifest.yaml`
 Output Artifact: `output/index.html`

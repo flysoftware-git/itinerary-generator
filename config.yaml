@@ -184,6 +184,9 @@ url_discovery:
   url_policy_allowlist_path: "docs/policy/url_policy_allowlist.txt"
   url_policy_auto_allow_from_output: true
   url_policy_output_path: "output/index.html"
+  alltrails_slug_denylist:
+    - "ajax-peak-trail"
+    - "jud-wiebe-trail"
   uninterested_attraction_keywords:
     - "golf course"
     - "country club"

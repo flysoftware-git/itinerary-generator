@@ -137,6 +137,38 @@ Implementation:
 - Mode is config-driven: `off | monitor | enforce` via `url_discovery.url_policy_mode`.
 - The blocklist is config-driven via `url_discovery.url_policy_blocked_classes` (list of class strings).
 
+## Entity-Path Integrity for Encyclopedic URLs
+For URLs where the subject entity is structurally encoded in the URL path by convention,
+item name tokens must appear in that path before any page fetch is attempted.
+
+Currently applied to:
+- Wikipedia URLs (`wikipedia.org/wiki/<Slug>`): the wiki-page slug is extracted and checked
+  against the item's significant tokens. If no token matches, the URL is rejected immediately.
+
+This catches cross-entity contamination such as "Mammoth Cave" linked to a
+`wikipedia.org/wiki/Bryce_Canyon_National_Park` page.
+
+## AllTrails Redirect Entity-Match
+After a successful AllTrails page fetch, the final URL (after any HTTP redirect)
+is compared against the originally requested URL. If the final URL slug no longer
+matches the item name tokens, the link is rejected.
+
+Implementation:
+- `_fetch_page_text_uncached` records `response.url` (final URL) into `_fetch_final_url_cache[original_url]`.
+- `_is_relevant_result` reads the cache after a successful fetch and calls
+  `_alltrails_slug_matches_item(final_url, item_name)`; mismatch → False.
+- Limitation: when AllTrails blocks the fetch (HTTP 403), no redirect is followed and
+  this check does not apply. The slug denylist (below) covers known cases.
+
+## AllTrails Slug Denylist
+A configurable frozenset of known-invalid AllTrails URL slugs, populated from
+`url_discovery.alltrails_slug_denylist` in `config.yaml`.
+
+- Applied in `_is_relevant_result` (discovery) and `_retain_discovered_url` (audit),
+  both as fast-reject before any network fetch.
+- Intended for slugs that return 404/redirect-to-different-entity in browser but
+  return 403 to bots, making automated detection impossible.
+
 ## Fail-Closed Policy for Named Entities
 A link is only publishable for a named entity if it is a **deterministic, entity-specific
 target** — one that refers to that single entity and not a list, search query, or area

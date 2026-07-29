@@ -1610,6 +1610,97 @@ def test_load_url_policy_allowlist_can_disable_output_auto_seed(tmp_path):
     assert "https://output.example.com/from-baseline" not in discoverer._url_policy_allowlisted_urls
 
 
+def test_retain_url_rejects_wikipedia_wrong_entity():
+    """PR-009: Wikipedia link to wrong entity is rejected via URL-path token check."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    result = discoverer._retain_discovered_url(
+        "https://en.wikipedia.org/wiki/Bryce_Canyon_National_Park",
+        "Mammoth Cave",
+        "Bryce Canyon National Park",
+        allow_alltrails=False,
+    )
+    assert result == ""
+
+
+def test_retain_url_keeps_wikipedia_matching_entity():
+    """Wikipedia link whose slug contains item tokens passes entity check and proceeds to relevance."""
+    from unittest.mock import MagicMock
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="Bryce Canyon National Park is a national park in Utah.",
+        url="https://en.wikipedia.org/wiki/Bryce_Canyon_National_Park",
+    )
+    result = discoverer._retain_discovered_url(
+        "https://en.wikipedia.org/wiki/Bryce_Canyon_National_Park",
+        "Bryce Canyon National Park",
+        "Bryce Canyon National Park",
+        allow_alltrails=False,
+    )
+    assert result == "https://en.wikipedia.org/wiki/Bryce_Canyon_National_Park"
+
+
+def test_retain_url_rejects_alltrails_slug_in_denylist():
+    """PR-017/019: Slug in denylist is rejected even before any network fetch."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_slug_denylist = frozenset({"ajax-peak-trail", "jud-wiebe-trail"})
+    for slug, item in [
+        ("ajax-peak-trail", "Ajax Peak"),
+        ("jud-wiebe-trail", "Jud Wiebe Trail"),
+    ]:
+        result = discoverer._retain_discovered_url(
+            f"https://www.alltrails.com/trail/us/colorado/{slug}",
+            item,
+            "Telluride",
+            allow_alltrails=True,
+        )
+        assert result == "", f"Expected denylist rejection for {slug}"
+
+
+def test_is_relevant_result_rejects_alltrails_slug_in_denylist():
+    """Slug denylist is also applied in the relevance gate during discovery."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_slug_denylist = frozenset({"ajax-peak-trail"})
+    result = discoverer._is_relevant_result(
+        "https://www.alltrails.com/trail/us/colorado/ajax-peak-trail",
+        "Ajax Peak",
+        "Telluride",
+    )
+    assert result is False
+
+
+def test_is_relevant_result_rejects_alltrails_redirect_to_different_entity():
+    """PR-018: When AllTrails redirects to a different trail slug, it is rejected."""
+    from unittest.mock import MagicMock
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_slug_denylist = frozenset()
+    discoverer._alltrails_min_confidence_for_publish = "medium"
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="Penrose Trail Colorado hiking details and reviews.",
+        url="https://www.alltrails.com/trail/us/colorado/penrose-trail",
+    )
+    discoverer._alltrails_request_delay_seconds = 0
+    discoverer._alltrails_block_cooldown_seconds = 0
+    discoverer._alltrails_fetch_cache = {}
+    discoverer._alltrails_fetch_lock = __import__("threading").Lock()
+    discoverer._alltrails_last_request_ts = 0.0
+    discoverer._alltrails_blocked_until_ts = 0.0
+    discoverer._fetch_final_url_cache = {}
+    discoverer._allow_blocked_alltrails = True
+    discoverer._max_trail_miles = 10.0
+
+    result = discoverer._is_relevant_result(
+        "https://www.alltrails.com/trail/us/colorado/bear-creek-trail",
+        "Bear Creek Trail",
+        "Telluride",
+    )
+    assert result is False
+
+
 def test_trail_ai_candidate_rejected_when_filtered_constraints_fail_then_falls_back_maps():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = True

@@ -171,6 +171,7 @@ DEFAULT_RESTAURANT_RATING_MIN = 4.4
 DEFAULT_RESTAURANT_RATING_MIN_VOTES = 100
 DEFAULT_RESTAURANT_RATING_BOOST = 6
 DEFAULT_URL_POLICY_MODE = "monitor"
+DEFAULT_ALLTRAILS_SLUG_DENYLIST: tuple[str, ...] = ()
 DEFAULT_URL_POLICY_BLOCKED_CLASSES = (
     "google_search",
     "google_maps_search",
@@ -284,6 +285,8 @@ class URLDiscoverer:
         self._url_policy_auto_allow_from_output: bool = DEFAULT_URL_POLICY_AUTO_ALLOW_FROM_OUTPUT
         self._url_policy_output_path: str = DEFAULT_URL_POLICY_OUTPUT_PATH
         self._url_policy_allowlisted_urls: set[str] = set()
+        self._alltrails_slug_denylist: frozenset[str] = frozenset(DEFAULT_ALLTRAILS_SLUG_DENYLIST)
+        self._fetch_final_url_cache: dict[str, str] = {}
         self._load_interest_filters(config_path)
         self._load_url_policy_allowlist()
 
@@ -524,6 +527,14 @@ class URLDiscoverer:
             ).strip()
             if output_path:
                 self._url_policy_output_path = output_path
+
+            raw_slug_denylist = url_cfg.get("alltrails_slug_denylist", [])
+            if isinstance(raw_slug_denylist, list):
+                self._alltrails_slug_denylist = frozenset(
+                    str(v or "").strip().lower()
+                    for v in raw_slug_denylist
+                    if str(v or "").strip()
+                )
         except Exception:
             # Keep defaults when config loading is unavailable in tests or runtime.
             return
@@ -719,6 +730,23 @@ class URLDiscoverer:
             return ""
         if not allow_alltrails and self._is_alltrails_trail_url(url):
             return ""
+        # AllTrails slug denylist: fast-reject known-invalid slugs before any fetch.
+        if self._is_alltrails_trail_url(url):
+            slug = urlparse(url).path.rsplit("/", 1)[-1].lower()
+            if slug in getattr(self, "_alltrails_slug_denylist", frozenset()):
+                logger.info("AllTrails slug denylist hit for %s '%s': %s", kind, item_name, url)
+                return ""
+        # Wikipedia entity-path check: wiki page name is deterministic in the URL.
+        # Reject when no item token appears in the wiki slug (catches wrong-entity links).
+        if not is_safe_fallback and "wikipedia.org/wiki/" in lower:
+            wiki_slug = lower.split("/wiki/")[-1].split("?")[0].replace("_", " ").replace("-", " ")
+            item_tokens = self._significant_tokens(item_name)
+            if item_tokens and not any(t in wiki_slug for t in item_tokens):
+                logger.info(
+                    "Wikipedia entity-path mismatch for %s '%s': %s",
+                    kind, item_name, url,
+                )
+                return ""
         if allow_alltrails and self._is_alltrails_trail_url(url):
             if not self._meets_alltrails_publish_confidence(url, item_name, dest_name):
                 return ""
@@ -1754,6 +1782,10 @@ class URLDiscoverer:
             item_tokens = self._significant_tokens(item_name)
             if not self._alltrails_slug_matches_item(url, item_name):
                 return False
+            # Slug denylist fast-reject (known-invalid/dead slugs from config).
+            _slug = urlparse(url).path.rsplit("/", 1)[-1].lower()
+            if _slug in getattr(self, "_alltrails_slug_denylist", frozenset()):
+                return False
             if self._alltrails_slug_has_numbered_suffix(url):
                 return False
             max_trail_miles = float(getattr(self, "_max_trail_miles", DEFAULT_MAX_TRAIL_MILES) or DEFAULT_MAX_TRAIL_MILES)
@@ -1797,6 +1829,16 @@ class URLDiscoverer:
                 text = (text or "").lower()
                 if any(marker in text for marker in ALLTRAILS_404_MARKERS):
                     return False
+                # Redirect entity check: if AllTrails silently redirected to a
+                # different trail, the final URL slug won't match the item.
+                final_url = getattr(self, "_fetch_final_url_cache", {}).get(url, url)
+                if final_url != url and self._is_alltrails_trail_url(final_url):
+                    if not self._alltrails_slug_matches_item(final_url, item_name):
+                        logger.info(
+                            "AllTrails redirect entity mismatch: %s -> %s (item: %s)",
+                            url, final_url, item_name,
+                        )
+                        return False
                 if max_trail_miles > 0:
                     fetched_miles = self._extract_trail_miles(text)
                     if fetched_miles is not None and fetched_miles > max_trail_miles:
@@ -1849,6 +1891,10 @@ class URLDiscoverer:
         # Backward-compat fallback for tests/mocks that only expose session.get.
         try:
             resp = self._url_validator.session.get(url, timeout=timeout)
+            # Track final URL after any redirect for entity-match verification.
+            final_url = str(getattr(resp, "url", None) or url)
+            if hasattr(self, "_fetch_final_url_cache") and final_url != url:
+                self._fetch_final_url_cache[url] = final_url
             return resp.status_code < 400, resp.status_code, resp.text or ""
         except Exception as exc:
             return False, str(exc), ""

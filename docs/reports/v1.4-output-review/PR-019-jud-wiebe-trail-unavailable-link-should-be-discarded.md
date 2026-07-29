@@ -1,6 +1,8 @@
 # PR-019: Jud Wiebe Trail points to unavailable AllTrails URL and should be discarded when target is invalid
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:high`, `area:url-validation`, `area:url-discovery`, `area:content-linking`, `area:hiking`, `area:html-output`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:high`, `area:url-validation`, `area:url-discovery`, `area:content-linking`, `area:hiking`, `area:html-output`
+
+**Fixed in:** v1.4.2 — `jud-wiebe-trail` added to `alltrails_slug_denylist` in `config.yaml`; rejected in both `_retain_discovered_url` and `_is_relevant_result` before any network fetch.
 
 Manifest: `trip_manifest.yaml`
 Output Artifact: `output/index.html`
