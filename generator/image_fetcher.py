@@ -11,6 +11,7 @@ Images are embedded as data URIs in the HTML (base64) OR stored as
 relative paths in output/images/ depending on config.
 """
 from __future__ import annotations
+import html as html_lib
 import hashlib, json, logging, mimetypes, os, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
@@ -28,6 +29,41 @@ WIKIMEDIA_INFO = "https://commons.wikimedia.org/w/api.php"
 THUMB_WIDTH = 960
 MAX_FALLBACK_ATTEMPTS = 4
 REQUEST_DELAY = 1.5
+NOISY_CAPTION_MARKERS = (
+    "when reusing",
+    "please credit me",
+    "contact me at",
+    "layouttemplate",
+    "external text",
+    "mw-file",
+    "cc-by-sa",
+    "wikimedia.org/wiki/file",
+    "info icon",
+)
+MARINE_HARD_REJECT_TERMS = {
+    "coral",
+    "underwater",
+    "ocean",
+    "sea",
+    "scuba",
+    "snorkel",
+    "tropical",
+    "marine",
+    "reef fish",
+    "anemone",
+    "stingray",
+    "manta",
+    "jellyfish",
+    "sea turtle",
+    "kelp",
+    "scuba diving",
+}
+GLOBAL_IMAGE_BLACKLIST_TERMS = {
+    "underwater",
+    "scuba",
+    "snorkel",
+    "snorkeling",
+}
 
 
 class ImageFetcher:
@@ -46,6 +82,12 @@ class ImageFetcher:
         self._max_per_dest = images_cfg.get("max_per_destination", 4)
         self._cache_ttl_seconds = int(images_cfg.get("cache_ttl_hours", 168)) * 3600
         self._force_refresh = force_refresh
+        raw_blacklist = images_cfg.get("never_content_terms", []) or []
+        self._global_blacklist_terms = {
+            str(term).strip().lower()
+            for term in raw_blacklist
+            if str(term).strip()
+        } or set(GLOBAL_IMAGE_BLACKLIST_TERMS)
         if output_dir is None:
             self._output_dir = Path("output/images")
         else:
@@ -91,6 +133,7 @@ class ImageFetcher:
     def _fetch_for_dest(self, dest: dict[str, Any]) -> list[dict[str, Any]]:
         images: list[dict[str, Any]] = []
         dest_name = str(dest.get("name", "") or "")
+        query_name = self._provider_query_for_destination(dest_name)
         cache_key = self._cache_key(dest)
 
         if not self._force_refresh:
@@ -109,19 +152,19 @@ class ImageFetcher:
     # Source 2: Unsplash (preferred over Wikimedia)
         if len(images) < self._max_per_dest:
             remaining = self._max_per_dest - len(images)
-            images.extend(self._fetch_from_unsplash(dest["name"], limit=remaining))
+            images.extend(self._fetch_from_unsplash(query_name, limit=remaining))
 
     # Source 3: Wikimedia (fallback)
         if len(images) < self._max_per_dest:
             remaining = self._max_per_dest - len(images)
-            images.extend(self._fetch_from_wikimedia(dest["name"], limit=remaining + 2))
+            images.extend(self._fetch_from_wikimedia(query_name, limit=remaining + 2))
 
         images = self._rank_images_for_destination(images, dest_name)
         verified = self._verify_and_materialize(images, dest_name)
 
         # Fallback queries if still short
         attempt = 0
-        fallback_queries = self._fallback_queries(dest["name"])
+        fallback_queries = self._fallback_queries(query_name)
         while len(verified) < self._min_per_dest and attempt < MAX_FALLBACK_ATTEMPTS:
             query = fallback_queries[attempt % len(fallback_queries)]
             logger.warning("  Image fallback attempt %d for '%s': '%s'", attempt + 1, dest["name"], query)
@@ -146,7 +189,7 @@ class ImageFetcher:
             local_path = self._download_image(url)
             if not local_path:
                 continue
-            item = dict(img)
+            item = self._normalize_image_record(dict(img))
             item["local_path"] = str(local_path)
             verified.append(item)
             seen_urls.add(url)
@@ -158,7 +201,7 @@ class ImageFetcher:
         name = str(dest.get("name", "") or "").strip().lower()
         name = re.sub(r"\s+", " ", name)
         nps = str(dest.get("nps_park_code", "") or "none").strip().lower()
-        return f"v1::{name}::{nps}"
+        return f"v2::{name}::{nps}"
 
     def _load_cache_index(self) -> dict[str, Any]:
         if not self._cache_index_path.exists():
@@ -206,16 +249,17 @@ class ImageFetcher:
         for img in images:
             if not isinstance(img, dict):
                 continue
-            url = str(img.get("url", "") or "").strip()
+            cleaned = self._normalize_image_record(img)
+            url = str(cleaned.get("url", "") or "").strip()
             if not url:
                 continue
             slim.append(
                 {
                     "url": url,
-                    "title": str(img.get("title", "") or ""),
-                    "credit": str(img.get("credit", "") or ""),
-                    "license": str(img.get("license", "") or ""),
-                    "source": str(img.get("source", "") or ""),
+                    "title": str(cleaned.get("title", "") or ""),
+                    "credit": str(cleaned.get("credit", "") or ""),
+                    "license": str(cleaned.get("license", "") or ""),
+                    "source": str(cleaned.get("source", "") or ""),
                 }
             )
         if not slim:
@@ -260,6 +304,59 @@ class ImageFetcher:
             ).lower()
             return sum(1 for t in profile["negative"] if t in hay)
 
+        def has_hard_marine_mismatch(img: dict[str, Any]) -> bool:
+            hay = " ".join(
+                [
+                    str(img.get("title", "") or ""),
+                    str(img.get("credit", "") or ""),
+                    str(img.get("url", "") or ""),
+                ]
+            ).lower()
+            if not any(cue in destination.lower() for cue in ("national park", "state park", "desert", "canyon", "utah", "arizona", "nevada", "new mexico", "colorado")):
+                return False
+            return any(term in hay for term in MARINE_HARD_REJECT_TERMS)
+
+        def has_global_blacklist_hit(img: dict[str, Any]) -> bool:
+            hay = " ".join(
+                [
+                    str(img.get("title", "") or ""),
+                    str(img.get("credit", "") or ""),
+                    str(img.get("url", "") or ""),
+                ]
+            ).lower()
+            blocked = getattr(self, "_global_blacklist_terms", set(GLOBAL_IMAGE_BLACKLIST_TERMS))
+            return any(term in hay for term in blocked)
+
+        blacklist_filtered = [img for img in images if not has_global_blacklist_hit(img)]
+        if blacklist_filtered:
+            images = blacklist_filtered
+        elif images:
+            return []
+
+        mismatch_flags = [has_hard_marine_mismatch(img) for img in images]
+        filtered = [img for img, bad in zip(images, mismatch_flags) if not bad]
+        if filtered:
+            images = filtered
+        elif images and any(mismatch_flags):
+            # All candidates are hard marine mismatches for an inland/desert context.
+            return []
+
+        required_any = profile.get("required_any", set())
+        if required_any:
+            required_hits = []
+            for img in images:
+                hay = " ".join(
+                    [
+                        str(img.get("title", "") or ""),
+                        str(img.get("credit", "") or ""),
+                        str(img.get("url", "") or ""),
+                    ]
+                ).lower()
+                if any(term in hay for term in required_any):
+                    required_hits.append(img)
+            if required_hits:
+                images = required_hits
+
         scored = sorted(images, key=score, reverse=True)
         non_negative = [img for img in scored if neg_hits(img) == 0]
         if non_negative:
@@ -287,6 +384,7 @@ class ImageFetcher:
             "national park",
         }
         negative: set[str] = set()
+        required_any: set[str] = set()
 
         # For inland and canyon/desert contexts, marine imagery is usually a mismatch.
         inland_cues = (
@@ -330,14 +428,19 @@ class ImageFetcher:
         if "capitol reef" in d or "capital reef" in d:
             negative.update({"coral", "underwater", "ocean", "sea", "scuba", "snorkel"})
             positive.update({"capitol reef", "waterpocket fold", "utah", "sandstone"})
+            # Disambiguate from marine "reef" imagery when metadata is sparse.
+            required_any.update({"capitol", "capital", "utah", "waterpocket", "sandstone", "canyon", "national park"})
 
-        return {"positive": positive, "negative": negative}
+        return {"positive": positive, "negative": negative, "required_any": required_any}
 
     @staticmethod
     def _location_tokens(destination: str) -> list[str]:
         parts = re.findall(r"[a-z0-9]+", (destination or "").lower())
         stop = {"national", "park", "state", "the", "and", "city"}
         tokens = [p for p in parts if len(p) >= 4 and p not in stop]
+        # "reef" is highly ambiguous and over-matches marine photos for Capitol Reef.
+        if ("capitol" in parts or "capital" in parts) and "reef" in tokens:
+            tokens = [t for t in tokens if t != "reef"]
         # Add canonical typo resilience for common park names.
         expanded = set(tokens)
         if "kolob" in expanded:
@@ -359,13 +462,13 @@ class ImageFetcher:
             for item in resp.json().get("data", []):
                 url = item.get("fileInfo", {}).get("url", "")
                 if url:
-                    results.append({
+                    results.append(self._normalize_image_record({
                         "url": url,
                         "title": item.get("title", ""),
                         "credit": item.get("credit", "National Park Service"),
                         "license": "Public Domain / NPS",
                         "source": "nps",
-                    })
+                    }))
             return results
         except requests.RequestException as exc:
             logger.warning("NPS image API error for '%s': %s", park_code, exc)
@@ -402,13 +505,13 @@ class ImageFetcher:
                 if not mime.startswith("image/"):
                     continue
                 meta = info.get("extmetadata", {})
-                results.append({
+                results.append(self._normalize_image_record({
                     "url": url,
                     "title": page.get("title", "").replace("File:", ""),
                     "credit": meta.get("Artist", {}).get("value", "Wikimedia Commons"),
                     "license": meta.get("LicenseShortName", {}).get("value", "CC BY-SA"),
                     "source": "wikimedia",
-                })
+                }))
             return results[:limit]
         except requests.RequestException as exc:
             logger.warning("Wikimedia search error for '%s': %s", query, exc)
@@ -450,7 +553,7 @@ class ImageFetcher:
                     "source": "unsplash",
                 })
 
-            return results[:limit]
+            return [self._normalize_image_record(r) for r in results[:limit]]
 
         except requests.RequestException as exc:
             logger.warning("Unsplash search error for '%s': %s", query, exc)
@@ -492,3 +595,46 @@ class ImageFetcher:
             f"{base} aerial view",
             f"{base} scenic",
         ]
+
+    @staticmethod
+    def _provider_query_for_destination(destination: str) -> str:
+        name = str(destination or "").strip()
+        lower = name.lower()
+        if "capitol reef" in lower or "capital reef" in lower:
+            return f"{name} Utah national park desert canyon"
+        return name
+
+    @staticmethod
+    def _sanitize_metadata_text(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = html_lib.unescape(text)
+        text = re.sub(r"\{\{.*?\}\}", " ", text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"https?://\S+", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s+", " ", text).strip()
+
+        lower = text.lower()
+        if any(marker in lower for marker in NOISY_CAPTION_MARKERS):
+            return ""
+
+        if len(text) > 200:
+            text = text[:197].rstrip() + "..."
+        return text
+
+    def _normalize_image_record(self, image: dict[str, Any]) -> dict[str, Any]:
+        out = dict(image)
+        out["title"] = self._sanitize_metadata_text(out.get("title", ""))
+        out["credit"] = self._sanitize_metadata_text(out.get("credit", ""))
+        out["license"] = self._sanitize_metadata_text(out.get("license", ""))
+        out["source"] = self._sanitize_metadata_text(out.get("source", ""))
+        if not out.get("credit"):
+            source = str(out.get("source", "") or "").strip().lower()
+            if source == "wikimedia":
+                out["credit"] = "Wikimedia Commons"
+            elif source == "nps":
+                out["credit"] = "National Park Service"
+            elif source == "unsplash":
+                out["credit"] = "Unsplash"
+        return out

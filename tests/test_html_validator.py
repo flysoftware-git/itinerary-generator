@@ -132,3 +132,25 @@ def test_nested_drive_descriptions_json_parses(tmp_path):
     v = _make_validator(tmp_path)
     report = v.validate(p, SAMPLE_TRIP)
     assert report["valid"] is True
+
+
+def test_drive_title_html_entities_do_not_break_key_matching(tmp_path):
+        drive_key = "Viewpoint at Angel's Landing"
+        html = f"""<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body>
+<section id="section-zion" class="destination-section">
+    <div class="dest-header"><div class="inner"></div></div>
+</section>
+<script>
+var DRIVE_DESCRIPTIONS = {json.dumps({drive_key: {"title": drive_key}})};
+</script>
+<button class="drive-link" data-drive-title="Viewpoint at Angel&#39;s Landing"></button>
+</body>
+</html>"""
+
+        p = _write_html(tmp_path, html)
+        v = _make_validator(tmp_path)
+        report = v.validate(p, SAMPLE_TRIP)
+        assert report["valid"] is True

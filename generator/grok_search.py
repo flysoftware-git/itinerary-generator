@@ -20,12 +20,15 @@ Search API history:
 """
 from __future__ import annotations
 import json, logging, os, threading
+import time
 from typing import Any
 import requests
 
 logger = logging.getLogger(__name__)
 GROK_ENDPOINT = "https://api.x.ai/v1/chat/completions"
 _DEFAULT_DELAY = 0.05
+_DEFAULT_TIMEOUT_SECONDS = 25
+_DEFAULT_NETWORK_RETRIES = 2
 
 # Global semaphore: cap concurrent connections to xAI API to avoid rate limiting.
 # 16 parallel threads → xAI rate-limits → all time out. Keep it at 4.
@@ -98,18 +101,23 @@ class GrokSearch:
         self,
         api_key: str | None = None,
         model: str | None = None,
-        timeout_seconds: int = 15,
+        timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
         request_delay_seconds: float = _DEFAULT_DELAY,
+        network_retries: int = _DEFAULT_NETWORK_RETRIES,
         usage_tracker: Any | None = None,
         usage_operation_prefix: str = "grok_search",
     ) -> None:
         self._api_key = api_key or os.environ["XAI_API_KEY"]
         self._model = model or os.environ.get("XAI_MODEL", "grok-2-latest")
-        self._timeout = timeout_seconds
+        self._timeout = int(os.environ.get("XAI_TIMEOUT_SECONDS", str(timeout_seconds)))
         self._delay = request_delay_seconds
+        self._network_retries = max(0, int(os.environ.get("XAI_NETWORK_RETRIES", str(network_retries))))
         self._session_local = threading.local()
         self._usage_tracker = usage_tracker
         self._usage_operation_prefix = usage_operation_prefix
+        self._warning_state_lock = threading.Lock()
+        self._warning_state: dict[str, dict[str, float | int]] = {}
+        self._warning_cooldown_seconds = int(os.environ.get("XAI_WARNING_COOLDOWN_SECONDS", "30"))
 
     # ── Thread-local session ─────────────────────────────────────────────────
 
@@ -167,12 +175,7 @@ class GrokSearch:
             logger.debug(f"[Grok-Attempt{attempt}] API Key prefix: {self._api_key[:20]}...")
             logger.debug(f"[Grok-Attempt{attempt}] Query: {query[:100]}")
 
-            with _GROK_SEMAPHORE:
-                resp = self._get_session().post(
-                    GROK_ENDPOINT,
-                    json=payload,
-                    timeout=self._timeout,
-                )
+            resp = self._post_with_retries(payload, query)
             logger.debug(f"[Grok-Attempt{attempt}] Response Status: {resp.status_code}")
             
             resp.raise_for_status()
@@ -213,22 +216,110 @@ class GrokSearch:
             logger.warning("Grok returned malformed JSON after retry for %r: %s", query[:60], exc)
             return []
         except requests.RequestException as exc:
-            # Log full response body for 4xx/5xx errors
-            if hasattr(exc, 'response') and exc.response is not None:
-                try:
-                    resp_body = exc.response.text[:500]
-                    logger.warning(
-                        "Grok API error for %r (status=%s): %s | Response: %s",
-                        query[:60], 
-                        exc.response.status_code,
-                        exc,
-                        resp_body
-                    )
-                except Exception:
-                    logger.warning("Grok API error for %r: %s", query[:60], exc)
-            else:
-                logger.warning("Grok API error for %r: %s", query[:60], exc)
+            self._log_request_exception(query, exc)
             return []
+
+    @staticmethod
+    def _classify_request_exception(exc: requests.RequestException) -> str:
+        text = str(exc).lower()
+        if isinstance(exc, requests.Timeout) or "timed out" in text:
+            return "timeout"
+        if (
+            "nameresolutionerror" in text
+            or "failed to resolve" in text
+            or "getaddrinfo failed" in text
+            or "temporary failure in name resolution" in text
+        ):
+            return "dns"
+        if isinstance(exc, requests.ConnectionError):
+            return "connection"
+        if getattr(exc, "response", None) is not None:
+            return "http"
+        return "request"
+
+    def _log_request_exception(self, query: str, exc: requests.RequestException) -> None:
+        category = self._classify_request_exception(exc)
+        now = time.monotonic()
+        should_log = False
+        suppressed_count = 0
+
+        with self._warning_state_lock:
+            state = self._warning_state.get(category, {"last_log": 0.0, "suppressed": 0})
+            last_log = float(state.get("last_log", 0.0) or 0.0)
+            if not last_log or (now - last_log) >= self._warning_cooldown_seconds:
+                should_log = True
+                suppressed_count = int(state.get("suppressed", 0) or 0)
+                state["last_log"] = now
+                state["suppressed"] = 0
+            else:
+                state["suppressed"] = int(state.get("suppressed", 0) or 0) + 1
+            self._warning_state[category] = state
+
+        if not should_log:
+            return
+
+        if suppressed_count > 0:
+            logger.warning(
+                "Grok %s errors continuing; suppressed %s similar warnings in the last %ss. latest query=%r error=%s",
+                category,
+                suppressed_count,
+                self._warning_cooldown_seconds,
+                query[:60],
+                exc,
+            )
+            return
+
+        if getattr(exc, "response", None) is not None:
+            try:
+                resp_body = exc.response.text[:500]
+                logger.warning(
+                    "Grok %s error for %r (status=%s): %s | Response: %s",
+                    category,
+                    query[:60],
+                    exc.response.status_code,
+                    exc,
+                    resp_body,
+                )
+                return
+            except Exception:
+                pass
+        logger.warning("Grok %s error for %r: %s", category, query[:60], exc)
+
+    @classmethod
+    def _is_transient_request_error(cls, exc: requests.RequestException) -> bool:
+        category = cls._classify_request_exception(exc)
+        return category in {"timeout", "dns", "connection"}
+
+    def _post_with_retries(self, payload: dict[str, Any], query: str) -> requests.Response:
+        """POST to Grok with lightweight retry/backoff for transient read timeouts."""
+        max_attempts = self._network_retries + 1
+        last_exc: requests.RequestException | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with _GROK_SEMAPHORE:
+                    return self._get_session().post(
+                        GROK_ENDPOINT,
+                        json=payload,
+                        timeout=self._timeout,
+                    )
+            except requests.RequestException as exc:
+                last_exc = exc
+                is_transient = self._is_transient_request_error(exc)
+                if attempt >= max_attempts or not is_transient:
+                    raise
+                backoff = min(2.0, 0.4 * attempt)
+                logger.info(
+                    "Grok transient %s for %r (attempt %s/%s), retrying in %.1fs",
+                    self._classify_request_exception(exc),
+                    query[:60],
+                    attempt,
+                    max_attempts,
+                    backoff,
+                )
+                time.sleep(backoff)
+        if last_exc:
+            raise last_exc
+        raise requests.RequestException("Unknown Grok POST failure")
 
     # ── URL-resolution helper ────────────────────────────────────────────────
 

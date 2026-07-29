@@ -1,0 +1,111 @@
+name: Broken Link Report
+description: Report a broken or low-quality link found in generated itinerary output
+title: "Broken link: <link name>"
+labels:
+  - bug
+  - broken-link
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a link issue. Please fill in the fields below so we can reproduce and fix it quickly.
+
+  - type: input
+    id: generator_version
+    attributes:
+      label: Generator version
+      description: Example: 1.4.0 (from itinerary footer)
+      placeholder: "1.4.0"
+    validations:
+      required: true
+
+  - type: input
+    id: itinerary_timestamp
+    attributes:
+      label: Itinerary output timestamp
+      description: Example: 2026-07-28 18:14 UTC (from itinerary footer)
+      placeholder: "YYYY-MM-DD HH:MM UTC"
+    validations:
+      required: false
+
+  - type: input
+    id: manifest_name
+    attributes:
+      label: Manifest used
+      description: Example: sw_manifest.yaml or trip_manifest.yaml
+      placeholder: "sw_manifest.yaml"
+    validations:
+      required: false
+
+  - type: input
+    id: destination
+    attributes:
+      label: Destination section
+      description: Destination where the bad link appears
+      placeholder: "Zion National Park"
+    validations:
+      required: true
+
+  - type: input
+    id: link_name
+    attributes:
+      label: Link name or visible text
+      description: The text shown in the itinerary
+      placeholder: "Angels Landing"
+    validations:
+      required: true
+
+  - type: input
+    id: broken_url
+    attributes:
+      label: Broken URL
+      description: Paste the full link URL exactly as opened
+      placeholder: "https://..."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: link_area
+    attributes:
+      label: Link area
+      description: Where this link appears in the itinerary
+      options:
+        - Top attractions
+        - Scenic drives
+        - Dinner recommendations
+        - Cultural events
+        - En route stops
+        - Planning links
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What page should this link open instead?
+      placeholder: "Should open the official trail page for..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened when you clicked?
+      placeholder: "404 page, unrelated destination, redirects to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction details
+      description: Optional extra context to help reproduce
+      placeholder: |
+        - Browser:
+        - Environment (dev/test/prod):
+        - Additional notes:
+    validations:
+      required: false

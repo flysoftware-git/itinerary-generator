@@ -1,0 +1,28 @@
+Generate a structured "What to Know" briefing for this travel stop.
+
+Destination name: {destination_name}
+Trip dates at this stop: {dates}
+Season context: {season}
+Nearby-day context: {nearby_days}
+Trip type: {trip_type}
+Previous stop: {previous_destination}
+Next stop: {next_destination}
+Budget guidance: {budget_guidance}
+
+Return JSON only with this exact schema:
+{
+  "summary": "2-3 sentence practical overview specific to this destination and time window.",
+  "local_customs": "1-2 sentences.",
+  "best_times_of_day": "1-2 sentences.",
+  "transportation_quirks": "1-2 sentences.",
+  "safety_considerations": "1-2 sentences.",
+  "crowd_patterns": "1-2 sentences.",
+  "local_etiquette": "1-2 sentences."
+}
+
+Rules:
+- Keep each field factual and logistics-oriented.
+- Do not include URLs.
+- Do not assume US-only systems or agencies.
+- Avoid generic fluff; mention concrete behaviors a traveler can use.
+- Make all guidance applicable to international destinations as well.

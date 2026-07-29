@@ -1,0 +1,115 @@
+name: Itinerary Feedback
+description: Report non-link itinerary issues or quality concerns in generated output
+title: "Itinerary feedback: <short summary>"
+labels:
+  - enhancement
+  - itinerary-feedback
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing feedback. Please provide enough context for us to reproduce and improve output quality.
+
+  - type: input
+    id: generator_version
+    attributes:
+      label: Generator version
+      description: Example: 1.4.0 (from itinerary footer)
+      placeholder: "1.4.0"
+    validations:
+      required: true
+
+  - type: input
+    id: itinerary_timestamp
+    attributes:
+      label: Itinerary output timestamp
+      description: Example: 2026-07-28 18:14 UTC (from itinerary footer)
+      placeholder: "YYYY-MM-DD HH:MM UTC"
+    validations:
+      required: false
+
+  - type: input
+    id: manifest_name
+    attributes:
+      label: Manifest used
+      description: Example: sw_manifest.yaml or trip_manifest.yaml
+      placeholder: "sw_manifest.yaml"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: feedback_area
+    attributes:
+      label: Feedback area
+      options:
+        - Schedule realism
+        - Attraction quality
+        - Scenic drives
+        - Dinner recommendations
+        - Cultural events
+        - What to know
+        - Getting here
+        - Images
+        - Map and navigation
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: destination
+    attributes:
+      label: Destination section (if applicable)
+      placeholder: "Zion National Park"
+    validations:
+      required: false
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Problem summary
+      description: One or two sentences describing what is wrong
+      placeholder: "The day-by-day schedule repeats the same activities and does not account for arrival travel time."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should the itinerary do instead?
+      placeholder: "Reserve Day 1 for arrival and constrain each day to the configured time budget."
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What did you see in the generated itinerary?
+      placeholder: "Day 1 starts with a 4-5 hour hike after a long transfer drive."
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Paste section text, item names, or screenshots/URLs if available
+      placeholder: |
+        - Section heading:
+        - Item name:
+        - Screenshot link:
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Optional traveler profile, constraints, or preferences
+      placeholder: |
+        - Traveler profile: seniors / family / athletic
+        - Daily hours available:
+        - Accessibility needs:
+    validations:
+      required: false

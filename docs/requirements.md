@@ -1,5 +1,65 @@
 # Road Trip Itinerary Generator — Requirements Document
-**Version 0.18 · July 24, 2026**
+**Version 0.26 · July 29, 2026**
+
+### Changelog for v0.26
+| # | Section | Change |
+|---|---|---|
+| 1 | §5 | Added URL class blocklist requirement: specific structural URL patterns (Google Maps search queries, Google Maps directions, bare Google search queries, social-media content pages) are categorically prohibited from final output regardless of discovery score or fallback path |
+| 2 | §5 | Added fail-closed definition for named-entity links: a published link must be a deterministic, entity-specific target; query-style URLs that open a list of results are not acceptable for named entities; when no entity-specific URL survives audit, the item must be rendered without a link |
+| 3 | §5 | Added URL policy rollout mode requirement: URL policy enforcement must be supportable in monitor-only mode (logging without rejection) to enable safe gradual rollout without breaking previously validated runs |
+| 4 | §5 | Clarified maps-search fallback acceptable-use boundary: the synthesized maps-search fallback is never acceptable as a published link for a named entity (attraction, restaurant, waypoint); it may only be used for category-level or type-level items where no single entity is implied |
+
+### Changelog for v0.25
+| # | Section | Change |
+|---|---|---|
+| 1 | §5, §10 | Added optional filtered AllTrails selection mode using snippet metadata constraints (distance, elevation gain, difficulty, min reviews) before accepting/ranking trail candidates |
+| 2 | §5, §10 | Filtered AllTrails mode ranks by rating/review volume among candidates that pass constraints, and allows fewer-than-target trail links rather than padding with weak matches |
+
+### Changelog for v0.24
+| # | Section | Change |
+|---|---|---|
+| 1 | §5, §10 | Trail-like attractions now apply a configurable AllTrails publish-confidence gate; links below threshold must fall back to non-AllTrails URLs (typically Google Maps query fallback) |
+| 2 | §5, §10 | Added `url_discovery.alltrails_min_confidence_for_publish` (`low|medium|high`) to control strictness for blocked/sparse AllTrails pages |
+
+### Changelog for v0.23
+| # | Section | Change |
+|---|---|---|
+| 1 | §5, §10 | URL scoring now applies high-rating prioritization for AllTrails and restaurant candidates only when review-count thresholds are met (vote-gated rating boost) |
+| 2 | §5, §10 | Added configuration controls for rating/vote thresholds and boost weights for AllTrails and restaurant discovery |
+
+### Changelog for v0.22
+| # | Section | Change |
+|---|---|---|
+| 1 | §3, §4 | Seed handling is now explicitly guaranteed at normalization time: missing seed attractions are injected and seed attractions are protected from en-route overlap pruning |
+| 2 | §4 | Schedule boundary policy hardened: first destination Day 1 Morning is reserved for inbound travel from origin, and final destination last-day Afternoon/Evening are reserved for return travel |
+| 3 | §5 | AllTrails hike selection now prefers canonical trail slugs over `-via-` variants when available, and place-level entities (including plain `park`) are guarded against false trail classification |
+| 4 | §5, §7 | Restaurant cards must prefer a verified discovered URL over query fallback links during rendering |
+| 5 | §9 | Added `--first-destination` CLI switch to process only the first destination after any destination-id filtering |
+
+### Changelog for v0.21
+| # | Section | Change |
+|---|---|---|
+| 1 | §4 | Multi-day schedule normalization now requires complete daily period coverage (Morning/Afternoon/Evening), with arrival context on Day 1, departure context on final day, and at least one unique planning signal per additional day |
+| 2 | §5 | Trail-like attraction detection expanded beyond explicit hike types (for example `walk`, `loop`, `narrows`, `riverside walk`) so AllTrails-first policy applies consistently |
+| 3 | §5 | Generic landing-page rejection expanded (including NPS `things2do` paths), and trusted-host SSL fallback is allowed for verification/readability checks when certificate-chain issues occur |
+| 4 | §6 | Capitol Reef image disambiguation hardened: marine/underwater reef imagery is hard-rejected for inland/desert contexts and Capitol-Reef-specific relevance cues are required when available |
+| 5 | §6, §10 | Added destination-agnostic image content blacklist (configurable) for categories that should never appear (for example underwater/scuba/snorkeling imagery) |
+
+### Changelog for v0.20
+| # | Section | Change |
+|---|---|---|
+| 1 | §5, §10 | Added configurable attraction-interest filtering in URL discovery: hard blacklist keywords (for example golf-course style attractions) and seasonal ski-attraction suppression outside configured ski months |
+| 2 | §4 | What-to-Know output schema trimmed to rendered fields only; weather-pattern and photography-tip fields are no longer required in prompt or normalization |
+| 3 | §5, §7 | Scenic-drive/day-trip popup content may include one optional "More Info" link when a verified URL is available; no generic fallback link is required |
+
+### Changelog for v0.19
+| # | Section | Change |
+|---|---|---|
+| 1 | §2, §4 | Added mandatory per-destination LLM-generated "What to Know" briefing with global context fields (customs, weather patterns, transportation quirks, safety, photography, crowds, etiquette) |
+| 2 | §2, §3, §5 | NPS enrichment is now US-coordinate gated; non-US destinations skip NPS resolution and must still receive full itinerary content |
+| 3 | §2, §7 | Weather link generation now uses weather.gov only for US coordinates and a global Weather.com fallback elsewhere |
+| 4 | §5 | URL selection now uses semantic candidate scoring (keyword alignment, domain hints, path relevance, title/context signals, and destination-country TLD boosts) instead of first-valid selection |
+| 5 | §6, §7 | Image gallery markup is standardized to one image-tile wrapper containing both image and caption; image-load failures hide only the <img> element |
 
 ### Changelog from v0.18
 | # | Section | Change |
@@ -10,7 +70,8 @@
 | 4 | §6, §12 | Local image references must be emitted as portable relative `./images/...` paths for both gallery images and hero backgrounds |
 | 5 | §6 | Image ranking must penalize off-theme marine / coral / underwater imagery for inland and desert destinations |
 | 6 | §9, §12 | Output environment subdirectories are opt-in via `--environment`; default output writes directly to the requested output directory |
-| 7 | §9, §11, §13 | Requirements updated for current multi-provider LLM setup, `--env-file` / `--refresh-image-cache` CLI options, and standalone-safe PWA degradation under `file://` |
+| 7 | §9, §11, §13 | Requirements updated for current multi-provider LLM setup, `--env-file` / `--refresh-image-cache` / `--log-level` CLI options, standalone-safe PWA degradation under `file://`, and removal of the attribution footer block |
+| 8 | §5 | URL validation now requires stronger page-text overlap for candidate pages, so hallucinated trail names cannot pass on a single broad token match |
 
 ### Changelog from v0.17
 | # | Section | Change |
@@ -115,8 +176,9 @@ The output file must remain usable when opened directly from disk (`file://`) an
 │  STAGE 1: Input Validation & Auto-Enrichment            │
 │  • Parse and validate manifest schema                   │
 │  • Geocode each destination → lat/lng (Nominatim API)   │
-│  • Detect NPS park code from destination name           │
-│  • Construct weather.gov URL from lat/lng               │
+│  • Detect NPS park code for US destinations only        │
+│  • Construct weather URL: weather.gov (US) or global    │
+│    Weather.com fallback (non-US)                        │
 │  • Verify all user-provided planning link URLs          │
 │  • Auto-generate Google Maps overview URL               │
 └────────────────────┬────────────────────────────────────┘
@@ -126,6 +188,8 @@ The output file must remain usable when opened directly from disk (`file://`) an
 │  STAGE 2: AI Content Generation (Configured LLM)        │
 │  • Per-destination content: environment, attractions,   │
 │    en-route stops, schedule, restaurants (NO URLS)      │
+│  • Per-destination "What to Know" briefing via LLM      │
+│    with global/local logistics context                   │
 │  • Post-normalization grounds monthly temperatures       │
 │    from climate normals and rewrites weather narrative   │
 │  • Post-normalization removes chain / fast-food dining   │
@@ -143,9 +207,20 @@ The output file must remain usable when opened directly from disk (`file://`) an
 │  • Two-pass restaurant strategy:                        │
 │    Pass 1: Google Maps (top-rated, hours)               │
 │    Pass 2: TripAdvisor (diversity, local favorites)     │
-│  • 4-variant fallback query sequence per item           │
+│  • 4-variant fallback query sequence per item            │
 │  • HTTP verification + page-body relevance checks        │
 │  • AllTrails soft-404 rejection for hike links          │
+│  • Semantic scoring selects best candidate URL (not      │
+│    first valid URL)                                      │
+│  • High-rating candidate boosts are vote-gated           │
+│    (ratings only influence rank when review volume is    │
+│    above configured thresholds)                          │
+│  • Trail-like AllTrails links are confidence-gated       │
+│    before publish; low-confidence results fall back to   │
+│    non-AllTrails URLs                                     │
+│  • Optional filtered AllTrails mode applies hard         │
+│    trail constraints and snippet-based ranking before     │
+│    canonicalization/publish confidence checks             │
 └────────────────────┬────────────────────────────────────┘
                      │
                      ▼
@@ -166,7 +241,7 @@ The output file must remain usable when opened directly from disk (`file://`) an
 │  • Python string assembly (no Jinja2)                   │
 │  • var DRIVE_DESCRIPTIONS JS object (not const)         │
 │  • Google Maps overview URL auto-injected               │
-│  • Attribution <details> block appended at page bottom  │
+│  • No attribution <details> block is appended            │
 └────────────────────┬────────────────────────────────────┘
                      │
                      ▼
@@ -206,8 +281,8 @@ The manifest is intentionally minimal. All geocoding, NPS detection, URL discove
 | Field | Resolution Method |
 |---|---|
 | `lat` / `lng` | Nominatim geocoding from `name` |
-| `nps_park_code` | Keyword detection + NPS API text search |
-| `weather_url` | Constructed from lat/lng |
+| `nps_park_code` | Keyword detection + NPS API text search (US coordinates only) |
+| `weather_url` | Constructed from lat/lng: weather.gov in US, global fallback elsewhere |
 | `google_maps_link` | Auto-generated from origin/destination/waypoints (names); includes `departure`/`return` when provided |
 
 ### 3.3 Destination Fields
@@ -229,6 +304,10 @@ Seeds are lightweight hints that anchor AI content generation to specific user i
 - ❌ NOT URLs — any seed containing `://` is rejected with a validation error
 - ❌ NOT scenic drive titles — AI discovers those independently
 - ❌ NOT restaurant names — AI discovers those via TripAdvisor/Google Maps sourcing
+
+Runtime guarantees:
+- If AI omits a requested seed attraction, normalization must inject it as a structured attraction item.
+- Seed attractions must be protected from en-route overlap pruning so user-requested anchors are retained.
 
 ---
 
@@ -289,10 +368,13 @@ Restaurants that are clearly chain or fast-food picks must be removed during nor
 - If no clear budget signal exists, include a mixed tier spread.
 
 **Schedule realism rules:**
-- Multi-day destination schedules must account for arrival-driving impact on Day 1.
-- Final day should account for onward departure preparation to the next destination.
+- For the first destination, Day 1 Morning is reserved for transportation from trip origin.
+- For the final destination, last-day Afternoon and Evening are reserved for return travel.
+- For intermediate destinations, final evening should account for onward departure preparation to the next destination.
 - Day-level sequencing should remain feasible given same-day drive and activity load.
 - Activities proposed after arrival to a destination must not duplicate CAN'T-MISS ENROUTE stops from that inbound leg.
+- For multi-day stops, each day must render Morning, Afternoon, and Evening periods after normalization (no sparse day cards).
+- For multi-day stops, each additional day should contain at least one meaningful planning variation relative to previously listed day summaries.
 
 ### 4.2 Scenic Drives & Viewpoints Schema
 
@@ -361,15 +443,61 @@ After AI content is generated, the URL Discoverer uses xAI Grok semantic search 
 5. **All items:** 4-variant fallback query sequence (most specific → broadest)
 6. **Final fallback:** Empty string stored (no fabricated URLs)
 
+Attraction interest filtering policy:
+- URL discovery may skip attraction linking for user-uninterested categories using configurable keyword blacklists.
+- Seasonal attraction filters are supported; for ski/snow attractions, linking may be skipped when destination-trip months fall outside configured in-season months.
+- Skipped attractions must not force generic map-link fallback; they remain intentionally unlinked.
+
 Every discovered URL is verified before storage, and strict candidates must also pass relevance checks against item/destination tokens. Live-but-generic search pages are rejected.
+
+For non-AllTrails candidates, page text must match enough of the item name to be credible; a single shared token is not sufficient when the requested attraction/hike name contains multiple meaningful tokens.
+
+The acceptance gate is stricter than HTTP liveness alone. Generic 404 pages, asset-detail pages, and other obviously non-target landing pages must be rejected even when they return 200.
 
 AllTrails-specific acceptance rules:
 - Non-hike attractions must reject AllTrails results even if those pages appear live.
-- Hike links may use `alltrails.com/trail/...`, but acceptance must require both URL-shape relevance and page-body validation.
+- Hike links may use `alltrails.com/trail/...`, but acceptance must require a strong trail-name match against the AllTrails slug plus page-body validation.
 - Known AllTrails soft-404 content, including localized "We've reached the end of the trail" / replacement-link pages, must be rejected even when the HTTP status is 200.
+- For trail-like attractions, the discoverer must exhaust the configured AllTrails variant sequence (specific to broad variants) before generic map-link fallback is permitted.
+- Trail-like detection must include common trail phrasing in names/descriptions (for example `trail`, `hike`, `loop`, `walk`, `narrows`, `riverside walk`) even when the item type is a generic attraction.
+- Trail-like detection must guard place-level entities (for example names ending in `park`, `state park`, or `national park`) unless the attraction name itself carries explicit trail cues.
+- When multiple valid AllTrails candidates exist, canonical trail slugs should be preferred over broader `-via-` route variants when a canonical slug match is available.
+
+Generic-page rejection rules:
+- Discovery must reject broad landing pages such as `/plan-your-visit`, `/things-to-do`, `/things2do`, `/explore`, `/about`, and equivalent non-specific listings.
+
+SSL verification handling:
+- URL verification/readability checks should remain strict by default.
+- For approved trusted public hosts with known certificate-chain instability (for example `*.blm.gov`), an SSL-verify fallback may be used to avoid discarding otherwise valid destination links.
 
 Fallback policy for unresolved links:
 - If strict discovery does not produce a verified attraction/en-route/scenic URL, render a Google Maps query link so cards still resolve to actionable context.
+- Exception: trail-like attractions may use the generic map-link fallback only after the AllTrails variant sequence has been fully attempted and rejected.
+- Restaurant rendering should prefer verified discovered URLs first, then `maps_url`, then synthesized maps-search query fallback.
+
+Final audit pass:
+- Before HTML assembly, a cleanup pass strips any remaining weak discovered URLs so hallucinated or low-confidence links do not reach the final itinerary.
+- Scenic-drive/day-trip URLs are retained only when verified and relevant; popups may render a single optional "More Info" link for those entries.
+
+URL class blocklist (structural prohibition):
+- The following URL structural patterns must never appear in published itinerary output, regardless of discovery method, relevance score, or fallback path:
+  - `google.com/maps/search/` or equivalent Maps search query (non-deterministic place list)
+  - `google.com/maps/dir/` or equivalent Maps directions URL
+  - `google.com/search` or equivalent bare Google web-search query
+  - Any URL on a social-media domain (`facebook.com`, `instagram.com`, `tiktok.com`, `twitter.com`, `x.com`)
+- These URL classes must be rejected in the audit retention pass regardless of HTTP liveness or token overlap scores.
+- Implementation must support configuration-driven class blocking so the blocklist can be extended without code changes.
+
+Fail-closed policy for named-entity links:
+- A link published for a named entity (attraction, restaurant, en-route stop, event) must resolve to a deterministic, entity-specific target — one that refers to that single entity and not a list, a search query, or an area-level reference.
+- A Google Maps search query of the form `maps/search/<name>+near+<destination>` is an area-reference query, not an entity-specific target, and must not be used as the published link for a named subject.
+- When no entity-specific URL survives discovery and audit, the correct behavior is to render the item with no link, not to publish the best-available query URL.
+- The synthesized `maps_url` search fallback is acceptable for rendering context only when the item is a category or type (not a specific named entity), or when the maps fallback is the configured last resort for a destination card and no other link is present.
+
+URL policy rollout mode:
+- URL class enforcement must be configurable via a policy mode setting: `off` (no enforcement), `monitor` (log violations but do not reject), or `enforce` (reject blocked URL classes).
+- Default mode for new installs must be `monitor` to prevent silent regressions on first use; `enforce` is the production target after validation.
+- Previously validated output links may be grandfathered via an allowlist mechanism; the allowlist must support automatic seeding from the prior generated HTML output to eliminate manual curation burden.
 
 ---
 
@@ -387,8 +515,10 @@ Fallback policy for unresolved links:
 - Images saved to a sibling `images/` directory beside the generated `index.html`, using MD5-hashed filenames
 - Generated HTML must reference local images with relative `./images/{filename}` paths for both `<img>` tags and hero `background-image` styles
 - Image selection should strongly prefer location-relevant landscape / landmark photography and penalize obvious theme mismatches such as marine or coral imagery for inland desert parks
+- For Capitol Reef destinations, marine/underwater reef imagery must be hard-rejected and ranking should prefer Utah/canyon/sandstone context cues when present
+- A destination-agnostic image blacklist must be applied first; blacklisted content classes (for example underwater/scuba/snorkeling) are always rejected regardless of destination
 - A local image cache index at `.cache/images/cache_index.json` may be reused until TTL expiry; `--refresh-image-cache` must bypass that cache on demand
-- Image metadata (source, license, author) stored for attribution footer
+- Image metadata (source, license, author) stored with the image records for validation and reporting
 
 ---
 
@@ -427,14 +557,9 @@ The template JavaScript queries `.dest-section` for scroll-spy, `.tab-btn[data-t
 
 ---
 
-## 8. Attribution Footer
+## 8. Footer Policy
 
-A collapsible `<details>` block is appended before `</body>` containing:
-
-1. Generator version + generation timestamp (UTC)
-2. Image attribution table (destination, title, source, credit, license per image)
-3. Cultural events disclaimer: *"Event information was auto-discovered and may not be current."*
-4. Generator credit line with repository link, generator version, and generation timestamp (UTC)
+No attribution footer block is appended to generated itineraries.
 
 Scenic-drive popups and other in-page modal content must not leak generator-version strings or attribution-table boilerplate into their visible body copy.
 
@@ -453,6 +578,7 @@ Options:
   --environment TEXT       Optional environment folder override (dev/test/prod)
   --env-file PATH          Optional .env file loaded before env resolution
   --llm-model TEXT         Override LLM model for this run
+  --log-level TEXT         Console logging threshold (`debug|info|warning|error|critical`)
   --dry-run                Parse & validate manifest only; no AI calls
   --skip-images            Skip image fetching
   --refresh-image-cache    Force refresh image-provider queries, bypassing local cache
@@ -460,12 +586,18 @@ Options:
   --skip-url-discovery     Skip URL discovery (AI content only)
   --noschedule             Suppress schedule rendering in output HTML
   --destination TEXT       Limit to specific destination id (repeatable)
+  --first-destination      Process only first destination after any --destination filtering
   --verbose                Enable debug logging
 ```
 
 Output path policy:
 - By default, generated files write directly under the requested `--output` directory.
 - An environment subdirectory is created only when `--environment` is provided explicitly on the CLI.
+
+Logging policy:
+- Default console logging threshold is `INFO`.
+- `--log-level` must allow `DEBUG`, `INFO`, `WARNING`, `ERROR`, and `CRITICAL` thresholds.
+- `--verbose` remains supported as a convenience alias for `DEBUG` and takes precedence over `--log-level` when both are provided.
 
 ---
 
@@ -479,7 +611,10 @@ Key configurable values:
 | `ai.max_tokens` | `3000` | Max tokens per AI response |
 | `images.min_per_destination` | `2` | Hard fail threshold |
 | `images.max_per_destination` | `4` | Maximum images fetched per destination |
+| `images.never_content_terms` | `['underwater','scuba','snorkel','snorkeling']` | Destination-agnostic image blacklist terms that are always filtered out |
 | `url_discovery.max_fallback_attempts` | `4` | Fallback query attempts per item |
+| `url_discovery.uninterested_attraction_keywords` | `['golf course','country club']` | Attraction keyword blacklist for categories that should not receive discovered links |
+| `url_discovery.seasonal_uninterested.ski` | Keywords + months | Ski/snow attraction suppression outside configured in-season month numbers |
 | `validation.min_images_per_section` | `2` | HTML validator image count threshold |
 
 ---
@@ -555,7 +690,7 @@ When `--environment` is provided explicitly, the above structure is created unde
 - Embedded map content must not break static-host deployment and should degrade gracefully when map scripts fail.
 
 Related popup requirement:
-- Scenic-drive and day-trip modal content should include one direct "More Info" link and should not include attribution-list boilerplate.
+- Scenic-drive and day-trip modal content should not include attribution-list boilerplate.
 
 ---
 

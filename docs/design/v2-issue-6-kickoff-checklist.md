@@ -56,6 +56,83 @@ Use this section to attach agreed requirements before coding.
 - [ ] Cost guardrails (target run-cost threshold).
 - [ ] Risk controls and rollback plan.
 
+### 4.1 Intake Template (Fill This In)
+
+Copy this block for each requirement group you want to add under Issue #6.
+
+```text
+Requirement Group Name:
+Owner:
+Date:
+Source (issue/experiment/doc):
+
+Problem Statement:
+-
+
+Current Behavior (v1.4 baseline):
+-
+
+Target Behavior (v2):
+-
+
+In Scope:
+- 
+
+Out of Scope / Non-Goals:
+-
+
+Constraints:
+- Cost:
+- Runtime:
+- Data quality:
+- Backward compatibility:
+
+Acceptance Criteria:
+1.
+2.
+3.
+
+Test Plan:
+- Unit tests:
+- Integration tests:
+- Golden manifest checks:
+
+Observability:
+- Required logs:
+- Required metrics:
+- Failure signals:
+
+Rollout Plan:
+- Feature flag name:
+- Default state:
+- Environments enabled first:
+- Rollback trigger:
+
+Dependencies / Sequencing:
+- Blocks:
+- Blocked by:
+
+Open Questions:
+-
+```
+
+### 4.2 Baseline Snapshot (Before Issue #6 Changes)
+
+Fill this once before coding starts so post-change deltas are unambiguous.
+
+- Baseline tag/commit: `v1.4.0` / `9c9b0da`
+- Baseline manifests:
+  - `C:/Dev/Sandbox/sw_manifest.yaml`
+  - `trip_manifest.yaml`
+- Baseline cost (full run):
+  - Predicted USD:
+  - Actual USD:
+- Baseline quality summary:
+  - resolved_exact:
+  - resolved_fallback_query:
+  - unresolved:
+  - rejected:
+
 ## 5. Regression Guardrails (Protect v1.4 Gains)
 
 - [ ] Keep existing URL/search/validation tests green:

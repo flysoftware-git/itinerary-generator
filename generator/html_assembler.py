@@ -114,7 +114,7 @@ class HTMLAssembler:
         with Path(config_path).open() as f:
             self._config = yaml.safe_load(f)
 
-    def assemble(self, trip: dict[str, Any], attribution_block: str = "") -> str:
+    def assemble(self, trip: dict[str, Any]) -> str:
         template_text = TEMPLATE_PATH.read_text(encoding="utf-8")
         _verify_checksum(template_text)
         logger.info("Template checksum verified ✓")
@@ -165,11 +165,7 @@ class HTMLAssembler:
         )
 
         # ── Footer credit ───────────────────────────────────────────────────
-        html = html.replace("<!--GENERATOR_FOOTER-->", self._build_generator_footer(trip))
-
-        # ── Attribution block (before </body>) ──────────────────────────────
-        if attribution_block:
-            html = html.replace("</body>", attribution_block + "\n</body>")
+        html = self._inject_generator_footer(html, trip)
 
         return html
 
@@ -273,6 +269,7 @@ class HTMLAssembler:
             images,
             dest.get("planning_links", []),
             dest.get("nps_park_code"),
+            ai.get("top_attractions", []),
         )
 
         # Intro note or cultural event summary belongs directly under hero
@@ -288,7 +285,7 @@ class HTMLAssembler:
         section += self._build_getting_here(ai, dest, previous_name)
 
         # Attractions + scenic drives/viewpoints
-        section += self._build_attractions(ai, drives)
+        section += self._build_attractions(ai, drives, dest.get("name", ""))
 
         # Daily schedule
         section += self._build_schedule(ai, drives, dest["name"])
@@ -314,13 +311,14 @@ class HTMLAssembler:
         images: list[dict[str, Any]],
         planning_links: list[dict[str, Any]],
         nps_code: str | None,
+        attractions: list[dict[str, Any]],
     ) -> str:
         hero_img = images[0]["local_path"] if images else ""
         # Use portable relative paths so moved/exported folders still work.
         if hero_img:
             hero_img = _portable_image_href(hero_img)
         credit = self._build_image_caption(images[0]) if images else ""
-        header_links = self._build_header_links(planning_links, nps_code, dest)
+        header_links = self._build_header_links(planning_links, nps_code, dest, attractions)
         return (
             f'<div class="dest-header" style="background-image:url(\'{hero_img}\')">\n'
             f'  <div class="dest-header-actions">{header_links}</div>\n'
@@ -335,6 +333,7 @@ class HTMLAssembler:
         links: list[dict[str, Any]],
         nps_code: str | None,
         dest: dict[str, Any],
+        attractions: list[dict[str, Any]],
     ) -> str:
         pills: list[str] = []
         weather_url = self._build_weather_url(dest)
@@ -342,7 +341,15 @@ class HTMLAssembler:
             pills.append(
                 f'<a href="{weather_url}" target="_blank" rel="noopener" class="notion-header-btn">Current Weather</a>'
             )
-        if nps_code:
+        attractions_map_url = self._build_destination_attractions_map_url(
+            str(dest.get("name", "") or ""),
+            attractions,
+        )
+        if attractions_map_url:
+            pills.append(
+                f'<a href="{self._safe_href(attractions_map_url)}" target="_blank" rel="noopener" class="notion-header-btn">Attractions Map</a>'
+            )
+        if nps_code and self._is_us_destination(dest):
             pills.append(
                 f'<a href="https://www.nps.gov/{nps_code}/" target="_blank" rel="noopener" class="notion-header-btn">NPS</a>'
             )
@@ -356,35 +363,133 @@ class HTMLAssembler:
             )
         return "".join(pills)
 
-    def _build_intro_note(self, dest: dict[str, Any], events: dict[str, Any]) -> str:
-        if not events or events.get("has_events"):
+    def _build_destination_attractions_map_url(
+        self,
+        dest_name: str,
+        attractions: list[dict[str, Any]],
+    ) -> str:
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in attractions or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "") or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            names.append(name)
+            if len(names) >= 8:
+                break
+
+        if not names:
             return ""
+
+        dest_label = str(dest_name or "").strip()
+        qualified = [self._maps_fallback_query_text(name, dest_label) for name in names]
+
+        # Single item: open a focused search query directly.
+        if len(qualified) == 1:
+            return f"https://www.google.com/maps/search/?api=1&query={quote(qualified[0])}"
+
+        # Multiple items: build a route-style map with destination-scoped waypoints.
+        origin = dest_label or names[0]
+        params = [
+            "api=1",
+            f"origin={quote(origin)}",
+            f"destination={quote(origin)}",
+            "travelmode=driving",
+            "waypoints=" + quote("|".join(qualified), safe="|"),
+        ]
+        return "https://www.google.com/maps/dir/?" + "&".join(params)
+
+    def _build_intro_note(self, dest: dict[str, Any], events: dict[str, Any]) -> str:
         title = html_escape.escape(dest.get("name", ""))
-        honest = html_escape.escape(events.get("honest_assessment", "").strip())
-        if not honest:
-            honest = (
-                "Seasonal programming varies here. Check the park, town, or visitor-center calendar before you go."
+        what = dest.get("what_to_know") or {}
+        if not isinstance(what, dict):
+            what = {}
+
+        summary = html_escape.escape(str(what.get("summary", "") or "").strip())
+        if not summary:
+            summary = (
+                "Expect conditions and logistics to shift by season; confirm weather, operating hours, "
+                "and access details the day before arrival."
             )
-        local_tip = html_escape.escape(events.get("local_tip", "").strip())
+
         html = '<div class="card intro-note-card">\n'
         html += f'  <h3>What to Know About {title}</h3>\n'
-        html += f'  <p class="intro-note-text">{honest}</p>\n'
-        if local_tip:
-            tip_query = quote(f"{events.get('local_tip', '')} {dest.get('name', '')}")
-            tip_url = f"https://www.google.com/search?q={tip_query}"
-            html += (
-                f'  <p class="local-tip"><strong>Local tip:</strong> {local_tip} '
-                f'<a href="{self._safe_href(tip_url)}" target="_blank" rel="noopener" class="event-link">More info</a></p>\n'
-            )
+        html += f'  <p class="intro-note-text">{summary}</p>\n'
+
+        detail_items = [
+            ("Local customs", what.get("local_customs", "")),
+            ("Best times of day", what.get("best_times_of_day", "")),
+            ("Transportation quirks", what.get("transportation_quirks", "")),
+            ("Safety", what.get("safety_considerations", "")),
+            ("Crowd patterns", what.get("crowd_patterns", "")),
+            ("Local etiquette", what.get("local_etiquette", "")),
+        ]
+
+        details_html = []
+        for label, value in detail_items:
+            text = html_escape.escape(str(value or "").strip())
+            if text:
+                details_html.append(f'  <p class="intro-note-text"><strong>{label}:</strong> {text}</p>')
+
+        if details_html:
+            html += "\n".join(details_html) + "\n"
+
+        if events and not events.get("has_events"):
+            honest = html_escape.escape(str(events.get("honest_assessment", "") or "").strip())
+            local_tip = html_escape.escape(str(events.get("local_tip", "") or "").strip())
+            if honest:
+                html += f'  <p class="intro-note-text">{honest}</p>\n'
+            if local_tip:
+                tip_query = quote(f"{events.get('local_tip', '')} {dest.get('name', '')}")
+                tip_url = f"https://www.google.com/search?q={tip_query}"
+                html += (
+                    f'  <p class="local-tip"><strong>Local tip:</strong> {local_tip} '
+                    f'<a href="{self._safe_href(tip_url)}" target="_blank" rel="noopener" class="event-link">More info</a></p>\n'
+                )
+
         html += '</div>\n'
         return html
 
     def _build_weather_url(self, dest: dict[str, Any]) -> str:
         lat = dest.get("lat")
         lng = dest.get("lng")
-        if not lat or not lng:
+        if lat is None or lng is None:
             return ""
-        return f"https://forecast.weather.gov/MapClick.php?lat={lat:.4f}&lon={lng:.4f}"
+        try:
+            lat_f = float(lat)
+            lng_f = float(lng)
+        except (TypeError, ValueError):
+            return ""
+
+        if self._is_us_coordinates(lat_f, lng_f):
+            return f"https://forecast.weather.gov/MapClick.php?lat={lat_f:.4f}&lon={lng_f:.4f}"
+
+        # Global fallback provider for non-US destinations.
+        return f"https://weather.com/weather/today/l/{lat_f:.4f},{lng_f:.4f}"
+
+    @staticmethod
+    def _is_us_coordinates(lat: float, lng: float) -> bool:
+        if 24.0 <= lat <= 49.5 and -125.0 <= lng <= -66.5:
+            return True
+        if 51.0 <= lat <= 72.0 and -170.0 <= lng <= -129.0:
+            return True
+        if 18.0 <= lat <= 23.0 and -161.0 <= lng <= -154.0:
+            return True
+        return False
+
+    def _is_us_destination(self, dest: dict[str, Any]) -> bool:
+        lat = dest.get("lat")
+        lng = dest.get("lng")
+        try:
+            return self._is_us_coordinates(float(lat), float(lng))
+        except (TypeError, ValueError):
+            return False
 
     def _build_environment_card(self, ai: dict, dest: dict[str, Any]) -> str:
         env = ai.get("expected_environment", "")
@@ -424,22 +529,21 @@ class HTMLAssembler:
             file_url = _portable_image_href(local_path)
             dest_escaped = html_escape.escape(dest_name)
             
-            html += '  <div class="photo-item">\n'
-            html += f'    <a href="{file_url}" target="_blank" rel="noopener">\n'
-            html += f'      <img src="{file_url}" alt="{dest_escaped}" />\n'
-            html += '    </a>\n'
-            
-            if caption:
-                html += f'    <p class="photo-caption">{caption}</p>\n'
+            html += '  <div class="image-tile photo-item">\n'
+            html += (
+                f'    <img src="{file_url}" alt="{dest_escaped}" '
+                f'onerror="this.style.display=\'none\';" loading="lazy" />\n'
+            )
+            html += f'    <div class="caption photo-caption">{caption}</div>\n'
             html += '  </div>\n'
         
         html += '</div>\n'
         return html
 
     def _build_image_caption(self, image: dict[str, Any]) -> str:
-        credit = str(image.get("credit", "") or "").strip()
-        source = str(image.get("source", "") or "").strip()
-        title = str(image.get("title", "") or "").strip()
+        credit = self._sanitize_caption_text(image.get("credit", ""))
+        source = self._sanitize_caption_text(image.get("source", ""))
+        title = self._sanitize_caption_text(image.get("title", ""))
         if credit:
             return html_escape.escape(credit)
         if source and title:
@@ -447,6 +551,35 @@ class HTMLAssembler:
         if source:
             return html_escape.escape(source.title())
         return html_escape.escape(title)
+
+    def _sanitize_caption_text(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+
+        text = html_escape.unescape(text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"https?://\S+", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s+", " ", text).strip()
+
+        lower = text.lower()
+        noisy_markers = (
+            "when reusing",
+            "please credit me",
+            "contact me at",
+            "layouttemplate",
+            "external text",
+            "mw-file",
+            "cc-by-sa",
+            "wikimedia.org/wiki/file",
+            "info icon",
+        )
+        if any(marker in lower for marker in noisy_markers):
+            return ""
+
+        if len(text) > 160:
+            text = text[:157].rstrip() + "..."
+        return text
 
     def _build_route_gmaps_url(self, previous_name: str, dest: dict, stops: list) -> str:
         """Build Google Maps URL with names and named waypoints."""
@@ -557,7 +690,7 @@ class HTMLAssembler:
         short = name.replace("National Park", "NP").replace("State Park", "SP")
         return " ".join(short.split())
 
-    def _build_attractions(self, ai: dict, drives: list[dict[str, Any]]) -> str:
+    def _build_attractions(self, ai: dict, drives: list[dict[str, Any]], dest_name: str = "") -> str:
         attrs = ai.get("top_attractions", [])
         if not attrs and not drives:
             return ""
@@ -591,7 +724,7 @@ class HTMLAssembler:
         for attr in attrs:
             url = self._normalize_external_url(attr.get("url", ""))
             if not url:
-                query = quote(f"{attr.get('name', '')} {dest_name}")
+                query = quote(self._maps_fallback_query_text(str(attr.get('name', '') or ""), dest_name))
                 url = f"https://www.google.com/maps/search/?api=1&query={query}"
             attr_type = attr.get("type", "attraction").lower()
             icon = type_icons.get(attr_type, "📍")
@@ -818,9 +951,17 @@ class HTMLAssembler:
             return ""
         html = '<div class="card restaurants-card">\n<h3>🍽️ Dinner Recommendations</h3>\n<div class="restaurant-list">\n'
         for rest in rests:
-            url = self._normalize_external_url(rest.get("maps_url", "") or rest.get("url", ""))
-            if "google.com/maps" not in url:
-                query = quote(f"{rest.get('name', '')} {dest_name}")
+            # Prefer the discovered URL (maps place, official site, or directory listing)
+            # and fall back to maps search only when we have no usable URL.
+            url = self._normalize_external_url(rest.get("url", ""))
+            if self._is_maps_directions_url(url):
+                url = ""
+            if not url:
+                url = self._normalize_external_url(rest.get("maps_url", ""))
+            if self._is_maps_directions_url(url):
+                url = ""
+            if not url:
+                query = quote(self._maps_fallback_query_text(str(rest.get('name', '') or ""), dest_name))
                 url = f"https://www.google.com/maps/search/?api=1&query={query}"
             name_html = (
                 f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{rest["name"]}</a>'
@@ -853,6 +994,11 @@ class HTMLAssembler:
             )
         html += '</div>\n</div>\n'
         return html
+
+    @staticmethod
+    def _is_maps_directions_url(url: str) -> bool:
+        lower = str(url or "").lower()
+        return "google.com/maps/dir/" in lower or "maps.google.com/maps/dir/" in lower
 
     def _build_packing_summary(self, destinations: list[dict[str, Any]]) -> str:
         by_item: dict[str, set[str]] = {}
@@ -888,6 +1034,14 @@ class HTMLAssembler:
     def _build_generator_footer(self, trip: dict[str, Any]) -> str:
         meta = trip.get("_meta", {})
         version = meta.get("generator_version", "")
+        broken_link_issue_link = (
+            "https://github.com/flysoftware-git/road-trip-generator/issues/new"
+            "?template=broken-link-report.yml"
+        )
+        feedback_issue_link = (
+            "https://github.com/flysoftware-git/road-trip-generator/issues/new"
+            "?template=itinerary-feedback.yml"
+        )
         timestamp = meta.get("generated_at_utc")
         if timestamp:
             try:
@@ -898,11 +1052,33 @@ class HTMLAssembler:
         else:
             shown_time = "unknown"
         return (
+            '<footer class="generator-footer" '
+            'style="margin:1.25rem auto 2.5rem;padding:0 1rem;max-width:72rem;">'
+            '<div style="border-top:1px solid #e8dcc8;padding-top:0.85rem;'
+            'font-size:0.8rem;color:#8B6347;line-height:1.5;text-align:center;">'
             'Generated by '
             '<a href="https://github.com/flysoftware-git/road-trip-generator" '
             'target="_blank" rel="noopener">Road Trip Itinerary Generator</a>'
-            f' v{html_escape.escape(str(version))} · {html_escape.escape(shown_time)}'
+            f' v{html_escape.escape(str(version))} · Itinerary output: {html_escape.escape(shown_time)}'
+            ' · '
+            f'<a href="{broken_link_issue_link}" target="_blank" rel="noopener">'
+            'Report broken links here</a>'
+            ' · '
+            f'<a href="{feedback_issue_link}" target="_blank" rel="noopener">'
+            'Share itinerary feedback</a>'
+            '</div>'
+            '</footer>'
         )
+
+    def _inject_generator_footer(self, html: str, trip: dict[str, Any]) -> str:
+        footer_html = self._build_generator_footer(trip)
+        if "<!--GENERATOR_FOOTER-->" in html:
+            return html.replace("<!--GENERATOR_FOOTER-->", footer_html)
+        if "<!-- DRIVE INFO MODAL -->" in html:
+            return html.replace("<!-- DRIVE INFO MODAL -->", footer_html + "\n\n    <!-- DRIVE INFO MODAL -->", 1)
+        if "</body>" in html:
+            return html.replace("</body>", footer_html + "\n</body>", 1)
+        return html + "\n" + footer_html
 
     def _build_drive_descriptions(self, destinations: list[dict]) -> dict[str, Any]:
         """Build DRIVE_DESCRIPTIONS keyed by raw title string (matches template JS lookup)."""
@@ -910,15 +1086,18 @@ class HTMLAssembler:
         for dest in destinations:
             for drive in dest.get("scenic_drives", []):
                 key = drive.get("title", "")
-                result[key] = {
+                entry = {
                     "title": drive.get("title", ""),
                     "category": drive.get("category", "scenic_drive"),
                     "distance_or_duration": drive.get("distance_or_duration", ""),
                     "best_time": drive.get("best_time", ""),
                     "description": self._clean_drive_description(drive.get("description", "")),
                     "vehicle_requirement": drive.get("vehicle_requirement", ""),
-                    "url": drive.get("url", ""),
                 }
+                info_url = self._normalize_external_url(drive.get("url", ""))
+                if info_url:
+                    entry["url"] = info_url
+                result[key] = entry
         return result
 
     def _clean_drive_description(self, description: Any) -> str:
@@ -959,6 +1138,54 @@ class HTMLAssembler:
         if re.match(r"^[a-z][a-z0-9+.-]*:", low):
             return ""
         return "https://" + raw
+
+    @staticmethod
+    def _looks_location_qualified(text: str) -> bool:
+        lowered = (text or "").lower().strip()
+        if not lowered:
+            return False
+        if "," in lowered:
+            return True
+        if any(
+            term in lowered
+            for term in (
+                "national park",
+                "state park",
+                "downtown",
+                "historic district",
+                "visitor center",
+                "utah",
+                "colorado",
+                "arizona",
+                "new mexico",
+                "nevada",
+                "california",
+            )
+        ):
+            return True
+        if re.search(r"\bst\.?\s+[a-z]", lowered):
+            return True
+        return False
+
+    @staticmethod
+    def _significant_place_tokens(text: str) -> set[str]:
+        tokens = set(re.findall(r"[a-z0-9]+", (text or "").lower()))
+        stop = {"the", "and", "for", "park", "national", "state", "road", "trail", "restaurant", "cafe"}
+        return {t for t in tokens if len(t) >= 4 and t not in stop}
+
+    @classmethod
+    def _maps_fallback_query_text(cls, item_name: str, dest_name: str) -> str:
+        item = str(item_name or "").strip()
+        dest = str(dest_name or "").strip()
+        if not item:
+            return dest
+        item_tokens = cls._significant_place_tokens(item)
+        dest_tokens = cls._significant_place_tokens(dest)
+        if item_tokens and dest_tokens and (item_tokens & dest_tokens):
+            return item
+        if cls._looks_location_qualified(item):
+            return item
+        return f"{item} {dest}".strip()
 
     def _infer_stop_type(self, stop: dict[str, Any]) -> str:
         raw = str(stop.get("type", "") or "").strip().lower()

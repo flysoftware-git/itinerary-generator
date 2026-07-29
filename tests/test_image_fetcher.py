@@ -111,6 +111,83 @@ def test_rank_images_penalizes_marine_mismatch_for_capitol_reef(tmp_path):
     assert "capitol-reef-utah-canyon" in ranked[0]["url"]
 
 
+def test_provider_query_disambiguates_capitol_reef():
+    q = ImageFetcher._provider_query_for_destination("Capitol Reef National Park")
+    assert "Utah national park desert canyon" in q
+
+
+def test_location_tokens_drop_ambiguous_reef_for_capitol_reef():
+    tokens = ImageFetcher._location_tokens("Capitol Reef National Park")
+    assert "capitol" in tokens
+    assert "reef" not in tokens
+
+
+def test_rank_images_hard_rejects_marine_only_results_for_inland_dest(tmp_path):
+    fetcher = _make_fetcher(tmp_path)
+    images = [
+        {
+            "url": "https://example.com/coral-reef-underwater.jpg",
+            "title": "Coral reef underwater scene",
+            "credit": "Photographer",
+            "source": "unsplash",
+        },
+        {
+            "url": "https://example.com/scuba-reef-fish.jpg",
+            "title": "Scuba reef fish",
+            "credit": "Photographer",
+            "source": "unsplash",
+        },
+    ]
+
+    ranked = fetcher._rank_images_for_destination(images, "Capitol Reef National Park")
+    assert ranked == []
+
+
+def test_rank_images_global_blacklist_rejects_underwater_for_any_destination(tmp_path):
+    fetcher = _make_fetcher(tmp_path)
+    fetcher._global_blacklist_terms = {"underwater", "scuba", "snorkel", "snorkeling"}
+    images = [
+        {
+            "url": "https://example.com/reef-underwater-shot.jpg",
+            "title": "Underwater reef photo",
+            "credit": "Photographer",
+            "source": "unsplash",
+        },
+        {
+            "url": "https://example.com/coastal-overlook.jpg",
+            "title": "Coastal overlook at sunset",
+            "credit": "Photographer",
+            "source": "unsplash",
+        },
+    ]
+
+    ranked = fetcher._rank_images_for_destination(images, "Sydney, Australia")
+    assert ranked
+    assert all("underwater" not in (img.get("title", "") or "").lower() for img in ranked)
+
+
+def test_rank_images_for_capitol_reef_prefers_required_context_when_available(tmp_path):
+    fetcher = _make_fetcher(tmp_path)
+    images = [
+        {
+            "url": "https://images.unsplash.com/photo-reef-12345",
+            "title": "",
+            "credit": "Photographer",
+            "source": "unsplash",
+        },
+        {
+            "url": "https://example.com/capitol-reef-utah-canyon.jpg",
+            "title": "Capitol Reef Utah canyon landscape",
+            "credit": "NPS",
+            "source": "nps",
+        },
+    ]
+
+    ranked = fetcher._rank_images_for_destination(images, "Capitol Reef National Park")
+    assert ranked
+    assert "capitol-reef-utah-canyon" in ranked[0]["url"]
+
+
 def test_destination_image_profile_marks_marine_terms_negative_for_inland_parks():
     profile = ImageFetcher._destination_image_profile("Zion National Park, Utah")
     assert "coral" in profile["negative"]
@@ -191,3 +268,26 @@ def test_fetch_for_dest_force_refresh_bypasses_cache(tmp_path):
     assert p_nps.called
     assert len(out) >= fetcher._min_per_dest
     assert all("live" in i.get("url", "") for i in out)
+
+
+def test_sanitize_metadata_text_drops_wikimedia_template_noise():
+    noisy = "<table><tr><td>When reusing, please credit me <a rel='nofollow' class='external text' href='https://commons.wikimedia.org/wiki/File:foo'>link</a></td></tr></table>"
+    cleaned = ImageFetcher._sanitize_metadata_text(noisy)
+    assert cleaned == ""
+
+
+def test_normalize_image_record_sets_fallback_credit_when_sanitized_empty(tmp_path):
+    fetcher = _make_fetcher(tmp_path)
+    record = {
+        "url": "https://example.com/img.jpg",
+        "title": "<b>Beautiful Canyon</b>",
+        "credit": "<table>When reusing, please credit me</table>",
+        "license": "<i>CC BY-SA</i>",
+        "source": "wikimedia",
+    }
+
+    normalized = fetcher._normalize_image_record(record)
+
+    assert normalized["title"] == "Beautiful Canyon"
+    assert normalized["credit"] == "Wikimedia Commons"
+    assert "<" not in normalized["license"]

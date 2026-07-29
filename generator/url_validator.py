@@ -10,12 +10,13 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 import requests
-from requests.exceptions import RequestException
+from requests.exceptions import RequestException, SSLError
 
 logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = 10
 DEFAULT_UA = "RoadTripItineraryGenerator/1.0"
 MAX_RETRIES = 2
+TRUSTED_SSL_FALLBACK_HOST_SUFFIXES = ("blm.gov",)
 
 
 class URLValidator:
@@ -40,6 +41,23 @@ class URLValidator:
     def verify_url(self, url: str) -> tuple[bool, int | str]:
         return self._check(url)
 
+    def get_text(self, url: str, timeout: int | None = None) -> tuple[bool, int | str, str]:
+        if not url or not urlparse(url).scheme:
+            return False, "invalid_url", ""
+        to = timeout or self.timeout
+        try:
+            resp = self.session.get(url, timeout=to)
+            return resp.status_code < 400, resp.status_code, resp.text or ""
+        except RequestException as exc:
+            if self._is_ssl_error(exc) and self._is_trusted_ssl_fallback_host(url):
+                try:
+                    resp = self.session.get(url, timeout=to, verify=False)
+                    logger.info("SSL verify bypass used for trusted host: %s", urlparse(url).netloc)
+                    return resp.status_code < 400, resp.status_code, resp.text or ""
+                except RequestException as inner_exc:
+                    return False, str(inner_exc), ""
+            return False, str(exc), ""
+
     def _check(self, url: str) -> tuple[bool, int | str]:
         if not url or not urlparse(url).scheme:
             return False, "invalid_url"
@@ -51,7 +69,40 @@ class URLValidator:
                     resp.close()
                 return resp.status_code < 400, resp.status_code
             except RequestException as exc:
+                if self._is_ssl_error(exc) and self._is_trusted_ssl_fallback_host(url):
+                    try:
+                        resp = self.session.head(url, timeout=self.timeout, allow_redirects=True, verify=False)
+                        if resp.status_code == 405:
+                            resp = self.session.get(url, timeout=self.timeout, allow_redirects=True, stream=True, verify=False)
+                            resp.close()
+                        logger.info("SSL verify bypass used for trusted host: %s", urlparse(url).netloc)
+                        return resp.status_code < 400, resp.status_code
+                    except RequestException as inner_exc:
+                        if attempt == MAX_RETRIES:
+                            return False, str(inner_exc)
                 if attempt == MAX_RETRIES:
                     return False, str(exc)
                 time.sleep(1)
         return False, "timeout"
+
+    @staticmethod
+    def _is_ssl_error(exc: RequestException) -> bool:
+        if isinstance(exc, SSLError):
+            return True
+        text = str(exc).lower()
+        return (
+            "ssl" in text
+            or "certificate verify failed" in text
+            or "certificateverifyfailed" in text
+            or "hostname mismatch" in text
+        )
+
+    @staticmethod
+    def _is_trusted_ssl_fallback_host(url: str) -> bool:
+        host = (urlparse(url).netloc or "").lower()
+        if not host:
+            return False
+        for suffix in TRUSTED_SSL_FALLBACK_HOST_SUFFIXES:
+            if host == suffix or host.endswith("." + suffix):
+                return True
+        return False

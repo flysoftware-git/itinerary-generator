@@ -1,0 +1,16 @@
+# URL policy allowlist for rollout safety (v1.4.1)
+#
+# Purpose:
+# - Preserve known-good links while url_discovery.url_policy_mode is rolled out.
+# - Manual entries are optional when auto-seeding from output/index.html is enabled.
+# - One absolute URL per line.
+# - Lines beginning with '#' are comments.
+#
+# Suggested workflow:
+# 1) Keep mode="monitor" and review policy monitor hits in logs.
+# 2) Let auto-seeding grandfather existing published links from prior output.
+# 3) Add manual entries only for exceptional URLs not present in prior output.
+# 3) Move selected blocked classes to enforce mode only after validation.
+#
+# Example:
+# https://www.example.com/known-good-link

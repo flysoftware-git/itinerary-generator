@@ -17,6 +17,7 @@ ai:
   model: "gpt-4o-mini"
   temperature: 0.7
   max_tokens: 4096
+  enable_url_candidate_experiment: true
 
 # ── Azure OpenAI (legacy compatibility) ──────────────────────────────────────
 azure_openai:
@@ -56,6 +57,11 @@ images:
   per_destination: 3
   min_per_destination: 2
   max_per_destination: 4
+  never_content_terms:
+    - "underwater"
+    - "scuba"
+    - "snorkel"
+    - "snorkeling"
   cache_ttl_hours: 168
   max_fallback_attempts: 4
   verify_timeout_seconds: 8
@@ -151,6 +157,46 @@ url_discovery:
   max_attempts_per_item: 4
   verify_timeout_seconds: 10
   restaurant_passes: 2
+  max_trail_miles: 3
+  allow_blocked_alltrails: true
+  alltrails_min_confidence_for_publish: "medium"
+  alltrails_request_delay_seconds: 0.8
+  alltrails_block_cooldown_seconds: 8
+  enable_filtered_alltrails_selection: true
+  alltrails_filter_max_miles: 4
+  alltrails_filter_max_gain_feet: 1000
+  alltrails_filter_min_reviews: 5
+  alltrails_filter_allowed_difficulties: ["easy", "moderate", "moderately challenging"]
+  max_alltrails_query_attempts: 5
+  max_restaurant_query_attempts: 3
+  alltrails_rating_min: 4.5
+  alltrails_rating_min_votes: 200
+  alltrails_rating_boost: 8
+  restaurant_rating_min: 4.4
+  restaurant_rating_min_votes: 100
+  restaurant_rating_boost: 6
+  url_policy_mode: "enforce"
+  url_policy_blocked_classes:
+    - "google_search"
+    - "google_maps_search"
+    - "google_maps_dir"
+    - "social_media"
+  url_policy_allowlist_path: "docs/policy/url_policy_allowlist.txt"
+  url_policy_auto_allow_from_output: true
+  url_policy_output_path: "output/index.html"
+  uninterested_attraction_keywords:
+    - "golf course"
+    - "country club"
+  seasonal_uninterested:
+    ski:
+      keywords:
+        - " ski"
+        - "ski "
+        - "ski-"
+        - "snowboard"
+        - "snowboarding"
+        - "chairlift"
+      in_season_months: [11, 12, 1, 2, 3, 4]
 
 # ── Output validation ─────────────────────────────────────────────────────────
 validation:

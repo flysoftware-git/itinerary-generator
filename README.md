@@ -4,13 +4,16 @@ A Python CLI tool that transforms a minimal YAML trip manifest into a single sel
 
 Write a manifest in minutes. Get a polished, deployable trip guide with:
 - AI-generated environment descriptions, attraction writeups, en-route stops, and daily schedules
+- AI-generated "What to Know" briefing per destination (customs, weather patterns, transport quirks, safety, photography, crowd timing, etiquette)
 - Auto-discovered cultural events (via Search + AI synthesis — never hallucinated)
 - 5–6 restaurant recommendations per destination with cuisine and price diversity
 - 2–4 scenic drives/viewpoints per destination (fully AI-discovered, not user-seeded)
 - Verified URLs for every attraction, restaurant, and stop
+- Semantic URL scoring to choose the best candidate link (not first-valid)
 - Destination images from NPS API and Wikimedia Commons
 - Interactive Leaflet map with auto-generated Google Maps overview link
-- Collapsible attribution footer with image credits and events disclaimer
+- Per-destination Attractions Map link for viewing recommended stops in Google Maps
+- Footer includes generator version/timestamp plus GitHub issue links for broken-link reports and general itinerary feedback
 
 ## Quick Start
 
@@ -113,6 +116,8 @@ python -m generator.main --manifest trip_manifest.yaml --output output/
 
 Your itinerary is at `output/index.html` by default. If you explicitly pass `--environment`, output is nested at `output/<environment>/index.html`.
 
+Each run also writes `url_diff_report.json` and `url_diff_report.md` next to the generated HTML. These compare links from the pre-run output HTML to the newly generated HTML and report kept, added, and removed URLs so review can focus on true link changes.
+
 ---
 
 ## CLI Options
@@ -128,6 +133,8 @@ python -m generator.main [OPTIONS]
   --llm-model TEXT         Override LLM model for this run
   --environment [dev|test|prod]
                            Optional environment override (also enables output/<environment>/ nesting)
+  --log-level [debug|info|warning|error|critical]
+                           Console logging threshold (`--verbose` overrides this to DEBUG)
   --dry-run                Parse & validate manifest only; no AI calls
   --skip-images            Skip image fetching (faster iteration)
   --refresh-image-cache    Force refresh image provider queries (bypass local image cache)
@@ -146,6 +153,9 @@ python -m generator.main --manifest trip.yaml --dry-run
 # Generate content for one destination only
 python -m generator.main --manifest trip.yaml --destination zion
 
+# Show only warnings and errors on the console
+python -m generator.main --manifest trip.yaml --log-level warning
+
 # Fast iteration (skip images and events)
 python -m generator.main --manifest trip.yaml --skip-images --skip-events
 
@@ -157,7 +167,15 @@ python -m generator.main --manifest trip.yaml --llm-provider anthropic
 
 # Test provider+model combination from CLI
 python -m generator.main --manifest trip.yaml --llm-provider openai --llm-model gpt-4o-mini
+
+# Force full debug output regardless of --log-level
+python -m generator.main --manifest trip.yaml --log-level warning --verbose
 ```
+
+Logging behavior:
+- Default console threshold is `INFO`.
+- Use `--log-level warning` to show only warnings and errors.
+- `--verbose` forces `DEBUG` logging and takes precedence over `--log-level`.
 
 ---
 
@@ -173,18 +191,21 @@ manifest.yaml
     │
     ▼  Stage 2: Auto-Enrich
        • Geocoding via Nominatim
-       • NPS park code detection
+       • NPS park code detection (US-coordinate destinations only)
        • Google Maps URL auto-generation
+       • Weather links: weather.gov (US) or global Weather.com fallback
     │
-    ▼  Stage 3: AI Content (Azure OpenAI)
+     ▼  Stage 3: AI Content (Configured LLM)
        • Environment, attractions, en-route stops, schedule
+       • What-to-Know briefing per destination
        • Scenic drives & viewpoints (fully AI-discovered)
-       • Cultural events (Bing Search + AI synthesis)
+       • Cultural events (Grok Search + AI synthesis)
     │
-    ▼  Stage 4: URL Discovery (Bing Search)
+     ▼  Stage 4: URL Discovery (Grok Search)
        • NPS.gov filter for park attractions
        • Two-pass restaurant strategy (Google Maps → TripAdvisor)
-       • 4-variant fallback per item, HEAD-verified
+       • 4-variant fallback per item
+       • Semantic candidate scoring + relevance verification
     │
     ▼  Stage 5: Images
        • NPS API (for national parks)

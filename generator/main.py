@@ -32,6 +32,112 @@ logger = logging.getLogger(__name__)
 LOG_LEVEL_CHOICES = ["debug", "info", "warning", "error", "critical"]
 
 
+def _extract_http_urls_from_html_text(html_text: str) -> set[str]:
+    import re
+
+    urls: set[str] = set()
+    for match in re.finditer(r'href\s*=\s*["\']([^"\']+)["\']', html_text, flags=re.IGNORECASE):
+        candidate = str(match.group(1) or "").strip()
+        if candidate.lower().startswith(("http://", "https://")):
+            urls.add(candidate)
+    return urls
+
+
+def _read_output_urls(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        return _extract_http_urls_from_html_text(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return set()
+
+
+def _domain_counts(urls: set[str]) -> dict[str, int]:
+    from urllib.parse import urlparse
+
+    counts: dict[str, int] = {}
+    for url in urls:
+        domain = (urlparse(url).netloc or "").lower()
+        if not domain:
+            continue
+        counts[domain] = counts.get(domain, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _write_url_diff_report(
+    *,
+    output_dir: Path,
+    baseline_urls: set[str],
+    current_urls: set[str],
+    run_id: str,
+) -> Path:
+    kept = sorted(baseline_urls & current_urls)
+    added = sorted(current_urls - baseline_urls)
+    removed = sorted(baseline_urls - current_urls)
+    report = {
+        "run_id": run_id,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "baseline_url_count": len(baseline_urls),
+            "current_url_count": len(current_urls),
+            "kept_count": len(kept),
+            "added_count": len(added),
+            "removed_count": len(removed),
+            "changed_total": len(added) + len(removed),
+        },
+        "baseline_domains": _domain_counts(baseline_urls),
+        "current_domains": _domain_counts(current_urls),
+        "kept": kept,
+        "added": added,
+        "removed": removed,
+    }
+    path = output_dir / "url_diff_report.json"
+    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return path
+
+
+def _write_url_diff_markdown_report(
+    *,
+    output_dir: Path,
+    baseline_urls: set[str],
+    current_urls: set[str],
+    run_id: str,
+) -> Path:
+    kept = sorted(baseline_urls & current_urls)
+    added = sorted(current_urls - baseline_urls)
+    removed = sorted(baseline_urls - current_urls)
+
+    lines: list[str] = []
+    lines.append("# URL Diff Report")
+    lines.append("")
+    lines.append(f"- Run ID: {run_id}")
+    lines.append(f"- Generated at (UTC): {datetime.now(timezone.utc).isoformat()}")
+    lines.append(f"- Baseline URLs: {len(baseline_urls)}")
+    lines.append(f"- Current URLs: {len(current_urls)}")
+    lines.append(f"- Kept: {len(kept)}")
+    lines.append(f"- Added: {len(added)}")
+    lines.append(f"- Removed: {len(removed)}")
+    lines.append("")
+
+    def _append_section(title: str, values: list[str]) -> None:
+        lines.append(f"## {title} ({len(values)})")
+        if not values:
+            lines.append("- None")
+            lines.append("")
+            return
+        for v in values:
+            lines.append(f"- {v}")
+        lines.append("")
+
+    _append_section("Added URLs", added)
+    _append_section("Removed URLs", removed)
+    _append_section("Kept URLs", kept)
+
+    path = output_dir / "url_diff_report.md"
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return path
+
+
 def _append_run_ledger(ledger_path: Path, record: dict) -> None:
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     with ledger_path.open("a", encoding="utf-8") as f:
@@ -346,6 +452,8 @@ def main(
     else:
         output_dir = Path(output)
     output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / "index.html"
+    baseline_output_urls = _read_output_urls(output_file)
 
     click.echo()
 
@@ -523,9 +631,24 @@ def main(
     assembler = HTMLAssembler(config_path)
     html = assembler.assemble(trip)
 
-    output_file = output_dir / "index.html"
     output_file.write_text(html, encoding="utf-8")
     click.echo(f"  ✓ index.html written ({output_file.stat().st_size:,} bytes)")
+
+    current_output_urls = _read_output_urls(output_file)
+    url_diff_report_path = _write_url_diff_report(
+        output_dir=output_dir,
+        baseline_urls=baseline_output_urls,
+        current_urls=current_output_urls,
+        run_id=run_id,
+    )
+    url_diff_markdown_path = _write_url_diff_markdown_report(
+        output_dir=output_dir,
+        baseline_urls=baseline_output_urls,
+        current_urls=current_output_urls,
+        run_id=run_id,
+    )
+    click.echo(f"  ✓ URL diff report: {url_diff_report_path}")
+    click.echo(f"  ✓ URL diff summary: {url_diff_markdown_path}")
 
     _write_pwa_assets(output_dir, trip)
     click.echo("  ✓ PWA assets written (manifest.webmanifest, sw.js)")

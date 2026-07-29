@@ -9,7 +9,9 @@ Checks:
   5. Image count >= min_per_destination per section
 """
 from __future__ import annotations
+import html
 import logging, re
+import html as html_lib
 from pathlib import Path
 from typing import Any
 
@@ -80,7 +82,8 @@ class HTMLValidator:
             return
 
         # Extract data-drive-title attributes from HTML (template uses drive-link + data-drive-title)
-        modal_keys = set(re.findall(r'data-drive-title="([^"]+)"', html))
+        raw_modal_keys = re.findall(r'data-drive-title="([^"]+)"', html)
+        modal_keys = {html_lib.unescape(k) for k in raw_modal_keys}
         dd_keys = set(dd.keys())
 
         orphan_modals = modal_keys - dd_keys

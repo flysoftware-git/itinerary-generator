@@ -352,10 +352,6 @@
 
     </main>
 
-    <footer data-id="1108" class="text-center py-6 text-dark/40 text-xs border-t border-[#d4c4a8]">
-      <!--GENERATOR_FOOTER-->
-    </footer>
-
     <!-- DRIVE INFO MODAL -->
     <div data-id="1109" id="drive-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.55);backdrop-filter:blur(3px);align-items:center;justify-content:center;">
       <div data-id="1110" style="background:#fff;border-radius:16px;max-width:640px;width:92%;max-height:85vh;overflow-y:auto;padding:28px;box-shadow:0 24px 64px rgba(0,0,0,0.25);position:relative;">
@@ -416,6 +412,7 @@
             var modal  = document.getElementById('drive-modal');
             var titleEl = document.getElementById('drive-modal-title');
             var bodyEl  = document.getElementById('drive-modal-body');
+            var attributionBlock = document.getElementById('attribution-block');
             if (!modal || !titleEl || !bodyEl) { return; }
             titleEl.textContent = cleanTitle;
             var meta = [];
@@ -439,6 +436,10 @@
             }
             bodyEl.innerHTML  = blocks.join('');
             modal.style.display = 'flex';
+            if (attributionBlock) {
+              attributionBlock.setAttribute('data-hidden-by-drive-modal', 'true');
+              attributionBlock.style.display = 'none';
+            }
             document.body.style.overflow = 'hidden';
           };
 
@@ -452,6 +453,11 @@
           var driveModal = document.getElementById('drive-modal');
           var driveClose = document.getElementById('drive-modal-close');
           function closeDrive() {
+            var attributionBlock = document.getElementById('attribution-block');
+            if (attributionBlock && attributionBlock.getAttribute('data-hidden-by-drive-modal') === 'true') {
+              attributionBlock.style.display = '';
+              attributionBlock.removeAttribute('data-hidden-by-drive-modal');
+            }
             if (driveModal) { driveModal.style.display = 'none'; document.body.style.overflow = ''; }
           }
           if (driveClose) driveClose.addEventListener('click', closeDrive);
