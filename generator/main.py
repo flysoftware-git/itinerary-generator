@@ -614,6 +614,10 @@ def main(
         for _f in _as_completed(_stage_futures):
             _f.result()
 
+    # Post-parallel content normalization: cross-section and cross-destination dedup.
+    ai_gen.normalize_trip_content(trip)
+    click.echo("  ✓ Content normalized")
+
     # ── Stage 6: Assemble HTML ───────────────────────────────────────────────
     click.echo("Stage 6/6 — Assembling HTML…")
     from generator.html_assembler import HTMLAssembler

@@ -1,5 +1,13 @@
 # Road Trip Itinerary Generator — Requirements Document
-**Version 0.27 · July 29, 2026**
+**Version 0.28 · July 29, 2026**
+
+### Changelog for v0.28
+| # | Section | Change |
+|---|---|---|
+| 1 | §4, §5 | Added within-destination deduplication requirement: when a named entity appears in both `top_attractions` and `scenic_drives` for the same destination, the scenic-drives entry must be removed (one-card-one-entity rule) |
+| 2 | §4 | Added cross-section deduplication requirement: text present verbatim in `what_to_know` fields must not also appear in `cultural_events.local_tip` or event descriptions for the same destination |
+| 3 | §4 | Added cross-destination deduplication requirement: `what_to_know` field values that are verbatim-identical across 2+ destinations must be replaced with the field-level fallback default |
+| 4 | §5 | Added compound entity URL rejection: attraction names containing ` & ` (joining two distinct POIs) must not receive a discovered URL; the name may render as plain text but must not be hyperlinked to a single generic target |
 
 ### Changelog for v0.27
 | # | Section | Change |

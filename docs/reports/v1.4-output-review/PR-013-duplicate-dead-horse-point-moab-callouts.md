@@ -1,6 +1,8 @@
 # PR-013: Moab contains duplicate Dead Horse Point State Park callouts, including placeholder-link viewpoint card
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:medium`, `area:ai-content`, `area:html-output`, `area:content-linking`, `area:deduplication`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:medium`, `area:ai-content`, `area:html-output`, `area:content-linking`, `area:deduplication`
+
+**Fixed in:** v1.4.3 — `_deduplicate_within_destination` added to `URLDiscoverer.audit_discovered_urls`: removes any `scenic_drives` entry whose name tokens overlap ≥80% with a `top_attractions` entry. Dead Horse Point State Park viewpoint card is removed from scenic_drives when the same entity is already in top_attractions.
 
 Manifest: `trip_manifest.yaml`
 Output Artifact: `output/index.html`

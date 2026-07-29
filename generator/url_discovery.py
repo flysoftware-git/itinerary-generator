@@ -710,6 +710,8 @@ class URLDiscoverer:
                         else:
                             event.pop("url", None)
 
+            self._deduplicate_within_destination(dest)
+
     def _retain_discovered_url(
         self,
         url: str,
@@ -747,6 +749,11 @@ class URLDiscoverer:
                     kind, item_name, url,
                 )
                 return ""
+        # Compound entity check: a URL cannot be entity-specific for a name
+        # that joins multiple distinct POIs with ' & '.
+        if " & " in (item_name or ""):
+            logger.info("Compound entity name rejected URL for %s '%s': %s", kind, item_name, url)
+            return ""
         if allow_alltrails and self._is_alltrails_trail_url(url):
             if not self._meets_alltrails_publish_confidence(url, item_name, dest_name):
                 return ""
@@ -839,6 +846,58 @@ class URLDiscoverer:
             return "low"
 
         return "low"
+
+    def _deduplicate_within_destination(self, dest: dict[str, Any]) -> None:
+        """Remove scenic_drives entries whose name tokens duplicate a top_attractions entry.
+
+        When the same geographic entity appears in both top_attractions and scenic_drives
+        (e.g., Dead Horse Point State Park as both an attraction and a viewpoint card),
+        the scenic_drives entry is the weaker representation and is removed.
+        """
+        ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content", {}), dict) else {}
+        attractions = ai.get("top_attractions", []) or []
+        drives = dest.get("scenic_drives", []) or []
+        if not attractions or not drives:
+            return
+
+        attr_token_sets: list[frozenset[str]] = []
+        for attr in attractions:
+            name = str(attr.get("name", "") or "")
+            tokens = frozenset(self._significant_tokens(name))
+            if len(tokens) >= 2:
+                attr_token_sets.append(tokens)
+
+        if not attr_token_sets:
+            return
+
+        kept_drives: list[dict[str, Any]] = []
+        for drive in drives:
+            title = str(drive.get("title", "") or "")
+            drive_tokens = frozenset(self._significant_tokens(title))
+            if not drive_tokens:
+                kept_drives.append(drive)
+                continue
+
+            duplicate = False
+            for attr_tokens in attr_token_sets:
+                if not attr_tokens:
+                    continue
+                overlap = len(attr_tokens & drive_tokens)
+                min_len = min(len(attr_tokens), len(drive_tokens))
+                if min_len >= 2 and overlap / min_len >= 0.8:
+                    logger.info(
+                        "  Within-destination dedup: removing scenic drive '%s' "
+                        "(duplicates attraction in '%s')",
+                        title,
+                        dest.get("name", ""),
+                    )
+                    duplicate = True
+                    break
+
+            if not duplicate:
+                kept_drives.append(drive)
+
+        dest["scenic_drives"] = kept_drives
 
     @staticmethod
     def _log_rejected_url(kind: str, dest_name: str, item_name: str, url: str) -> None:

@@ -1,6 +1,8 @@
 # PR-015: Telluride repeats the same local tip and More info link in What to Know and Cultural Events
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:medium`, `area:ai-content`, `area:content-linking`, `area:html-output`, `area:deduplication`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:medium`, `area:ai-content`, `area:content-linking`, `area:html-output`, `area:deduplication`
+
+**Fixed in:** v1.4.3 — `_deduplicate_cross_section_tips` in `normalize_trip_content` detects when `cultural_events.local_tip` text appears verbatim in any `what_to_know` field value for the same destination and removes it from cultural events. Note: the `More info` search-query URL duplicate was already resolved by Epic 1 (v1.4.1 `google_search` class blocked).
 
 Manifest: `trip_manifest.yaml`
 Output Artifact: `output/index.html`

@@ -1,6 +1,8 @@
 # PR-023: Redundant viewpoint activity callouts: Wolf Creek Pass and Lookout Mountain Viewpoint
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:medium`, `area:ai-content`, `area:content-linking`, `area:deduplication`, `area:html-output`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:medium`, `area:ai-content`, `area:content-linking`, `area:deduplication`, `area:html-output`
+
+**Fixed in:** v1.4.3 — `_deduplicate_within_destination` removes `Wolf Creek Pass Scenic Drive` from scenic_drives because all tokens of the `Wolf Creek Pass` top-attraction name appear in the drive title (80%+ overlap threshold). Note: empty scenic-drive popup behavior (Lookout Mountain Viewpoint) is an assembler/UI concern tracked under Epic 6.
 
 Manifest: `trip_manifest.yaml`
 Output Artifact: `output/index.html`

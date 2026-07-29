@@ -1,6 +1,8 @@
 # PR-027: Compound destination label combines multiple entities into one link target (Santa Fe Plaza & Palace of the Governors)
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:high`, `area:entity-classification`, `area:url-discovery`, `area:content-linking`, `area:html-output`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:high`, `area:entity-classification`, `area:url-discovery`, `area:content-linking`, `area:html-output`
+
+**Fixed in:** v1.4.3 — compound entity check added to `_retain_discovered_url`: when item name contains ` & `, the URL is rejected and the attraction renders as plain unlinked text. A single generic domain like `santafenm.gov` is not an entity-specific target for two distinct named POIs.
 
 Manifest: `trip_manifest.yaml`
 Output Artifact: `output/index.html`

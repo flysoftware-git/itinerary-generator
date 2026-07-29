@@ -114,6 +114,83 @@ class AIContentGenerator:
         self.generate_destination_content(trip)
         self.generate_scenic_drive_descriptions(trip)
 
+    def normalize_trip_content(self, trip: dict[str, Any]) -> None:
+        """Post-generation normalization: cross-section and cross-destination dedup.
+
+        Runs after all parallel stages (events, images, URL discovery) complete
+        so that both what_to_know and cultural_events data are available.
+        """
+        self._deduplicate_cross_section_tips(trip)
+        self._deduplicate_cross_destination_what_to_know(trip)
+
+    def _deduplicate_cross_section_tips(self, trip: dict[str, Any]) -> None:
+        """Remove cultural_events.local_tip when it duplicates what_to_know field text."""
+        for dest in trip.get("destinations", []):
+            what_to_know = dest.get("what_to_know") if isinstance(dest.get("what_to_know"), dict) else {}
+            cultural_events = dest.get("cultural_events") if isinstance(dest.get("cultural_events"), dict) else {}
+            if not what_to_know or not cultural_events:
+                continue
+
+            wk_text = " ".join(str(v or "") for v in what_to_know.values()).lower()
+
+            local_tip = str(cultural_events.get("local_tip", "") or "").strip()
+            if local_tip and local_tip.lower() in wk_text:
+                cultural_events.pop("local_tip", None)
+                logger.info(
+                    "  Cross-section dedup: removed duplicate local_tip from cultural_events for '%s'",
+                    dest.get("name", ""),
+                )
+
+            for event in cultural_events.get("events", []) or []:
+                desc = str(event.get("description", "") or "").strip()
+                if desc and len(desc) > 30 and desc.lower() in wk_text:
+                    event.pop("description", None)
+                    logger.info(
+                        "  Cross-section dedup: removed duplicate event description for '%s' in '%s'",
+                        event.get("name", ""),
+                        dest.get("name", ""),
+                    )
+
+    def _deduplicate_cross_destination_what_to_know(self, trip: dict[str, Any]) -> None:
+        """Replace what_to_know fields whose value is verbatim-identical across 2+ destinations."""
+        destinations = trip.get("destinations", [])
+        if len(destinations) < 2:
+            return
+
+        fallback_defaults = {
+            "local_customs": "Follow posted rules, respect quiet areas, and support local businesses with patience during peak windows.",
+            "best_times_of_day": "Early morning and late afternoon usually provide easier parking and calmer conditions.",
+            "transportation_quirks": "Plan for limited parking in core areas and possible shuttle, permit, or reservation constraints.",
+            "safety_considerations": "Carry water, layers, and navigation backup; check alerts and avoid pushing exposure during heat or storms.",
+            "crowd_patterns": "Midday is often busiest near major trailheads and viewpoints; quieter windows are usually early and late.",
+            "local_etiquette": "Yield politely on narrow paths, keep noise low at viewpoints, and pack out all trash.",
+        }
+
+        for field, fallback in fallback_defaults.items():
+            value_counts: dict[str, int] = {}
+            for dest in destinations:
+                wk = dest.get("what_to_know") if isinstance(dest.get("what_to_know"), dict) else {}
+                val = str((wk or {}).get(field, "") or "").strip()
+                if val and val != fallback:
+                    value_counts[val] = value_counts.get(val, 0) + 1
+
+            repeated = {v for v, c in value_counts.items() if c >= 2}
+            if not repeated:
+                continue
+
+            for dest in destinations:
+                wk = dest.get("what_to_know") if isinstance(dest.get("what_to_know"), dict) else {}
+                if not wk:
+                    continue
+                val = str(wk.get(field, "") or "").strip()
+                if val in repeated:
+                    wk[field] = fallback
+                    logger.info(
+                        "  Cross-destination dedup: reset repeated what_to_know.%s for '%s'",
+                        field,
+                        dest.get("name", ""),
+                    )
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30))
     def _generate_what_to_know(
         self,

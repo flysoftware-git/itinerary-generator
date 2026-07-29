@@ -1,6 +1,8 @@
 # PR-001: What to Know duplicates generic guidance across destinations
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:medium`, `area:html-output`, `area:content-linking`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:medium`, `area:html-output`, `area:content-linking`
+
+**Fixed in:** v1.4.3 — `_deduplicate_cross_destination_what_to_know` in `AIContentGenerator.normalize_trip_content` detects verbatim-identical `what_to_know` field values across 2+ destinations and replaces them with the field-level fallback default. Called after all parallel generation stages complete in `main.py`.
 
 Manifest: `C:/Dev/Sandbox/sw_manifest.yaml`
 Output Artifact: `output/index.html`

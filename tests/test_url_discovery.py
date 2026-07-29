@@ -1701,6 +1701,99 @@ def test_is_relevant_result_rejects_alltrails_redirect_to_different_entity():
     assert result is False
 
 
+# ── Epic 3: Content deduplication ────────────────────────────────────────────
+
+def test_retain_url_rejects_compound_entity_name():
+    """PR-027: Compound entity name with ' & ' gets URL rejected (fail-closed)."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    result = discoverer._retain_discovered_url(
+        "https://www.santafenm.gov",
+        "Santa Fe Plaza & Palace of the Governors",
+        "Santa Fe",
+        allow_alltrails=False,
+    )
+    assert result == ""
+
+
+def test_retain_url_keeps_non_compound_entity():
+    """Single-entity name without ' & ' is not rejected by compound check."""
+    from unittest.mock import MagicMock
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="Santa Fe Plaza historic square in Santa Fe New Mexico.",
+        url="https://www.santafenm.gov/plaza",
+    )
+    result = discoverer._retain_discovered_url(
+        "https://www.santafenm.gov/plaza",
+        "Santa Fe Plaza",
+        "Santa Fe",
+        allow_alltrails=False,
+    )
+    assert result == "https://www.santafenm.gov/plaza"
+
+
+def test_deduplicate_within_destination_removes_drive_matching_attraction():
+    """PR-013/023: Scenic drive whose title overlaps an attraction is removed."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Moab, UT",
+        "ai_content": {
+            "top_attractions": [
+                {"name": "Dead Horse Point State Park", "type": "attraction"},
+            ]
+        },
+        "scenic_drives": [
+            {"title": "Dead Horse Point State Park", "category": "viewpoint"},
+            {"title": "Colorado River Scenic Byway", "category": "drive"},
+        ],
+    }
+    discoverer._deduplicate_within_destination(dest)
+    titles = [d["title"] for d in dest["scenic_drives"]]
+    assert "Dead Horse Point State Park" not in titles
+    assert "Colorado River Scenic Byway" in titles
+
+
+def test_deduplicate_within_destination_removes_partial_drive_overlap():
+    """PR-023: 'Wolf Creek Pass Scenic Drive' removed when 'Wolf Creek Pass' is an attraction."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Pagosa Springs",
+        "ai_content": {
+            "top_attractions": [
+                {"name": "Wolf Creek Pass", "type": "viewpoint"},
+            ]
+        },
+        "scenic_drives": [
+            {"title": "Wolf Creek Pass Scenic Drive", "category": "drive"},
+            {"title": "Treasure Falls", "category": "viewpoint"},
+        ],
+    }
+    discoverer._deduplicate_within_destination(dest)
+    titles = [d["title"] for d in dest["scenic_drives"]]
+    assert "Wolf Creek Pass Scenic Drive" not in titles
+    assert "Treasure Falls" in titles
+
+
+def test_deduplicate_within_destination_keeps_unrelated_drives():
+    """Unrelated scenic drives are not affected by within-destination dedup."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Zion National Park",
+        "ai_content": {
+            "top_attractions": [
+                {"name": "Angels Landing", "type": "hike"},
+            ]
+        },
+        "scenic_drives": [
+            {"title": "Zion Canyon Scenic Drive", "category": "drive"},
+        ],
+    }
+    discoverer._deduplicate_within_destination(dest)
+    assert len(dest["scenic_drives"]) == 1
+
+
 def test_trail_ai_candidate_rejected_when_filtered_constraints_fail_then_falls_back_maps():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = True
