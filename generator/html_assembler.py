@@ -465,19 +465,6 @@ class HTMLAssembler:
         if details_html:
             html += "\n".join(details_html) + "\n"
 
-        if events and not events.get("has_events"):
-            honest = html_escape.escape(str(events.get("honest_assessment", "") or "").strip())
-            local_tip = html_escape.escape(str(events.get("local_tip", "") or "").strip())
-            if honest:
-                html += f'  <p class="intro-note-text">{honest}</p>\n'
-            if local_tip:
-                tip_query = quote(f"{events.get('local_tip', '')} {dest.get('name', '')}")
-                tip_url = f"https://www.google.com/search?q={tip_query}"
-                html += (
-                    f'  <p class="local-tip"><strong>Local tip:</strong> {local_tip} '
-                    f'<a href="{self._safe_href(tip_url)}" target="_blank" rel="noopener" class="event-link">More info</a></p>\n'
-                )
-
         html += '</div>\n'
         return html
 

@@ -293,6 +293,33 @@ def test_intro_note_omits_weather_and_photography_rows() -> None:
     assert "Photography:" not in html
 
 
+def test_intro_note_does_not_repeat_fallback_cultural_events_copy() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest = {
+        "name": "St. George",
+        "what_to_know": {
+            "summary": "Desert gateway with easy access to red-rock parks.",
+            "local_customs": "Expect a relaxed pace in town.",
+            "best_times_of_day": "Morning and dusk.",
+            "transportation_quirks": "Parking is easiest outside midday.",
+            "safety_considerations": "Carry water.",
+            "crowd_patterns": "Busy on weekends.",
+            "local_etiquette": "Respect trail signage.",
+        },
+    }
+    events = {
+        "has_events": False,
+        "honest_assessment": "St. George has a lively cultural scene in October, characterized by community gatherings and outdoor activities.",
+        "local_tip": "Check the local farmers market on Saturday mornings.",
+    }
+
+    html = assembler._build_intro_note(dest, events)
+
+    assert "Desert gateway with easy access to red-rock parks." in html
+    assert "St. George has a lively cultural scene in October" not in html
+    assert "Local tip:" not in html
+
+
 def test_image_caption_drops_wikimedia_template_boilerplate() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     image = {
