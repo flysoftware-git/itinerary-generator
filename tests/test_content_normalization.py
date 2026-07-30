@@ -10,8 +10,8 @@ def _make_gen() -> AIContentGenerator:
     return gen
 
 
-def test_cross_section_dedup_removes_local_tip_present_in_what_to_know():
-    """PR-015: local_tip that duplicates what_to_know text is removed from cultural_events."""
+def test_cross_section_dedup_preserves_local_tip_and_strips_what_to_know_echo():
+    """PR-015 policy: keep cultural_events.local_tip and strip duplicate prose from what_to_know."""
     gen = _make_gen()
     tip = "Check the Sheridan Opera House schedule for any live music events during your stay."
     trip = {
@@ -36,7 +36,8 @@ def test_cross_section_dedup_removes_local_tip_present_in_what_to_know():
         ]
     }
     gen._deduplicate_cross_section_tips(trip)
-    assert "local_tip" not in trip["destinations"][0]["cultural_events"]
+    assert trip["destinations"][0]["cultural_events"]["local_tip"] == tip
+    assert tip not in trip["destinations"][0]["what_to_know"]["local_customs"]
 
 
 def test_cross_section_dedup_keeps_tip_not_in_what_to_know():
@@ -104,6 +105,7 @@ def test_cross_section_dedup_strips_honest_assessment_echo_from_local_etiquette(
     local_etiquette = trip["destinations"][0]["what_to_know"]["local_etiquette"]
     assert "Respect trail signage." in local_etiquette
     assert duplicate not in local_etiquette
+    assert trip["destinations"][0]["cultural_events"]["honest_assessment"] == duplicate
 
 
 def test_cross_destination_what_to_know_dedup_resets_repeated_field():

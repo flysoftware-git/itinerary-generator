@@ -248,7 +248,11 @@ class AIContentGenerator:
         return days
 
     def _deduplicate_cross_section_tips(self, trip: dict[str, Any]) -> None:
-        """Remove cultural_events.local_tip when it duplicates what_to_know field text."""
+        """Strip Cultural Events prose echoes from what_to_know fields.
+
+        Policy: keep cultural_events as canonical event context and remove the
+        duplicated text from what_to_know instead of deleting event prose.
+        """
         import re as _re
 
         fallback_defaults = {
@@ -274,8 +278,6 @@ class AIContentGenerator:
             cultural_events = dest.get("cultural_events") if isinstance(dest.get("cultural_events"), dict) else {}
             if not what_to_know or not cultural_events:
                 continue
-
-            wk_text_before = " ".join(str(v or "") for v in what_to_know.values()).lower()
 
             # Prevent the Cultural Events assessment/tip block from being echoed
             # in What to Know fields (e.g., as an extra paragraph after Local etiquette).
@@ -307,24 +309,6 @@ class AIContentGenerator:
                     logger.info(
                         "  Cross-section dedup: stripped cultural-events duplicate from what_to_know.%s for '%s'",
                         field,
-                        dest.get("name", ""),
-                    )
-
-            local_tip = str(cultural_events.get("local_tip", "") or "").strip()
-            if local_tip and local_tip.lower() in wk_text_before:
-                cultural_events.pop("local_tip", None)
-                logger.info(
-                    "  Cross-section dedup: removed duplicate local_tip from cultural_events for '%s'",
-                    dest.get("name", ""),
-                )
-
-            for event in cultural_events.get("events", []) or []:
-                desc = str(event.get("description", "") or "").strip()
-                if desc and len(desc) > 30 and desc.lower() in wk_text_before:
-                    event.pop("description", None)
-                    logger.info(
-                        "  Cross-section dedup: removed duplicate event description for '%s' in '%s'",
-                        event.get("name", ""),
                         dest.get("name", ""),
                     )
 
