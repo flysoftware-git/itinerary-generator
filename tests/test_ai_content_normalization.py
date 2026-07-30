@@ -248,6 +248,60 @@ def test_normalize_schedule_ensures_each_day_has_unique_signal() -> None:
     assert any(summary not in day1_set for summary in day2_set)
 
 
+def test_filter_oversized_scenic_drives_removes_full_day_loop() -> None:
+    g = _gen()
+    g._config = {"url_discovery": {"max_scenic_drive_miles": 150}}
+    trip = {
+        "destinations": [
+            {
+                "name": "Pagosa Springs",
+                "scenic_drives": [
+                    {
+                        "title": "San Juan Skyway Day Trip",
+                        "distance_or_duration": "236-mile loop - allow a full day",
+                    },
+                    {
+                        "title": "Piedra Road",
+                        "distance_or_duration": "42 miles round-trip",
+                    },
+                ],
+            }
+        ]
+    }
+
+    g._filter_oversized_scenic_drives(trip)
+    titles = [d["title"] for d in trip["destinations"][0]["scenic_drives"]]
+    assert "San Juan Skyway Day Trip" not in titles
+    assert "Piedra Road" in titles
+
+
+def test_filter_oversized_scenic_drives_respects_mile_cap() -> None:
+    g = _gen()
+    g._config = {"url_discovery": {"max_scenic_drive_miles": 120}}
+    trip = {
+        "destinations": [
+            {
+                "name": "Pagosa Springs",
+                "scenic_drives": [
+                    {
+                        "title": "Long Loop",
+                        "distance_or_duration": "130 miles",
+                    },
+                    {
+                        "title": "Short Loop",
+                        "distance_or_duration": "95 miles",
+                    },
+                ],
+            }
+        ]
+    }
+
+    g._filter_oversized_scenic_drives(trip)
+    titles = [d["title"] for d in trip["destinations"][0]["scenic_drives"]]
+    assert "Long Loop" not in titles
+    assert "Short Loop" in titles
+
+
 def test_remove_enroute_stops_from_attractions() -> None:
     g = _gen()
     attractions = [
