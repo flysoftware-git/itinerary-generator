@@ -249,16 +249,69 @@ class AIContentGenerator:
 
     def _deduplicate_cross_section_tips(self, trip: dict[str, Any]) -> None:
         """Remove cultural_events.local_tip when it duplicates what_to_know field text."""
+        import re as _re
+
+        fallback_defaults = {
+            "local_customs": "Follow posted rules, respect quiet areas, and support local businesses with patience during peak windows.",
+            "best_times_of_day": "Early morning and late afternoon usually provide easier parking and calmer conditions.",
+            "transportation_quirks": "Plan for limited parking in core areas and possible shuttle, permit, or reservation constraints.",
+            "safety_considerations": "Carry water, layers, and navigation backup; check alerts and avoid pushing exposure during heat or storms.",
+            "crowd_patterns": "Midday is often busiest near major trailheads and viewpoints; quieter windows are usually early and late.",
+            "local_etiquette": "Yield politely on narrow paths, keep noise low at viewpoints, and pack out all trash.",
+        }
+
+        def _normalize_space(text: str) -> str:
+            return " ".join(str(text or "").split()).strip()
+
+        def _strip_duplicate_block(base: str, duplicate: str) -> str:
+            if not duplicate:
+                return base
+            pattern = _re.compile(_re.escape(duplicate), _re.IGNORECASE)
+            return _normalize_space(pattern.sub(" ", base))
+
         for dest in trip.get("destinations", []):
             what_to_know = dest.get("what_to_know") if isinstance(dest.get("what_to_know"), dict) else {}
             cultural_events = dest.get("cultural_events") if isinstance(dest.get("cultural_events"), dict) else {}
             if not what_to_know or not cultural_events:
                 continue
 
-            wk_text = " ".join(str(v or "") for v in what_to_know.values()).lower()
+            wk_text_before = " ".join(str(v or "") for v in what_to_know.values()).lower()
+
+            # Prevent the Cultural Events assessment/tip block from being echoed
+            # in What to Know fields (e.g., as an extra paragraph after Local etiquette).
+            duplicate_blocks = [
+                _normalize_space(cultural_events.get("honest_assessment", "")),
+                _normalize_space(cultural_events.get("local_tip", "")),
+            ]
+            duplicate_blocks = [blk for blk in duplicate_blocks if len(blk) >= 30]
+
+            for field in (
+                "summary",
+                "local_customs",
+                "best_times_of_day",
+                "transportation_quirks",
+                "safety_considerations",
+                "crowd_patterns",
+                "local_etiquette",
+            ):
+                current = _normalize_space(what_to_know.get(field, ""))
+                if not current:
+                    continue
+                cleaned = current
+                for duplicate in duplicate_blocks:
+                    cleaned = _strip_duplicate_block(cleaned, duplicate)
+                if cleaned != current:
+                    if not cleaned and field in fallback_defaults:
+                        cleaned = fallback_defaults[field]
+                    what_to_know[field] = cleaned
+                    logger.info(
+                        "  Cross-section dedup: stripped cultural-events duplicate from what_to_know.%s for '%s'",
+                        field,
+                        dest.get("name", ""),
+                    )
 
             local_tip = str(cultural_events.get("local_tip", "") or "").strip()
-            if local_tip and local_tip.lower() in wk_text:
+            if local_tip and local_tip.lower() in wk_text_before:
                 cultural_events.pop("local_tip", None)
                 logger.info(
                     "  Cross-section dedup: removed duplicate local_tip from cultural_events for '%s'",
@@ -267,7 +320,7 @@ class AIContentGenerator:
 
             for event in cultural_events.get("events", []) or []:
                 desc = str(event.get("description", "") or "").strip()
-                if desc and len(desc) > 30 and desc.lower() in wk_text:
+                if desc and len(desc) > 30 and desc.lower() in wk_text_before:
                     event.pop("description", None)
                     logger.info(
                         "  Cross-section dedup: removed duplicate event description for '%s' in '%s'",

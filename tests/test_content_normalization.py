@@ -68,6 +68,44 @@ def test_cross_section_dedup_keeps_tip_not_in_what_to_know():
     assert trip["destinations"][0]["cultural_events"]["local_tip"] == tip
 
 
+def test_cross_section_dedup_strips_honest_assessment_echo_from_local_etiquette():
+    """PR-001/PR-015 regression: remove duplicated Cultural Events prose from What to Know fields."""
+    gen = _make_gen()
+    duplicate = (
+        "St. George has a lively cultural scene in October, characterized by community gatherings "
+        "and outdoor activities. Visitors can explore local art galleries and enjoy the warm weather "
+        "while attending various informal events. The area is also known for its scenic beauty, "
+        "making it a pleasant place for outdoor enthusiasts."
+    )
+    trip = {
+        "destinations": [
+            {
+                "name": "St. George",
+                "what_to_know": {
+                    "summary": "Desert gateway with easy access to parks.",
+                    "local_customs": "Friendly and relaxed pace.",
+                    "best_times_of_day": "Morning and dusk.",
+                    "transportation_quirks": "Parking is easier outside midday.",
+                    "safety_considerations": "Carry water.",
+                    "crowd_patterns": "Busy on weekends.",
+                    "local_etiquette": f"Respect trail signage. {duplicate}",
+                },
+                "cultural_events": {
+                    "has_events": False,
+                    "honest_assessment": duplicate,
+                    "events": [],
+                },
+            }
+        ]
+    }
+
+    gen._deduplicate_cross_section_tips(trip)
+
+    local_etiquette = trip["destinations"][0]["what_to_know"]["local_etiquette"]
+    assert "Respect trail signage." in local_etiquette
+    assert duplicate not in local_etiquette
+
+
 def test_cross_destination_what_to_know_dedup_resets_repeated_field():
     """PR-001: Identical what_to_know field value in 2+ destinations is replaced with fallback."""
     gen = _make_gen()
