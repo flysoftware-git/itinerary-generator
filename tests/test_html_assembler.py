@@ -141,6 +141,55 @@ def test_weather_url_uses_global_fallback_for_non_us_coordinates() -> None:
     assert "weather.com/weather/today/l/" in url
 
 
+def test_build_map_markers_includes_sequential_stop_indices() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [
+        {"name": "Zion National Park", "dates": "October 7-9, 2026", "lat": 37.3, "lng": -113.0},
+        {"name": "Bryce Canyon National Park", "dates": "October 10-12, 2026", "lat": 37.6, "lng": -112.2},
+    ]
+    trip_meta = {
+        "departure": "Las Vegas",
+        "departure_lat": 36.17,
+        "departure_lng": -115.14,
+        "return": "Salt Lake City",
+        "return_lat": 40.76,
+        "return_lng": -111.89,
+    }
+
+    markers = assembler._build_map_markers(destinations, trip_meta)
+    dest_markers = [m for m in markers if "idx" in m]
+
+    assert [m["idx"] for m in dest_markers] == [1, 2]
+    assert [m["stop_index"] for m in dest_markers] == [1, 2]
+    assert markers[0]["mo"] == "DEP"
+    assert markers[-1]["mo"] == "RET"
+
+
+def test_build_getting_there_renders_departure_route_options() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "getting_there": {
+            "route_summary": "Departure leg toward Albuquerque, NM.",
+            "route_options": [
+                {
+                    "title": "Turquoise Trail Scenic Byway",
+                    "distance_or_duration": "50 miles one-way",
+                    "description": "Historic route via Madrid.",
+                    "url": "https://example.com/turquoise-trail-byway",
+                }
+            ],
+        }
+    }
+    dest = {"name": "Santa Fe"}
+    trip_meta = {"return": "Albuquerque, NM"}
+
+    html = assembler._build_getting_there(ai, dest, trip_meta)
+
+    assert "Getting There" in html
+    assert "Turquoise Trail Scenic Byway" in html
+    assert "Departure leg toward Albuquerque, NM." in html
+
+
 def test_intro_note_omits_weather_and_photography_rows() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     dest = {

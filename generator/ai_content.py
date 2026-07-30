@@ -184,6 +184,7 @@ class AIContentGenerator:
             return
 
         drives = last_dest.get("scenic_drives", []) or []
+        departure_options: list[dict[str, Any]] = []
         eligible = []
         for drive in drives:
             dist = str(drive.get("distance_or_duration", "") or "").lower()
@@ -197,12 +198,32 @@ class AIContentGenerator:
             ).lower()
             if any(token in title_and_desc for token in return_tokens):
                 logger.info(
-                    "  Departure-aligned drive removed: '%s' in '%s' (one-way toward '%s')",
+                    "  Departure-aligned drive moved to getting_there: '%s' in '%s' (one-way toward '%s')",
                     drive.get("title", ""), last_dest.get("name", ""), return_name,
                 )
+                departure_options.append(drive)
             else:
                 eligible.append(drive)
         last_dest["scenic_drives"] = eligible
+
+        if departure_options:
+            ai = last_dest.get("ai_content", {}) if isinstance(last_dest.get("ai_content", {}), dict) else {}
+            getting_there = ai.get("getting_there", {}) if isinstance(ai.get("getting_there", {}), dict) else {}
+            existing_options = getting_there.get("route_options", []) if isinstance(getting_there.get("route_options", []), list) else []
+
+            seen_titles = {str(opt.get("title", "") or "").strip().lower() for opt in existing_options}
+            merged_options = list(existing_options)
+            for option in departure_options:
+                key = str(option.get("title", "") or "").strip().lower()
+                if key and key not in seen_titles:
+                    merged_options.append(option)
+                    seen_titles.add(key)
+
+            getting_there["route_options"] = merged_options
+            if return_name and not str(getting_there.get("route_summary", "") or "").strip():
+                getting_there["route_summary"] = f"Departure leg toward {return_name}."
+            ai["getting_there"] = getting_there
+            last_dest["ai_content"] = ai
 
     @staticmethod
     def _cap_period_sentences(

@@ -152,7 +152,12 @@ class HTMLAssembler:
         departure_name = meta.get("departure", "")
         for index, dest in enumerate(destinations):
             previous_name = destinations[index - 1]["name"] if index > 0 else departure_name
-            sections_html += self._build_single_section(dest, meta, previous_name)
+            sections_html += self._build_single_section(
+                dest,
+                meta,
+                previous_name,
+                is_last=(index == len(destinations) - 1),
+            )
         sections_html += self._build_packing_summary(destinations)
         html = html.replace("<!--DESTINATION_SECTIONS-->", sections_html)
 
@@ -223,7 +228,16 @@ class HTMLAssembler:
             mo = mo_match.group(1)[:3] if mo_match else ""
             dy = mo_match.group(2) if mo_match else ""
             short = d["name"].replace(" National Park", "").replace(" State Park", "")
-            result.append({"c": [d.get("lat", 0), d.get("lng", 0)], "mo": mo, "dy": dy, "name": short, "idx": i + 1})
+            result.append(
+                {
+                    "c": [d.get("lat", 0), d.get("lng", 0)],
+                    "mo": mo,
+                    "dy": dy,
+                    "name": short,
+                    "idx": i + 1,
+                    "stop_index": i + 1,
+                }
+            )
 
         if trip_meta.get("return") and trip_meta.get("return_lat") and trip_meta.get("return_lng"):
             result.append({
@@ -251,7 +265,14 @@ class HTMLAssembler:
         )
         return "\n          ".join(tabs)
 
-    def _build_single_section(self, dest: dict[str, Any], trip_meta: dict[str, Any], previous_name: str = "") -> str:
+    def _build_single_section(
+        self,
+        dest: dict[str, Any],
+        trip_meta: dict[str, Any],
+        previous_name: str = "",
+        *,
+        is_last: bool = False,
+    ) -> str:
         import logging
         logger = logging.getLogger(__name__)
         ai = dest.get("ai_content", {})
@@ -283,6 +304,10 @@ class HTMLAssembler:
 
         # Getting here + en-route stops
         section += self._build_getting_here(ai, dest, previous_name)
+
+        # Final leg departure guidance for the last destination (PR-029)
+        if is_last:
+            section += self._build_getting_there(ai, dest, trip_meta)
 
         # Attractions + scenic drives/viewpoints
         section += self._build_attractions(ai, drives, dest.get("name", ""))
@@ -452,6 +477,77 @@ class HTMLAssembler:
                     f'  <p class="local-tip"><strong>Local tip:</strong> {local_tip} '
                     f'<a href="{self._safe_href(tip_url)}" target="_blank" rel="noopener" class="event-link">More info</a></p>\n'
                 )
+
+        html += '</div>\n'
+        return html
+
+    def _build_getting_there(self, ai: dict, dest: dict, trip_meta: dict[str, Any]) -> str:
+        getting_there = ai.get("getting_there", {}) if isinstance(ai, dict) else {}
+        if not isinstance(getting_there, dict):
+            getting_there = {}
+
+        return_name = str((trip_meta or {}).get("return", "") or "").strip()
+        route_summary = str(getting_there.get("route_summary", "") or "").strip()
+        distance = str(getting_there.get("distance_miles", "") or "").strip()
+        drive_time = str(getting_there.get("drive_time", "") or "").strip()
+        route_options = getting_there.get("route_options", []) or []
+        if not return_name and not route_summary and not route_options:
+            return ""
+
+        route_label = ""
+        if return_name:
+            route_label = f'{self._short_place_name(dest.get("name", ""))} → {self._short_place_name(return_name)}'
+
+        gmaps_url = ""
+        if return_name:
+            pseudo_dest = {"name": return_name}
+            gmaps_url = self._build_route_gmaps_url(dest.get("name", ""), pseudo_dest, route_options)
+
+        html = '<div class="card getting-here-card getting-here-subcard">\n'
+        html += '  <div class="getting-here-header">\n'
+        html += '    <h3>↩️ Getting There</h3>\n'
+        if gmaps_url:
+            html += f'    <a href="{gmaps_url}" target="_blank" rel="noopener" class="gmaps-link">Open in Google Maps →</a>\n'
+        html += '  </div>\n'
+
+        if distance and drive_time:
+            html += '  <div class="route-headline-row">\n'
+            if route_label:
+                html += f'    <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
+            html += '    <div class="route-badges route-badges-inline">\n'
+            html += f'      <span class="badge badge-distance">{distance} mi</span>\n'
+            html += f'      <span class="badge badge-time">{drive_time}</span>\n'
+            html += '    </div>\n'
+            html += '  </div>\n'
+        elif route_label:
+            html += f'  <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
+
+        if route_summary:
+            html += f'  <p class="route-summary">{html_escape.escape(route_summary)}</p>\n'
+
+        if route_options:
+            html += '  <div class="can-miss-header">🧭 DEPARTURE ROUTE OPTIONS</div>\n'
+            html += '  <div class="en-route-stops">\n'
+            for opt in route_options:
+                title = str(opt.get("title", "") or "").strip()
+                if not title:
+                    continue
+                url = self._normalize_external_url(opt.get("url", ""))
+                name_html = (
+                    f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{html_escape.escape(title)}</a>'
+                    if url else html_escape.escape(title)
+                )
+                dist = str(opt.get("distance_or_duration", "") or "").strip()
+                detour_html = f' <span class="stop-detour">({html_escape.escape(dist)})</span>' if dist else ""
+                description = html_escape.escape(str(opt.get("description", "") or "").strip())
+                html += (
+                    '    <div class="stop-card">'
+                    '<span class="stop-icon">🚗</span>'
+                    f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}'
+                    f'<div class="stop-desc">{description}</div></div>'
+                    '</div>\n'
+                )
+            html += '  </div>\n'
 
         html += '</div>\n'
         return html

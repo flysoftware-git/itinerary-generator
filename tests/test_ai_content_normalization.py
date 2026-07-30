@@ -302,6 +302,42 @@ def test_filter_oversized_scenic_drives_respects_mile_cap() -> None:
     assert "Short Loop" in titles
 
 
+def test_filter_departure_aligned_drives_moves_matching_one_way_drive_to_getting_there() -> None:
+    g = _gen()
+    trip = {
+        "trip": {"return": "Albuquerque, NM"},
+        "destinations": [
+            {
+                "name": "Santa Fe",
+                "ai_content": {},
+                "scenic_drives": [
+                    {
+                        "title": "Turquoise Trail Scenic Byway to Albuquerque",
+                        "distance_or_duration": "50 miles one-way",
+                        "description": "Historic route into Albuquerque.",
+                    },
+                    {
+                        "title": "Hyde Memorial Loop",
+                        "distance_or_duration": "32 miles round-trip",
+                        "description": "Mountain loop.",
+                    },
+                ],
+            }
+        ],
+    }
+
+    g._filter_departure_aligned_drives(trip)
+
+    scenic_titles = [d["title"] for d in trip["destinations"][0]["scenic_drives"]]
+    assert "Turquoise Trail Scenic Byway to Albuquerque" not in scenic_titles
+    assert "Hyde Memorial Loop" in scenic_titles
+
+    options = trip["destinations"][0]["ai_content"]["getting_there"]["route_options"]
+    option_titles = [o["title"] for o in options]
+    assert "Turquoise Trail Scenic Byway to Albuquerque" in option_titles
+    assert "departure leg toward albuquerque, nm" in trip["destinations"][0]["ai_content"]["getting_there"]["route_summary"].lower()
+
+
 def test_remove_enroute_stops_from_attractions() -> None:
     g = _gen()
     attractions = [
