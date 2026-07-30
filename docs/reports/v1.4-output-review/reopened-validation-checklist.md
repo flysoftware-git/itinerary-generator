@@ -12,7 +12,6 @@ Purpose: provide a closure-ready checklist for all reopened v1.4 output-review i
 
 These were already implemented with automated coverage and are functionally in the 1.4.4 line. You can use the 1.4.4 build/output pass to confirm and potentially re-close.
 
-- [ ] PR-001 / #12: What to Know cross-destination dedup confirmed in output. Issue: https://github.com/flysoftware-git/road-trip-generator/issues/12. Report: [PR-001-what-to-know-duplicates-generic-guidance.md](PR-001-what-to-know-duplicates-generic-guidance.md)
 - [ ] PR-003 / #13: Scenic-drive card teaser differs from popup full description. Issue: https://github.com/flysoftware-git/road-trip-generator/issues/13. Report: [PR-003-scenic-drive-card-duplicates-popup-description.md](PR-003-scenic-drive-card-duplicates-popup-description.md)
 - [ ] PR-004 / #14: Scenic-drive links are route-specific; generic place pages rejected. Issue: https://github.com/flysoftware-git/road-trip-generator/issues/14. Report: [PR-004-scenic-drive-link-resolves-to-place-not-drive-info.md](PR-004-scenic-drive-link-resolves-to-place-not-drive-info.md)
 - [ ] PR-005 / #16: Daily schedule appears route-aware/time-budgeted in rendered itinerary. Issue: https://github.com/flysoftware-git/road-trip-generator/issues/16. Report: [PR-005-possible-daily-schedule-not-realistic-route-aware-or-time-budgeted.md](PR-005-possible-daily-schedule-not-realistic-route-aware-or-time-budgeted.md)
@@ -34,6 +33,7 @@ These were already implemented with automated coverage and are functionally in t
 
 These changed after reopen and should wait for full manual revalidation on the updated build before any re-close action.
 
+- [ ] PR-001 / #12: What to Know duplicate prose fix updated post-reopen to strip Cultural Events echo from What to Know while preserving Cultural Events content. Issue: https://github.com/flysoftware-git/road-trip-generator/issues/12. Report: [PR-001-what-to-know-duplicates-generic-guidance.md](PR-001-what-to-know-duplicates-generic-guidance.md)
 - [ ] PR-006 / #17: Route overview marker UX update (compact marker size + secondary date under location label + stop-index readability). Issue: https://github.com/flysoftware-git/road-trip-generator/issues/17. Report: [PR-006-route-overview-map-markers-missing-stop-number-tags.md](PR-006-route-overview-map-markers-missing-stop-number-tags.md)
 
 ## Completion Gate
