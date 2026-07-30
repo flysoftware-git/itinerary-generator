@@ -114,6 +114,29 @@ def test_assembled_html_includes_generator_footer_signature() -> None:
     assert "Itinerary output: 2026-07-26 17:41 UTC" in html
 
 
+def test_footer_issue_guidance_is_split_and_template_specific() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {
+        "trip": {
+            "title": "Test Trip",
+            "theme_color": "#C0623E",
+        },
+        "_meta": {
+            "generator_version": "9.9.9",
+            "template_version": "2.5",
+            "generated_at_utc": "2026-07-26T17:41:23+00:00",
+            "llm": {"provider": "openai", "model": "test", "usage": {"models": [], "total_estimated_cost_usd": 0.0}},
+        },
+        "destinations": [],
+    }
+
+    html = assembler.assemble(trip)
+
+    assert "Issue reporting:" in html
+    assert "?template=broken-link-report.yml" in html
+    assert "?template=itinerary-feedback.yml" in html
+
+
 def test_image_gallery_uses_unified_tile_structure() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     images = [
