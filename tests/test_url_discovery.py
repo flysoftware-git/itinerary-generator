@@ -1701,6 +1701,38 @@ def test_is_relevant_result_rejects_alltrails_redirect_to_different_entity():
     assert result is False
 
 
+def test_is_relevant_result_rejects_alltrails_redirect_mismatch_when_blocked_fetch():
+    """PR-018 hardening: redirect mismatch is rejected even when AllTrails fetch is blocked (403)."""
+    from unittest.mock import MagicMock
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_slug_denylist = frozenset()
+    discoverer._alltrails_min_confidence_for_publish = "medium"
+    discoverer._url_validator = MagicMock()
+
+    def _fake_get_text(url, timeout=8):
+        discoverer._url_validator._last_final_url = "https://www.alltrails.com/trail/us/colorado/penrose-trail"
+        return False, 403, ""
+
+    discoverer._url_validator.get_text.side_effect = _fake_get_text
+    discoverer._alltrails_request_delay_seconds = 0
+    discoverer._alltrails_block_cooldown_seconds = 0
+    discoverer._alltrails_fetch_cache = {}
+    discoverer._alltrails_fetch_lock = __import__("threading").Lock()
+    discoverer._alltrails_last_request_ts = 0.0
+    discoverer._alltrails_blocked_until_ts = 0.0
+    discoverer._fetch_final_url_cache = {}
+    discoverer._allow_blocked_alltrails = True
+    discoverer._max_trail_miles = 10.0
+
+    result = discoverer._is_relevant_result(
+        "https://www.alltrails.com/trail/us/colorado/bear-creek-trail",
+        "Bear Creek Trail",
+        "Telluride",
+    )
+    assert result is False
+
+
 # ── Epic 4: Restaurant freshness gate ────────────────────────────────────────
 
 def test_is_restaurant_ineligible_via_name_denylist():

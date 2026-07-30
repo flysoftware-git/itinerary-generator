@@ -51,3 +51,19 @@ def test_get_text_uses_ssl_fallback_for_trusted_host() -> None:
     assert ok is True
     assert status == 200
     assert "Wilson Arch" in text
+
+
+def test_get_text_records_final_redirect_url() -> None:
+    validator = URLValidator(timeout=1)
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.text = "Trail page"
+    resp.url = "https://www.alltrails.com/trail/us/colorado/penrose-trail"
+    validator.session.get = MagicMock(return_value=resp)
+
+    ok, status, text = validator.get_text("https://www.alltrails.com/trail/us/colorado/bear-creek-trail")
+
+    assert ok is True
+    assert status == 200
+    assert text == "Trail page"
+    assert getattr(validator, "_last_final_url", "") == "https://www.alltrails.com/trail/us/colorado/penrose-trail"

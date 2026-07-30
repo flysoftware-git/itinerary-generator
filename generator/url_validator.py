@@ -47,11 +47,14 @@ class URLValidator:
         to = timeout or self.timeout
         try:
             resp = self.session.get(url, timeout=to)
+            # Expose final URL after redirects for downstream entity checks.
+            self._last_final_url = str(getattr(resp, "url", None) or url)
             return resp.status_code < 400, resp.status_code, resp.text or ""
         except RequestException as exc:
             if self._is_ssl_error(exc) and self._is_trusted_ssl_fallback_host(url):
                 try:
                     resp = self.session.get(url, timeout=to, verify=False)
+                    self._last_final_url = str(getattr(resp, "url", None) or url)
                     logger.info("SSL verify bypass used for trusted host: %s", urlparse(url).netloc)
                     return resp.status_code < 400, resp.status_code, resp.text or ""
                 except RequestException as inner_exc:

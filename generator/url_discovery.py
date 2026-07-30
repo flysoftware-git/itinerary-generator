@@ -639,17 +639,35 @@ class URLDiscoverer:
             dest_name = dest.get("name", "")
             ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content", {}), dict) else {}
 
+            max_trail_miles = float(getattr(self, "_max_trail_miles", DEFAULT_MAX_TRAIL_MILES) or 0)
+            eligible_attractions: list[dict[str, Any]] = []
             for attr in ai.get("top_attractions", []) or []:
                 attr_name = str(attr.get("name", "") or "")
                 attr_type = str(attr.get("type", "attraction") or "attraction").lower()
                 attr_context = self._attraction_trail_context(attr)
                 trail_like = self._is_trail_like_attraction(attr_name, attr_type, attr_context)
                 url = str(attr.get("url", "") or "").strip()
+
+                # PR-028: enforce max_trail_miles from AI description when page fetch is unavailable
+                if trail_like and max_trail_miles > 0:
+                    desc_text = (
+                        str(attr.get("description", "") or "") + " " +
+                        str(attr.get("practical_note", "") or "")
+                    )
+                    desc_miles = self._extract_trail_miles(desc_text)
+                    if desc_miles is not None and desc_miles > max_trail_miles:
+                        logger.info(
+                            "  Trail miles threshold exceeded for '%s' in '%s': %.1f mi > %.1f mi",
+                            attr_name, dest_name, desc_miles, max_trail_miles,
+                        )
+                        continue  # Remove attraction entirely
+
                 if trail_like and url and not self._is_alltrails_trail_url(url):
                     lower = url.lower()
                     if not any(lower.startswith(prefix) for prefix in SAFE_FALLBACK_URL_PREFIXES):
                         self._log_rejected_url("attraction", dest_name, attr_name, url)
                         attr.pop("url", None)
+                        eligible_attractions.append(attr)
                         continue
                 cleaned = self._retain_discovered_url(
                     url,
@@ -664,6 +682,17 @@ class URLDiscoverer:
                         attr["url"] = cleaned
                     else:
                         attr.pop("url", None)
+                eligible_attractions.append(attr)
+
+            if len(eligible_attractions) != len(ai.get("top_attractions", []) or []):
+                ai["top_attractions"] = eligible_attractions
+
+            # Collect attraction URLs for PR-004: drive URL dedup
+            attraction_urls: set[str] = {
+                str(a.get("url", "") or "").strip()
+                for a in (ai.get("top_attractions", []) or [])
+                if str(a.get("url", "") or "").strip()
+            }
 
             for stop in ai.get("getting_here", {}).get("en_route_stops", []) or []:
                 stop_name = str(stop.get("name", "") or "")
@@ -719,6 +748,13 @@ class URLDiscoverer:
                     allow_alltrails=False,
                     kind="scenic drive",
                 )
+                # PR-004: reject drive URL when it duplicates an attraction URL
+                if cleaned and cleaned in attraction_urls:
+                    logger.info(
+                        "  Scenic drive URL dedup (matches attraction): '%s' in '%s': %s",
+                        drive_name, dest_name, cleaned,
+                    )
+                    cleaned = ""
                 if cleaned != url:
                     self._log_rejected_url("scenic drive", dest_name, drive_name, url)
                     if cleaned:
@@ -1598,7 +1634,14 @@ class URLDiscoverer:
             max_attempts=max_attempts,
         )
         _url_cache[cache_key] = result
-        logger.info("  resolved: %s (%s) -> %s", item_name, site_filter or "any", result or "(none)")
+        if result:
+            logger.info("  resolved: %s (%s) -> %s", item_name, site_filter or "any", result)
+        else:
+            logger.info(
+                "  rejected/no-match: %s (%s) -> (none)",
+                item_name,
+                site_filter or "any",
+            )
         return result
 
     def _search_first_strict(
@@ -1935,6 +1978,16 @@ class URLDiscoverer:
             try:
                 ok, status, text = self._fetch_page_text(url, timeout=8)
                 if not ok:
+                    final_url = getattr(self, "_fetch_final_url_cache", {}).get(url, url)
+                    if final_url != url and self._is_alltrails_trail_url(final_url):
+                        if not self._alltrails_slug_matches_item(final_url, item_name):
+                            logger.info(
+                                "AllTrails redirect entity mismatch (blocked fetch): %s -> %s (item: %s)",
+                                url,
+                                final_url,
+                                item_name,
+                            )
+                            return False
                     blocked_status = isinstance(status, int) and status in (401, 403)
                     if blocked_status and not bool(getattr(self, "_allow_blocked_alltrails", DEFAULT_ALLOW_BLOCKED_ALLTRAILS)):
                         return False
@@ -2019,6 +2072,9 @@ class URLDiscoverer:
             try:
                 out = get_text(url, timeout=timeout)
                 if isinstance(out, tuple) and len(out) == 3:
+                    final_url = str(getattr(self._url_validator, "_last_final_url", "") or "")
+                    if final_url and hasattr(self, "_fetch_final_url_cache") and final_url != url:
+                        self._fetch_final_url_cache[url] = final_url
                     return bool(out[0]), out[1], str(out[2] or "")
             except Exception:
                 pass
