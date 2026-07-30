@@ -193,6 +193,7 @@ DEFAULT_URL_POLICY_BLOCKED_CLASSES = (
     "google_maps_search",
     "google_maps_dir",
 )
+DEFAULT_URL_DOMAIN_DENYLIST: tuple[str, ...] = ()
 DEFAULT_URL_POLICY_ALLOWLIST_PATH = "docs/policy/url_policy_allowlist.txt"
 DEFAULT_URL_POLICY_AUTO_ALLOW_FROM_OUTPUT = True
 DEFAULT_URL_POLICY_OUTPUT_PATH = "output/index.html"
@@ -298,6 +299,7 @@ class URLDiscoverer:
         self._restaurant_name_denylist: frozenset[str] = frozenset(DEFAULT_RESTAURANT_NAME_DENYLIST)
         self._url_policy_mode: str = DEFAULT_URL_POLICY_MODE
         self._url_policy_blocked_classes: set[str] = set(DEFAULT_URL_POLICY_BLOCKED_CLASSES)
+        self._url_domain_denylist: frozenset[str] = frozenset(DEFAULT_URL_DOMAIN_DENYLIST)
         self._url_policy_allowlist_path: str = DEFAULT_URL_POLICY_ALLOWLIST_PATH
         self._url_policy_auto_allow_from_output: bool = DEFAULT_URL_POLICY_AUTO_ALLOW_FROM_OUTPUT
         self._url_policy_output_path: str = DEFAULT_URL_POLICY_OUTPUT_PATH
@@ -560,6 +562,14 @@ class URLDiscoverer:
                     for v in raw_restaurant_denylist
                     if str(v or "").strip()
                 )
+
+            raw_url_domain_denylist = url_cfg.get("url_domain_denylist", [])
+            if isinstance(raw_url_domain_denylist, list):
+                self._url_domain_denylist = frozenset(
+                    str(v or "").strip().lower().lstrip(".")
+                    for v in raw_url_domain_denylist
+                    if str(v or "").strip()
+                )
         except Exception:
             # Keep defaults when config loading is unavailable in tests or runtime.
             return
@@ -794,6 +804,9 @@ class URLDiscoverer:
     ) -> str:
         if not url:
             return ""
+        if self._is_url_domain_denied(url):
+            logger.info("URL domain denylist hit for %s '%s': %s", kind, item_name, url)
+            return ""
         lower = url.lower()
         allowlisted_urls = getattr(self, "_url_policy_allowlisted_urls", set())
         if url in allowlisted_urls:
@@ -855,6 +868,24 @@ class URLDiscoverer:
                 url,
             )
         return url
+
+    def _is_url_domain_denied(self, url: str) -> bool:
+        denylist = getattr(self, "_url_domain_denylist", frozenset())
+        if not denylist:
+            return False
+        host = (urlparse(url).netloc or "").strip().lower()
+        if not host:
+            return False
+        host = host.split(":", 1)[0].strip(".")
+        if host.startswith("www."):
+            host = host[4:]
+        for blocked in denylist:
+            normalized = (blocked or "").strip().lower().lstrip(".")
+            if not normalized:
+                continue
+            if host == normalized or host.endswith(f".{normalized}"):
+                return True
+        return False
 
     @staticmethod
     def _classify_url_policy_class(url: str) -> str:

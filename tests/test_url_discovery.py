@@ -1622,6 +1622,42 @@ def test_retain_url_rejects_wikipedia_wrong_entity():
     assert result == ""
 
 
+def test_retain_url_rejects_domain_in_denylist():
+    """PR-020/021/025: Known-untrusted domains are rejected before relevance checks."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_domain_denylist = frozenset({"visitpagosasprings.com", "pagosabrewing.com"})
+    for url in [
+        "https://visitpagosasprings.com/lizard-head-pass-area",
+        "https://www.visitpagosasprings.com/listing/pagosa-springs-center-for-the-arts/204/",
+        "https://www.pagosabrewing.com",
+    ]:
+        result = discoverer._retain_discovered_url(
+            url,
+            "Test Item",
+            "Pagosa Springs",
+            allow_alltrails=False,
+        )
+        assert result == "", f"Expected denylist rejection for {url}"
+
+
+def test_retain_url_rejects_google_maps_search_in_enforce_mode():
+    """PR-022: Maps-search URLs are blocked as final links in enforce mode."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_search"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+
+    result = discoverer._retain_discovered_url(
+        "https://www.google.com/maps/search/?api=1&query=San+Juan+River+Fly+Fishing+Pagosa+Springs",
+        "San Juan River Fly Fishing",
+        "Pagosa Springs",
+        allow_alltrails=False,
+        kind="attraction",
+    )
+    assert result == ""
+
+
 def test_retain_url_keeps_wikipedia_matching_entity():
     """Wikipedia link whose slug contains item tokens passes entity check and proceeds to relevance."""
     from unittest.mock import MagicMock
@@ -1736,12 +1772,12 @@ def test_is_relevant_result_rejects_alltrails_redirect_mismatch_when_blocked_fet
 # ── Epic 4: Restaurant freshness gate ────────────────────────────────────────
 
 def test_is_restaurant_ineligible_via_name_denylist():
-    """PR-026/030: Restaurant name in denylist is immediately ineligible."""
+    """PR-025/026/030: Restaurant name in denylist is immediately ineligible."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
-    discoverer._restaurant_name_denylist = frozenset({"nello's bistro", "la casa sena"})
+    discoverer._restaurant_name_denylist = frozenset({"nello's bistro", "la casa sena", "pagosa brewing"})
     assert discoverer._is_restaurant_ineligible({"name": "Nello's Bistro"}, "Pagosa Springs")
     assert discoverer._is_restaurant_ineligible({"name": "La Casa Sena"}, "Santa Fe")
-    assert not discoverer._is_restaurant_ineligible({"name": "Pagosa Brewing"}, "Pagosa Springs")
+    assert discoverer._is_restaurant_ineligible({"name": "Pagosa Brewing"}, "Pagosa Springs")
 
 
 def test_is_restaurant_ineligible_via_closure_page_text():
@@ -1788,7 +1824,7 @@ def test_is_restaurant_ineligible_skips_fallback_urls():
 def test_audit_removes_ineligible_restaurant_from_destination():
     """Full audit pass removes restaurant matching denylist from dinner_recommendations."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
-    discoverer._restaurant_name_denylist = frozenset({"nello's bistro"})
+    discoverer._restaurant_name_denylist = frozenset({"nello's bistro", "pagosa brewing"})
     discoverer._url_policy_mode = "off"
     discoverer._url_policy_blocked_classes = set()
     discoverer._url_policy_allowlisted_urls = set()
@@ -1817,7 +1853,7 @@ def test_audit_removes_ineligible_restaurant_from_destination():
     discoverer.audit_discovered_urls(trip)
     names = [r["name"] for r in trip["destinations"][0]["ai_content"]["dinner_recommendations"]]
     assert "Nello's Bistro" not in names
-    assert "Pagosa Brewing" in names
+    assert "Pagosa Brewing" not in names
 
 
 # ── Epic 3: Content deduplication ────────────────────────────────────────────
