@@ -1949,6 +1949,55 @@ def test_deduplicate_within_destination_keeps_unrelated_drives():
     assert len(dest["scenic_drives"]) == 1
 
 
+def test_deduplicate_cross_destination_drives_removes_overlap_with_other_destination_attraction():
+    """PR-008: scenic drive is removed when it duplicates another destination's attraction concept."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    trip = {
+        "destinations": [
+            {
+                "name": "St. George",
+                "ai_content": {"top_attractions": []},
+                "scenic_drives": [{"title": "Kolob Canyons Road", "category": "drive"}],
+            },
+            {
+                "name": "Zion National Park",
+                "ai_content": {"top_attractions": [{"name": "Kolob Canyons", "type": "attraction"}]},
+                "scenic_drives": [{"title": "Zion Canyon Scenic Drive", "category": "drive"}],
+            },
+        ]
+    }
+
+    discoverer._deduplicate_cross_destination_drives(trip)
+
+    st_george_titles = [d["title"] for d in trip["destinations"][0]["scenic_drives"]]
+    zion_titles = [d["title"] for d in trip["destinations"][1]["scenic_drives"]]
+    assert "Kolob Canyons Road" not in st_george_titles
+    assert "Zion Canyon Scenic Drive" in zion_titles
+
+
+def test_deduplicate_cross_destination_drives_keeps_unrelated_concepts():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    trip = {
+        "destinations": [
+            {
+                "name": "A",
+                "ai_content": {"top_attractions": [{"name": "Angels Landing", "type": "hike"}]},
+                "scenic_drives": [{"title": "Kolob Terrace Road", "category": "drive"}],
+            },
+            {
+                "name": "B",
+                "ai_content": {"top_attractions": [{"name": "Bryce Amphitheater", "type": "viewpoint"}]},
+                "scenic_drives": [{"title": "Scenic Byway 12", "category": "drive"}],
+            },
+        ]
+    }
+
+    discoverer._deduplicate_cross_destination_drives(trip)
+
+    assert len(trip["destinations"][0]["scenic_drives"]) == 1
+    assert len(trip["destinations"][1]["scenic_drives"]) == 1
+
+
 def test_trail_ai_candidate_rejected_when_filtered_constraints_fail_then_falls_back_maps():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = True
@@ -2197,6 +2246,40 @@ def test_audit_retains_verified_scenic_drive_url():
     discoverer.audit_discovered_urls(trip)
 
     assert trip["destinations"][0]["scenic_drives"][0]["url"].startswith("https://www.visitutah.com/")
+
+
+def test_audit_rejects_scenic_drive_place_page_url_without_route_intent():
+    """PR-004: scenic-drive URLs should be route-specific, not generic place pages."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="Snow Canyon State Park official visitor information.",
+    )
+
+    trip = {
+        "destinations": [
+            {
+                "name": "St. George, Utah",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [
+                    {
+                        "title": "Snow Canyon Scenic Drive",
+                        "url": "https://stateparks.utah.gov/parks/snow-canyon/",
+                    }
+                ],
+                "cultural_events": {"has_events": False, "events": []},
+            }
+        ]
+    }
+
+    discoverer.audit_discovered_urls(trip)
+
+    assert trip["destinations"][0]["scenic_drives"][0].get("url", "") == ""
 
 
 def test_audit_strips_non_alltrails_url_for_trail_like_attraction():

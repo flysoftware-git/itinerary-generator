@@ -793,6 +793,8 @@ class URLDiscoverer:
 
             self._deduplicate_within_destination(dest)
 
+        self._deduplicate_cross_destination_drives(trip)
+
     def _retain_discovered_url(
         self,
         url: str,
@@ -837,6 +839,9 @@ class URLDiscoverer:
         # that joins multiple distinct POIs with ' & '.
         if " & " in (item_name or ""):
             logger.info("Compound entity name rejected URL for %s '%s': %s", kind, item_name, url)
+            return ""
+        if kind == "scenic drive" and not self._is_route_specific_scenic_drive_url(url):
+            logger.info("Scenic-drive URL rejected (non-route target) for '%s': %s", item_name, url)
             return ""
         if allow_alltrails and self._is_alltrails_trail_url(url):
             if not self._meets_alltrails_publish_confidence(url, item_name, dest_name):
@@ -1041,6 +1046,79 @@ class URLDiscoverer:
                 kept_drives.append(drive)
 
         dest["scenic_drives"] = kept_drives
+
+    def _deduplicate_cross_destination_drives(self, trip: dict[str, Any]) -> None:
+        """Remove scenic drives that duplicate attractions in other destinations.
+
+        This prevents cross-destination concept duplication like "Kolob Canyons Road"
+        appearing as a scenic drive in one stop while "Kolob Canyons" is a primary
+        attraction in another stop.
+        """
+        destinations = trip.get("destinations", []) or []
+        if len(destinations) < 2:
+            return
+
+        attraction_token_sets_by_dest: list[list[frozenset[str]]] = []
+        for dest in destinations:
+            ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content", {}), dict) else {}
+            token_sets: list[frozenset[str]] = []
+            for attr in ai.get("top_attractions", []) or []:
+                tokens = frozenset(self._significant_tokens(str(attr.get("name", "") or "")))
+                if len(tokens) >= 2:
+                    token_sets.append(tokens)
+            attraction_token_sets_by_dest.append(token_sets)
+
+        for idx, dest in enumerate(destinations):
+            drives = dest.get("scenic_drives", []) or []
+            if not drives:
+                continue
+            kept: list[dict[str, Any]] = []
+            for drive in drives:
+                drive_tokens = frozenset(self._significant_tokens(str(drive.get("title", "") or "")))
+                if len(drive_tokens) < 2:
+                    kept.append(drive)
+                    continue
+
+                duplicate_elsewhere = False
+                for other_idx, token_sets in enumerate(attraction_token_sets_by_dest):
+                    if other_idx == idx:
+                        continue
+                    for attr_tokens in token_sets:
+                        overlap = len(drive_tokens & attr_tokens)
+                        min_len = min(len(drive_tokens), len(attr_tokens))
+                        if min_len >= 2 and overlap / min_len >= 0.8:
+                            logger.info(
+                                "  Cross-destination dedup: removing scenic drive '%s' in '%s' "
+                                "(duplicates attraction in '%s')",
+                                drive.get("title", ""),
+                                dest.get("name", ""),
+                                destinations[other_idx].get("name", ""),
+                            )
+                            duplicate_elsewhere = True
+                            break
+                    if duplicate_elsewhere:
+                        break
+
+                if not duplicate_elsewhere:
+                    kept.append(drive)
+
+            dest["scenic_drives"] = kept
+
+    @staticmethod
+    def _is_route_specific_scenic_drive_url(url: str) -> bool:
+        parsed = urlparse(url or "")
+        path_and_query = f"{parsed.path or ''} {(parsed.query or '')}".lower()
+        route_markers = (
+            "scenic-drive",
+            "scenic_drives",
+            "scenic-drives",
+            "byway",
+            "route",
+            "highway",
+            "road",
+            "drive",
+        )
+        return any(marker in path_and_query for marker in route_markers)
 
     @staticmethod
     def _log_rejected_url(kind: str, dest_name: str, item_name: str, url: str) -> None:
