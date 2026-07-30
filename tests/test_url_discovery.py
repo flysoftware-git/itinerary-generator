@@ -1562,6 +1562,147 @@ def test_filtered_alltrails_strategy_rejects_candidates_outside_constraints():
     assert url is None
 
 
+def test_filtered_alltrails_does_not_pad_with_weak_matches_when_only_one_candidate_passes():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+    discoverer._alltrails_filtered_selection_cache = {}
+    discoverer._strict_filtered_alltrails_names = ("canyon overlook trail", "sand bench trail")
+    discoverer._uninterested_keywords = ()
+    discoverer._seasonal_ski_keywords = ()
+    discoverer._ski_in_season_months = ()
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Canyon Overlook Trail",
+                "type": "hike",
+                "description": "Short canyon overlook hike.",
+            },
+            {
+                "name": "Sand Bench Trail",
+                "type": "hike",
+                "description": "Longer strenuous desert trail.",
+            },
+        ]
+    }
+
+    def fake_filtered(*, item_name, dest_name, query_variants):
+        _ = dest_name, query_variants
+        if item_name == "Canyon Overlook Trail":
+            return "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"
+        return None
+
+    with patch.object(discoverer, "_search_alltrails_for_trail_filtered", side_effect=fake_filtered):
+        with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None):
+            with patch.object(discoverer, "_meets_alltrails_publish_confidence", return_value=True):
+                discoverer._discover_attractions(ai, "Zion National Park", "zion")
+
+    first_url = ai["top_attractions"][0]["url"]
+    second_url = ai["top_attractions"][1]["url"]
+
+    assert first_url == "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"
+    assert second_url.startswith("https://www.google.com/maps/search/?api=1&query=")
+    assert "alltrails.com/trail/us/utah/sand-bench-trail" not in second_url
+
+
+def test_load_interest_filters_applies_rating_threshold_and_boost_controls(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+url_discovery:
+  alltrails_rating_min: 4.9
+  alltrails_rating_min_votes: 1000
+  alltrails_rating_boost: 25
+  restaurant_rating_min: 4.8
+  restaurant_rating_min_votes: 500
+  restaurant_rating_boost: 20
+""".strip(),
+        encoding="utf-8",
+    )
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_rating_min = 4.5
+    discoverer._alltrails_rating_min_votes = 200
+    discoverer._alltrails_rating_boost = 8
+    discoverer._restaurant_rating_min = 4.4
+    discoverer._restaurant_rating_min_votes = 100
+    discoverer._restaurant_rating_boost = 6
+
+    discoverer._load_interest_filters(str(config_file))
+
+    assert discoverer._alltrails_rating_min == 4.9
+    assert discoverer._alltrails_rating_min_votes == 1000
+    assert discoverer._alltrails_rating_boost == 25
+    assert discoverer._restaurant_rating_min == 4.8
+    assert discoverer._restaurant_rating_min_votes == 500
+    assert discoverer._restaurant_rating_boost == 20
+
+    item = {
+        "url": "https://www.alltrails.com/trail/us/utah/example-trail",
+        "name": "Example Trail",
+        "snippet": "4.9 stars 1200 reviews scenic trail",
+    }
+    strict_score = discoverer._score_candidate_result(
+        item,
+        "Example Trail",
+        "Zion National Park",
+        specific=True,
+        site_filter="alltrails.com",
+    )
+
+    discoverer._alltrails_rating_min = 5.0
+    discoverer._alltrails_rating_min_votes = 5000
+    discoverer._alltrails_rating_boost = 25
+    tighter_score = discoverer._score_candidate_result(
+        item,
+        "Example Trail",
+        "Zion National Park",
+        specific=True,
+        site_filter="alltrails.com",
+    )
+
+    assert strict_score > tighter_score
+
+
+def test_audit_fail_closed_removes_named_entity_url_when_policy_blocks_only_candidate():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_search"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+    discoverer._alltrails_slug_denylist = frozenset()
+    discoverer._max_trail_miles = 10.0
+    discoverer._allow_blocked_alltrails = True
+    discoverer._alltrails_min_confidence_for_publish = "low"
+
+    trip = {
+        "destinations": [
+            {
+                "name": "Capitol Reef National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Capitol Reef Cafe",
+                            "type": "attraction",
+                            "description": "Popular stop.",
+                            "url": "https://www.google.com/maps/search/?api=1&query=Capitol+Reef+Cafe",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"has_events": False, "events": []},
+            }
+        ]
+    }
+
+    discoverer.audit_discovered_urls(trip)
+
+    attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
+    assert attraction.get("url", "") == ""
+
+
 def test_load_url_policy_allowlist_merges_manual_and_output_urls(tmp_path):
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
 
@@ -1656,6 +1797,111 @@ def test_retain_url_rejects_google_maps_search_in_enforce_mode():
         kind="attraction",
     )
     assert result == ""
+
+
+def test_retain_url_rejects_google_maps_search_for_named_restaurant_in_enforce_mode():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_search"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+
+    result = discoverer._retain_discovered_url(
+        "https://www.google.com/maps/search/?api=1&query=Capitol+Reef+Cafe",
+        "Capitol Reef Cafe",
+        "Capitol Reef National Park",
+        allow_alltrails=False,
+        kind="restaurant",
+    )
+    assert result == ""
+
+
+def test_retain_url_rejects_google_maps_search_for_named_waypoint_in_enforce_mode():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_search"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+
+    result = discoverer._retain_discovered_url(
+        "https://www.google.com/maps/search/?api=1&query=Wilson+Arch+Moab",
+        "Wilson Arch",
+        "Moab",
+        allow_alltrails=False,
+        kind="en-route stop",
+    )
+    assert result == ""
+
+
+def test_retain_url_rejects_google_maps_dir_in_enforce_mode():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_dir"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+
+    result = discoverer._retain_discovered_url(
+        "https://www.google.com/maps/dir/Capitol+Reef/Capitol+Reef+Cafe",
+        "Capitol Reef Cafe",
+        "Capitol Reef National Park",
+        allow_alltrails=False,
+        kind="restaurant",
+    )
+    assert result == ""
+
+
+def test_retain_url_rejects_google_search_in_enforce_mode():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_search"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+
+    result = discoverer._retain_discovered_url(
+        "https://www.google.com/search?q=Capitol+Reef+Cafe",
+        "Capitol Reef Cafe",
+        "Capitol Reef National Park",
+        allow_alltrails=False,
+        kind="restaurant",
+    )
+    assert result == ""
+
+
+def test_retain_url_rejects_social_media_in_enforce_mode():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"social_media"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+    discoverer._is_relevant_result = lambda *_args, **_kwargs: True
+
+    result = discoverer._retain_discovered_url(
+        "https://www.facebook.com/pagosacenterforthearts",
+        "Pagosa Springs Center for the Arts",
+        "Pagosa Springs",
+        allow_alltrails=False,
+        kind="attraction",
+    )
+    assert result == ""
+
+
+def test_retain_url_keeps_blocked_class_in_monitor_mode():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "monitor"
+    discoverer._url_policy_blocked_classes = {"social_media"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+    discoverer._is_relevant_result = lambda *_args, **_kwargs: True
+
+    url = "https://www.instagram.com/example-trail/"
+    result = discoverer._retain_discovered_url(
+        url,
+        "Example Trail",
+        "Telluride",
+        allow_alltrails=False,
+        kind="attraction",
+    )
+    assert result == url
 
 
 def test_retain_url_keeps_wikipedia_matching_entity():

@@ -467,6 +467,30 @@ def test_normalize_restaurants_filters_chain_and_fast_food() -> None:
     assert "The Painted Pony" in names
 
 
+def test_normalize_restaurants_filters_ai_closure_signal() -> None:
+    g = _gen()
+    restaurants = [
+        {
+            "name": "Closed Bistro",
+            "cuisine": "American",
+            "price_range": "$$",
+            "description": "A neighborhood favorite that is permanently closed.",
+        },
+        {
+            "name": "Open Kitchen",
+            "cuisine": "Contemporary",
+            "price_range": "$$$",
+            "description": "Popular dinner spot with a seasonal menu.",
+        },
+    ]
+
+    normalized = g._normalize_restaurants(restaurants)
+    names = [r.get("name") for r in normalized]
+
+    assert "Closed Bistro" not in names
+    assert "Open Kitchen" in names
+
+
 def test_normalize_what_to_know_always_populates_required_fields() -> None:
     g = _gen()
     payload = {
@@ -490,6 +514,22 @@ def test_normalize_what_to_know_always_populates_required_fields() -> None:
         assert key in normalized
         assert isinstance(normalized[key], str)
         assert normalized[key].strip() != ""
+
+
+def test_normalize_what_to_know_does_not_require_or_emit_legacy_weather_photo_fields() -> None:
+    g = _gen()
+    payload = {
+        "summary": "Expect fast weather swings.",
+        "local_customs": "Respect shuttle lines.",
+    }
+    dest = {"name": "Zion National Park", "dates": "October 7-9, 2026"}
+
+    normalized = g._normalize_what_to_know(payload, dest)
+
+    assert "typical_weather_patterns" not in normalized
+    assert "photography_tips" not in normalized
+    assert normalized["summary"] == "Expect fast weather swings."
+    assert normalized["local_customs"] == "Respect shuttle lines."
 
 
 def test_render_prompt_template_replaces_known_tokens_only() -> None:

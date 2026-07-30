@@ -188,6 +188,58 @@ def test_build_map_markers_includes_sequential_stop_indices() -> None:
     assert markers[-1]["mo"] == "RET"
 
 
+def test_assembled_html_preserves_marker_date_context_alongside_stop_indices() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {
+        "trip": {
+            "title": "Test Trip",
+            "theme_color": "#C0623E",
+            "departure": "Las Vegas",
+            "departure_lat": 36.17,
+            "departure_lng": -115.14,
+            "return": "Salt Lake City",
+            "return_lat": 40.76,
+            "return_lng": -111.89,
+        },
+        "_meta": {
+            "generator_version": "9.9.9",
+            "template_version": "2.5",
+            "generated_at_utc": "2026-07-26T17:41:23+00:00",
+            "llm": {"provider": "openai", "model": "test", "usage": {"models": [], "total_estimated_cost_usd": 0.0}},
+        },
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "dates": "October 7-9, 2026",
+                "lat": 37.3,
+                "lng": -113.0,
+                "images": [],
+                "planning_links": [],
+                "ai_content": {"top_attractions": [], "getting_here": {}, "possible_daily_schedule": [], "dinner_recommendations": []},
+                "what_to_know": {
+                    "summary": "Summary.",
+                    "local_customs": "Customs.",
+                    "best_times_of_day": "Morning.",
+                    "transportation_quirks": "Transit.",
+                    "safety_considerations": "Safety.",
+                    "crowd_patterns": "Crowds.",
+                    "local_etiquette": "Etiquette.",
+                },
+                "cultural_events": {"has_events": False, "events": []},
+                "scenic_drives": [],
+            }
+        ],
+    }
+
+    html = assembler.assemble(trip)
+
+    assert '"stop_index": 1' in html
+    assert '"mo": "Oct"' in html
+    assert '"dy": "7"' in html
+    assert "var dateLabel = ((s.mo || '') + (s.dy ? (' ' + s.dy) : '')).trim();" in html
+
+
 def test_build_getting_there_renders_departure_route_options() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {
