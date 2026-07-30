@@ -1135,7 +1135,7 @@ class HTMLAssembler:
         version = meta.get("generator_version", "")
         broken_link_issue_link = (
             "https://github.com/flysoftware-git/road-trip-generator/issues/new"
-            "?template=broken-link-report.yml"
+            "?template=broken-link-report.yml&labels=bug"
         )
         feedback_issue_link = (
             "https://github.com/flysoftware-git/road-trip-generator/issues/new"

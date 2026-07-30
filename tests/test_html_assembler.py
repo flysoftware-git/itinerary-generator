@@ -133,7 +133,7 @@ def test_footer_issue_guidance_is_split_and_template_specific() -> None:
     html = assembler.assemble(trip)
 
     assert "Issue reporting:" in html
-    assert "?template=broken-link-report.yml" in html
+    assert "?template=broken-link-report.yml&labels=bug" in html
     assert "?template=itinerary-feedback.yml" in html
 
 
