@@ -216,14 +216,14 @@ class HTMLAssembler:
                 "name": str(trip_meta.get("departure"))[:24],
             })
 
-        for d in destinations:
+        for i, d in enumerate(destinations):
             dates = d.get("dates", "")
             # Extract month abbrev and start day from e.g. "October 7-9, 2026"
             mo_match = re.match(r'([A-Za-z]+)\s+(\d+)', dates)
             mo = mo_match.group(1)[:3] if mo_match else ""
             dy = mo_match.group(2) if mo_match else ""
             short = d["name"].replace(" National Park", "").replace(" State Park", "")
-            result.append({"c": [d.get("lat", 0), d.get("lng", 0)], "mo": mo, "dy": dy, "name": short})
+            result.append({"c": [d.get("lat", 0), d.get("lng", 0)], "mo": mo, "dy": dy, "name": short, "idx": i + 1})
 
         if trip_meta.get("return") and trip_meta.get("return_lat") and trip_meta.get("return_lng"):
             result.append({
@@ -769,6 +769,9 @@ class HTMLAssembler:
             category = scenic_badges.get(drive.get("category", "drive"), "Scenic Drive")
             duration = drive.get("distance_or_duration", "")
             description = drive.get("description", "")
+            # PR-003: card shows first-sentence teaser; popup shows full description via DRIVE_DESCRIPTIONS
+            first_sentence = description.split(".")[0].strip()
+            card_desc = (first_sentence + ".") if first_sentence and not first_sentence.endswith((".", "!", "?")) else first_sentence
             duration_html = (
                 f'<span class="badge badge-duration">{html_escape.escape(duration)}</span>'
                 if duration else ""
@@ -788,7 +791,7 @@ class HTMLAssembler:
                 f'{duration_html}'
                 '</div>'
                 '</div>'
-                f'<span class="attr-desc">{html_escape.escape(str(description or ""))}</span>'
+                f'<span class="attr-desc">{html_escape.escape(str(card_desc or ""))}</span>'
                 '</div>\n'
             )
         html += '</div>\n</div>\n'

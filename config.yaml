@@ -190,6 +190,7 @@ url_discovery:
   restaurant_name_denylist:
     - "Nello's Bistro"
     - "La Casa Sena"
+  max_scenic_drive_miles: 150
   uninterested_attraction_keywords:
     - "golf course"
     - "country club"

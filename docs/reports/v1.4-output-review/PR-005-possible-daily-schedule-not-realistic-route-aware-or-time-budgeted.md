@@ -14,7 +14,7 @@ Daily schedules across destinations can be implausible and disconnected from rea
 ## Expected Behavior
 
 - Day 1 for each destination should be treated as arrival-constrained.
-- For the first destination in the trip, schedule should reserve Day 1 for travel/arrival and orientation only (no major activity block).
+- For the first destination in the trip, schedule should reserve Day 1 morning for travel/arrival and orientation only (no major activity block).
 - Daily plans should fit a configurable time budget (for example: hours-available-per-day = 5).
 - Activity sequencing should be route-aware and include realistic transitions, meal windows, and parking/transport buffers.
 - Long-duration activities (for example 4-5 hour strenuous hikes) should not be combined with additional major blocks when that exceeds the day budget.

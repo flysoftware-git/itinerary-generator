@@ -1,6 +1,6 @@
 # PR-021: Pagosa Springs Center for the Arts uses hallucinated/untrusted listing link and should be rejected
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:high`, `area:url-validation`, `area:url-discovery`, `area:hallucination-risk`, `area:content-linking`, `area:html-output`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:high`, `area:url-validation`, `area:url-discovery`, `area:hallucination-risk`, `area:content-linking`, `area:html-output`
 
 Manifest: `trip_manifest.yaml`
 Output Artifact: `output/index.html`

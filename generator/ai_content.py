@@ -122,6 +122,109 @@ class AIContentGenerator:
         """
         self._deduplicate_cross_section_tips(trip)
         self._deduplicate_cross_destination_what_to_know(trip)
+        self._filter_oversized_scenic_drives(trip)
+        self._filter_departure_aligned_drives(trip)
+
+    def _filter_oversized_scenic_drives(self, trip: dict[str, Any]) -> None:
+        """Remove scenic drive entries that exceed daily time budget (PR-024).
+
+        Drives labeled 'full day' or 'all day' are removed unless they are the
+        only drive for the destination. A configurable mile cap is also applied.
+        """
+        import re as _re
+        try:
+            cfg = self._config.get("url_discovery", {}) or {}
+            max_miles = float(cfg.get("max_scenic_drive_miles", 150) or 0)
+        except (TypeError, ValueError):
+            max_miles = 150.0
+
+        full_day_keywords = ("full day", "all day", "full-day", "all-day")
+
+        for dest in trip.get("destinations", []):
+            drives = dest.get("scenic_drives", []) or []
+            if not drives:
+                continue
+            eligible = []
+            for drive in drives:
+                dist = str(drive.get("distance_or_duration", "") or "").lower()
+                if any(kw in dist for kw in full_day_keywords):
+                    logger.info(
+                        "  Oversized drive filter: removed '%s' in '%s' (full-day keyword)",
+                        drive.get("title", ""), dest.get("name", ""),
+                    )
+                    continue
+                if max_miles > 0:
+                    m = _re.search(r"(\d+(?:\.\d+)?)[\s-]*(miles|mi)", dist)
+                    if m and float(m.group(1)) > max_miles:
+                        logger.info(
+                            "  Oversized drive filter: removed '%s' in '%s' (%.0f mi > %.0f mi)",
+                            drive.get("title", ""), dest.get("name", ""),
+                            float(m.group(1)), max_miles,
+                        )
+                        continue
+                eligible.append(drive)
+            dest["scenic_drives"] = eligible
+
+    def _filter_departure_aligned_drives(self, trip: dict[str, Any]) -> None:
+        """Remove one-way scenic drives from the last destination when they align
+        with the return route rather than being in-stay activities (PR-029)."""
+        destinations = trip.get("destinations", [])
+        if not destinations:
+            return
+        last_dest = destinations[-1]
+        return_name = str(trip.get("trip", {}).get("return", "") or "").strip()
+        if not return_name:
+            return
+
+        return_tokens = {
+            t for t in re.findall(r"[a-z]{4,}", return_name.lower())
+            if t not in {"national", "state", "city", "town"}
+        }
+        if not return_tokens:
+            return
+
+        drives = last_dest.get("scenic_drives", []) or []
+        eligible = []
+        for drive in drives:
+            dist = str(drive.get("distance_or_duration", "") or "").lower()
+            is_one_way = "one-way" in dist or "one way" in dist
+            if not is_one_way:
+                eligible.append(drive)
+                continue
+            title_and_desc = (
+                str(drive.get("title", "") or "") + " " +
+                str(drive.get("description", "") or "")
+            ).lower()
+            if any(token in title_and_desc for token in return_tokens):
+                logger.info(
+                    "  Departure-aligned drive removed: '%s' in '%s' (one-way toward '%s')",
+                    drive.get("title", ""), last_dest.get("name", ""), return_name,
+                )
+            else:
+                eligible.append(drive)
+        last_dest["scenic_drives"] = eligible
+
+    @staticmethod
+    def _cap_period_sentences(
+        days: list[dict[str, Any]],
+        max_sentences: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Truncate each schedule period to at most max_sentences sentences (PR-005).
+
+        Prevents over-packed AI periods from surfacing as unrealistic activity lists.
+        """
+        import re as _re
+        if max_sentences <= 0:
+            return days
+        for day in days:
+            for period in day.get("periods", []) or []:
+                summary = str(period.get("summary", "") or "").strip()
+                if not summary:
+                    continue
+                sentences = _re.split(r"(?<=[.!?])\s+", summary)
+                if len(sentences) > max_sentences:
+                    period["summary"] = " ".join(sentences[:max_sentences]).strip()
+        return days
 
     def _deduplicate_cross_section_tips(self, trip: dict[str, Any]) -> None:
         """Remove cultural_events.local_tip when it duplicates what_to_know field text."""
@@ -766,6 +869,7 @@ class AIContentGenerator:
             day_count = self._infer_day_count(dates)
             normalized_days = self._expand_days(normalized_days, day_count)
             normalized_days = self._ensure_day_period_coverage(normalized_days, restaurant_names)
+            normalized_days = self._cap_period_sentences(normalized_days)
             return self._inject_travel_realism(
                 normalized_days,
                 getting_here,
