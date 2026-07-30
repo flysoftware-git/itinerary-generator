@@ -1,5 +1,16 @@
 # Road Trip Itinerary Generator — Requirements Document
-**Version 0.29 · July 29, 2026**
+**Version 0.30 · July 29, 2026**
+
+### Changelog for v0.30
+| # | Section | Change |
+|---|---|---|
+| 1 | §4, §7 | Added final-leg rendering requirement: the last destination must include a dedicated `Getting There` block for return-route logistics (not just schedule prose) |
+| 2 | §4 | Departure-aligned one-way scenic drives are no longer dropped; they must be reclassified into `ai_content.getting_there.route_options` for final-leg presentation |
+| 3 | §7 | Route-map marker payload now requires explicit stop-order metadata (`stop_index`) aligned with numbered destination tabs; marker rendering must preserve date context while showing stop numbers |
+| 4 | §5 | Added URL domain denylist requirement (`url_discovery.url_domain_denylist`) for config-driven hard rejection of known-untrusted domains prior to relevance scoring |
+| 5 | §5 | Scenic-drive links must be route-intent specific; generic place pages that do not indicate route/byway/drive intent are not acceptable as scenic-drive `More Info` links |
+| 6 | §5 | Added cross-destination scenic-drive dedup requirement: scenic drives that duplicate another destination's primary attraction concept must be removed from the conflicting destination |
+| 7 | §7 | Footer issue/reporting guidance must render on a second line and provide distinct links for broken-link reports vs itinerary-feedback reports |
 
 ### Changelog for v0.29
 | # | Section | Change |

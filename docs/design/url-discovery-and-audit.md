@@ -52,6 +52,8 @@ En-route stop:
 Scenic drive/day-trip:
 - AllTrails explicitly disallowed at discovery time (`allow_alltrails=False`).
 - URL is optional; stored as empty if no verified match.
+- Scenic-drive URLs must indicate route intent (for example byway/route/drive/road
+  markers) and are rejected when they look like generic place pages.
 
 Event:
 - Cleaned in audit; AllTrails disallowed.
@@ -114,6 +116,9 @@ Retention path:
 - Enforce category policy (`allow_alltrails=False` where required).
 - Re-check relevance with destination/item context.
 - Apply URL class blocklist (see below).
+- Apply domain hard-rejection (`url_domain_denylist`) before relevance scoring.
+- Reconcile cross-destination scenic-drive duplication against attraction
+	ownership in other destinations.
 
 Logging:
 - Policy-driven AllTrails rejections for scenic/en-route/restaurant/event are info-level.
@@ -185,14 +190,37 @@ Consequences:
 
 ## URL Policy Rollout Mechanism
 - New installs default to `monitor` mode; `enforce` is the production target.
-- Baseline grandfathering: on startup, `_load_url_policy_allowlist` reads the prior
-  `output/index.html` (configurable path) and extracts all absolute `href` URLs into an
-  in-memory allowlist. Any URL present in the prior output passes the policy gate
-  unconditionally, preventing regressions on already-validated links.
+- Baseline grandfathering is optional: `_load_url_policy_allowlist` can read prior
+  `output/index.html` (configurable path) and extract absolute `href` URLs into an
+  in-memory allowlist when auto-seeding is enabled.
 - Manual allowlist entries (one URL per line, `#` comments) are merged with the
   auto-seeded baseline; manual entries are optional when auto-seeding is enabled.
+- Current repository policy sets auto-seeding off by default to avoid preserving
+  stale links that would otherwise be rejected by current trust gates.
 - A `url_diff_report.json` and `url_diff_report.md` are written each run summarizing
   kept, added, and removed links relative to the prior output baseline.
+
+## Domain Denylist
+Config key: `url_discovery.url_domain_denylist`
+
+Behavior:
+- Hostnames in this list are rejected in `_retain_discovered_url` before any
+  relevance scoring.
+- Matching is normalized and supports exact host and subdomain suffix match.
+
+Use case:
+- Fast fail for known-untrusted or hallucination-prone domains.
+
+## Cross-Destination Scenic-Drive Dedup
+Audit pass includes `_deduplicate_cross_destination_drives`.
+
+Behavior:
+- Build significant-token sets for `top_attractions` per destination.
+- Remove scenic drives whose title token set substantially overlaps an attraction
+  token set in a different destination.
+
+Design intent:
+- Prevent duplicate concept ownership conflicts across adjacent stops.
 
 ## Maps Fallback Query Composition
 Fallback maps queries avoid contradictory location suffixes.

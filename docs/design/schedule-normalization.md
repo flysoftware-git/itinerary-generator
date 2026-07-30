@@ -79,7 +79,22 @@ Intermediate destinations:
 
 Design intent:
 - Prevent unrealistic booking of activities in boundary windows where travel
-	logistics dominate.
+  logistics dominate.
+
+## Departure-Aligned Scenic Drive Reclassification
+`normalize_trip_content` includes a final-leg route pass that inspects scenic
+drives on the last destination.
+
+Behavior:
+- One-way scenic drives aligned with return-route tokens are moved out of
+  `scenic_drives` and into `ai_content.getting_there.route_options`.
+- Non-aligned or round-trip scenic drives remain in `scenic_drives`.
+- When moved options exist and no return summary is present, a default
+  departure-leg summary is injected.
+
+Design intent:
+- Preserve useful departure-route suggestions while preventing them from being
+  rendered as in-stay activities.
 
 ## Interaction With Other Normalizers
 Schedule normalization runs after:

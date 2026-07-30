@@ -50,11 +50,12 @@ Each destination section is assembled in fixed order:
 3. Image gallery
 4. Expected environment card
 5. Getting Here card (with en-route stops)
-6. Top Attractions card (plus scenic drives)
-7. Possible Daily Schedule card
-8. Cultural Events card
-9. Dinner Recommendations card
-10. Optional debug block (config controlled)
+6. Getting There card (last destination only; return-leg logistics)
+7. Top Attractions card (plus scenic drives)
+8. Possible Daily Schedule card
+9. Cultural Events card
+10. Dinner Recommendations card
+11. Optional debug block (config controlled)
 
 ## Link Normalization and Fallbacks
 All external links are normalized by `_normalize_external_url`:
@@ -71,8 +72,13 @@ Fallback behavior:
 ## Map and Route Artifacts
 Assembly generates:
 - Full-route Google Maps URL for nav button
-- Leaflet marker payload with departure/return support
+- Leaflet marker payload with departure/return support and explicit stop order
 - Per-leg Getting Here route URL with waypoint stops
+
+Marker payload fields now include:
+- `idx`: destination ordinal shown in marker/popup
+- `stop_index`: explicit stable stop-order index aligned to tab labels
+- `mo`/`dy`: date context retained for scanability
 
 ## Scenic Drive Modal Payload
 `_build_drive_descriptions` builds `var DRIVE_DESCRIPTIONS = {...}` keyed by raw
@@ -82,6 +88,23 @@ drive title. Entries include:
 
 Descriptions are sanitized to remove metadata/attribution leakage and template
 artifacts before embedding.
+
+## Final-Leg Departure Modeling
+For the last destination only, assembly renders a dedicated `Getting There` card
+using `ai_content.getting_there` fields:
+- `route_summary`
+- `distance_miles` / `drive_time` (optional)
+- `route_options` (optional departure-route items)
+
+This keeps return-route logistics distinct from in-stay attractions and schedule
+content.
+
+## Footer Reporting Guidance
+Generator footer output now uses two lines:
+- Line 1: generator/version/timestamp signature
+- Line 2: issue-reporting guidance with distinct links for:
+  - broken-link report template
+  - itinerary feedback template
 
 ## Image Handling in HTML
 Images are referenced as portable relative paths (`./images/<file>`), not absolute
