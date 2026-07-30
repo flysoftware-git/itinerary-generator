@@ -238,6 +238,9 @@ def test_assembled_html_preserves_marker_date_context_alongside_stop_indices() -
     assert '"mo": "Oct"' in html
     assert '"dy": "7"' in html
     assert "var dateLabel = ((s.mo || '') + (s.dy ? (' ' + s.dy) : '')).trim();" in html
+    assert "var markerDateSecondary = dateLabel" in html
+    assert "width:34px;height:34px" in html
+    assert "iconSize:[34,62],iconAnchor:[17,17],popupAnchor:[0,-22]" in html
 
 
 def test_build_getting_there_renders_departure_route_options() -> None:
