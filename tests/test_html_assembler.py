@@ -47,6 +47,27 @@ def test_drive_descriptions_omit_popup_url_when_unsafe() -> None:
     assert "url" not in payload["Unsafe Drive"]
 
 
+def test_scenic_drive_card_uses_teaser_while_popup_keeps_full_description() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    drives = [
+        {
+            "title": "Zion Canyon Scenic Drive",
+            "category": "drive",
+            "distance_or_duration": "54 mi",
+            "description": "First sentence teaser. Second sentence detailed popup guidance.",
+        }
+    ]
+
+    html = assembler._build_attractions({"top_attractions": []}, drives=drives, dest_name="Zion National Park")
+    payload = assembler._build_drive_descriptions([{"scenic_drives": drives}])
+
+    assert "First sentence teaser." in html
+    assert "Second sentence detailed popup guidance." not in html
+    assert payload["Zion Canyon Scenic Drive"]["description"] == (
+        "First sentence teaser. Second sentence detailed popup guidance."
+    )
+
+
 def test_assembled_html_omits_attribution_footer(tmp_path) -> None:
     assembler = HTMLAssembler(config_path="config.yaml")
     trip = {
