@@ -2122,6 +2122,12 @@ def test_audit_removes_ineligible_restaurant_from_destination():
     names = [r["name"] for r in trip["destinations"][0]["ai_content"]["dinner_recommendations"]]
     assert "Nello's Bistro" not in names
     assert "Pagosa Brewing" not in names
+    decisions = trip["destinations"][0]["_registry_decisions"]
+    rejected_names = [entry["display_name"] for entry in decisions]
+    assert "Nello's Bistro" in rejected_names
+    assert "Pagosa Brewing" in rejected_names
+    assert all(entry["validation_status"] == "rejected" for entry in decisions)
+    assert all("entity_removed" in entry["rejection_reasons"] for entry in decisions)
 
 
 # ── Epic 3: Content deduplication ────────────────────────────────────────────

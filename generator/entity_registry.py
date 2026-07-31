@@ -87,6 +87,64 @@ def _clean_payload(payload: dict[str, Any], rendered_url: str) -> dict[str, Any]
     return cleaned
 
 
+def _append_registry_decision_entities(
+    *,
+    dest: dict[str, Any],
+    destination_id: str,
+    entities: list[dict[str, Any]],
+    reports: list[dict[str, Any]],
+) -> None:
+    decisions = dest.get("_registry_decisions", []) if isinstance(dest.get("_registry_decisions", []), list) else []
+    if not decisions:
+        return
+
+    report = _report_for(reports, destination_id)
+    for ordering_hint, decision in enumerate(decisions):
+        if not isinstance(decision, dict):
+            continue
+        display_name = str(decision.get("display_name", "") or "")
+        entity_class = str(decision.get("entity_class", "generic") or "generic")
+        normalized_name = _normalized_name(display_name)
+        entity_id = str(decision.get("entity_id", "") or f"{destination_id}:{entity_class}:{normalized_name or ordering_hint}:decision")
+        validation_status = str(decision.get("validation_status", "rejected") or "rejected")
+        rejection_reasons = [
+            str(reason or "")
+            for reason in (decision.get("rejection_reasons", []) or [])
+            if str(reason or "")
+        ]
+        record = {
+            "entity_id": entity_id,
+            "destination_id": destination_id,
+            "entity_class": entity_class,
+            "ownership_type": str(decision.get("ownership_type", "destination") or "destination"),
+            "source_stage": str(decision.get("source_stage", "reconciliation") or "reconciliation"),
+            "display_name": display_name,
+            "normalized_name": normalized_name,
+            "description": str(decision.get("description", "") or ""),
+            "raw_payload": deepcopy(decision.get("raw_payload", {})) if isinstance(decision.get("raw_payload", {}), dict) else {},
+            "confidence": str(decision.get("confidence", "high") or "high"),
+            "validation_status": validation_status,
+            "rejection_reasons": rejection_reasons,
+            "rendered_url": str(decision.get("rendered_url", "") or ""),
+            "candidate_urls": list(decision.get("candidate_urls", []) or []) if isinstance(decision.get("candidate_urls", []), list) else [],
+            "section_target": str(decision.get("section_target", "") or ""),
+            "ordering_hint": int(decision.get("ordering_hint", ordering_hint) or ordering_hint),
+            "shared_group_id": decision.get("shared_group_id"),
+            "metadata": deepcopy(decision.get("metadata", {})) if isinstance(decision.get("metadata", {}), dict) else {"removed": True},
+        }
+        entities.append(record)
+
+        if validation_status == "quarantined":
+            report["quarantined"].append(entity_id)
+        elif validation_status in _ACCEPTED_STATUSES:
+            report["accepted"].append(entity_id)
+        else:
+            report["rejected"].append({
+                "entity_id": entity_id,
+                "reasons": rejection_reasons,
+            })
+
+
 def _section_items(dest: dict[str, Any], section_target: str) -> list[dict[str, Any]]:
     ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content", {}), dict) else {}
     if section_target == "top_attractions":
@@ -178,6 +236,13 @@ def build_entity_registry(trip: dict[str, Any]) -> dict[str, Any]:
                         "entity_id": entity_id,
                         "reasons": rejection_reasons,
                     })
+
+        _append_registry_decision_entities(
+            dest=dest,
+            destination_id=destination_id,
+            entities=entities,
+            reports=reports,
+        )
 
     return {
         "entities": entities,

@@ -670,6 +670,14 @@ class URLDiscoverer:
                             "  Trail miles threshold exceeded for '%s' in '%s': %.1f mi > %.1f mi",
                             attr_name, dest_name, desc_miles, max_trail_miles,
                         )
+                        self._record_registry_entity_removal(
+                            dest,
+                            section_target="top_attractions",
+                            entity_class="trail" if trail_like else "attraction",
+                            display_name=attr_name,
+                            description=desc_text,
+                            rejection_reason="threshold_removed",
+                        )
                         continue  # Remove attraction entirely
 
                 if trail_like and url and not self._is_alltrails_trail_url(url):
@@ -747,6 +755,14 @@ class URLDiscoverer:
                     logger.info(
                         "  Restaurant freshness gate removed '%s' in '%s'",
                         rest_name, dest_name,
+                    )
+                    self._record_registry_entity_removal(
+                        dest,
+                        section_target="dinner_recommendations",
+                        entity_class="restaurant",
+                        display_name=rest_name,
+                        description=str(rest.get("description", "") or ""),
+                        rejection_reason="entity_removed",
                     )
                     continue
                 eligible_restaurants.append(rest)
@@ -1175,6 +1191,29 @@ class URLDiscoverer:
                 existing.append(rejection_reason)
             registry_meta["rejection_reasons"] = existing
         item["_registry"] = registry_meta
+
+    @staticmethod
+    def _record_registry_entity_removal(
+        dest: dict[str, Any],
+        *,
+        section_target: str,
+        entity_class: str,
+        display_name: str,
+        rejection_reason: str,
+        description: str = "",
+    ) -> None:
+        decisions = dest.get("_registry_decisions", []) if isinstance(dest.get("_registry_decisions", []), list) else []
+        decisions.append({
+            "entity_class": entity_class,
+            "display_name": display_name,
+            "description": description,
+            "section_target": section_target,
+            "validation_status": "rejected",
+            "rejection_reasons": [rejection_reason],
+            "rendered_url": "",
+            "metadata": {"removed": True},
+        })
+        dest["_registry_decisions"] = decisions
 
     # ── Attractions ──────────────────────────────────────────────────────────
 

@@ -94,3 +94,41 @@ def test_build_entity_registry_tracks_reassignment_and_rejection_directives() ->
     assert report["reassigned"][0]["to"] == "getting_there.route_options"
     assert report["rejected"][0]["reasons"] == ["url_rejected"]
     assert entities["Ghost Ranch Trail"]["rendered_url"] == ""
+
+
+def test_build_entity_registry_includes_removed_entity_decisions() -> None:
+    trip = {
+        "destinations": [
+            {
+                "id": "pagosa",
+                "name": "Pagosa Springs",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "getting_there": {"route_options": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+                "_registry_decisions": [
+                    {
+                        "entity_class": "restaurant",
+                        "display_name": "Nello's Bistro",
+                        "section_target": "dinner_recommendations",
+                        "validation_status": "rejected",
+                        "rejection_reasons": ["entity_removed"],
+                        "rendered_url": "",
+                        "metadata": {"removed": True},
+                    }
+                ],
+            }
+        ]
+    }
+
+    registry = build_entity_registry(trip)
+    report = registry["reports"][0]
+    entities = {entity["display_name"]: entity for entity in registry["entities"]}
+
+    assert registry["destination_view"]["pagosa"]["dinner_recommendations"] == []
+    assert report["rejected"][0]["reasons"] == ["entity_removed"]
+    assert entities["Nello's Bistro"]["metadata"]["removed"] is True
