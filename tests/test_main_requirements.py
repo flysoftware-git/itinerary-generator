@@ -127,3 +127,57 @@ def test_filter_destinations_applies_destination_filter_before_first_destination
     main_mod._filter_destinations(trip, ("zion", "bryce"), first_destination_only=True)
 
     assert [d["id"] for d in trip["destinations"]] == ["zion"]
+
+
+def test_registry_roundtrip_preserves_destination_shaped_sections() -> None:
+    trip = {
+        "trip": {"return": "Albuquerque, NM"},
+        "destinations": [
+            {
+                "id": "santafe",
+                "name": "Santa Fe",
+                "ai_content": {
+                    "top_attractions": [
+                        {"name": "Canyon Road", "type": "attraction", "url": "https://example.com/canyon-road"},
+                        {"name": "Dale Ball Trail", "type": "hike", "url": ""},
+                    ],
+                    "getting_here": {
+                        "en_route_stops": [
+                            {"name": "Madrid", "url": "https://example.com/madrid"},
+                        ],
+                    },
+                    "getting_there": {
+                        "route_summary": "Departure leg toward Albuquerque, NM.",
+                        "route_options": [
+                            {"title": "Turquoise Trail Scenic Byway", "description": "Historic route.", "url": "https://example.com/turquoise"},
+                        ],
+                    },
+                    "dinner_recommendations": [
+                        {"name": "La Choza", "url": "https://example.com/la-choza"},
+                    ],
+                },
+                "scenic_drives": [
+                    {"title": "Hyde Memorial Loop", "description": "Mountain drive.", "url": "https://example.com/hyde"},
+                ],
+                "cultural_events": {
+                    "has_events": True,
+                    "events": [
+                        {"name": "Spanish Market", "description": "Annual market.", "url": "https://example.com/spanish-market"},
+                    ],
+                    "honest_assessment": "Seasonal events vary.",
+                    "local_tip": "Check plaza posters.",
+                },
+            }
+        ],
+    }
+
+    reconciled = main_mod._reconcile_trip_via_registry(trip)
+
+    dest = reconciled["destinations"][0]
+    assert [item["name"] for item in dest["ai_content"]["top_attractions"]] == ["Canyon Road", "Dale Ball Trail"]
+    assert [item["name"] for item in dest["ai_content"]["getting_here"]["en_route_stops"]] == ["Madrid"]
+    assert [item["title"] for item in dest["ai_content"]["getting_there"]["route_options"]] == ["Turquoise Trail Scenic Byway"]
+    assert [item["name"] for item in dest["ai_content"]["dinner_recommendations"]] == ["La Choza"]
+    assert [item["title"] for item in dest["scenic_drives"]] == ["Hyde Memorial Loop"]
+    assert [item["name"] for item in dest["cultural_events"]["events"]] == ["Spanish Market"]
+    assert dest["ai_content"]["getting_there"]["route_summary"] == "Departure leg toward Albuquerque, NM."

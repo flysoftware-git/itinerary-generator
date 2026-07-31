@@ -27,9 +27,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 import click
 from generator import __version__, __template_version__
+from generator.entity_registry import build_entity_registry, reconcile_trip_from_registry
 
 logger = logging.getLogger(__name__)
 LOG_LEVEL_CHOICES = ["debug", "info", "warning", "error", "critical"]
+
+
+def _reconcile_trip_via_registry(trip: dict) -> dict:
+    registry = build_entity_registry(trip)
+    return reconcile_trip_from_registry(trip, registry)
 
 
 def _extract_http_urls_from_html_text(html_text: str) -> set[str]:
@@ -617,6 +623,8 @@ def main(
     # Post-parallel content normalization: cross-section and cross-destination dedup.
     ai_gen.normalize_trip_content(trip)
     click.echo("  ✓ Content normalized")
+    trip = _reconcile_trip_via_registry(trip)
+    click.echo("  ✓ Entity registry reconciled")
 
     # ── Stage 6: Assemble HTML ───────────────────────────────────────────────
     click.echo("Stage 6/6 — Assembling HTML…")
