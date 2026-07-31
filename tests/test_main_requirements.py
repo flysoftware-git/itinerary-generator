@@ -670,3 +670,84 @@ def test_destination_ids_needing_attention_returns_unresolved_only() -> None:
     unresolved = main_mod._destination_ids_needing_attention(status_report)
 
     assert unresolved == ["taos", "durango"]
+
+
+def test_annotate_retry_outcomes_mixed_destinations_tracks_resolved_and_unresolved() -> None:
+    status_report = {
+        "summary": {"destination_count": 4},
+        "destinations": [
+            {
+                "destination_id": "santafe",
+                "retry_recommended": False,
+                "retry_triggers": [],
+            },
+            {
+                "destination_id": "taos",
+                "retry_recommended": False,
+                "retry_triggers": [],
+            },
+            {
+                "destination_id": "durango",
+                "retry_recommended": True,
+                "retry_triggers": ["url_collapse"],
+            },
+            {
+                "destination_id": "moab",
+                "retry_recommended": True,
+                "retry_triggers": ["section_minimum_not_met:top_attractions"],
+            },
+        ],
+    }
+
+    payload = main_mod._annotate_retry_outcomes(
+        status_report=status_report,
+        attempted_destination_ids=["taos", "durango"],
+        max_retries_per_destination_per_run=1,
+    )
+
+    by_destination = {row["destination_id"]: row for row in payload["destinations"]}
+    assert by_destination["santafe"]["retry_outcome"]["terminal_state"] == "stable_without_retry"
+    assert by_destination["taos"]["retry_outcome"]["terminal_state"] == "resolved_after_retry"
+    assert by_destination["durango"]["retry_outcome"]["terminal_state"] == "retry_cap_reached_unresolved"
+    assert by_destination["moab"]["retry_outcome"]["terminal_state"] == "not_retried_due_to_cap"
+
+    outcomes = payload["summary"]["retry_outcomes"]
+    assert outcomes["attempted_destination_count"] == 2
+    assert outcomes["resolved_after_retry_count"] == 1
+    assert outcomes["unresolved_after_retry_count"] == 1
+    assert outcomes["not_retried_due_to_cap_count"] == 1
+
+
+def test_annotate_retry_outcomes_zero_cap_marks_retry_cap_reached() -> None:
+    status_report = {
+        "summary": {"destination_count": 2},
+        "destinations": [
+            {
+                "destination_id": "taos",
+                "retry_recommended": True,
+                "retry_triggers": ["image_shortfall"],
+            },
+            {
+                "destination_id": "durango",
+                "retry_recommended": False,
+                "retry_triggers": [],
+            },
+        ],
+    }
+
+    payload = main_mod._annotate_retry_outcomes(
+        status_report=status_report,
+        attempted_destination_ids=[],
+        max_retries_per_destination_per_run=0,
+    )
+
+    by_destination = {row["destination_id"]: row for row in payload["destinations"]}
+    assert by_destination["taos"]["retry_outcome"]["terminal_state"] == "not_retried_due_to_cap"
+    assert by_destination["taos"]["retry_outcome"]["attempt_cap"] == 0
+    assert "retry_cap_reached" in by_destination["taos"]["retry_triggers"]
+    assert by_destination["durango"]["retry_outcome"]["terminal_state"] == "stable_without_retry"
+
+    outcomes = payload["summary"]["retry_outcomes"]
+    assert outcomes["max_retries_per_destination_per_run"] == 0
+    assert outcomes["attempted_destination_count"] == 0
+    assert outcomes["not_retried_due_to_cap_count"] == 1
