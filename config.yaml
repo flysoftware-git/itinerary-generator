@@ -225,7 +225,7 @@ validation:
 # ── Destination retry policy (Phase 4 selective regeneration) ───────────────
 destination_retry:
   max_retries_per_destination_per_run: 1
-  min_url_acceptance_ratio: 0.40
+  min_url_acceptance_ratio: 0.60
   min_accepted_by_section:
     top_attractions: 1
 

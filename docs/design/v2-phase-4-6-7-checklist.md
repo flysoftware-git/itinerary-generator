@@ -27,15 +27,27 @@ Status: in progress
 
 ### Remaining
 
-- [ ] Tune `destination_retry` thresholds from one controlled run.
+- [x] Tune `destination_retry` thresholds from one controlled run.
 - [x] Add test coverage for multi-destination mixed outcome scenarios.
 - [x] Add test coverage for zero-cap mode (`max_retries_per_destination_per_run: 0`).
 
+Calibration notes (2026-07-30 controlled single-destination run):
+- Run scope: `--first-destination` on Zion with full stages enabled and env-backed credentials.
+- Artifact outcome:
+  - status: `degraded`
+  - retry recommended: `false`
+  - URL acceptance ratio: `0.8333` (`10 accepted / 12 total`)
+  - unresolved after retry: `0`
+- Threshold decision:
+  - Raise `destination_retry.min_url_acceptance_ratio` from `0.40` to `0.60`.
+  - Keep `min_accepted_by_section.top_attractions = 1` for now.
+  - Keep `max_retries_per_destination_per_run = 1`.
+
 ### Exit Criteria
 
-- [ ] Retry policy thresholds are calibrated and documented.
+- [x] Retry policy thresholds are calibrated and documented.
 - [x] Focused selective-retry tests cover mixed and zero-cap cases.
-- [ ] Unresolved destinations are always explicit in status artifacts and CLI output.
+- [x] Unresolved destinations are always explicit in status artifacts and CLI output.
 
 ## Phase 6: Validation And Observability
 
