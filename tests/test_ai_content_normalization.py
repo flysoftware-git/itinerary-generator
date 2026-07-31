@@ -372,6 +372,10 @@ def test_filter_departure_aligned_drives_moves_matching_one_way_drive_to_getting
     option_titles = [o["title"] for o in options]
     assert "Turquoise Trail Scenic Byway to Albuquerque" in option_titles
     assert "departure leg toward albuquerque, nm" in trip["destinations"][0]["ai_content"]["getting_there"]["route_summary"].lower()
+    moved = options[0]
+    assert moved["_registry"]["ownership_type"] == "transfer_leg"
+    assert moved["_registry"]["section_target"] == "getting_there.route_options"
+    assert moved["_registry"]["validation_status"] == "accepted"
 
 
 def test_remove_enroute_stops_from_attractions() -> None:

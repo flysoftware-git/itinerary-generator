@@ -214,6 +214,14 @@ class AIContentGenerator:
             seen_titles = {str(opt.get("title", "") or "").strip().lower() for opt in existing_options}
             merged_options = list(existing_options)
             for option in departure_options:
+                option = dict(option)
+                registry_meta = option.get("_registry", {}) if isinstance(option.get("_registry", {}), dict) else {}
+                registry_meta.update({
+                    "ownership_type": "transfer_leg",
+                    "section_target": "getting_there.route_options",
+                    "validation_status": "accepted",
+                })
+                option["_registry"] = registry_meta
                 key = str(option.get("title", "") or "").strip().lower()
                 if key and key not in seen_titles:
                     merged_options.append(option)
