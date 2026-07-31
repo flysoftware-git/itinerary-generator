@@ -401,6 +401,68 @@ def _write_destination_status_report(output_dir: Path, status_report: dict[str, 
     return path
 
 
+def _write_destination_status_markdown_report(output_dir: Path, status_report: dict[str, Any]) -> Path:
+    destinations = status_report.get("destinations", []) if isinstance(status_report.get("destinations", []), list) else []
+    summary = status_report.get("summary", {}) if isinstance(status_report.get("summary", {}), dict) else {}
+    retry_outcomes = summary.get("retry_outcomes", {}) if isinstance(summary.get("retry_outcomes", {}), dict) else {}
+
+    lines: list[str] = []
+    lines.append("# Destination Status Summary")
+    lines.append("")
+    lines.append(f"- Run ID: {status_report.get('run_id', '')}")
+    lines.append(f"- Generated at (UTC): {status_report.get('generated_at_utc', '')}")
+    lines.append(f"- Destination count: {summary.get('destination_count', 0)}")
+    lines.append(f"- Retry recommended: {summary.get('retry_recommended_count', 0)}")
+    if retry_outcomes:
+        lines.append(f"- Retry attempted: {retry_outcomes.get('attempted_destination_count', 0)}")
+        lines.append(f"- Resolved after retry: {retry_outcomes.get('resolved_after_retry_count', 0)}")
+        lines.append(f"- Unresolved after retry: {retry_outcomes.get('unresolved_after_retry_count', 0)}")
+        lines.append(f"- Not retried due to cap: {retry_outcomes.get('not_retried_due_to_cap_count', 0)}")
+    lines.append("")
+
+    attention_rows = []
+    for row in destinations:
+        if not isinstance(row, dict):
+            continue
+        outcome = row.get("retry_outcome", {}) if isinstance(row.get("retry_outcome", {}), dict) else {}
+        terminal_state = str(outcome.get("terminal_state", "") or "")
+        if terminal_state in {"retry_cap_reached_unresolved", "not_retried_due_to_cap"}:
+            attention_rows.append(row)
+
+    lines.append(f"## Needs Attention ({len(attention_rows)})")
+    if not attention_rows:
+        lines.append("- None")
+    else:
+        for row in attention_rows:
+            destination_name = str(row.get("destination_name", "") or row.get("destination_id", ""))
+            destination_id = str(row.get("destination_id", "") or "")
+            status = str(row.get("status", "") or "")
+            outcome = row.get("retry_outcome", {}) if isinstance(row.get("retry_outcome", {}), dict) else {}
+            terminal_state = str(outcome.get("terminal_state", "") or "")
+            retry_triggers = row.get("retry_triggers", []) if isinstance(row.get("retry_triggers", []), list) else []
+            trigger_text = ", ".join(str(t) for t in retry_triggers) if retry_triggers else "none"
+            lines.append(f"- {destination_name} ({destination_id}) — status={status}, terminal={terminal_state}, triggers={trigger_text}")
+    lines.append("")
+
+    lines.append(f"## All Destinations ({len(destinations)})")
+    if not destinations:
+        lines.append("- None")
+    else:
+        for row in destinations:
+            if not isinstance(row, dict):
+                continue
+            destination_name = str(row.get("destination_name", "") or row.get("destination_id", ""))
+            destination_id = str(row.get("destination_id", "") or "")
+            status = str(row.get("status", "") or "")
+            outcome = row.get("retry_outcome", {}) if isinstance(row.get("retry_outcome", {}), dict) else {}
+            terminal_state = str(outcome.get("terminal_state", "pending_retry_pass") or "pending_retry_pass")
+            lines.append(f"- {destination_name} ({destination_id}) — status={status}, terminal={terminal_state}")
+
+    path = output_dir / "destination_status_report.md"
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return path
+
+
 def _destination_ids_for_selective_retry(status_report: dict[str, Any]) -> list[str]:
     destinations = status_report.get("destinations", []) if isinstance(status_report.get("destinations", []), list) else []
     retry_ids: list[str] = []
@@ -1084,7 +1146,9 @@ def main(
         int(retry_policy.get("max_retries_per_destination_per_run", 1) or 1),
     )
     destination_status_report_path = _write_destination_status_report(output_dir, destination_status_report)
+    destination_status_markdown_path = _write_destination_status_markdown_report(output_dir, destination_status_report)
     click.echo(f"  ✓ Destination status report: {destination_status_report_path}")
+    click.echo(f"  ✓ Destination status summary: {destination_status_markdown_path}")
 
     retried_destination_ids: list[str] = []
     if max_retries_per_destination > 0:
@@ -1121,7 +1185,9 @@ def main(
         max_retries_per_destination_per_run=max_retries_per_destination,
     )
     destination_status_report_path = _write_destination_status_report(output_dir, destination_status_report)
+    destination_status_markdown_path = _write_destination_status_markdown_report(output_dir, destination_status_report)
     click.echo(f"  ✓ Destination status report refreshed: {destination_status_report_path}")
+    click.echo(f"  ✓ Destination status summary refreshed: {destination_status_markdown_path}")
 
     if verbose:
         registry_report_path = _write_entity_registry_debug_report(output_dir, registry)

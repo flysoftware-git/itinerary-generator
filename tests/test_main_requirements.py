@@ -357,6 +357,49 @@ def test_write_destination_status_report_writes_json(tmp_path) -> None:
     assert payload["destinations"][0]["destination_id"] == "santafe"
 
 
+def test_write_destination_status_markdown_report_includes_attention_section(tmp_path) -> None:
+    status_report = {
+        "run_id": "run-abc",
+        "generated_at_utc": "2026-07-30T00:00:00+00:00",
+        "summary": {
+            "destination_count": 2,
+            "retry_recommended_count": 1,
+            "retry_outcomes": {
+                "attempted_destination_count": 1,
+                "resolved_after_retry_count": 0,
+                "unresolved_after_retry_count": 1,
+                "not_retried_due_to_cap_count": 0,
+            },
+        },
+        "destinations": [
+            {
+                "destination_id": "santafe",
+                "destination_name": "Santa Fe",
+                "status": "healthy",
+                "retry_triggers": [],
+                "retry_outcome": {"terminal_state": "stable_without_retry"},
+            },
+            {
+                "destination_id": "taos",
+                "destination_name": "Taos",
+                "status": "needs_retry",
+                "retry_triggers": ["url_collapse", "retry_cap_reached"],
+                "retry_outcome": {"terminal_state": "retry_cap_reached_unresolved"},
+            },
+        ],
+    }
+
+    report_path = main_mod._write_destination_status_markdown_report(tmp_path, status_report)
+
+    assert report_path.exists()
+    text = report_path.read_text(encoding="utf-8")
+    assert "# Destination Status Summary" in text
+    assert "## Needs Attention (1)" in text
+    assert "Taos (taos)" in text
+    assert "retry_cap_reached_unresolved" in text
+    assert "url_collapse, retry_cap_reached" in text
+
+
 def test_destination_ids_for_selective_retry_prefers_retry_recommended_and_status() -> None:
     status_report = {
         "destinations": [
