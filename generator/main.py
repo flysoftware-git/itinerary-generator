@@ -46,6 +46,7 @@ def _load_destination_retry_policy(config_path: str | Path) -> dict[str, Any]:
     policy: dict[str, Any] = {
         "min_url_acceptance_ratio": 0.0,
         "min_accepted_by_section": {},
+        "max_retries_per_destination_per_run": 1,
     }
     try:
         import yaml
@@ -75,9 +76,76 @@ def _load_destination_retry_policy(config_path: str | Path) -> dict[str, Any]:
                 if count > 0:
                     min_by_section[section_key] = count
         policy["min_accepted_by_section"] = min_by_section
+
+        max_retries = raw_policy.get("max_retries_per_destination_per_run", 1)
+        try:
+            parsed_max_retries = int(max_retries)
+            policy["max_retries_per_destination_per_run"] = max(0, parsed_max_retries)
+        except (TypeError, ValueError):
+            policy["max_retries_per_destination_per_run"] = 1
     except Exception:
         return policy
     return policy
+
+
+def _annotate_retry_outcomes(
+    *,
+    status_report: dict[str, Any],
+    attempted_destination_ids: list[str],
+    max_retries_per_destination_per_run: int,
+) -> dict[str, Any]:
+    destinations = status_report.get("destinations", []) if isinstance(status_report.get("destinations", []), list) else []
+    attempted_set = set(attempted_destination_ids)
+    max_attempts = max(0, int(max_retries_per_destination_per_run or 0))
+
+    summary = {
+        "max_retries_per_destination_per_run": max_attempts,
+        "attempted_destination_count": 0,
+        "resolved_after_retry_count": 0,
+        "unresolved_after_retry_count": 0,
+        "not_retried_due_to_cap_count": 0,
+        "stable_without_retry_count": 0,
+    }
+
+    for row in destinations:
+        if not isinstance(row, dict):
+            continue
+        destination_id = str(row.get("destination_id", "") or "").strip()
+        retry_recommended = bool(row.get("retry_recommended", False))
+        retry_triggers = row.get("retry_triggers", []) if isinstance(row.get("retry_triggers", []), list) else []
+        attempted = bool(destination_id and destination_id in attempted_set)
+
+        terminal_state = "stable_without_retry"
+        if attempted and retry_recommended:
+            terminal_state = "retry_cap_reached_unresolved"
+            if "retry_cap_reached" not in retry_triggers:
+                retry_triggers.append("retry_cap_reached")
+            summary["attempted_destination_count"] += 1
+            summary["unresolved_after_retry_count"] += 1
+        elif attempted and not retry_recommended:
+            terminal_state = "resolved_after_retry"
+            summary["attempted_destination_count"] += 1
+            summary["resolved_after_retry_count"] += 1
+        elif (not attempted) and retry_recommended:
+            terminal_state = "not_retried_due_to_cap"
+            if max_attempts == 0 and "retry_cap_reached" not in retry_triggers:
+                retry_triggers.append("retry_cap_reached")
+            summary["not_retried_due_to_cap_count"] += 1
+        else:
+            summary["stable_without_retry_count"] += 1
+
+        row["retry_triggers"] = retry_triggers
+        row["retry_outcome"] = {
+            "attempted": attempted,
+            "attempts_used": 1 if attempted else 0,
+            "attempt_cap": max_attempts,
+            "terminal_state": terminal_state,
+        }
+
+    status_summary = status_report.get("summary", {}) if isinstance(status_report.get("summary", {}), dict) else {}
+    status_summary["retry_outcomes"] = summary
+    status_report["summary"] = status_summary
+    return status_report
 
 
 def _reconcile_trip_via_registry(trip: dict, *, return_registry: bool = False) -> dict | tuple[dict, dict[str, Any]]:
@@ -1011,20 +1079,26 @@ def main(
         skip_url_discovery=skip_url_discovery,
         retry_policy=retry_policy,
     )
+    max_retries_per_destination = max(
+        0,
+        int(retry_policy.get("max_retries_per_destination_per_run", 1) or 1),
+    )
     destination_status_report_path = _write_destination_status_report(output_dir, destination_status_report)
     click.echo(f"  ✓ Destination status report: {destination_status_report_path}")
 
-    retried_destination_ids = _selective_retry_destinations(
-        trip=trip,
-        status_report=destination_status_report,
-        config_path=config_path,
-        llm_client=llm_client,
-        output_dir=output_dir,
-        refresh_image_cache=refresh_image_cache,
-        skip_events=skip_events,
-        skip_images=skip_images,
-        skip_url_discovery=skip_url_discovery,
-    )
+    retried_destination_ids: list[str] = []
+    if max_retries_per_destination > 0:
+        retried_destination_ids = _selective_retry_destinations(
+            trip=trip,
+            status_report=destination_status_report,
+            config_path=config_path,
+            llm_client=llm_client,
+            output_dir=output_dir,
+            refresh_image_cache=refresh_image_cache,
+            skip_events=skip_events,
+            skip_images=skip_images,
+            skip_url_discovery=skip_url_discovery,
+        )
     if retried_destination_ids:
         click.echo(
             "  ↻ Selective retry completed for: "
@@ -1041,8 +1115,13 @@ def main(
             skip_url_discovery=skip_url_discovery,
             retry_policy=retry_policy,
         )
-        destination_status_report_path = _write_destination_status_report(output_dir, destination_status_report)
-        click.echo(f"  ✓ Destination status report refreshed: {destination_status_report_path}")
+    destination_status_report = _annotate_retry_outcomes(
+        status_report=destination_status_report,
+        attempted_destination_ids=retried_destination_ids,
+        max_retries_per_destination_per_run=max_retries_per_destination,
+    )
+    destination_status_report_path = _write_destination_status_report(output_dir, destination_status_report)
+    click.echo(f"  ✓ Destination status report refreshed: {destination_status_report_path}")
 
     if verbose:
         registry_report_path = _write_entity_registry_debug_report(output_dir, registry)

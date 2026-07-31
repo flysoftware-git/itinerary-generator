@@ -549,6 +549,7 @@ def test_load_destination_retry_policy_reads_thresholds(tmp_path) -> None:
                 "    top_attractions: 2",
                 "    scenic_drives: 1",
                 "    unknown_section: 4",
+                "  max_retries_per_destination_per_run: 1",
             ]
         )
         + "\n",
@@ -561,3 +562,45 @@ def test_load_destination_retry_policy_reads_thresholds(tmp_path) -> None:
     assert policy["min_accepted_by_section"]["top_attractions"] == 2
     assert policy["min_accepted_by_section"]["scenic_drives"] == 1
     assert "unknown_section" not in policy["min_accepted_by_section"]
+    assert policy["max_retries_per_destination_per_run"] == 1
+
+
+def test_annotate_retry_outcomes_marks_terminal_status() -> None:
+    status_report = {
+        "summary": {"destination_count": 3},
+        "destinations": [
+            {
+                "destination_id": "santafe",
+                "retry_recommended": False,
+                "retry_triggers": [],
+            },
+            {
+                "destination_id": "taos",
+                "retry_recommended": True,
+                "retry_triggers": ["image_shortfall"],
+            },
+            {
+                "destination_id": "durango",
+                "retry_recommended": True,
+                "retry_triggers": ["url_collapse"],
+            },
+        ],
+    }
+
+    payload = main_mod._annotate_retry_outcomes(
+        status_report=status_report,
+        attempted_destination_ids=["taos"],
+        max_retries_per_destination_per_run=1,
+    )
+
+    by_destination = {row["destination_id"]: row for row in payload["destinations"]}
+    assert by_destination["santafe"]["retry_outcome"]["terminal_state"] == "stable_without_retry"
+    assert by_destination["taos"]["retry_outcome"]["terminal_state"] == "retry_cap_reached_unresolved"
+    assert "retry_cap_reached" in by_destination["taos"]["retry_triggers"]
+    assert by_destination["durango"]["retry_outcome"]["terminal_state"] == "not_retried_due_to_cap"
+
+    outcomes = payload["summary"]["retry_outcomes"]
+    assert outcomes["max_retries_per_destination_per_run"] == 1
+    assert outcomes["attempted_destination_count"] == 1
+    assert outcomes["unresolved_after_retry_count"] == 1
+    assert outcomes["not_retried_due_to_cap_count"] == 1
