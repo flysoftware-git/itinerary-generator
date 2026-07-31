@@ -172,6 +172,42 @@ def test_normalize_schedule_reserves_first_day_morning_for_origin_transport() ->
     assert "travel from las vegas" in morning
 
 
+def test_normalize_schedule_softens_first_day_heavy_afternoon_after_origin_travel() -> None:
+    g = _gen()
+    schedule = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Begin with signature viewpoints."},
+                {"period": "Afternoon", "summary": "Complete a strenuous summit hike and long trail segment."},
+                {"period": "Evening", "summary": "Dinner downtown."},
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Major trail day."},
+                {"period": "Afternoon", "summary": "Scenic route."},
+                {"period": "Evening", "summary": "Sunset stop."},
+            ],
+        },
+    ]
+
+    out = g._normalize_schedule(
+        schedule=schedule,
+        restaurants=[{"name": "Local Bistro"}],
+        dates="October 7-8, 2026",
+        getting_here={"drive_time": "2 hrs"},
+        previous_destination="none",
+        next_destination="Bryce Canyon National Park",
+        trip_origin="Las Vegas",
+        trip_return="Las Vegas",
+    )
+
+    first_afternoon = out[0]["periods"][1]["summary"].lower()
+    assert "keep activity light after travel" in first_afternoon
+
+
 def test_normalize_schedule_reserves_last_day_afternoon_evening_for_return() -> None:
     g = _gen()
     schedule = [

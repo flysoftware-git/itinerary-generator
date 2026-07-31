@@ -71,3 +71,7 @@ If a source target cannot be verified as trustworthy and subject-correct, it sho
 ## Notes
 
 - This is intake-only; no implementation change is included.
+
+## Comments
+
+- Link remains invalid

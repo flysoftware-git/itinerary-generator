@@ -190,6 +190,8 @@ url_discovery:
   alltrails_slug_denylist:
     - "ajax-peak-trail"
     - "jud-wiebe-trail"
+    - "jud-wiebe-memorial-trail"
+    - "bear-creek-trail"
   restaurant_name_denylist:
     - "Nello's Bistro"
     - "La Casa Sena"

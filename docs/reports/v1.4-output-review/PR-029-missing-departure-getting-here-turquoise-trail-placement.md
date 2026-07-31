@@ -69,3 +69,7 @@ Review Source: manual output review
 ## Notes
 
 - This is intake-only; no implementation change is included.
+
+## Comment
+
+- Title should have been clearer (body text explained) intent is return leg after last stop

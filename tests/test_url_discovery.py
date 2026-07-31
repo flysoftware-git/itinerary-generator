@@ -1418,7 +1418,7 @@ def test_search_alltrails_for_trail_includes_explicit_alltrails_variants():
     assert any(v.strip() == '"angels landing" alltrails' for v in variants)
 
 
-def test_trail_like_attraction_falls_back_to_maps_not_non_alltrails():
+def test_trail_like_attraction_omits_link_when_no_validated_trail_url_exists():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
 
     def fake_search(variants, site_filter=None, **kwargs):
@@ -1439,11 +1439,10 @@ def test_trail_like_attraction_falls_back_to_maps_not_non_alltrails():
     with patch.object(discoverer, "_search_first", side_effect=fake_search):
         discoverer._discover_attractions(ai, "Bryce Canyon National Park", "blca")
 
-    url = ai["top_attractions"][0]["url"]
-    assert url.startswith("https://www.google.com/maps/search/?api=1&query=")
+    assert "url" not in ai["top_attractions"][0]
 
 
-def test_trail_like_attraction_falls_back_when_alltrails_confidence_below_threshold():
+def test_trail_like_attraction_omits_link_when_alltrails_confidence_below_threshold():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._alltrails_min_confidence_for_publish = "high"
 
@@ -1466,8 +1465,7 @@ def test_trail_like_attraction_falls_back_when_alltrails_confidence_below_thresh
         with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
             discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
-    url = ai["top_attractions"][0]["url"]
-    assert url.startswith("https://www.google.com/maps/search/?api=1&query=")
+    assert "url" not in ai["top_attractions"][0]
 
 
 def test_retain_discovered_url_rejects_low_confidence_alltrails_for_trails():
@@ -1598,11 +1596,10 @@ def test_filtered_alltrails_does_not_pad_with_weak_matches_when_only_one_candida
                 discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
     first_url = ai["top_attractions"][0]["url"]
-    second_url = ai["top_attractions"][1]["url"]
+    second_url = ai["top_attractions"][1].get("url", "")
 
     assert first_url == "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"
-    assert second_url.startswith("https://www.google.com/maps/search/?api=1&query=")
-    assert "alltrails.com/trail/us/utah/sand-bench-trail" not in second_url
+    assert second_url == ""
 
 
 def test_load_interest_filters_applies_rating_threshold_and_boost_controls(tmp_path):
@@ -1926,10 +1923,17 @@ def test_retain_url_keeps_wikipedia_matching_entity():
 def test_retain_url_rejects_alltrails_slug_in_denylist():
     """PR-017/019: Slug in denylist is rejected even before any network fetch."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
-    discoverer._alltrails_slug_denylist = frozenset({"ajax-peak-trail", "jud-wiebe-trail"})
+    discoverer._alltrails_slug_denylist = frozenset({
+        "ajax-peak-trail",
+        "jud-wiebe-trail",
+        "jud-wiebe-memorial-trail",
+        "bear-creek-trail",
+    })
     for slug, item in [
         ("ajax-peak-trail", "Ajax Peak"),
         ("jud-wiebe-trail", "Jud Wiebe Trail"),
+        ("jud-wiebe-memorial-trail", "Jud Wiebe Trail"),
+        ("bear-creek-trail", "Bear Creek Trail"),
     ]:
         result = discoverer._retain_discovered_url(
             f"https://www.alltrails.com/trail/us/colorado/{slug}",
@@ -1938,6 +1942,24 @@ def test_retain_url_rejects_alltrails_slug_in_denylist():
             allow_alltrails=True,
         )
         assert result == "", f"Expected denylist rejection for {slug}"
+
+
+def test_retain_url_rejects_generic_geography_url_for_category_activity():
+    """PR-022 hardening: category activities must not link to generic geography pages."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_domain_denylist = frozenset()
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = set()
+
+    result = discoverer._retain_discovered_url(
+        "https://en.wikipedia.org/wiki/San_Juan_River_(Colorado_River_tributary)",
+        "San Juan River Fly Fishing",
+        "Pagosa Springs",
+        allow_alltrails=False,
+        kind="attraction",
+    )
+    assert result == ""
 
 
 def test_is_relevant_result_rejects_alltrails_slug_in_denylist():
@@ -2244,7 +2266,7 @@ def test_deduplicate_cross_destination_drives_keeps_unrelated_concepts():
     assert len(trip["destinations"][1]["scenic_drives"]) == 1
 
 
-def test_trail_ai_candidate_rejected_when_filtered_constraints_fail_then_falls_back_maps():
+def test_trail_ai_candidate_rejected_when_filtered_constraints_fail_then_omits_link():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = True
     discoverer._alltrails_filtered_selection_cache = {}
@@ -2265,11 +2287,10 @@ def test_trail_ai_candidate_rejected_when_filtered_constraints_fail_then_falls_b
     with patch.object(discoverer, "_search_alltrails_for_trail_filtered", return_value=None):
         discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
-    url = ai["top_attractions"][0]["url"]
-    assert url.startswith("https://www.google.com/maps/search/?api=1&query=")
+    assert "url" not in ai["top_attractions"][0]
 
 
-def test_angels_landing_seed_fails_filtered_constraints_and_falls_back_maps():
+def test_angels_landing_seed_fails_filtered_constraints_and_omits_link():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = True
     discoverer._alltrails_filtered_selection_cache = {}
@@ -2290,8 +2311,7 @@ def test_angels_landing_seed_fails_filtered_constraints_and_falls_back_maps():
     with patch.object(discoverer, "_search_alltrails_for_trail_filtered", return_value=None):
         discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
-    url = ai["top_attractions"][0]["url"]
-    assert url.startswith("https://www.google.com/maps/search/?api=1&query=")
+    assert "url" not in ai["top_attractions"][0]
 
 
 def test_non_strict_trail_ai_candidate_can_pass_when_filtered_metadata_missing():

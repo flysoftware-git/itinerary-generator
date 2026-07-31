@@ -1053,6 +1053,17 @@ class AIContentGenerator:
         if not days:
             return days
 
+        def _is_heavy_activity_block(summary: str) -> bool:
+            text = str(summary or "").lower()
+            if not text:
+                return False
+            return bool(
+                re.search(
+                    r"\b(hike|trail|summit|strenuous|full[- ]day|all[- ]day|backcountry|multi-hour|long\s+drive)\b",
+                    text,
+                )
+            )
+
         is_first_destination = str(previous_destination or "").strip().lower() in {"", "none"}
         is_last_destination = not str(next_destination or "").strip()
 
@@ -1070,6 +1081,19 @@ class AIContentGenerator:
                 "Morning",
                 f"Travel from {origin_label}.",
             )
+            # Keep first-day arrival plans realistic by avoiding heavy activity
+            # blocks immediately after transit from origin.
+            first_afternoon = ""
+            for period in days[0].get("periods", []) or []:
+                if str(period.get("period", "")).title() == "Afternoon":
+                    first_afternoon = str(period.get("summary", "") or "")
+                    break
+            if _is_heavy_activity_block(first_afternoon):
+                _set_period_summary(
+                    days[0],
+                    "Afternoon",
+                    "Arrival check-in, meal break, and a short orientation stop near lodging; keep activity light after travel.",
+                )
 
         drive_time = str(getting_here.get("drive_time", "") or "").strip()
         first = days[0]

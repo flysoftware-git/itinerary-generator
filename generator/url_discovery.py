@@ -673,12 +673,10 @@ class URLDiscoverer:
                         continue  # Remove attraction entirely
 
                 if trail_like and url and not self._is_alltrails_trail_url(url):
-                    lower = url.lower()
-                    if not any(lower.startswith(prefix) for prefix in SAFE_FALLBACK_URL_PREFIXES):
-                        self._log_rejected_url("attraction", dest_name, attr_name, url)
-                        attr.pop("url", None)
-                        eligible_attractions.append(attr)
-                        continue
+                    self._log_rejected_url("attraction", dest_name, attr_name, url)
+                    attr.pop("url", None)
+                    eligible_attractions.append(attr)
+                    continue
                 cleaned = self._retain_discovered_url(
                     url,
                     attr_name,
@@ -840,6 +838,15 @@ class URLDiscoverer:
         if " & " in (item_name or ""):
             logger.info("Compound entity name rejected URL for %s '%s': %s", kind, item_name, url)
             return ""
+        if kind in {"generic", "attraction"} and self._is_category_style_activity(item_name):
+            if self._is_generic_geographic_url_for_category(url, item_name):
+                logger.info(
+                    "Category-style activity rejected generic geography URL for %s '%s': %s",
+                    kind,
+                    item_name,
+                    url,
+                )
+                return ""
         if kind == "scenic drive" and not self._is_route_specific_scenic_drive_url(url):
             logger.info("Scenic-drive URL rejected (non-route target) for '%s': %s", item_name, url)
             return ""
@@ -1186,9 +1193,8 @@ class URLDiscoverer:
                     attr["url"] = url
                     logger.info("  trail-like link (alltrails): %s -> %s", attr_name, url)
                     continue
-                q = self._maps_fallback_query_text(attr_name, dest_name)
-                attr["url"] = f"https://www.google.com/maps/search/?api=1&query={quote(q)}"
-                logger.info("  trail-like link (fallback maps): %s -> (alltrails none)", attr_name)
+                attr.pop("url", None)
+                logger.info("  trail-like link omitted (no validated trail URL): %s", attr_name)
                 continue
 
             # For NPS parks, prefer nps.gov results
@@ -2379,6 +2385,59 @@ class URLDiscoverer:
     @staticmethod
     def _is_obviously_generic_url(lower_url: str) -> bool:
         return any(marker in lower_url for marker in GENERIC_BAD_URL_MARKERS)
+
+    @classmethod
+    def _is_category_style_activity(cls, item_name: str) -> bool:
+        text = (item_name or "").lower()
+        if not text:
+            return False
+        activity_cues = (
+            "fly fishing",
+            "fishing",
+            "stargazing",
+            "birding",
+            "kayaking",
+            "rafting",
+            "paddleboarding",
+            "wine tasting",
+            "food tour",
+            "photography",
+        )
+        return any(cue in text for cue in activity_cues)
+
+    @classmethod
+    def _is_generic_geographic_url_for_category(cls, url: str, item_name: str) -> bool:
+        lower = (url or "").lower()
+        if not lower:
+            return False
+
+        activity_tokens = {
+            token
+            for token in cls._significant_tokens(item_name)
+            if token in {"fishing", "stargazing", "birding", "kayaking", "rafting", "paddleboarding", "photography"}
+        }
+        if activity_tokens and any(token in lower for token in activity_tokens):
+            return False
+
+        if "google.com/maps/search" in lower or "google.com/search" in lower:
+            return True
+        if "wikipedia.org/wiki/" in lower:
+            return True
+
+        path = (urlparse(url).path or "").lower()
+        geographic_markers = (
+            "river",
+            "lake",
+            "mountain",
+            "canyon",
+            "park",
+            "pass",
+            "valley",
+            "forest",
+            "reservoir",
+            "byway",
+        )
+        return any(marker in path for marker in geographic_markers)
 
     @staticmethod
     def _is_trail_like_attraction(name: str, attr_type: str, description: str = "") -> bool:

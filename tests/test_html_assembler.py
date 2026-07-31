@@ -239,8 +239,9 @@ def test_assembled_html_preserves_marker_date_context_alongside_stop_indices() -
     assert '"dy": "7"' in html
     assert "var dateLabel = ((s.mo || '') + (s.dy ? (' ' + s.dy) : '')).trim();" in html
     assert "var markerDateSecondary = dateLabel" in html
-    assert "width:34px;height:34px" in html
-    assert "iconSize:[34,62],iconAnchor:[17,17],popupAnchor:[0,-22]" in html
+    assert "width:28px;height:28px" in html
+    assert "text-align:center" in html
+    assert "iconSize:[28,54],iconAnchor:[14,14],popupAnchor:[0,-20]" in html
 
 
 def test_build_getting_there_renders_departure_route_options() -> None:
@@ -266,6 +267,36 @@ def test_build_getting_there_renders_departure_route_options() -> None:
     assert "Getting There" in html
     assert "Turquoise Trail Scenic Byway" in html
     assert "Departure leg toward Albuquerque, NM." in html
+
+
+def test_build_schedule_preserves_structured_one_day_schedule() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "possible_daily_schedule": [
+            {
+                "day_label": "Day 1",
+                "periods": [
+                    {"period": "Morning", "summary": "Travel from Las Vegas."},
+                    {
+                        "period": "Afternoon",
+                        "summary": "Arrival check-in, meal break, and a short orientation stop near lodging; keep activity light after travel.",
+                    },
+                    {"period": "Evening", "summary": "Dinner in town and an easy sunset stop."},
+                ],
+            }
+        ],
+        "top_attractions": [
+            {"name": "Snow Canyon State Park"},
+            {"name": "Pioneer Park"},
+        ],
+        "dinner_recommendations": [{"name": "Cliffside Restaurant"}],
+    }
+
+    html = assembler._build_schedule(ai, drives=[], dest_name="St. George, Utah")
+
+    assert "Travel from Las Vegas." in html
+    assert "keep activity light after travel." in html
+    assert "Start with Snow Canyon State Park; plan for 2–3 hours." not in html
 
 
 def test_intro_note_omits_weather_and_photography_rows() -> None:

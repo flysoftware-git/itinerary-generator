@@ -883,8 +883,9 @@ class HTMLAssembler:
     def _build_schedule(self, ai: dict, drives: list, dest_name: str) -> str:
         schedule = ai.get("possible_daily_schedule", [])
         
-        # If schedule is empty or too short, synthesize from available data
-        if not schedule or (isinstance(schedule, list) and len(schedule) < 2):
+        # Only synthesize when schedule content is actually absent; preserve
+        # valid one-day arrival-aware schedules produced upstream.
+        if not schedule:
             attrs = ai.get("top_attractions", [])
             restaurants = ai.get("dinner_recommendations", [])
             

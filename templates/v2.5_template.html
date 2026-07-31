@@ -371,19 +371,18 @@
         L.polyline(stops.map(function(s){return s.c;}),{color:'#C0623E',weight:2.5,dashArray:'7,6',opacity:0.85}).addTo(map);
         stops.forEach(function(s){
           var stopIndex = s.stop_index || s.idx;
-          var idxLabel=stopIndex ? '<span style="font-size:12px;font-weight:900;color:#fff;line-height:1;letter-spacing:-0.2px;">'+stopIndex+'</span>' : '';
+          var idxLabel=stopIndex ? '<span style="font-size:11px;font-weight:900;color:#fff;line-height:1;letter-spacing:-0.15px;">'+stopIndex+'</span>' : '';
           var dateLabel = ((s.mo || '') + (s.dy ? (' ' + s.dy) : '')).trim();
-          var markerDateSecondary = dateLabel ? '<div style="font-size:8px;font-weight:600;color:#b8a694;line-height:1.1;margin-top:1px;">'+dateLabel+'</div>' : '';
+          var markerDateSecondary = dateLabel ? '<div style="font-size:9px;font-weight:700;color:#f3e8de;line-height:1.15;text-align:center;margin-top:2px;">'+dateLabel+'</div>' : '';
           var icon=L.divIcon({
             className:'',
-            html:'<div style="display:flex;flex-direction:column;align-items:center;gap:3px;">'+
-              '<div style="font-size:9px;font-weight:700;color:#5e412f;line-height:1;min-height:10px;">'+(dateLabel || '&nbsp;')+'</div>'+ 
-              '<div style="width:34px;height:34px;border-radius:50%;background:#C0623E;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.24);display:flex;flex-direction:column;align-items:center;justify-content:center;">'+
-              (stopIndex ? idxLabel : ('<span style="font-size:9px;font-weight:800;color:#fff;line-height:1;">'+(s.mo || '')+'</span>'))+
+            html:'<div style="display:flex;flex-direction:column;align-items:center;gap:2px;">'+
+              '<div style="width:28px;height:28px;border-radius:50%;background:#C0623E;border:2px solid #fff;box-shadow:0 2px 5px rgba(0,0,0,0.2);display:flex;align-items:center;justify-content:center;">'+
+              (stopIndex ? idxLabel : ('<span style="font-size:8px;font-weight:800;color:#fff;line-height:1;">'+(s.mo || '')+'</span>'))+
               '</div>'+
-              '<div style="background:rgba(44,22,10,0.82);color:#fff;font-size:8px;font-weight:600;padding:2px 6px;border-radius:4px;white-space:nowrap;line-height:1.2;">'+s.name+markerDateSecondary+'</div>'+
+              '<div style="background:rgba(44,22,10,0.88);color:#fff;font-size:9px;font-weight:700;padding:3px 7px;border-radius:5px;white-space:nowrap;line-height:1.15;text-align:center;">'+s.name+markerDateSecondary+'</div>'+
               '</div>',
-            iconSize:[34,62],iconAnchor:[17,17],popupAnchor:[0,-22]
+            iconSize:[28,54],iconAnchor:[14,14],popupAnchor:[0,-20]
           });
           L.marker(s.c,{icon:icon}).bindPopup('<b>'+(stopIndex?stopIndex+' · ':'')+s.name+'</b><br>'+s.mo+' '+s.dy).addTo(map);
         });

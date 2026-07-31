@@ -66,3 +66,7 @@ Review Source: manual output review
 ## Notes
 
 - This is intake-only; no implementation change is included.
+
+## Comments
+
+Updated link to trail is invalid and trail length exceeds threshold
