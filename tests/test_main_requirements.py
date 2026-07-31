@@ -355,3 +355,111 @@ def test_write_destination_status_report_writes_json(tmp_path) -> None:
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["run_id"] == "run-abc"
     assert payload["destinations"][0]["destination_id"] == "santafe"
+
+
+def test_destination_ids_for_selective_retry_prefers_retry_recommended_and_status() -> None:
+    status_report = {
+        "destinations": [
+            {"destination_id": "santafe", "status": "healthy", "retry_recommended": False},
+            {"destination_id": "taos", "status": "needs_retry", "retry_recommended": False},
+            {"destination_id": "durango", "status": "healthy", "retry_recommended": True},
+            {"destination_id": "taos", "status": "quarantined", "retry_recommended": True},
+        ]
+    }
+
+    retry_ids = main_mod._destination_ids_for_selective_retry(status_report)
+
+    assert retry_ids == ["taos", "durango"]
+
+
+def test_selective_retry_runs_only_flagged_destinations() -> None:
+    trip = {
+        "trip": {"title": "Test"},
+        "destinations": [
+            {"id": "santafe", "name": "Santa Fe"},
+            {"id": "taos", "name": "Taos"},
+            {"id": "durango", "name": "Durango"},
+        ],
+    }
+    status_report = {
+        "destinations": [
+            {"destination_id": "santafe", "status": "healthy", "retry_recommended": False},
+            {"destination_id": "taos", "status": "needs_retry", "retry_recommended": True},
+        ]
+    }
+
+    called = {"events": [], "images": [], "urls": []}
+
+    def _run_events(subset_trip):
+        called["events"].append([d["id"] for d in subset_trip["destinations"]])
+
+    def _run_images(subset_trip):
+        called["images"].append([d["id"] for d in subset_trip["destinations"]])
+
+    def _run_urls(subset_trip):
+        called["urls"].append([d["id"] for d in subset_trip["destinations"]])
+
+    retry_ids = main_mod._selective_retry_destinations(
+        trip=trip,
+        status_report=status_report,
+        config_path="config.yaml",
+        llm_client=None,
+        output_dir=main_mod.Path("output"),
+        refresh_image_cache=False,
+        skip_events=False,
+        skip_images=False,
+        skip_url_discovery=False,
+        run_events=_run_events,
+        run_images=_run_images,
+        run_urls=_run_urls,
+    )
+
+    assert retry_ids == ["taos"]
+    assert called["events"] == [["taos"]]
+    assert called["images"] == [["taos"]]
+    assert called["urls"] == [["taos"]]
+
+
+def test_selective_retry_respects_skip_flags() -> None:
+    trip = {
+        "trip": {"title": "Test"},
+        "destinations": [
+            {"id": "taos", "name": "Taos"},
+        ],
+    }
+    status_report = {
+        "destinations": [
+            {"destination_id": "taos", "status": "quarantined", "retry_recommended": True},
+        ]
+    }
+
+    called = {"events": 0, "images": 0, "urls": 0}
+
+    def _run_events(_subset_trip):
+        called["events"] += 1
+
+    def _run_images(_subset_trip):
+        called["images"] += 1
+
+    def _run_urls(_subset_trip):
+        called["urls"] += 1
+
+    retry_ids = main_mod._selective_retry_destinations(
+        trip=trip,
+        status_report=status_report,
+        config_path="config.yaml",
+        llm_client=None,
+        output_dir=main_mod.Path("output"),
+        refresh_image_cache=False,
+        skip_events=True,
+        skip_images=True,
+        skip_url_discovery=False,
+        run_events=_run_events,
+        run_images=_run_images,
+        run_urls=_run_urls,
+    )
+
+    assert retry_ids == ["taos"]
+    assert called["events"] == 0
+    assert called["images"] == 0
+    assert called["urls"] == 1

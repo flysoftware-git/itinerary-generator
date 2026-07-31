@@ -219,6 +219,87 @@ def _write_destination_status_report(output_dir: Path, status_report: dict[str, 
     return path
 
 
+def _destination_ids_for_selective_retry(status_report: dict[str, Any]) -> list[str]:
+    destinations = status_report.get("destinations", []) if isinstance(status_report.get("destinations", []), list) else []
+    retry_ids: list[str] = []
+    for row in destinations:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status", "") or "").strip().lower()
+        destination_id = str(row.get("destination_id", "") or "").strip()
+        retry_recommended = bool(row.get("retry_recommended", False))
+        if destination_id and (retry_recommended or status in {"needs_retry", "quarantined"}):
+            retry_ids.append(destination_id)
+    # Preserve order while de-duplicating.
+    return list(dict.fromkeys(retry_ids))
+
+
+def _selective_retry_destinations(
+    *,
+    trip: dict[str, Any],
+    status_report: dict[str, Any],
+    config_path: str,
+    llm_client: Any,
+    output_dir: Path,
+    refresh_image_cache: bool,
+    skip_events: bool,
+    skip_images: bool,
+    skip_url_discovery: bool,
+    run_events: Any | None = None,
+    run_images: Any | None = None,
+    run_urls: Any | None = None,
+) -> list[str]:
+    retry_ids = _destination_ids_for_selective_retry(status_report)
+    if not retry_ids:
+        return []
+
+    retry_set = set(retry_ids)
+    retry_destinations = [
+        dest
+        for dest in (trip.get("destinations", []) or [])
+        if isinstance(dest, dict) and str(dest.get("id", "") or "") in retry_set
+    ]
+    if not retry_destinations:
+        return []
+
+    retry_trip = {
+        "trip": trip.get("trip", {}),
+        "destinations": retry_destinations,
+    }
+
+    if not skip_events:
+        if run_events is None:
+            from generator.cultural_events import CulturalEventsDiscoverer
+
+            run_events = lambda subset_trip: CulturalEventsDiscoverer(config_path, llm_client=llm_client).discover(subset_trip)
+        run_events(retry_trip)
+
+    if not skip_images:
+        if run_images is None:
+            from generator.image_fetcher import ImageFetcher
+
+            run_images = lambda subset_trip: ImageFetcher(
+                config_path,
+                output_dir=output_dir / "images",
+                force_refresh=refresh_image_cache,
+            ).fetch_all(subset_trip)
+        run_images(retry_trip)
+
+    if not skip_url_discovery:
+        if run_urls is None:
+            from generator.url_discovery import URLDiscoverer
+
+            def _default_run_urls(subset_trip: dict[str, Any]) -> None:
+                url_discoverer = URLDiscoverer(config_path, llm_client=llm_client)
+                url_discoverer.discover_all(subset_trip)
+                url_discoverer.audit_discovered_urls(subset_trip)
+
+            run_urls = _default_run_urls
+        run_urls(retry_trip)
+
+    return retry_ids
+
+
 def _extract_http_urls_from_html_text(html_text: str) -> set[str]:
     import re
 
@@ -816,6 +897,36 @@ def main(
     )
     destination_status_report_path = _write_destination_status_report(output_dir, destination_status_report)
     click.echo(f"  ✓ Destination status report: {destination_status_report_path}")
+
+    retried_destination_ids = _selective_retry_destinations(
+        trip=trip,
+        status_report=destination_status_report,
+        config_path=config_path,
+        llm_client=llm_client,
+        output_dir=output_dir,
+        refresh_image_cache=refresh_image_cache,
+        skip_events=skip_events,
+        skip_images=skip_images,
+        skip_url_discovery=skip_url_discovery,
+    )
+    if retried_destination_ids:
+        click.echo(
+            "  ↻ Selective retry completed for: "
+            + ", ".join(retried_destination_ids)
+        )
+        ai_gen.normalize_trip_content(trip)
+        trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
+        destination_status_report = _build_destination_status_report(
+            trip=trip,
+            registry=registry,
+            run_id=run_id,
+            skip_events=skip_events,
+            skip_images=skip_images,
+            skip_url_discovery=skip_url_discovery,
+        )
+        destination_status_report_path = _write_destination_status_report(output_dir, destination_status_report)
+        click.echo(f"  ✓ Destination status report refreshed: {destination_status_report_path}")
+
     if verbose:
         registry_report_path = _write_entity_registry_debug_report(output_dir, registry)
         click.echo(f"  ✓ Entity registry debug report: {registry_report_path}")
