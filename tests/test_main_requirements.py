@@ -647,3 +647,26 @@ def test_annotate_retry_outcomes_marks_terminal_status() -> None:
     assert outcomes["attempted_destination_count"] == 1
     assert outcomes["unresolved_after_retry_count"] == 1
     assert outcomes["not_retried_due_to_cap_count"] == 1
+
+
+def test_destination_ids_needing_attention_returns_unresolved_only() -> None:
+    status_report = {
+        "destinations": [
+            {
+                "destination_id": "santafe",
+                "retry_outcome": {"terminal_state": "stable_without_retry"},
+            },
+            {
+                "destination_id": "taos",
+                "retry_outcome": {"terminal_state": "retry_cap_reached_unresolved"},
+            },
+            {
+                "destination_id": "durango",
+                "retry_outcome": {"terminal_state": "not_retried_due_to_cap"},
+            },
+        ]
+    }
+
+    unresolved = main_mod._destination_ids_needing_attention(status_report)
+
+    assert unresolved == ["taos", "durango"]

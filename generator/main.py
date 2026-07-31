@@ -148,6 +148,20 @@ def _annotate_retry_outcomes(
     return status_report
 
 
+def _destination_ids_needing_attention(status_report: dict[str, Any]) -> list[str]:
+    destinations = status_report.get("destinations", []) if isinstance(status_report.get("destinations", []), list) else []
+    unresolved: list[str] = []
+    for row in destinations:
+        if not isinstance(row, dict):
+            continue
+        destination_id = str(row.get("destination_id", "") or "").strip()
+        outcome = row.get("retry_outcome", {}) if isinstance(row.get("retry_outcome", {}), dict) else {}
+        terminal_state = str(outcome.get("terminal_state", "") or "")
+        if terminal_state in {"retry_cap_reached_unresolved", "not_retried_due_to_cap"} and destination_id:
+            unresolved.append(destination_id)
+    return unresolved
+
+
 def _reconcile_trip_via_registry(trip: dict, *, return_registry: bool = False) -> dict | tuple[dict, dict[str, Any]]:
     registry = build_entity_registry(trip)
     reconciled = reconcile_trip_from_registry(trip, registry)
@@ -1188,6 +1202,11 @@ def main(
     destination_status_markdown_path = _write_destination_status_markdown_report(output_dir, destination_status_report)
     click.echo(f"  ✓ Destination status report refreshed: {destination_status_report_path}")
     click.echo(f"  ✓ Destination status summary refreshed: {destination_status_markdown_path}")
+    unresolved_destination_ids = _destination_ids_needing_attention(destination_status_report)
+    if unresolved_destination_ids:
+        click.echo("  ! Unresolved destinations after retry: " + ", ".join(unresolved_destination_ids))
+    else:
+        click.echo("  ✓ No unresolved destinations after retry pass")
 
     if verbose:
         registry_report_path = _write_entity_registry_debug_report(output_dir, registry)
