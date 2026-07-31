@@ -1,5 +1,14 @@
 # Road Trip Itinerary Generator — Requirements Document
-**Version 0.30 · July 29, 2026**
+**Version 2.0 · July 31, 2026**
+
+### Changelog for v2.0
+| # | Section | Change |
+|---|---|---|
+| 1 | Global | Promoted the validated v0.30 behavioral contract to Version 2 after successful Phase 4 selective-regeneration rollout, Phase 6 invariant validation, and Phase 7 controlled end-to-end gate run |
+| 2 | §9, §11 | Added destination-status observability outputs and selective-regeneration orchestration as the supported runtime model for Version 2 |
+| 3 | §9, §11 | Added runtime timing and retry-efficiency instrumentation so selective regeneration can be measured against full-rerun fallback cost |
+
+Version 2 preserves the v0.30 rendering, fail-closed URL, ownership, and template-integrity invariants while promoting the orchestration architecture that was validated in the Issue #6 execution track.
 
 ### Changelog for v0.30
 | # | Section | Change |

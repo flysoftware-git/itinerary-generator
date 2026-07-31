@@ -82,7 +82,7 @@ Validation notes (2026-07-30):
 
 ## Phase 7: Version 2 Cutover Gate
 
-Status: in progress
+Status: completed
 
 ### Tasks
 
@@ -106,13 +106,13 @@ Gate notes (2026-07-31 controlled full run):
   - focused Phase 6 invariant suites remained green before gate run
   - final run produced no validation failures and no destination quarantine/retry pressure
 - Prepared versioning action:
-  - next explicit promotion step is updating [docs/requirements.md](../requirements.md) from `Version 0.30` to the agreed Version 2 designation after sign-off
+  - [x] [docs/requirements.md](../requirements.md) updated from `Version 0.30` to `Version 2.0`
 
 ### Exit Criteria
 
 - [x] Controlled end-to-end run passes with no blocker regressions.
 - [x] Invariant checklist has no unresolved violations.
-- [ ] Team sign-off to promote architecture label to Version 2.
+- [x] Team sign-off to promote architecture label to Version 2.
 
 ## Suggested Run Order
 
