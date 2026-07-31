@@ -675,6 +675,7 @@ class URLDiscoverer:
                 if trail_like and url and not self._is_alltrails_trail_url(url):
                     self._log_rejected_url("attraction", dest_name, attr_name, url)
                     attr.pop("url", None)
+                    self._annotate_registry_url_decision(attr, rendered_url="", rejection_reason="url_rejected")
                     eligible_attractions.append(attr)
                     continue
                 cleaned = self._retain_discovered_url(
@@ -688,8 +689,10 @@ class URLDiscoverer:
                     self._log_rejected_url("attraction", dest_name, attr_name, url)
                     if cleaned:
                         attr["url"] = cleaned
+                        self._annotate_registry_url_decision(attr, rendered_url=cleaned)
                     else:
                         attr.pop("url", None)
+                        self._annotate_registry_url_decision(attr, rendered_url="", rejection_reason="url_rejected")
                 eligible_attractions.append(attr)
 
             if len(eligible_attractions) != len(ai.get("top_attractions", []) or []):
@@ -716,8 +719,10 @@ class URLDiscoverer:
                     self._log_rejected_url("en-route stop", dest_name, stop_name, url)
                     if cleaned:
                         stop["url"] = cleaned
+                        self._annotate_registry_url_decision(stop, rendered_url=cleaned)
                     else:
                         stop.pop("url", None)
+                        self._annotate_registry_url_decision(stop, rendered_url="", rejection_reason="url_rejected")
 
             eligible_restaurants: list[dict[str, Any]] = []
             for rest in ai.get("dinner_recommendations", []) or []:
@@ -734,8 +739,10 @@ class URLDiscoverer:
                     self._log_rejected_url("restaurant", dest_name, rest_name, url)
                     if cleaned:
                         rest["url"] = cleaned
+                        self._annotate_registry_url_decision(rest, rendered_url=cleaned)
                     else:
                         rest.pop("url", None)
+                        self._annotate_registry_url_decision(rest, rendered_url="", rejection_reason="url_rejected")
                 if self._is_restaurant_ineligible(rest, dest_name):
                     logger.info(
                         "  Restaurant freshness gate removed '%s' in '%s'",
@@ -767,8 +774,10 @@ class URLDiscoverer:
                     self._log_rejected_url("scenic drive", dest_name, drive_name, url)
                     if cleaned:
                         drive["url"] = cleaned
+                        self._annotate_registry_url_decision(drive, rendered_url=cleaned)
                     else:
                         drive.pop("url", None)
+                        self._annotate_registry_url_decision(drive, rendered_url="", rejection_reason="url_rejected")
 
             events = dest.get("cultural_events", {})
             if isinstance(events, dict):
@@ -786,8 +795,10 @@ class URLDiscoverer:
                         self._log_rejected_url("event", dest_name, event_name, url)
                         if cleaned:
                             event["url"] = cleaned
+                            self._annotate_registry_url_decision(event, rendered_url=cleaned)
                         else:
                             event.pop("url", None)
+                            self._annotate_registry_url_decision(event, rendered_url="", rejection_reason="url_rejected")
 
             self._deduplicate_within_destination(dest)
 
@@ -1143,6 +1154,27 @@ class URLDiscoverer:
             dest_name or "unknown destination",
             url or "(empty)",
         )
+
+    @staticmethod
+    def _annotate_registry_url_decision(
+        item: dict[str, Any],
+        *,
+        rendered_url: str,
+        rejection_reason: str | None = None,
+    ) -> None:
+        registry_meta = item.get("_registry", {}) if isinstance(item.get("_registry", {}), dict) else {}
+        registry_meta["validation_status"] = "accepted"
+        registry_meta["rendered_url"] = str(rendered_url or "")
+        if rejection_reason:
+            existing = [
+                str(reason or "")
+                for reason in (registry_meta.get("rejection_reasons", []) or [])
+                if str(reason or "")
+            ]
+            if rejection_reason not in existing:
+                existing.append(rejection_reason)
+            registry_meta["rejection_reasons"] = existing
+        item["_registry"] = registry_meta
 
     # ── Attractions ──────────────────────────────────────────────────────────
 

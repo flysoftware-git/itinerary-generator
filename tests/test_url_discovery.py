@@ -2583,6 +2583,9 @@ def test_audit_strips_non_alltrails_url_for_trail_like_attraction():
 
     attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
     assert "url" not in attraction
+    assert attraction["_registry"]["validation_status"] == "accepted"
+    assert attraction["_registry"]["rendered_url"] == ""
+    assert "url_rejected" in attraction["_registry"]["rejection_reasons"]
 
 
 def test_semantic_scoring_prefers_cultural_domain_over_preserve_domain():
