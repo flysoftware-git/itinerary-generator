@@ -51,19 +51,31 @@ Calibration notes (2026-07-30 controlled single-destination run):
 
 ## Phase 6: Validation And Observability
 
-Status: not started
+Status: completed
 
 ### Tasks
 
-- [ ] Run focused non-regression suite mapped to v0.30 invariants.
-- [ ] Verify destination status artifacts are stable and readable on real run output.
-- [ ] Verify registry debug artifact remains verbose-only.
-- [ ] Confirm failure isolation by destination/stage from produced artifacts.
+- [x] Run focused non-regression suite mapped to v0.30 invariants.
+- [x] Verify destination status artifacts are stable and readable on real run output.
+- [x] Verify registry debug artifact remains verbose-only.
+- [x] Confirm failure isolation by destination/stage from produced artifacts.
+
+Validation notes (2026-07-30):
+- Focused suites (all green):
+  - `tests/test_ai_content_normalization.py -k "first_day or travel_realism or departure_aligned"` → 4 passed
+  - `tests/test_url_discovery.py -k "denylist or bear or jud or fly or category or redirect or trail_like_attraction or filtered_constraints"` → 18 passed
+  - `tests/test_html_assembler.py -k "marker or getting_there or schedule_preserves_structured_one_day_schedule"` → 4 passed
+  - `tests/test_html_validator.py` → 8 passed
+- Real controlled run artifacts present and readable:
+  - `output/destination_status_report.json`
+  - `output/destination_status_report.md`
+- Destination/stage isolation confirmed by `destinations[].stage_status` and per-destination counts/triggers in status JSON.
+- Registry debug artifact did not appear in non-verbose controlled run output; code path remains gated by `if verbose` in `main.py`.
 
 ### Exit Criteria
 
-- [ ] Regressions are caught by focused suites before end-to-end run.
-- [ ] Operator can identify failing destination(s) and trigger(s) in under 2 minutes from artifacts.
+- [x] Regressions are caught by focused suites before end-to-end run.
+- [x] Operator can identify failing destination(s) and trigger(s) in under 2 minutes from artifacts.
 
 ## Phase 7: Version 2 Cutover Gate
 
