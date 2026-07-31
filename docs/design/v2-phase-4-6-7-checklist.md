@@ -82,19 +82,36 @@ Validation notes (2026-07-30):
 
 ## Phase 7: Version 2 Cutover Gate
 
-Status: not started
+Status: in progress
 
 ### Tasks
 
-- [ ] Execute one controlled end-to-end validation pass on agreed manifest.
-- [ ] Review generated itinerary + validation report + destination status artifacts.
-- [ ] Confirm non-negotiable invariants remain intact.
-- [ ] Prepare requirements/versioning update for v2 declaration.
+- [x] Execute one controlled end-to-end validation pass on agreed manifest.
+- [x] Review generated itinerary + validation report + destination status artifacts.
+- [x] Confirm non-negotiable invariants remain intact.
+- [x] Prepare requirements/versioning update for v2 declaration.
+
+Gate notes (2026-07-31 controlled full run):
+- Run id: `20260731T055856.595756Z`
+- Scope: full `trip_manifest.yaml` with env-backed credentials and all stages enabled.
+- Outcome:
+  - run ledger status: `completed`
+  - validation report: `valid=true`, `error_count=0`, `warning_count=0`
+  - destination status summary: 7/7 destinations `healthy`
+  - retry recommended: `0`
+  - retry attempted: `0`
+  - unresolved after retry: `0`
+  - retry scope reduction: `100.0%` versus full rerun fallback
+- Invariant evidence:
+  - focused Phase 6 invariant suites remained green before gate run
+  - final run produced no validation failures and no destination quarantine/retry pressure
+- Prepared versioning action:
+  - next explicit promotion step is updating [docs/requirements.md](../requirements.md) from `Version 0.30` to the agreed Version 2 designation after sign-off
 
 ### Exit Criteria
 
-- [ ] Controlled end-to-end run passes with no blocker regressions.
-- [ ] Invariant checklist has no unresolved violations.
+- [x] Controlled end-to-end run passes with no blocker regressions.
+- [x] Invariant checklist has no unresolved violations.
 - [ ] Team sign-off to promote architecture label to Version 2.
 
 ## Suggested Run Order
