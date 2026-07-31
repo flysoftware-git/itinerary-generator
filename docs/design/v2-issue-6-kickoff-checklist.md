@@ -2,11 +2,15 @@
 
 Purpose: start v2 work on a separate branch while preserving v1.4 behavior as a stable baseline.
 
+Current status:
+- Stable pre-v2 baseline commit created: `ff71a13` (`Stabilize review fixes before v2 architecture`).
+- Issue #6 architecture review has been updated to align with current v0.30 behavior and fail-closed policy requirements.
+
 ## 1. Baseline Preservation
 
-- [ ] Confirm current baseline commit hash: `9c9b0da`.
+- [x] Confirm current baseline commit hash: `ff71a13`.
 - [ ] Create annotated release tag from baseline:
-  - `git tag -a v1.4.0 -m "v1.4.0 baseline before v2/Issue #6" 9c9b0da`
+  - `git tag -a v1.4.0 -m "v1.4.0 baseline before v2/Issue #6" ff71a13`
 - [ ] Push tag:
   - `git push origin v1.4.0`
 - [ ] Verify tag points to expected commit:
@@ -14,8 +18,9 @@ Purpose: start v2 work on a separate branch while preserving v1.4 behavior as a 
 
 ## 2. V2 Branch Setup
 
-- [ ] Create Issue #6 branch from baseline tag:
-  - `git checkout -b issue-6-v2 v1.4.0`
+- [x] Create Issue #6 branch from baseline tag/lineage:
+  - active branch: `issue-6-v2`
+  - stable checkpoint committed at `ff71a13`
 - [ ] Push branch and set upstream:
   - `git push -u origin issue-6-v2`
 - [ ] Add branch protection policy (if using hosted repo rules):
@@ -120,7 +125,7 @@ Open Questions:
 
 Fill this once before coding starts so post-change deltas are unambiguous.
 
-- Baseline tag/commit: `v1.4.0` / `9c9b0da`
+- Baseline tag/commit: `v1.4.0` / `ff71a13`
 - Baseline manifests:
   - `C:/Dev/Sandbox/sw_manifest.yaml`
   - `trip_manifest.yaml`
@@ -179,3 +184,9 @@ Only begin core Issue #6 coding after all checks are complete:
 - [ ] environment tagging decisions finalized.
 - [ ] requirements and design inputs attached.
 - [ ] regression and cost guardrails agreed.
+
+## 9. Follow-On Plan
+
+- [x] Local execution plan created: [v2-issue-6-execution-plan.md](./v2-issue-6-execution-plan.md)
+- [x] Phase 0 invariants captured in-repo before core refactor work starts: [v2-issue-6-invariants.md](./v2-issue-6-invariants.md)
+- [x] Phase 1 registry/reconciliation design drafted before implementation begins: [v2-issue-6-registry-schema.md](./v2-issue-6-registry-schema.md)
