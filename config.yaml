@@ -222,6 +222,12 @@ validation:
   min_images_per_destination: 2
   report_path: "output/validation_report.json"
 
+# ── Destination retry policy (Phase 4 selective regeneration) ───────────────
+destination_retry:
+  min_url_acceptance_ratio: 0.40
+  min_accepted_by_section:
+    top_attractions: 1
+
 # ── Output ────────────────────────────────────────────────────────────────────
 output:
   path: "output/index.html"

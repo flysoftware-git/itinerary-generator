@@ -463,3 +463,101 @@ def test_selective_retry_respects_skip_flags() -> None:
     assert called["events"] == 0
     assert called["images"] == 0
     assert called["urls"] == 1
+
+
+def test_build_destination_status_report_adds_threshold_retry_triggers() -> None:
+    trip = {
+        "destinations": [
+            {
+                "id": "durango",
+                "name": "Durango",
+                "images": [{"path": "images/durango-1.jpg"}],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+    registry = {
+        "entities": [
+            {
+                "entity_id": "durango:attraction:mesa-verde",
+                "destination_id": "durango",
+                "validation_status": "accepted",
+            },
+            {
+                "entity_id": "durango:attraction:animas-river-trail",
+                "destination_id": "durango",
+                "validation_status": "rejected",
+            },
+        ],
+        "destination_view": {
+            "durango": {
+                "top_attractions": [
+                    "durango:attraction:mesa-verde",
+                    "durango:attraction:animas-river-trail",
+                ],
+                "scenic_drives": [],
+                "getting_here.en_route_stops": [],
+                "getting_there.route_options": [],
+                "dinner_recommendations": [],
+                "cultural_events": [],
+            }
+        },
+        "reports": [
+            {
+                "destination_id": "durango",
+                "accepted": ["durango:attraction:mesa-verde"],
+                "rejected": [{"entity_id": "durango:attraction:animas-river-trail", "reasons": ["url_rejected"]}],
+                "reassigned": [],
+                "quarantined": [],
+            }
+        ],
+    }
+
+    payload = main_mod._build_destination_status_report(
+        trip=trip,
+        registry=registry,
+        run_id="run-threshold",
+        skip_events=False,
+        skip_images=False,
+        skip_url_discovery=False,
+        retry_policy={
+            "min_url_acceptance_ratio": 0.8,
+            "min_accepted_by_section": {
+                "top_attractions": 2,
+            },
+        },
+    )
+
+    row = payload["destinations"][0]
+    assert row["status"] == "needs_retry"
+    assert "url_acceptance_ratio_below_threshold" in row["retry_triggers"]
+    assert "section_minimum_not_met:top_attractions" in row["retry_triggers"]
+    assert row["stage_status"]["url_discovery"]["acceptance_ratio"] == 0.5
+    assert row["stage_status"]["url_discovery"]["acceptance_ratio_threshold"] == 0.8
+    assert row["section_counts"]["top_attractions"]["total"] == 2
+    assert row["section_counts"]["top_attractions"]["accepted"] == 1
+
+
+def test_load_destination_retry_policy_reads_thresholds(tmp_path) -> None:
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "\n".join(
+            [
+                "destination_retry:",
+                "  min_url_acceptance_ratio: 0.55",
+                "  min_accepted_by_section:",
+                "    top_attractions: 2",
+                "    scenic_drives: 1",
+                "    unknown_section: 4",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    policy = main_mod._load_destination_retry_policy(cfg_path)
+
+    assert policy["min_url_acceptance_ratio"] == 0.55
+    assert policy["min_accepted_by_section"]["top_attractions"] == 2
+    assert policy["min_accepted_by_section"]["scenic_drives"] == 1
+    assert "unknown_section" not in policy["min_accepted_by_section"]

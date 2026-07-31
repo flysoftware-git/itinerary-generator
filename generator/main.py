@@ -32,6 +32,52 @@ from generator.entity_registry import build_entity_registry, reconcile_trip_from
 
 logger = logging.getLogger(__name__)
 LOG_LEVEL_CHOICES = ["debug", "info", "warning", "error", "critical"]
+_SECTION_TARGETS = {
+    "top_attractions",
+    "scenic_drives",
+    "getting_here.en_route_stops",
+    "getting_there.route_options",
+    "dinner_recommendations",
+    "cultural_events",
+}
+
+
+def _load_destination_retry_policy(config_path: str | Path) -> dict[str, Any]:
+    policy: dict[str, Any] = {
+        "min_url_acceptance_ratio": 0.0,
+        "min_accepted_by_section": {},
+    }
+    try:
+        import yaml
+
+        with Path(config_path).open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        raw_policy = cfg.get("destination_retry", {}) if isinstance(cfg.get("destination_retry", {}), dict) else {}
+
+        min_ratio = raw_policy.get("min_url_acceptance_ratio", 0.0)
+        try:
+            parsed_ratio = float(min_ratio)
+            policy["min_url_acceptance_ratio"] = min(1.0, max(0.0, parsed_ratio))
+        except (TypeError, ValueError):
+            policy["min_url_acceptance_ratio"] = 0.0
+
+        raw_min_by_section = raw_policy.get("min_accepted_by_section", {})
+        min_by_section: dict[str, int] = {}
+        if isinstance(raw_min_by_section, dict):
+            for section, value in raw_min_by_section.items():
+                section_key = str(section or "").strip()
+                if section_key not in _SECTION_TARGETS:
+                    continue
+                try:
+                    count = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if count > 0:
+                    min_by_section[section_key] = count
+        policy["min_accepted_by_section"] = min_by_section
+    except Exception:
+        return policy
+    return policy
 
 
 def _reconcile_trip_via_registry(trip: dict, *, return_registry: bool = False) -> dict | tuple[dict, dict[str, Any]]:
@@ -70,16 +116,31 @@ def _build_destination_status_report(
     skip_events: bool,
     skip_images: bool,
     skip_url_discovery: bool,
+    retry_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     entities = registry.get("entities", []) if isinstance(registry.get("entities", []), list) else []
     reports = registry.get("reports", []) if isinstance(registry.get("reports", []), list) else []
+    destination_view = registry.get("destination_view", {}) if isinstance(registry.get("destination_view", {}), dict) else {}
+
+    effective_retry_policy = retry_policy if isinstance(retry_policy, dict) else {}
+    min_url_acceptance_ratio = float(effective_retry_policy.get("min_url_acceptance_ratio", 0.0) or 0.0)
+    min_url_acceptance_ratio = min(1.0, max(0.0, min_url_acceptance_ratio))
+    min_accepted_by_section = (
+        effective_retry_policy.get("min_accepted_by_section", {})
+        if isinstance(effective_retry_policy.get("min_accepted_by_section", {}), dict)
+        else {}
+    )
 
     by_destination_entities: dict[str, list[dict[str, Any]]] = {}
+    entity_by_id: dict[str, dict[str, Any]] = {}
     for entity in entities:
         if not isinstance(entity, dict):
             continue
+        entity_id = str(entity.get("entity_id", "") or "")
         destination_id = str(entity.get("destination_id", "") or "")
         by_destination_entities.setdefault(destination_id, []).append(entity)
+        if entity_id:
+            entity_by_id[entity_id] = entity
 
     report_by_destination: dict[str, dict[str, Any]] = {}
     for report in reports:
@@ -150,6 +211,56 @@ def _build_destination_status_report(
         if not skip_url_discovery and validation_counts["total"] > 0 and validation_counts["accepted"] == 0:
             retry_triggers.append("url_collapse")
 
+        accepted_for_ratio = validation_counts["accepted"]
+        evaluated_for_ratio = (
+            validation_counts["accepted"]
+            + validation_counts["rejected"]
+            + validation_counts["needs_retry"]
+            + validation_counts["quarantined"]
+        )
+        url_acceptance_ratio = (accepted_for_ratio / evaluated_for_ratio) if evaluated_for_ratio > 0 else 1.0
+        if (
+            not skip_url_discovery
+            and min_url_acceptance_ratio > 0.0
+            and evaluated_for_ratio > 0
+            and url_acceptance_ratio < min_url_acceptance_ratio
+        ):
+            retry_triggers.append("url_acceptance_ratio_below_threshold")
+
+        section_counts: dict[str, dict[str, int]] = {}
+        destination_sections = destination_view.get(destination_id, {}) if isinstance(destination_view.get(destination_id, {}), dict) else {}
+        for section_name, refs in destination_sections.items():
+            if section_name not in _SECTION_TARGETS or not isinstance(refs, list):
+                continue
+            section_total = 0
+            section_accepted = 0
+            for ref in refs:
+                entity = entity_by_id.get(str(ref or ""))
+                if not isinstance(entity, dict):
+                    continue
+                section_total += 1
+                if str(entity.get("validation_status", "") or "").strip().lower() in {"accepted", "pending"}:
+                    section_accepted += 1
+            section_counts[section_name] = {
+                "total": section_total,
+                "accepted": section_accepted,
+            }
+
+        for section_name, minimum_required in min_accepted_by_section.items():
+            if section_name not in _SECTION_TARGETS:
+                continue
+            try:
+                min_required = int(minimum_required)
+            except (TypeError, ValueError):
+                continue
+            if min_required <= 0:
+                continue
+            current = section_counts.get(section_name, {"total": 0, "accepted": 0})
+            if current.get("total", 0) <= 0:
+                continue
+            if current.get("accepted", 0) < min_required:
+                retry_triggers.append(f"section_minimum_not_met:{section_name}")
+
         destination_status = "healthy"
         if quarantined_entity_ids or validation_counts["quarantined"] > 0:
             destination_status = "quarantined"
@@ -185,6 +296,8 @@ def _build_destination_status_report(
                         "rejected_count": validation_counts["rejected"],
                         "needs_retry_count": validation_counts["needs_retry"],
                         "quarantined_count": validation_counts["quarantined"],
+                        "acceptance_ratio": round(url_acceptance_ratio, 4),
+                        "acceptance_ratio_threshold": min_url_acceptance_ratio,
                     },
                     "reconciliation": {
                         "status": "completed",
@@ -198,6 +311,7 @@ def _build_destination_status_report(
                         "quarantined_count": len(quarantined_entity_ids),
                     },
                 },
+                "section_counts": section_counts,
             }
         )
 
@@ -665,6 +779,7 @@ def main(
 
     effective_log_level = _setup_logging(verbose, log_level)
     output_dir = Path(output)
+    retry_policy = _load_destination_retry_policy(config_path)
 
     click.echo(f"🗺  Road Trip Itinerary Generator")
     click.echo(f"   Manifest : {manifest}")
@@ -894,6 +1009,7 @@ def main(
         skip_events=skip_events,
         skip_images=skip_images,
         skip_url_discovery=skip_url_discovery,
+        retry_policy=retry_policy,
     )
     destination_status_report_path = _write_destination_status_report(output_dir, destination_status_report)
     click.echo(f"  ✓ Destination status report: {destination_status_report_path}")
@@ -923,6 +1039,7 @@ def main(
             skip_events=skip_events,
             skip_images=skip_images,
             skip_url_discovery=skip_url_discovery,
+            retry_policy=retry_policy,
         )
         destination_status_report_path = _write_destination_status_report(output_dir, destination_status_report)
         click.echo(f"  ✓ Destination status report refreshed: {destination_status_report_path}")
