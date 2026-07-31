@@ -225,3 +225,38 @@ def test_registry_roundtrip_can_strip_url_and_reassign_section_via_directives() 
     assert dest["scenic_drives"] == []
     assert [item["title"] for item in dest["ai_content"]["getting_there"]["route_options"]] == ["Turquoise Trail Scenic Byway"]
     assert dest["ai_content"]["top_attractions"][0]["url"] == ""
+
+
+def test_write_entity_registry_debug_report_creates_summary_and_payload(tmp_path) -> None:
+    registry = {
+        "entities": [
+            {"entity_id": "santafe:route_option:turquoise-trail", "display_name": "Turquoise Trail Scenic Byway"},
+            {"entity_id": "santafe:trail:dale-ball-trail", "display_name": "Dale Ball Trail"},
+        ],
+        "destination_view": {
+            "santafe": {
+                "getting_there.route_options": ["santafe:route_option:turquoise-trail"],
+                "top_attractions": ["santafe:trail:dale-ball-trail"],
+            }
+        },
+        "reports": [
+            {
+                "destination_id": "santafe",
+                "accepted": ["santafe:trail:dale-ball-trail"],
+                "rejected": [{"entity_id": "santafe:trail:ghost-ranch", "reasons": ["url_rejected"]}],
+                "reassigned": [{"entity_id": "santafe:route_option:turquoise-trail", "from": "scenic_drives", "to": "getting_there.route_options"}],
+                "quarantined": [],
+            }
+        ],
+    }
+
+    report_path = main_mod._write_entity_registry_debug_report(tmp_path, registry)
+
+    assert report_path.exists()
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["summary"]["entity_count"] == 2
+    assert payload["summary"]["destination_count"] == 1
+    assert payload["summary"]["accepted_count"] == 1
+    assert payload["summary"]["rejected_count"] == 1
+    assert payload["summary"]["reassigned_count"] == 1
+    assert payload["registry"]["entities"][0]["entity_id"] == "santafe:route_option:turquoise-trail"

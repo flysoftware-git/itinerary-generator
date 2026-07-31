@@ -33,9 +33,32 @@ logger = logging.getLogger(__name__)
 LOG_LEVEL_CHOICES = ["debug", "info", "warning", "error", "critical"]
 
 
-def _reconcile_trip_via_registry(trip: dict) -> dict:
+def _reconcile_trip_via_registry(trip: dict, *, return_registry: bool = False) -> dict | tuple[dict, dict[str, Any]]:
     registry = build_entity_registry(trip)
-    return reconcile_trip_from_registry(trip, registry)
+    reconciled = reconcile_trip_from_registry(trip, registry)
+    if return_registry:
+        return reconciled, registry
+    return reconciled
+
+
+def _write_entity_registry_debug_report(output_dir: Path, registry: dict[str, Any]) -> Path:
+    entities = registry.get("entities", []) if isinstance(registry.get("entities", []), list) else []
+    reports = registry.get("reports", []) if isinstance(registry.get("reports", []), list) else []
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "entity_count": len(entities),
+            "destination_count": len(registry.get("destination_view", {})),
+            "accepted_count": sum(len(report.get("accepted", [])) for report in reports if isinstance(report, dict)),
+            "rejected_count": sum(len(report.get("rejected", [])) for report in reports if isinstance(report, dict)),
+            "reassigned_count": sum(len(report.get("reassigned", [])) for report in reports if isinstance(report, dict)),
+            "quarantined_count": sum(len(report.get("quarantined", [])) for report in reports if isinstance(report, dict)),
+        },
+        "registry": registry,
+    }
+    path = output_dir / "entity_registry_debug.json"
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
 
 
 def _extract_http_urls_from_html_text(html_text: str) -> set[str]:
@@ -623,8 +646,11 @@ def main(
     # Post-parallel content normalization: cross-section and cross-destination dedup.
     ai_gen.normalize_trip_content(trip)
     click.echo("  ✓ Content normalized")
-    trip = _reconcile_trip_via_registry(trip)
+    trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
     click.echo("  ✓ Entity registry reconciled")
+    if verbose:
+        registry_report_path = _write_entity_registry_debug_report(output_dir, registry)
+        click.echo(f"  ✓ Entity registry debug report: {registry_report_path}")
 
     # ── Stage 6: Assemble HTML ───────────────────────────────────────────────
     click.echo("Stage 6/6 — Assembling HTML…")
