@@ -751,3 +751,35 @@ def test_annotate_retry_outcomes_zero_cap_marks_retry_cap_reached() -> None:
     assert outcomes["max_retries_per_destination_per_run"] == 0
     assert outcomes["attempted_destination_count"] == 0
     assert outcomes["not_retried_due_to_cap_count"] == 1
+
+
+def test_build_retry_efficiency_metrics_calculates_scope_reduction() -> None:
+    metrics = main_mod._build_retry_efficiency_metrics(
+        destination_count=5,
+        retry_candidate_ids=["a", "b", "c"],
+        retried_destination_ids=["b"],
+        unresolved_destination_ids=["b"],
+        max_retries_per_destination_per_run=1,
+    )
+
+    assert metrics["destination_count"] == 5
+    assert metrics["retry_candidate_count"] == 3
+    assert metrics["retried_destination_count"] == 1
+    assert metrics["unresolved_destination_count"] == 1
+    assert metrics["retry_scope_ratio"] == 0.2
+    assert metrics["retry_scope_reduction_percent"] == 80.0
+
+
+def test_build_retry_efficiency_metrics_handles_zero_destinations() -> None:
+    metrics = main_mod._build_retry_efficiency_metrics(
+        destination_count=0,
+        retry_candidate_ids=[],
+        retried_destination_ids=[],
+        unresolved_destination_ids=[],
+        max_retries_per_destination_per_run=0,
+    )
+
+    assert metrics["destination_count"] == 0
+    assert metrics["retry_scope_ratio"] == 0.0
+    assert metrics["retry_scope_reduction_percent"] == 0.0
+    assert metrics["max_retries_per_destination_per_run"] == 0

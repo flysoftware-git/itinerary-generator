@@ -25,6 +25,7 @@ import json
 import logging, os, sys
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 import click
 from generator import __version__, __template_version__
@@ -160,6 +161,37 @@ def _destination_ids_needing_attention(status_report: dict[str, Any]) -> list[st
         if terminal_state in {"retry_cap_reached_unresolved", "not_retried_due_to_cap"} and destination_id:
             unresolved.append(destination_id)
     return unresolved
+
+
+def _elapsed_seconds(started_at_perf: float) -> float:
+    return round(max(0.0, perf_counter() - started_at_perf), 3)
+
+
+def _build_retry_efficiency_metrics(
+    *,
+    destination_count: int,
+    retry_candidate_ids: list[str],
+    retried_destination_ids: list[str],
+    unresolved_destination_ids: list[str],
+    max_retries_per_destination_per_run: int,
+) -> dict[str, Any]:
+    total = max(0, int(destination_count or 0))
+    candidate_count = len(list(dict.fromkeys(retry_candidate_ids)))
+    retried_count = len(list(dict.fromkeys(retried_destination_ids)))
+    unresolved_count = len(list(dict.fromkeys(unresolved_destination_ids)))
+
+    retry_scope_ratio = (retried_count / total) if total > 0 else 0.0
+    avoided_ratio = 1.0 - retry_scope_ratio if total > 0 else 0.0
+
+    return {
+        "destination_count": total,
+        "retry_candidate_count": candidate_count,
+        "retried_destination_count": retried_count,
+        "unresolved_destination_count": unresolved_count,
+        "retry_scope_ratio": round(retry_scope_ratio, 4),
+        "retry_scope_reduction_percent": round(avoided_ratio * 100.0, 1),
+        "max_retries_per_destination_per_run": max(0, int(max_retries_per_destination_per_run or 0)),
+    }
 
 
 def _reconcile_trip_via_registry(trip: dict, *, return_registry: bool = False) -> dict | tuple[dict, dict[str, Any]]:
@@ -877,9 +909,12 @@ def main(
     verbose: bool,
 ) -> None:
     run_started_at = datetime.now(timezone.utc)
+    run_started_at_perf = perf_counter()
     run_id = run_started_at.strftime("%Y%m%dT%H%M%S.%fZ")
     ledger_path = Path(output) / "dev" / "run_ledger.jsonl"
     finalized = False
+    stage_timings: dict[str, float] = {}
+    runtime_metrics: dict[str, Any] = {}
 
     def _finalize_run(status: str, exit_code: int, error: str | None = None) -> None:
         nonlocal finalized
@@ -908,6 +943,8 @@ def main(
             "skip_url_discovery": bool(skip_url_discovery),
             "first_destination_only": bool(first_destination_only),
             "destinations": list(destinations),
+            "stage_timings_seconds": stage_timings,
+            "runtime_metrics": runtime_metrics,
         }
         try:
             _append_run_ledger(ledger_path, record)
@@ -949,6 +986,7 @@ def main(
             click.echo(f"   EnvFile  : failed to load ({exc})", err=True)
 
     # ── Stage 1: Parse & validate manifest ──────────────────────────────────
+    stage_1_started = perf_counter()
     click.echo("Stage 1/6 — Parsing manifest…")
     from generator.parser import ManifestParser
     parser = ManifestParser()
@@ -996,13 +1034,17 @@ def main(
         sys.exit(1)
 
     click.echo(f"  ✓ {len(trip['destinations'])} destination(s) loaded")
+    stage_timings["stage_1_parse_validate"] = _elapsed_seconds(stage_1_started)
+    runtime_metrics["destination_count"] = len(trip.get("destinations", []) or [])
 
     if dry_run:
         click.echo("\n✅ Dry run complete — manifest valid.")
+        stage_timings["total_pipeline"] = _elapsed_seconds(run_started_at_perf)
         _finalize_run("dry_run_completed", 0)
         return
 
     # ── Stage 2: Geocode + auto-enrich ──────────────────────────────────────
+    stage_2_started = perf_counter()
     click.echo("Stage 2/6 — Geocoding & enrichment…")
     from generator.geocoder import Geocoder
     from generator.nps_resolver import NPSResolver
@@ -1038,8 +1080,10 @@ def main(
             f.result()
     for dest in trip["destinations"]:
         click.echo(f"  \u2713 {dest['name']}: lat={dest['lat']:.4f} lng={dest['lng']:.4f} nps={dest['nps_park_code']}")
+    stage_timings["stage_2_geocode_enrich"] = _elapsed_seconds(stage_2_started)
 
     # ── Stage 3: AI content generation ──────────────────────────────────────
+    stage_3_started = perf_counter()
     click.echo("Stage 3/6 — AI content generation…")
     from generator.llm_client import MultiLLMClient
     from generator.ai_content import AIContentGenerator
@@ -1095,8 +1139,10 @@ def main(
                 dest["ai_content"]["possible_daily_schedule"] = []
 
     click.echo(f"  ✓ AI content generated for {len(trip['destinations'])} destination(s)")
+    stage_timings["stage_3_ai_generation"] = _elapsed_seconds(stage_3_started)
 
     # ── Stages 4 + 5a + 5b: run concurrently (all independent of each other) ─
+    stage_4_5_started = perf_counter()
     from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
 
     def _run_events() -> None:
@@ -1140,8 +1186,10 @@ def main(
         _stage_futures = [_stage_pool.submit(fn) for fn in (_run_events, _run_images, _run_urls)]
         for _f in _as_completed(_stage_futures):
             _f.result()
+    stage_timings["stage_4_5_parallel"] = _elapsed_seconds(stage_4_5_started)
 
     # Post-parallel content normalization: cross-section and cross-destination dedup.
+    stage_reconcile_started = perf_counter()
     ai_gen.normalize_trip_content(trip)
     click.echo("  ✓ Content normalized")
     trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
@@ -1164,7 +1212,13 @@ def main(
     click.echo(f"  ✓ Destination status report: {destination_status_report_path}")
     click.echo(f"  ✓ Destination status summary: {destination_status_markdown_path}")
 
+    retry_candidate_ids = _destination_ids_for_selective_retry(destination_status_report)
+    runtime_metrics["retry_candidate_ids"] = retry_candidate_ids
+    runtime_metrics["retry_candidate_count"] = len(retry_candidate_ids)
+    stage_timings["status_build_initial"] = _elapsed_seconds(stage_reconcile_started)
+
     retried_destination_ids: list[str] = []
+    retry_started = perf_counter()
     if max_retries_per_destination > 0:
         retried_destination_ids = _selective_retry_destinations(
             trip=trip,
@@ -1193,6 +1247,7 @@ def main(
             skip_url_discovery=skip_url_discovery,
             retry_policy=retry_policy,
         )
+    stage_timings["selective_retry"] = _elapsed_seconds(retry_started)
     destination_status_report = _annotate_retry_outcomes(
         status_report=destination_status_report,
         attempted_destination_ids=retried_destination_ids,
@@ -1203,16 +1258,32 @@ def main(
     click.echo(f"  ✓ Destination status report refreshed: {destination_status_report_path}")
     click.echo(f"  ✓ Destination status summary refreshed: {destination_status_markdown_path}")
     unresolved_destination_ids = _destination_ids_needing_attention(destination_status_report)
+    runtime_metrics["retry_efficiency"] = _build_retry_efficiency_metrics(
+        destination_count=len(trip.get("destinations", []) or []),
+        retry_candidate_ids=retry_candidate_ids,
+        retried_destination_ids=retried_destination_ids,
+        unresolved_destination_ids=unresolved_destination_ids,
+        max_retries_per_destination_per_run=max_retries_per_destination,
+    )
+    retry_efficiency = runtime_metrics.get("retry_efficiency", {}) if isinstance(runtime_metrics.get("retry_efficiency", {}), dict) else {}
+    click.echo(
+        "  ⏱ Retry scope: "
+        f"{retry_efficiency.get('retried_destination_count', 0)}/"
+        f"{retry_efficiency.get('destination_count', 0)} destination(s) retried "
+        f"({retry_efficiency.get('retry_scope_reduction_percent', 0.0):.1f}% work avoided vs full rerun)"
+    )
     if unresolved_destination_ids:
         click.echo("  ! Unresolved destinations after retry: " + ", ".join(unresolved_destination_ids))
     else:
         click.echo("  ✓ No unresolved destinations after retry pass")
+    stage_timings["stage_4_5_postprocessing"] = _elapsed_seconds(stage_reconcile_started)
 
     if verbose:
         registry_report_path = _write_entity_registry_debug_report(output_dir, registry)
         click.echo(f"  ✓ Entity registry debug report: {registry_report_path}")
 
     # ── Stage 6: Assemble HTML ───────────────────────────────────────────────
+    stage_6_started = perf_counter()
     click.echo("Stage 6/6 — Assembling HTML…")
     from generator.html_assembler import HTMLAssembler
     trip["_meta"] = {
@@ -1276,6 +1347,8 @@ def main(
                 f"calls={row.get('calls', 0)} tokens={row.get('total_tokens', 0)} "
                 f"est=${row.get('estimated_cost_usd', 0.0):.4f}"
             )
+    stage_timings["stage_6_assemble_validate"] = _elapsed_seconds(stage_6_started)
+    stage_timings["total_pipeline"] = _elapsed_seconds(run_started_at_perf)
 
     if not report["valid"]:
         click.echo(f"\n⚠️  {report['error_count']} validation error(s) found:", err=True)

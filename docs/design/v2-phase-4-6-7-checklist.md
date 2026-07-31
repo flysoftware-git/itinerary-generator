@@ -9,7 +9,7 @@ Current context:
 
 ## Phase 4: Destination Quarantine And Selective Regeneration
 
-Status: in progress
+Status: completed
 
 ### Completed
 
@@ -69,6 +69,9 @@ Validation notes (2026-07-30):
 - Real controlled run artifacts present and readable:
   - `output/destination_status_report.json`
   - `output/destination_status_report.md`
+- Runtime instrumentation baseline captured from controlled run `20260731T054400.419975Z`:
+  - stage timings (s): parse 1.177, geocode 1.021, AI 44.208, parallel 4-5 336.901, stage 6 0.229, total 383.696
+  - retry efficiency: retry candidates 0, retried destinations 0/1, retry scope reduction 100.0%
 - Destination/stage isolation confirmed by `destinations[].stage_status` and per-destination counts/triggers in status JSON.
 - Registry debug artifact did not appear in non-verbose controlled run output; code path remains gated by `if verbose` in `main.py`.
 
