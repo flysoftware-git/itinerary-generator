@@ -25,6 +25,7 @@ import json
 import logging, os, sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 import click
 from generator import __version__, __template_version__
 from generator.entity_registry import build_entity_registry, reconcile_trip_from_registry
@@ -58,6 +59,163 @@ def _write_entity_registry_debug_report(output_dir: Path, registry: dict[str, An
     }
     path = output_dir / "entity_registry_debug.json"
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
+def _build_destination_status_report(
+    *,
+    trip: dict[str, Any],
+    registry: dict[str, Any],
+    run_id: str,
+    skip_events: bool,
+    skip_images: bool,
+    skip_url_discovery: bool,
+) -> dict[str, Any]:
+    entities = registry.get("entities", []) if isinstance(registry.get("entities", []), list) else []
+    reports = registry.get("reports", []) if isinstance(registry.get("reports", []), list) else []
+
+    by_destination_entities: dict[str, list[dict[str, Any]]] = {}
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        destination_id = str(entity.get("destination_id", "") or "")
+        by_destination_entities.setdefault(destination_id, []).append(entity)
+
+    report_by_destination: dict[str, dict[str, Any]] = {}
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        destination_id = str(report.get("destination_id", "") or "")
+        if destination_id:
+            report_by_destination[destination_id] = report
+
+    destination_statuses: list[dict[str, Any]] = []
+    status_counts = {
+        "healthy": 0,
+        "degraded": 0,
+        "needs_retry": 0,
+        "quarantined": 0,
+    }
+
+    for dest in trip.get("destinations", []) or []:
+        if not isinstance(dest, dict):
+            continue
+        destination_id = str(dest.get("id", "") or "")
+        destination_name = str(dest.get("name", "") or destination_id)
+        destination_entities = by_destination_entities.get(destination_id, [])
+        reconciliation_report = report_by_destination.get(destination_id, {})
+
+        validation_counts = {
+            "total": len(destination_entities),
+            "accepted": 0,
+            "pending": 0,
+            "rejected": 0,
+            "needs_retry": 0,
+            "quarantined": 0,
+        }
+        for entity in destination_entities:
+            status = str(entity.get("validation_status", "pending") or "pending").strip().lower()
+            if status in validation_counts:
+                validation_counts[status] += 1
+            else:
+                validation_counts["pending"] += 1
+
+        rejected = reconciliation_report.get("rejected", []) if isinstance(reconciliation_report.get("rejected", []), list) else []
+        rejected_reasons = sorted(
+            {
+                str(reason or "")
+                for row in rejected
+                if isinstance(row, dict)
+                for reason in (row.get("reasons", []) or [])
+                if str(reason or "")
+            }
+        )
+        quarantined_entity_ids = (
+            reconciliation_report.get("quarantined", [])
+            if isinstance(reconciliation_report.get("quarantined", []), list)
+            else []
+        )
+
+        image_count = len(dest.get("images", []) or []) if isinstance(dest.get("images", []), list) else 0
+        cultural_events = dest.get("cultural_events", {}) if isinstance(dest.get("cultural_events", {}), dict) else {}
+        event_count = len(cultural_events.get("events", []) or []) if isinstance(cultural_events.get("events", []), list) else 0
+
+        retry_triggers: list[str] = []
+        if quarantined_entity_ids or validation_counts["quarantined"] > 0:
+            retry_triggers.append("registry_quarantined_entities")
+        if validation_counts["needs_retry"] > 0:
+            retry_triggers.append("registry_entities_needing_retry")
+        if not skip_images and image_count == 0:
+            retry_triggers.append("image_shortfall")
+        if not skip_url_discovery and validation_counts["total"] > 0 and validation_counts["accepted"] == 0:
+            retry_triggers.append("url_collapse")
+
+        destination_status = "healthy"
+        if quarantined_entity_ids or validation_counts["quarantined"] > 0:
+            destination_status = "quarantined"
+        elif retry_triggers:
+            destination_status = "needs_retry"
+        elif validation_counts["rejected"] > 0:
+            destination_status = "degraded"
+
+        status_counts[destination_status] += 1
+
+        destination_statuses.append(
+            {
+                "destination_id": destination_id,
+                "destination_name": destination_name,
+                "status": destination_status,
+                "retry_recommended": destination_status in {"needs_retry", "quarantined"},
+                "retry_triggers": retry_triggers,
+                "validation_counts": validation_counts,
+                "rejected_reasons": rejected_reasons,
+                "stage_status": {
+                    "ai_generation": {"status": "completed"},
+                    "cultural_events": {
+                        "status": "skipped" if skip_events else "completed",
+                        "event_count": event_count,
+                    },
+                    "images": {
+                        "status": "skipped" if skip_images else ("completed" if image_count > 0 else "shortfall"),
+                        "image_count": image_count,
+                    },
+                    "url_discovery": {
+                        "status": "skipped" if skip_url_discovery else "completed",
+                        "accepted_count": validation_counts["accepted"],
+                        "rejected_count": validation_counts["rejected"],
+                        "needs_retry_count": validation_counts["needs_retry"],
+                        "quarantined_count": validation_counts["quarantined"],
+                    },
+                    "reconciliation": {
+                        "status": "completed",
+                        "accepted_count": len(reconciliation_report.get("accepted", []) or [])
+                        if isinstance(reconciliation_report.get("accepted", []), list)
+                        else 0,
+                        "rejected_count": len(rejected),
+                        "reassigned_count": len(reconciliation_report.get("reassigned", []) or [])
+                        if isinstance(reconciliation_report.get("reassigned", []), list)
+                        else 0,
+                        "quarantined_count": len(quarantined_entity_ids),
+                    },
+                },
+            }
+        )
+
+    return {
+        "run_id": run_id,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "destination_count": len(destination_statuses),
+            "status_counts": status_counts,
+            "retry_recommended_count": sum(1 for item in destination_statuses if item.get("retry_recommended")),
+        },
+        "destinations": destination_statuses,
+    }
+
+
+def _write_destination_status_report(output_dir: Path, status_report: dict[str, Any]) -> Path:
+    path = output_dir / "destination_status_report.json"
+    path.write_text(json.dumps(status_report, indent=2), encoding="utf-8")
     return path
 
 
@@ -648,6 +806,16 @@ def main(
     click.echo("  ✓ Content normalized")
     trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
     click.echo("  ✓ Entity registry reconciled")
+    destination_status_report = _build_destination_status_report(
+        trip=trip,
+        registry=registry,
+        run_id=run_id,
+        skip_events=skip_events,
+        skip_images=skip_images,
+        skip_url_discovery=skip_url_discovery,
+    )
+    destination_status_report_path = _write_destination_status_report(output_dir, destination_status_report)
+    click.echo(f"  ✓ Destination status report: {destination_status_report_path}")
     if verbose:
         registry_report_path = _write_entity_registry_debug_report(output_dir, registry)
         click.echo(f"  ✓ Entity registry debug report: {registry_report_path}")

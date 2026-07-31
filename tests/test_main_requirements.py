@@ -260,3 +260,98 @@ def test_write_entity_registry_debug_report_creates_summary_and_payload(tmp_path
     assert payload["summary"]["rejected_count"] == 1
     assert payload["summary"]["reassigned_count"] == 1
     assert payload["registry"]["entities"][0]["entity_id"] == "santafe:route_option:turquoise-trail"
+
+
+def test_build_destination_status_report_marks_quarantine_and_retry_triggers() -> None:
+    trip = {
+        "destinations": [
+            {
+                "id": "santafe",
+                "name": "Santa Fe",
+                "images": [{"path": "images/santafe-1.jpg"}],
+                "cultural_events": {"events": [{"name": "Spanish Market"}]},
+            },
+            {
+                "id": "taos",
+                "name": "Taos",
+                "images": [],
+                "cultural_events": {"events": []},
+            },
+        ]
+    }
+    registry = {
+        "entities": [
+            {
+                "entity_id": "santafe:trail:dale-ball-trail",
+                "destination_id": "santafe",
+                "validation_status": "accepted",
+            },
+            {
+                "entity_id": "taos:trail:williams-lake-trail",
+                "destination_id": "taos",
+                "validation_status": "quarantined",
+            },
+            {
+                "entity_id": "taos:restaurant:closed-cafe",
+                "destination_id": "taos",
+                "validation_status": "rejected",
+            },
+        ],
+        "reports": [
+            {
+                "destination_id": "santafe",
+                "accepted": ["santafe:trail:dale-ball-trail"],
+                "rejected": [],
+                "reassigned": [],
+                "quarantined": [],
+            },
+            {
+                "destination_id": "taos",
+                "accepted": [],
+                "rejected": [{"entity_id": "taos:restaurant:closed-cafe", "reasons": ["entity_removed"]}],
+                "reassigned": [],
+                "quarantined": ["taos:trail:williams-lake-trail"],
+            },
+        ],
+    }
+
+    payload = main_mod._build_destination_status_report(
+        trip=trip,
+        registry=registry,
+        run_id="run-123",
+        skip_events=False,
+        skip_images=False,
+        skip_url_discovery=False,
+    )
+
+    assert payload["run_id"] == "run-123"
+    assert payload["summary"]["destination_count"] == 2
+    assert payload["summary"]["status_counts"]["healthy"] == 1
+    assert payload["summary"]["status_counts"]["quarantined"] == 1
+    assert payload["summary"]["retry_recommended_count"] == 1
+
+    by_destination = {row["destination_id"]: row for row in payload["destinations"]}
+    assert by_destination["santafe"]["status"] == "healthy"
+    assert by_destination["santafe"]["stage_status"]["images"]["status"] == "completed"
+
+    assert by_destination["taos"]["status"] == "quarantined"
+    assert by_destination["taos"]["retry_recommended"] is True
+    assert "registry_quarantined_entities" in by_destination["taos"]["retry_triggers"]
+    assert "image_shortfall" in by_destination["taos"]["retry_triggers"]
+    assert by_destination["taos"]["stage_status"]["images"]["status"] == "shortfall"
+    assert by_destination["taos"]["rejected_reasons"] == ["entity_removed"]
+
+
+def test_write_destination_status_report_writes_json(tmp_path) -> None:
+    status_report = {
+        "run_id": "run-abc",
+        "summary": {"destination_count": 1},
+        "destinations": [{"destination_id": "santafe", "status": "healthy"}],
+    }
+
+    report_path = main_mod._write_destination_status_report(tmp_path, status_report)
+
+    assert report_path.exists()
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["run_id"] == "run-abc"
+    assert payload["destinations"][0]["destination_id"] == "santafe"
