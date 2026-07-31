@@ -46,3 +46,51 @@ def test_build_entity_registry_captures_section_targets_and_ownership() -> None:
     assert len(destination_view["dinner_recommendations"]) == 1
     assert len(destination_view["scenic_drives"]) == 1
     assert len(destination_view["cultural_events"]) == 1
+
+
+def test_build_entity_registry_tracks_reassignment_and_rejection_directives() -> None:
+    trip = {
+        "destinations": [
+            {
+                "id": "santafe",
+                "name": "Santa Fe",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Ghost Ranch Trail",
+                            "type": "hike",
+                            "url": "https://example.com/ghost-ranch-trail",
+                            "_registry": {
+                                "validation_status": "rejected",
+                                "rejection_reasons": ["url_rejected"],
+                                "rendered_url": "",
+                            },
+                        }
+                    ],
+                },
+                "scenic_drives": [
+                    {
+                        "title": "Turquoise Trail Scenic Byway",
+                        "description": "Historic route.",
+                        "url": "https://example.com/turquoise",
+                        "_registry": {
+                            "ownership_type": "transfer_leg",
+                            "section_target": "getting_there.route_options",
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+    registry = build_entity_registry(trip)
+    report = registry["reports"][0]
+    destination_view = registry["destination_view"]["santafe"]
+    entities = {entity["display_name"]: entity for entity in registry["entities"]}
+
+    assert destination_view["scenic_drives"] == []
+    assert len(destination_view["getting_there.route_options"]) == 1
+    assert report["reassigned"][0]["from"] == "scenic_drives"
+    assert report["reassigned"][0]["to"] == "getting_there.route_options"
+    assert report["rejected"][0]["reasons"] == ["url_rejected"]
+    assert entities["Ghost Ranch Trail"]["rendered_url"] == ""

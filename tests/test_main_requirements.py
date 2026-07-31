@@ -181,3 +181,47 @@ def test_registry_roundtrip_preserves_destination_shaped_sections() -> None:
     assert [item["title"] for item in dest["scenic_drives"]] == ["Hyde Memorial Loop"]
     assert [item["name"] for item in dest["cultural_events"]["events"]] == ["Spanish Market"]
     assert dest["ai_content"]["getting_there"]["route_summary"] == "Departure leg toward Albuquerque, NM."
+
+
+def test_registry_roundtrip_can_strip_url_and_reassign_section_via_directives() -> None:
+    trip = {
+        "destinations": [
+            {
+                "id": "santafe",
+                "name": "Santa Fe",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Dale Ball Trail",
+                            "type": "hike",
+                            "url": "https://example.com/dale-ball",
+                            "_registry": {
+                                "validation_status": "accepted",
+                                "rendered_url": "",
+                            },
+                        }
+                    ],
+                    "getting_there": {"route_options": []},
+                },
+                "scenic_drives": [
+                    {
+                        "title": "Turquoise Trail Scenic Byway",
+                        "description": "Historic route.",
+                        "url": "https://example.com/turquoise",
+                        "_registry": {
+                            "ownership_type": "transfer_leg",
+                            "section_target": "getting_there.route_options",
+                        },
+                    }
+                ],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    reconciled = main_mod._reconcile_trip_via_registry(trip)
+
+    dest = reconciled["destinations"][0]
+    assert dest["scenic_drives"] == []
+    assert [item["title"] for item in dest["ai_content"]["getting_there"]["route_options"]] == ["Turquoise Trail Scenic Byway"]
+    assert dest["ai_content"]["top_attractions"][0]["url"] == ""

@@ -8,6 +8,14 @@ import re
 _TRAIL_TYPE_TOKENS = {"hike", "hiking", "trail", "trek", "walk"}
 _TRAIL_NAME_PATTERN = re.compile(r"\b(trail|hike|hiking|loop|walk|trek|path|summit|narrows)\b", re.IGNORECASE)
 _ACCEPTED_STATUSES = {"accepted", "pending"}
+_SECTION_TARGETS = (
+    "top_attractions",
+    "scenic_drives",
+    "getting_here.en_route_stops",
+    "getting_there.route_options",
+    "dinner_recommendations",
+    "cultural_events",
+)
 
 
 def _normalized_name(text: str) -> str:
@@ -51,6 +59,34 @@ def _entity_class_for(section_target: str, item: dict[str, Any]) -> str:
     return "event"
 
 
+def _registry_directives(item: dict[str, Any]) -> dict[str, Any]:
+    directives = item.get("_registry", {}) if isinstance(item.get("_registry", {}), dict) else {}
+    return directives
+
+
+def _report_for(reports: list[dict[str, Any]], destination_id: str) -> dict[str, Any]:
+    for report in reports:
+        if str(report.get("destination_id", "") or "") == destination_id:
+            return report
+    report = {
+        "destination_id": destination_id,
+        "accepted": [],
+        "rejected": [],
+        "reassigned": [],
+        "quarantined": [],
+    }
+    reports.append(report)
+    return report
+
+
+def _clean_payload(payload: dict[str, Any], rendered_url: str) -> dict[str, Any]:
+    cleaned = deepcopy(payload)
+    cleaned.pop("_registry", None)
+    if "url" in cleaned or rendered_url:
+        cleaned["url"] = rendered_url
+    return cleaned
+
+
 def _section_items(dest: dict[str, Any], section_target: str) -> list[dict[str, Any]]:
     ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content", {}), dict) else {}
     if section_target == "top_attractions":
@@ -73,58 +109,75 @@ def build_entity_registry(trip: dict[str, Any]) -> dict[str, Any]:
     entities: list[dict[str, Any]] = []
     destination_view: dict[str, dict[str, list[str]]] = {}
     reports: list[dict[str, Any]] = []
-    section_targets = (
-        "top_attractions",
-        "scenic_drives",
-        "getting_here.en_route_stops",
-        "getting_there.route_options",
-        "dinner_recommendations",
-        "cultural_events",
-    )
 
     for dest in trip.get("destinations", []) or []:
         destination_id = str(dest.get("id", "") or "")
-        destination_view[destination_id] = {section: [] for section in section_targets}
-        reports.append({
-            "destination_id": destination_id,
-            "accepted": [],
-            "rejected": [],
-            "reassigned": [],
-            "quarantined": [],
-        })
-        report = reports[-1]
+        destination_view[destination_id] = {section: [] for section in _SECTION_TARGETS}
+        report = _report_for(reports, destination_id)
 
-        for section_target in section_targets:
+        for section_target in _SECTION_TARGETS:
             for ordering_hint, item in enumerate(_section_items(dest, section_target)):
                 if not isinstance(item, dict):
                     continue
+                directives = _registry_directives(item)
                 display_name = _display_name_for(section_target, item)
                 entity_class = _entity_class_for(section_target, item)
                 normalized_name = _normalized_name(display_name)
                 entity_id = f"{destination_id}:{entity_class}:{normalized_name or ordering_hint}"
+                ownership_type = str(
+                    directives.get(
+                        "ownership_type",
+                        "transfer_leg" if section_target == "getting_there.route_options" else "destination",
+                    )
+                    or "destination"
+                )
+                target_section = str(directives.get("section_target", section_target) or section_target)
+                if target_section not in _SECTION_TARGETS:
+                    target_section = section_target
+                validation_status = str(directives.get("validation_status", "accepted") or "accepted")
+                rejection_reasons = [
+                    str(reason or "")
+                    for reason in (directives.get("rejection_reasons", []) or [])
+                    if str(reason or "")
+                ]
+                rendered_url = str(directives.get("rendered_url", item.get("url", "")) or "")
                 record = {
                     "entity_id": entity_id,
                     "destination_id": destination_id,
                     "entity_class": entity_class,
-                    "ownership_type": "transfer_leg" if section_target == "getting_there.route_options" else "destination",
+                    "ownership_type": ownership_type,
                     "source_stage": "reconciliation",
                     "display_name": display_name,
                     "normalized_name": normalized_name,
                     "description": _description_for(section_target, item),
-                    "raw_payload": deepcopy(item),
+                    "raw_payload": _clean_payload(item, rendered_url),
                     "confidence": "high",
-                    "validation_status": "accepted",
-                    "rejection_reasons": [],
-                    "rendered_url": str(item.get("url", "") or ""),
+                    "validation_status": validation_status,
+                    "rejection_reasons": rejection_reasons,
+                    "rendered_url": rendered_url,
                     "candidate_urls": list(item.get("url_candidates", []) or []) if isinstance(item.get("url_candidates", []), list) else [],
-                    "section_target": section_target,
+                    "section_target": target_section,
                     "ordering_hint": ordering_hint,
                     "shared_group_id": None,
                     "metadata": {},
                 }
                 entities.append(record)
-                destination_view[destination_id][section_target].append(entity_id)
-                report["accepted"].append(entity_id)
+                destination_view[destination_id][target_section].append(entity_id)
+                if target_section != section_target:
+                    report["reassigned"].append({
+                        "entity_id": entity_id,
+                        "from": section_target,
+                        "to": target_section,
+                    })
+                if validation_status == "quarantined":
+                    report["quarantined"].append(entity_id)
+                elif validation_status in _ACCEPTED_STATUSES:
+                    report["accepted"].append(entity_id)
+                else:
+                    report["rejected"].append({
+                        "entity_id": entity_id,
+                        "reasons": rejection_reasons,
+                    })
 
     return {
         "entities": entities,
