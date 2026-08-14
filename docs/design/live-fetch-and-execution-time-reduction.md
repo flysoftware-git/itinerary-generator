@@ -278,3 +278,58 @@ drive that happens to lie along the route between two destinations should
 also be surfaced as an en-route stop candidate. That's a distinct feature —
 cross-referencing scenic-drive location against route geometry — not
 something this batching change provides.
+
+## 5. Content-generation provider failover
+
+Follow-up to the dipstick49 validation run (§0's "provider-outage regime"):
+prompted by watching the llm_client.py/grok_search.py circuit breakers trip
+correctly during a real ~40-minute Grok outage, but with no way to actually
+keep making progress once tripped besides waiting out the cooldown.
+
+**Scope decision (explicit, not full parity with GH #64/#65):** content
+generation only. Search/harvest (`grok_search.py`) has no alternative-
+provider implementation at all — Grok's built-in web-search capability
+isn't replicated for any other provider in this codebase, and building
+that (e.g. wiring up Claude's web-search tool: different API shape,
+tool-use response parsing, mapping into the harvest-row format
+`url_discovery.py` expects) is a separately-scoped, larger effort. This
+section covers `llm_client.py`'s content-generation calls only, which
+already had full multi-provider plumbing (openai/anthropic/gemini/
+deepseek/grok) from GH #64/#65's groundwork.
+
+**Mechanism:** `MultiLLMClient` accepts optional `ai.fallback_provider` /
+`ai.fallback_model` config (see `config.yaml`). When set, a second, fully
+independent `MultiLLMClient` instance is constructed eagerly at startup
+(not lazily on first failover — a missing fallback API key must fail loudly
+at construct time, not deep into a run at the exact moment the primary is
+already struggling). It shares the primary's `UsageTracker` instance so
+cost accounting stays centralized regardless of which provider actually
+served a call (GH #66's explicit ask).
+
+In `generate_json`, after the primary's own cache is checked (a cache hit
+is served regardless of breaker state — no need to fail over for something
+already known), if the primary's circuit breaker is open and a fallback is
+configured, the call is transparently delegated to the fallback instance's
+own `generate_json` instead of raising `LLMCircuitOpenError`. The fallback
+runs through its own full stack (its own cache, its own breaker, its own
+transient-error classification) — this is deliberately a single level of
+failover, no chains. Recovery is automatic and not sticky: since
+`is_circuit_open()` is checked fresh on every call, as soon as the
+primary's cooldown expires, subsequent calls go straight back to it without
+needing to explicitly "switch back."
+
+A `fallback_provider` equal to the primary `provider` is ignored (logged,
+not acted on) — both because it's nonsensical and because it would recurse
+into constructing a fallback-of-itself via the same config.yaml.
+
+Not implemented: manifest-level fallback override (only config.yaml-level
+for this first cut), and any failover for the search/harvest layer (the
+harder, higher-value half of the original outage — see scope decision
+above; tracked separately, not yet scheduled).
+
+Tests: `test_generate_json_fails_over_to_fallback_when_primary_circuit_open`,
+`test_generate_json_without_fallback_still_raises_when_circuit_open`,
+`test_generate_json_failover_shares_usage_tracker_with_primary`,
+`test_construct_builds_fallback_client_from_config_and_fails_fast_on_missing_key`,
+`test_construct_ignores_fallback_provider_matching_primary` in
+`tests/test_llm_client.py`.

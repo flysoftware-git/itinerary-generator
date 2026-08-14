@@ -180,6 +180,7 @@ class MultiLLMClient:
         self,
         config_path: str | Path = "config.yaml",
         llm_overrides: dict[str, Any] | None = None,
+        usage_tracker: "UsageTracker | None" = None,
     ) -> None:
         import yaml
 
@@ -202,7 +203,34 @@ class MultiLLMClient:
         self.temperature = float(llm_cfg.get("temperature", ai_cfg.get("temperature", legacy_cfg.get("temperature", 0.7))))
         self.max_tokens = int(llm_cfg.get("max_tokens", ai_cfg.get("max_tokens", legacy_cfg.get("max_tokens", 4096))))
 
-        self.usage_tracker = UsageTracker()
+        # Shared across a primary instance and its fallback (if any) so cost
+        # accounting stays centralized regardless of which provider actually
+        # served a given call -- a fresh per-instance tracker would silently
+        # lose track of spend incurred during failover.
+        self.usage_tracker = usage_tracker or UsageTracker()
+        self._config_path = config_path
+        self._fallback_client: "MultiLLMClient | None" = None
+        fallback_provider = str(
+            llm_cfg.get("fallback_provider") or ai_cfg.get("fallback_provider") or ""
+        ).strip().lower()
+        if fallback_provider and fallback_provider != self.provider:
+            fallback_model = llm_cfg.get("fallback_model") or ai_cfg.get("fallback_model")
+            # Constructed eagerly (not on first failover) so a misconfigured
+            # or missing fallback API key fails loudly at startup, matching
+            # the eager-key-check philosophy already used for anthropic/
+            # gemini above -- not silently discovered deep into a run at the
+            # exact moment the primary is already struggling.
+            self._fallback_client = MultiLLMClient(
+                config_path,
+                llm_overrides={"provider": fallback_provider, "model": fallback_model},
+                usage_tracker=self.usage_tracker,
+            )
+        elif fallback_provider:
+            logger.warning(
+                "ai.fallback_provider ('%s') is the same as ai.provider; ignoring (no fallback configured).",
+                fallback_provider,
+            )
+
         self._json_cache: dict[tuple[str, str, str, str, float, int], dict[str, Any]] = {}
         self._json_cache_lock = threading.Lock()
         self._circuit_breaker_threshold = max(
@@ -401,6 +429,22 @@ class MultiLLMClient:
             cached = self._json_cache.get(cache_key)
         if cached is not None:
             return copy.deepcopy(cached)
+
+        if self._fallback_client is not None and self.is_circuit_open():
+            logger.warning(
+                "LLM circuit breaker open for '%s/%s'; failing over to '%s/%s' for this call.",
+                self.provider,
+                self.model,
+                self._fallback_client.provider,
+                self._fallback_client.model,
+            )
+            return self._fallback_client.generate_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                operation=operation,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
 
         self._circuit_breaker_check()
         try:

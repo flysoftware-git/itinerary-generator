@@ -28,6 +28,7 @@ def _make_client(provider: str = "openai", *, threshold: int = 3, cooldown: floa
     client._circuit_breaker_lock = threading.Lock()
     client._circuit_breaker_failure_times = []
     client._circuit_breaker_open_until = 0.0
+    client._fallback_client = None
     return client
 
 
@@ -154,6 +155,75 @@ def test_generate_json_does_not_count_non_transient_errors_toward_breaker() -> N
     assert client.is_circuit_open() is False
 
 
+def test_generate_json_fails_over_to_fallback_when_primary_circuit_open() -> None:
+    """The actual point of this session's failover work: when the primary
+    provider's breaker is open and a fallback is configured, calls route to
+    the fallback transparently instead of raising LLMCircuitOpenError."""
+    fallback = _make_client(provider="anthropic")
+    fallback._call_anthropic = lambda *a, **k: (
+        '{"answer": "from-fallback"}',
+        {"prompt_tokens": 2, "completion_tokens": 2, "model": "claude-3-5-sonnet-latest"},
+    )
+
+    primary = _make_client(provider="openai", threshold=1, cooldown=60.0)
+    primary._fallback_client = fallback
+    primary._call_openai = lambda *a, **k: (_ for _ in ()).throw(
+        requests.exceptions.ConnectionError("refused")
+    )
+
+    # Trip the primary's breaker (threshold=1).
+    with pytest.raises(requests.exceptions.ConnectionError):
+        primary.generate_json(system_prompt="s", user_prompt="u", operation="op")
+    assert primary.is_circuit_open() is True
+
+    # Next call must transparently use the fallback, not raise.
+    out = primary.generate_json(system_prompt="s", user_prompt="u2", operation="op")
+    assert out == {"answer": "from-fallback"}
+
+
+def test_generate_json_without_fallback_still_raises_when_circuit_open() -> None:
+    """No fallback configured (the default) -- unchanged behavior: raise
+    LLMCircuitOpenError so the caller's own failure handling takes over."""
+    client = _make_client(provider="openai", threshold=1, cooldown=60.0)
+    client._call_openai = lambda *a, **k: (_ for _ in ()).throw(
+        requests.exceptions.ConnectionError("refused")
+    )
+
+    with pytest.raises(requests.exceptions.ConnectionError):
+        client.generate_json(system_prompt="s", user_prompt="u", operation="op")
+
+    with pytest.raises(LLMCircuitOpenError):
+        client.generate_json(system_prompt="s", user_prompt="u2", operation="op")
+
+
+def test_generate_json_failover_shares_usage_tracker_with_primary() -> None:
+    """Cost accounting must stay centralized -- spend incurred on the
+    fallback provider must still show up in the primary's usage_tracker,
+    the one the rest of the app queries for cost reporting."""
+    shared_tracker = UsageTracker()
+    fallback = _make_client(provider="anthropic")
+    fallback.usage_tracker = shared_tracker
+    fallback._call_anthropic = lambda *a, **k: (
+        '{"ok": true}',
+        {"prompt_tokens": 10, "completion_tokens": 5, "model": "claude-3-5-sonnet-latest"},
+    )
+
+    primary = _make_client(provider="openai", threshold=1, cooldown=60.0)
+    primary.usage_tracker = shared_tracker
+    primary._fallback_client = fallback
+    primary._call_openai = lambda *a, **k: (_ for _ in ()).throw(
+        requests.exceptions.ConnectionError("refused")
+    )
+
+    with pytest.raises(requests.exceptions.ConnectionError):
+        primary.generate_json(system_prompt="s", user_prompt="u", operation="op")
+    primary.generate_json(system_prompt="s", user_prompt="u2", operation="op")
+
+    summary = shared_tracker.summary()
+    assert summary["total_calls"] == 1
+    assert summary["models"][0]["provider"] == "anthropic"
+
+
 @pytest.mark.parametrize(
     "exc, expected",
     [
@@ -239,6 +309,52 @@ def test_construct_fails_fast_when_gemini_api_key_missing(tmp_path, monkeypatch)
         assert False, "expected missing GEMINI_API_KEY to fail at construct time"
     except KeyError as exc:
         assert "GEMINI_API_KEY" in str(exc)
+
+
+def test_construct_builds_fallback_client_from_config_and_fails_fast_on_missing_key(tmp_path, monkeypatch) -> None:
+    """ai.fallback_provider/fallback_model must construct a real fallback
+    MultiLLMClient eagerly at startup -- not lazily on first failover, which
+    would surface a missing fallback API key deep into a run at exactly the
+    moment the primary is already struggling."""
+    monkeypatch.setenv("OPENAI_API_KEY", "primary-test-key")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "ai:\n"
+        "  provider: openai\n"
+        "  model: gpt-4o-mini\n"
+        "  fallback_provider: anthropic\n"
+        "  fallback_model: claude-3-5-sonnet-latest\n",
+        encoding="utf-8",
+    )
+
+    try:
+        MultiLLMClient(config_path=str(config_path))
+        assert False, "expected missing fallback ANTHROPIC_API_KEY to fail at construct time"
+    except KeyError as exc:
+        assert "ANTHROPIC_API_KEY" in str(exc)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fallback-test-key")
+    client = MultiLLMClient(config_path=str(config_path))
+    assert client._fallback_client is not None
+    assert client._fallback_client.provider == "anthropic"
+    assert client._fallback_client.model == "claude-3-5-sonnet-latest"
+    assert client._fallback_client.usage_tracker is client.usage_tracker
+
+
+def test_construct_ignores_fallback_provider_matching_primary(tmp_path, monkeypatch) -> None:
+    """A fallback_provider equal to the primary provider is nonsensical
+    (and would recurse into constructing itself as its own fallback via the
+    same config.yaml) -- must be ignored, not acted on."""
+    monkeypatch.setenv("OPENAI_API_KEY", "primary-test-key")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "ai:\n  provider: openai\n  model: gpt-4o-mini\n  fallback_provider: openai\n",
+        encoding="utf-8",
+    )
+
+    client = MultiLLMClient(config_path=str(config_path))
+    assert client._fallback_client is None
 
 
 def test_call_anthropic_marks_system_prompt_as_ephemeral_cache_breakpoint(monkeypatch) -> None:

@@ -20,6 +20,17 @@ ai:
   max_concurrent_destinations: 4
   grok_max_concurrent_destinations: 1
   enable_url_candidate_experiment: false
+  # Optional content-generation failover: when the primary provider's circuit
+  # breaker opens (repeated transient errors -- see llm_client.py), calls are
+  # transparently routed to this fallback provider/model instead of failing.
+  # Requires the fallback provider's own API key to be present in the
+  # environment (checked eagerly at startup, same as the primary). Leave
+  # unset (or comment out) to disable -- the default, unchanged behavior.
+  # Note: this only covers content-generation calls (llm_client.py). It does
+  # NOT cover search/harvest calls (grok_search.py), which have no
+  # alternative-provider implementation.
+  # fallback_provider: "openai"
+  # fallback_model: "gpt-4o-mini"
 
 # ── Azure OpenAI (legacy compatibility) ──────────────────────────────────────
 azure_openai:
