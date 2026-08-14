@@ -148,3 +148,313 @@ def test_cross_destination_dedup_leaves_unique_values_unchanged():
     gen._deduplicate_cross_destination_what_to_know(trip)
     assert "flash floods" in trip["destinations"][0]["what_to_know"]["safety_considerations"]
     assert "altitude" in trip["destinations"][1]["what_to_know"]["safety_considerations"].lower()
+
+
+def test_inject_travel_realism_uses_default_day_start_time_for_arrival_leg():
+    gen = _make_gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Explore downtown."},
+                {"period": "Afternoon", "summary": "Museum visit."},
+                {"period": "Evening", "summary": "Dinner."},
+            ],
+        }
+    ]
+
+    out = gen._inject_travel_realism(
+        days=days,
+        getting_here={"drive_time": "2 hours"},
+        previous_destination="Las Vegas Airport",
+        next_destination="Zion National Park",
+        default_day_start_time="10:00 AM",
+    )
+
+    morning = out[0]["periods"][0]["summary"]
+    assert "Travel from Las Vegas Airport" in morning
+    assert "depart around 10:00 AM" in morning
+    assert "arrival around 12:00 PM" in morning
+
+
+def test_inject_travel_realism_honors_destination_start_time_override():
+    gen = _make_gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Explore downtown."},
+                {"period": "Afternoon", "summary": "Museum visit."},
+                {"period": "Evening", "summary": "Dinner."},
+            ],
+        }
+    ]
+
+    out = gen._inject_travel_realism(
+        days=days,
+        getting_here={"drive_time": "2 hours"},
+        previous_destination="Las Vegas Airport",
+        next_destination="Zion National Park",
+        default_day_start_time="10:00 AM",
+        destination_day_start_time="8:00 AM",
+    )
+
+    morning = out[0]["periods"][0]["summary"]
+    assert "depart around 8:00 AM" in morning
+    assert "arrival around 10:00 AM" in morning
+
+
+def test_inject_travel_realism_packs_multiple_afternoon_activities_with_default_budget():
+    gen = _make_gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Transit."},
+                {"period": "Afternoon", "summary": "Old afternoon text."},
+                {"period": "Evening", "summary": "Dinner."},
+            ],
+        }
+    ]
+    attractions = [
+        {"name": "The Narrows", "duration": "2 hours"},
+        {"name": "Emerald Pools Trail", "duration": "1.5 hours"},
+        {"name": "Canyon Overlook Trail", "duration": "1 hour"},
+    ]
+
+    out = gen._inject_travel_realism(
+        days=days,
+        getting_here={"drive_time": "2 hours"},
+        previous_destination="Las Vegas Airport",
+        next_destination="Zion National Park",
+        default_day_start_time="10:00 AM",
+        attractions=attractions,
+        default_daily_activity_hours=5,
+    )
+
+    afternoon = out[0]["periods"][1]["summary"]
+    # The activity budget represents willingness/time for activities in a
+    # normal full day -- on an arrival day the 2-hour drive itself eats
+    # directly into that 5-hour allotment, leaving 3 hours: The Narrows (2h)
+    # + Canyon Overlook Trail (1h) fit exactly; Emerald Pools Trail (1.5h)
+    # does not.
+    assert "fit multiple activities" in afternoon
+    assert "The Narrows" in afternoon
+    assert "Canyon Overlook Trail" in afternoon
+    assert "Emerald Pools Trail" not in afternoon
+
+
+def test_inject_travel_realism_respects_destination_activity_hour_override():
+    gen = _make_gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Transit."},
+                {"period": "Afternoon", "summary": "Old afternoon text."},
+                {"period": "Evening", "summary": "Dinner."},
+            ],
+        }
+    ]
+    attractions = [
+        {"name": "The Narrows", "duration": "2 hours"},
+        {"name": "Emerald Pools Trail", "duration": "1.5 hours"},
+        {"name": "Canyon Overlook Trail", "duration": "1 hour"},
+    ]
+
+    out = gen._inject_travel_realism(
+        days=days,
+        getting_here={"drive_time": "2 hours"},
+        previous_destination="Las Vegas Airport",
+        next_destination="Zion National Park",
+        default_day_start_time="10:00 AM",
+        attractions=attractions,
+        default_daily_activity_hours=5,
+        destination_daily_activity_hours=2,
+    )
+
+    # A 2-hour destination override minus the 2-hour drive leaves no activity
+    # budget at all -- packing must decline rather than force a plan into
+    # zero remaining time, proving the override value is actually consulted
+    # (a real day-vs-drive-time interaction, not just a smaller version of
+    # the default-budget test above).
+    afternoon = out[0]["periods"][1]["summary"]
+    assert afternoon == "Old afternoon text."
+
+
+def test_inject_travel_realism_extends_packing_to_day2_plus_with_rotated_attractions():
+    """Regression: capacity-aware Afternoon packing previously only ever
+    applied to Day 1's Afternoon of a non-first destination arriving via a
+    recorded drive -- an in-stay Day 2+ just kept generic/rotated-name text
+    even though it has the full activity budget available with zero transit
+    friction. Day index must also rotate which attractions are considered
+    first, so consecutive days don't greedily pick the identical set."""
+    gen = _make_gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Transit."},
+                {"period": "Afternoon", "summary": "Old afternoon text."},
+                {"period": "Evening", "summary": "Dinner."},
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Free morning."},
+                {"period": "Afternoon", "summary": "Old afternoon text."},
+                {"period": "Evening", "summary": "Dinner."},
+            ],
+        },
+        {
+            "day_label": "Day 3",
+            "periods": [
+                {"period": "Morning", "summary": "Free morning."},
+                {"period": "Afternoon", "summary": "Old afternoon text."},
+                {"period": "Evening", "summary": "Dinner."},
+            ],
+        },
+    ]
+    attractions = [
+        {"name": "The Narrows", "duration": "1 hour"},
+        {"name": "Emerald Pools Trail", "duration": "1 hour"},
+        {"name": "Canyon Overlook Trail", "duration": "1 hour"},
+        {"name": "Weeping Rock", "duration": "1 hour"},
+    ]
+
+    out = gen._inject_travel_realism(
+        days=days,
+        getting_here={},
+        previous_destination="none",
+        next_destination="Bryce Canyon National Park",
+        default_day_start_time="10:00 AM",
+        attractions=attractions,
+        default_daily_activity_hours=5,
+    )
+
+    day2_afternoon = out[1]["periods"][1]["summary"]
+    day3_afternoon = out[2]["periods"][1]["summary"]
+    assert "fit multiple activities" in day2_afternoon.lower()
+    assert "fit multiple activities" in day3_afternoon.lower()
+    # Rotated starting point means Day 2 and Day 3 don't pack the identical set.
+    assert day2_afternoon != day3_afternoon
+
+
+def test_inject_travel_realism_day2_plus_packing_declines_with_insufficient_attractions():
+    gen = _make_gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Transit."},
+                {"period": "Afternoon", "summary": "Old afternoon text."},
+                {"period": "Evening", "summary": "Dinner."},
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Free morning."},
+                {"period": "Afternoon", "summary": "Keep this specific text."},
+                {"period": "Evening", "summary": "Dinner."},
+            ],
+        },
+    ]
+
+    out = gen._inject_travel_realism(
+        days=days,
+        getting_here={},
+        previous_destination="none",
+        next_destination="Bryce Canyon National Park",
+        default_day_start_time="10:00 AM",
+        attractions=[{"name": "Only One Attraction", "duration": "1 hour"}],
+        default_daily_activity_hours=5,
+    )
+
+    assert out[1]["periods"][1]["summary"] == "Keep this specific text."
+
+
+def test_normalize_schedule_multi_day_strips_arrival_checkin_from_day_two_plus():
+    gen = _make_gen()
+
+    schedule = {
+        "morning": "Arrive at Bryce Canyon National Park and check in to your lodging at 4:00 PM.",
+        "afternoon": "After arrival, explore Navajo Loop Trail and Bryce Point.",
+        "evening": "Watch sunset from Bryce Point, then dinner at Bryce Canyon Lodge.",
+    }
+
+    out = gen._normalize_schedule(
+        schedule=schedule,
+        restaurants=[{"name": "Bryce Canyon Lodge"}],
+        dates="June 1-3, 2026",
+        attractions=[],
+        getting_here={"drive_time": "2 hours"},
+        previous_destination="Zion National Park",
+        next_destination="Capitol Reef National Park",
+    )
+
+    assert len(out) == 3
+
+    day2_morning = out[1]["periods"][0]["summary"].lower()
+    day3_morning = out[2]["periods"][0]["summary"].lower()
+    assert "check in" not in day2_morning
+    assert "check-in" not in day2_morning
+    assert "arrive at" not in day2_morning
+    assert "check in" not in day3_morning
+    assert "check-in" not in day3_morning
+    assert "arrive at" not in day3_morning
+
+
+def test_inject_travel_realism_does_not_duplicate_existing_dinner_phrase():
+    gen = _make_gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Travel day."},
+                {"period": "Afternoon", "summary": "Explore downtown."},
+                {"period": "Evening", "summary": "Dine at Painted Pony Restaurant for a taste of local cuisine."},
+            ],
+        }
+    ]
+
+    out = gen._inject_travel_realism(
+        days,
+        {"drive_time": "2 hours"},
+        "Las Vegas Airport",
+        "St. George",
+        restaurants=[{"name": "Painted Pony Restaurant"}],
+    )
+
+    evening = out[0]["periods"][2]["summary"]
+    assert evening == "Dine at Painted Pony Restaurant for a taste of local cuisine."
+    assert "Plan dinner at Painted Pony Restaurant" not in evening
+
+
+def test_inject_travel_realism_does_not_append_block_filler_phrases() -> None:
+    gen = _make_gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Start early and avoid crowds."},
+                {"period": "Afternoon", "summary": "Explore nearby highlights."},
+                {"period": "Evening", "summary": "Dinner."},
+            ],
+        }
+    ]
+
+    out = gen._inject_travel_realism(
+        days=days,
+        getting_here={"drive_time": "2 hours"},
+        previous_destination="Las Vegas Airport",
+        next_destination="Zion National Park",
+        attractions=[{"name": "The Narrows", "duration": "2 hours"}],
+    )
+
+    morning = out[0]["periods"][0]["summary"]
+    afternoon = out[0]["periods"][1]["summary"]
+    assert "in this block" not in morning.lower()
+    assert "in this block" not in afternoon.lower()
+    assert "center this block around" not in afternoon.lower()

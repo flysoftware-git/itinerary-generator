@@ -1,4 +1,4 @@
-from generator.entity_registry import build_entity_registry
+from generator.entity_registry import build_entity_registry, reconcile_schedule_from_registry, reconcile_trip_from_registry
 
 
 def test_build_entity_registry_captures_section_targets_and_ownership() -> None:
@@ -132,3 +132,161 @@ def test_build_entity_registry_includes_removed_entity_decisions() -> None:
     assert registry["destination_view"]["pagosa"]["dinner_recommendations"] == []
     assert report["rejected"][0]["reasons"] == ["entity_removed"]
     assert entities["Nello's Bistro"]["metadata"]["removed"] is True
+
+
+def test_reconcile_schedule_from_registry_scrubs_rejected_attraction_mention() -> None:
+    trip = {
+        "destinations": [
+            {
+                "id": "telluride",
+                "name": "Telluride",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Bear Creek Falls",
+                            "type": "hike",
+                            "url": "https://example.com/bear-creek",
+                            "_registry": {"validation_status": "rejected", "rejection_reasons": ["url_rejected"]},
+                        },
+                    ],
+                    "possible_daily_schedule": [
+                        {
+                            "day_label": "Day 1",
+                            "periods": [
+                                {"period": "Morning", "summary": "Start with Bear Creek Falls before lunch."},
+                                {"period": "Afternoon", "summary": "Explore nearby highlights."},
+                                {"period": "Evening", "summary": "Dinner in town."},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+
+    registry = build_entity_registry(trip)
+    reconciled = reconcile_trip_from_registry(trip, registry)
+    reconcile_schedule_from_registry(reconciled, registry)
+
+    morning = reconciled["destinations"][0]["ai_content"]["possible_daily_schedule"][0]["periods"][0]["summary"].lower()
+    assert "bear creek falls" not in morning
+    assert "currently eligible" in morning
+
+
+def test_reconcile_schedule_from_registry_covers_non_attraction_sections() -> None:
+    """Regression: the old audit-time reconciler only ever looked at
+    top_attractions -- a rejected restaurant/scenic-drive/en-route-stop
+    mention was never scrubbed from the schedule. The registry-based version
+    spans every section."""
+    trip = {
+        "destinations": [
+            {
+                "id": "moab",
+                "name": "Moab",
+                "ai_content": {
+                    "dinner_recommendations": [
+                        {
+                            "name": "Sunset Grill",
+                            "url": "https://example.com/sunset-grill",
+                            "_registry": {"validation_status": "rejected", "rejection_reasons": ["closed_business"]},
+                        },
+                    ],
+                    "possible_daily_schedule": [
+                        {
+                            "day_label": "Day 1",
+                            "periods": [
+                                {"period": "Morning", "summary": "Explore town."},
+                                {"period": "Afternoon", "summary": "Free time."},
+                                {"period": "Evening", "summary": "Dinner at Sunset Grill overlooking the canyon."},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+
+    registry = build_entity_registry(trip)
+    reconciled = reconcile_trip_from_registry(trip, registry)
+    reconcile_schedule_from_registry(reconciled, registry)
+
+    evening = reconciled["destinations"][0]["ai_content"]["possible_daily_schedule"][0]["periods"][2]["summary"].lower()
+    assert "sunset grill" not in evening
+    assert "eligible" in evening
+
+
+def test_reconcile_schedule_from_registry_scrubs_threshold_demoted_mention_even_though_accepted() -> None:
+    """A trail demoted to a plain attraction for exceeding the mileage
+    threshold stays 'accepted' in the registry (it's still present, just
+    re-typed) -- but a schedule mention still implies the original hike
+    recommendation, which is no longer accurate and must still be scrubbed."""
+    trip = {
+        "destinations": [
+            {
+                "id": "telluride",
+                "name": "Telluride",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "San Miguel River Trail",
+                            "type": "attraction",
+                            "_registry": {
+                                "validation_status": "accepted",
+                                "rejection_reasons": ["threshold_demoted_to_attraction"],
+                            },
+                        },
+                        {"name": "Bridal Veil Falls", "type": "attraction"},
+                    ],
+                    "possible_daily_schedule": [
+                        {
+                            "day_label": "Day 1",
+                            "periods": [
+                                {"period": "Morning", "summary": "Start with San Miguel River Trail before lunch."},
+                                {"period": "Afternoon", "summary": "Explore nearby highlights."},
+                                {"period": "Evening", "summary": "Dinner in town."},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+
+    registry = build_entity_registry(trip)
+    reconciled = reconcile_trip_from_registry(trip, registry)
+    reconcile_schedule_from_registry(reconciled, registry)
+
+    morning = reconciled["destinations"][0]["ai_content"]["possible_daily_schedule"][0]["periods"][0]["summary"].lower()
+    assert "san miguel river trail" not in morning
+    assert "currently eligible" in morning
+
+
+def test_reconcile_schedule_from_registry_preserves_mentions_of_accepted_entities() -> None:
+    trip = {
+        "destinations": [
+            {
+                "id": "telluride",
+                "name": "Telluride",
+                "ai_content": {
+                    "top_attractions": [
+                        {"name": "Bridal Veil Falls", "type": "attraction"},
+                    ],
+                    "possible_daily_schedule": [
+                        {
+                            "day_label": "Day 1",
+                            "periods": [
+                                {"period": "Morning", "summary": "Visit Bridal Veil Falls before lunch."},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+
+    registry = build_entity_registry(trip)
+    reconciled = reconcile_trip_from_registry(trip, registry)
+    reconcile_schedule_from_registry(reconciled, registry)
+
+    morning = reconciled["destinations"][0]["ai_content"]["possible_daily_schedule"][0]["periods"][0]["summary"]
+    assert "Bridal Veil Falls" in morning

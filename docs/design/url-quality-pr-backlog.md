@@ -1,12 +1,26 @@
 # URL Quality PR Backlog (v1.4 Planning)
 
-This note tracks the next batch of URL quality work after v1.3 behavior hardening.
-Scope is analysis/backlog only: no runtime behavior changes are applied by this note.
+This note tracks URL quality hardening after repeated reopened regressions.
+Scope is planning and sequencing for quality-first implementation.
 
 ## Context
-- Current pipeline can emit technically usable fallback links that are weak quality evidence.
-- Logging sometimes conflates "resolved" with "fallback assigned" semantics.
-- Full-run costs have increased enough that quality instrumentation must be low-overhead and actionable.
+- Reopened defects show repeated publication of ambiguous/fallback links for named entities.
+- Logging and artifacts do not yet make provenance/decision state the controlling mechanism.
+- Long end-to-end reruns are expensive and weak at isolating root causes; short-gate validation is required.
+
+## PR-0: Provenance-Controlled Publication Contract
+- Goal: make provenance and decision state the only authority for final link publication.
+- Required behavior:
+  - renderers consume decisioned URL state only
+  - renderers do not synthesize named-entity links from names
+  - fallback/query URLs remain diagnostics metadata unless explicitly category-contextual
+- Primary files:
+  - `generator/url_discovery.py`
+  - `generator/entity_registry.py`
+  - `generator/html_assembler.py`
+- Acceptance criteria:
+  - Named entities with unresolved/ambiguous state render as plain text.
+  - Published links are explainable via provenance state + reason code.
 
 ## PR-1: Explicit URL State Model
 - Goal: separate semantic states from transport success.
@@ -75,11 +89,19 @@ Scope is analysis/backlog only: no runtime behavior changes are applied by this 
   - Regressions trigger visible warnings in output report.
 
 ## Rollout Order
-1. PR-1 (state model)
-2. PR-3 (audit reason codes)
-3. PR-2 (restaurant confidence tiers)
+1. PR-0 (provenance-controlled publication)
+2. PR-1 (state model)
+3. PR-3 (audit reason codes)
 4. PR-4 (trace artifact)
-5. PR-5 (cost-quality accounting)
+5. PR-2 (restaurant confidence tiers)
+6. PR-5 (cost-quality accounting)
+
+## Validation Strategy
+
+Use short, credibility-first gates for each PR:
+1. targeted unit/contract tests for changed logic
+2. compact golden-manifest assertions for reopened defect classes
+3. one end-to-end smoke run only after gates 1 and 2 pass
 
 ## Non-Goals (This Cycle)
 - No changes to destination content generation prompts.

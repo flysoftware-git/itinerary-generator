@@ -21,6 +21,7 @@ class ReportWriter:
             "generator_version": meta.get("generator_version", __version__),
             "template_version": meta.get("template_version", __template_version__),
             "generated_at_utc": meta.get("generated_at_utc", ""),
+            "development_build": meta.get("development_build", {}),
             "timestamp_utc": datetime.datetime.utcnow().isoformat() + "Z",
             "summary": {
                 "valid": report.get("valid", False),
@@ -33,6 +34,11 @@ class ReportWriter:
                 "models": llm_usage.get("models", []),
                 "total_calls": llm_usage.get("total_calls", 0),
                 "total_estimated_cost_usd": llm_usage.get("total_estimated_cost_usd", 0.0),
+                # Per-call records are the only thing carrying per-operation
+                # attribution (provider/model/operation/tokens/cost per call).
+                # Without them, per-stage token/cost spend is unmeasurable from
+                # a completed run -- only the aggregate total survives.
+                "records": llm_usage.get("records", []),
             },
             "errors": report.get("errors", []),
             "warnings": report.get("warnings", []),

@@ -30,9 +30,31 @@ _DEFAULT_DELAY = 0.05
 _DEFAULT_TIMEOUT_SECONDS = 25
 _DEFAULT_NETWORK_RETRIES = 2
 
+# threshold=4/window=30s (not the original 5/20) is sized to the real failure
+# cadence under a sustained provider outage: with _GROK_SEMAPHORE capping
+# concurrency at 4 and a 25s per-attempt timeout, the largest failure burst
+# physically possible is one failure per occupied slot roughly every ~25-26s
+# (attempt timeout + backoff) -- a full round of all 4 concurrent slots
+# timing out. The original 5-within-20s combination could never be reached by
+# that cadence (max burst size 4 < threshold 5, and 25s > the 20s window even
+# for a single call's own retries), so the breaker never engaged during an
+# observed 3.5-hour outage (Dipstick48). threshold=4 trips on exactly one full
+# concurrent-timeout round; window=30s comfortably contains that round even
+# with slot-start jitter.
+_DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 4
+_DEFAULT_CIRCUIT_BREAKER_WINDOW_SECONDS = 30.0
+_DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 15.0
+_DEFAULT_CHAT_MAX_TOKENS = 6000
+
 # Global semaphore: cap concurrent connections to xAI API to avoid rate limiting.
 # 16 parallel threads → xAI rate-limits → all time out. Keep it at 4.
 _GROK_SEMAPHORE = threading.Semaphore(4)
+
+
+class GrokCircuitOpenError(requests.RequestException):
+    """Raised when the circuit breaker short-circuits a call after a recent burst
+    of transient Grok errors, instead of letting the caller wait out a full
+    timeout+retry cycle against an already-struggling endpoint."""
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -108,7 +130,7 @@ class GrokSearch:
         usage_operation_prefix: str = "grok_search",
     ) -> None:
         self._api_key = api_key or os.environ["XAI_API_KEY"]
-        self._model = model or os.environ.get("XAI_MODEL", "grok-2-latest")
+        self._model = model or os.environ.get("XAI_MODEL", "grok-latest")
         self._timeout = int(os.environ.get("XAI_TIMEOUT_SECONDS", str(timeout_seconds)))
         self._delay = request_delay_seconds
         self._network_retries = max(0, int(os.environ.get("XAI_NETWORK_RETRIES", str(network_retries))))
@@ -118,6 +140,19 @@ class GrokSearch:
         self._warning_state_lock = threading.Lock()
         self._warning_state: dict[str, dict[str, float | int]] = {}
         self._warning_cooldown_seconds = int(os.environ.get("XAI_WARNING_COOLDOWN_SECONDS", "30"))
+        self._circuit_breaker_threshold = max(
+            1, int(os.environ.get("XAI_CIRCUIT_BREAKER_THRESHOLD", str(_DEFAULT_CIRCUIT_BREAKER_THRESHOLD)))
+        )
+        self._circuit_breaker_window_seconds = float(
+            os.environ.get("XAI_CIRCUIT_BREAKER_WINDOW_SECONDS", str(_DEFAULT_CIRCUIT_BREAKER_WINDOW_SECONDS))
+        )
+        self._circuit_breaker_cooldown_seconds = float(
+            os.environ.get("XAI_CIRCUIT_BREAKER_COOLDOWN_SECONDS", str(_DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECONDS))
+        )
+        self._circuit_breaker_lock = threading.Lock()
+        self._circuit_breaker_failure_times: list[float] = []
+        self._circuit_breaker_open_until: float = 0.0
+        self._chat_max_tokens = int(os.environ.get("XAI_CHAT_MAX_TOKENS", str(_DEFAULT_CHAT_MAX_TOKENS)))
 
     # ── Thread-local session ─────────────────────────────────────────────────
 
@@ -147,6 +182,64 @@ class GrokSearch:
         except Exception as exc:
             logger.warning("Grok search error for %r: %s", query[:60], exc)
             return []
+
+    def chat_completion(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.1,
+        response_format: dict[str, Any] | None = None,
+        live_search: bool = False,
+        max_tokens: int | None = None,
+    ) -> str:
+        """Execute a single Grok chat completion and return message content.
+
+        This is used by URL discovery HTML-mode direct-batch prompts where the
+        caller needs raw model text rather than normalized search rows.
+        """
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": str(system_prompt or "")},
+                {"role": "user", "content": str(user_prompt or "")},
+            ],
+            "temperature": float(temperature),
+            # Uncapped completions let a stuck/rambling model run to whatever the
+            # provider's own ceiling is, inflating latency and cost with no
+            # legitimate direct-batch harvest needing that much output.
+            "max_tokens": int(max_tokens) if max_tokens is not None else self._chat_max_tokens,
+        }
+        if response_format is not None:
+            payload["response_format"] = response_format
+        if live_search:
+            payload["tools"] = [{"type": "live_search"}]
+
+        try:
+            resp = self._post_with_retries(payload, user_prompt)
+            resp.raise_for_status()
+            response_json = resp.json()
+            content = str(response_json.get("choices", [{}])[0].get("message", {}).get("content", "") or "")
+
+            usage = response_json.get("usage", {})
+            if self._usage_tracker and isinstance(usage, dict):
+                prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+                if prompt_tokens or completion_tokens:
+                    self._usage_tracker.add(
+                        provider="grok",
+                        model=self._model,
+                        operation=f"{self._usage_operation_prefix}:chat_completion",
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                    )
+            return content
+        except requests.RequestException as exc:
+            self._log_request_exception(user_prompt, exc)
+            return ""
+        except Exception as exc:
+            logger.warning("Grok chat completion error for %r: %s", user_prompt[:60], exc)
+            return ""
 
     def _grok_search(self, query: str, attempt: int = 1) -> list[dict[str, Any]]:
         """Execute Grok search with optional retry on malformed JSON."""
@@ -221,6 +314,8 @@ class GrokSearch:
 
     @staticmethod
     def _classify_request_exception(exc: requests.RequestException) -> str:
+        if isinstance(exc, GrokCircuitOpenError):
+            return "circuit_open"
         text = str(exc).lower()
         if isinstance(exc, requests.Timeout) or "timed out" in text:
             return "timeout"
@@ -290,21 +385,68 @@ class GrokSearch:
         category = cls._classify_request_exception(exc)
         return category in {"timeout", "dns", "connection"}
 
+    def is_circuit_open(self) -> bool:
+        """Non-raising peek at circuit-breaker state, for callers that want to
+        skip optional/supplementary work (like a harvest retry-prompt) during
+        a known-bad period rather than compounding it -- as opposed to
+        _circuit_breaker_check, which is the fail-fast gate on the actual
+        network call."""
+        with self._circuit_breaker_lock:
+            open_until = self._circuit_breaker_open_until
+        return open_until > time.monotonic()
+
+    def _circuit_breaker_check(self) -> None:
+        """Fail fast if a recent burst of transient errors tripped the breaker.
+
+        Under a provider-side outage, every concurrent caller would otherwise
+        independently retry and wait out its own full timeout budget, piling
+        more load onto an already-struggling endpoint and stalling the whole
+        run. Once enough transient failures land in a short window, later
+        callers short-circuit immediately instead of queuing up behind them.
+        """
+        with self._circuit_breaker_lock:
+            open_until = self._circuit_breaker_open_until
+        remaining = open_until - time.monotonic()
+        if remaining > 0:
+            raise GrokCircuitOpenError(
+                f"Grok circuit breaker open ({remaining:.1f}s remaining) after repeated transient errors"
+            )
+
+    def _record_circuit_breaker_outcome(self, *, transient_failure: bool) -> None:
+        now = time.monotonic()
+        with self._circuit_breaker_lock:
+            if not transient_failure:
+                self._circuit_breaker_failure_times.clear()
+                self._circuit_breaker_open_until = 0.0
+                return
+            cutoff = now - self._circuit_breaker_window_seconds
+            self._circuit_breaker_failure_times = [
+                t for t in self._circuit_breaker_failure_times if t >= cutoff
+            ]
+            self._circuit_breaker_failure_times.append(now)
+            if len(self._circuit_breaker_failure_times) >= self._circuit_breaker_threshold:
+                self._circuit_breaker_open_until = now + self._circuit_breaker_cooldown_seconds
+
     def _post_with_retries(self, payload: dict[str, Any], query: str) -> requests.Response:
         """POST to Grok with lightweight retry/backoff for transient read timeouts."""
+        self._circuit_breaker_check()
         max_attempts = self._network_retries + 1
         last_exc: requests.RequestException | None = None
         for attempt in range(1, max_attempts + 1):
             try:
                 with _GROK_SEMAPHORE:
-                    return self._get_session().post(
+                    resp = self._get_session().post(
                         GROK_ENDPOINT,
                         json=payload,
                         timeout=self._timeout,
                     )
+                self._record_circuit_breaker_outcome(transient_failure=False)
+                return resp
             except requests.RequestException as exc:
                 last_exc = exc
                 is_transient = self._is_transient_request_error(exc)
+                if is_transient:
+                    self._record_circuit_breaker_outcome(transient_failure=True)
                 if attempt >= max_attempts or not is_transient:
                     raise
                 backoff = min(2.0, 0.4 * attempt)

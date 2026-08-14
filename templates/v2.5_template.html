@@ -121,6 +121,66 @@
         background: #FDE68A;
       }
 
+      /* ── Route overview markers ── */
+      .route-marker-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+      }
+      .route-marker-pin {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: #C0623E;
+        border: 2px solid #fff;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.24);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .route-marker-index {
+        font-size: 12px;
+        font-weight: 900;
+        color: #fff;
+        line-height: 1;
+        letter-spacing: -0.1px;
+        font-variant-numeric: tabular-nums;
+        text-shadow: 0 1px 1px rgba(0,0,0,0.2);
+      }
+      .route-marker-month {
+        font-size: 9px;
+        font-weight: 800;
+        color: #fff;
+        line-height: 1;
+      }
+      .route-marker-nameplate {
+        background: transparent;
+        color: #000;
+        padding: 4px 8px;
+        border-radius: 7px;
+        line-height: 1.15;
+        text-align: center;
+        max-width: 136px;
+        box-shadow: none;
+      }
+      .route-marker-title {
+        display: block;
+        font-size: 11px;
+        font-weight: 800;
+        line-height: 1.15;
+        white-space: normal;
+      }
+      .route-marker-date {
+        display: block;
+        font-size: 9px;
+        font-weight: 700;
+        color: #000;
+        line-height: 1.15;
+        text-align: center;
+        margin-top: 2px;
+      }
+
       /* ── Destination section layout ── */
       .dest-section { background: #fff; border-radius: 16px; box-shadow: 0 2px 12px rgba(44,26,14,0.08); overflow: hidden; }
       .dest-header { position: relative; min-height: 220px; background-size: cover; background-position: center; display: flex; flex-direction: column; justify-content: flex-end; padding: 1.5rem; color: #fff; }
@@ -192,7 +252,10 @@
       .badge-hike-moderate { background: #dcfce7; color: #15803d; font-size: 0.75rem; }
       .badge-hike-easy { background: #dcfce7; color: #15803d; font-size: 0.75rem; }
       .badge-mustsee { background: #fed7aa; color: #92400e; font-size: 0.75rem; font-weight: 700; }
+      .badge-seed { background: #dcfce7; color: #15803d; font-size: 0.75rem; font-weight: 700; }
       .badge-duration { background: #e0f2fe; color: #0369a1; font-size: 0.75rem; }
+      .badge-rating { background: #fef9c3; color: #854d0e; font-size: 0.75rem; font-weight: 700; }
+      .badge-elevation { background: #e0e7ff; color: #3730a3; font-size: 0.75rem; }
 
       /* ── Schedule ── */
       .schedule-note { font-size: 0.86rem; color: #7c6a55; font-style: italic; margin-bottom: 0.75rem; }
@@ -371,20 +434,27 @@
         L.polyline(stops.map(function(s){return s.c;}),{color:'#C0623E',weight:2.5,dashArray:'7,6',opacity:0.85}).addTo(map);
         stops.forEach(function(s){
           var stopIndex = s.stop_index || s.idx;
-          var idxLabel=stopIndex ? '<span style="font-size:11px;font-weight:900;color:#fff;line-height:1;letter-spacing:-0.15px;">'+stopIndex+'</span>' : '';
+          var idxLabel=stopIndex ? '<span class="route-marker-index">'+stopIndex+'</span>' : '';
           var dateLabel = ((s.mo || '') + (s.dy ? (' ' + s.dy) : '')).trim();
-          var markerDateSecondary = dateLabel ? '<div style="font-size:9px;font-weight:700;color:#f3e8de;line-height:1.15;text-align:center;margin-top:2px;">'+dateLabel+'</div>' : '';
+          if (s.date_label) { dateLabel = s.date_label; }
+          var timeLabel = (s.time_label || '').trim();
+          var markerDateSecondaryText = dateLabel;
+          if (timeLabel) {
+            markerDateSecondaryText = markerDateSecondaryText ? (markerDateSecondaryText + '<br>' + timeLabel) : timeLabel;
+          }
+          var markerDateSecondary = markerDateSecondaryText ? '<span class="route-marker-date">'+markerDateSecondaryText+'</span>' : '';
           var icon=L.divIcon({
             className:'',
-            html:'<div style="display:flex;flex-direction:column;align-items:center;gap:2px;">'+
-              '<div style="width:28px;height:28px;border-radius:50%;background:#C0623E;border:2px solid #fff;box-shadow:0 2px 5px rgba(0,0,0,0.2);display:flex;align-items:center;justify-content:center;">'+
-              (stopIndex ? idxLabel : ('<span style="font-size:8px;font-weight:800;color:#fff;line-height:1;">'+(s.mo || '')+'</span>'))+
+            html:'<div class="route-marker-wrap">'+
+              '<div class="route-marker-pin">'+
+              (stopIndex ? idxLabel : ('<span class="route-marker-month">'+(s.mo || '')+'</span>'))+
               '</div>'+
-              '<div style="background:rgba(44,22,10,0.88);color:#fff;font-size:9px;font-weight:700;padding:3px 7px;border-radius:5px;white-space:nowrap;line-height:1.15;text-align:center;">'+s.name+markerDateSecondary+'</div>'+
+              '<div class="route-marker-nameplate"><span class="route-marker-title">'+s.name+'</span>'+markerDateSecondary+'</div>'+
               '</div>',
-            iconSize:[28,54],iconAnchor:[14,14],popupAnchor:[0,-20]
+            iconSize:[26,50],iconAnchor:[13,13],popupAnchor:[0,-20]
           });
-          L.marker(s.c,{icon:icon}).bindPopup('<b>'+(stopIndex?stopIndex+' · ':'')+s.name+'</b><br>'+s.mo+' '+s.dy).addTo(map);
+          var popupWhen = markerDateSecondaryText.replace(/<br>/g, ' ');
+          L.marker(s.c,{icon:icon}).bindPopup('<b>'+(stopIndex?stopIndex+' · ':'')+s.name+'</b><br>'+(popupWhen || ((s.mo || '') + ' ' + (s.dy || '')).trim())).addTo(map);
         });
         map.fitBounds(L.featureGroup(stops.map(function(s){return L.circleMarker(s.c);})).getBounds().pad(0.1));
       }
@@ -434,8 +504,15 @@
             if (desc.vehicle_requirement) {
               blocks.push('<p style="margin:0 0 0.65rem;"><strong>Vehicle:</strong> ' + desc.vehicle_requirement + '</p>');
             }
+            var linkParts = [];
+            if (desc.route_map_url) {
+              linkParts.push('<a href="' + desc.route_map_url + '" target="_blank" rel="noopener" class="event-link">Route Map</a>');
+            }
             if (desc.url) {
-              blocks.push('<p style="margin:0.8rem 0 0;"><a href="' + desc.url + '" target="_blank" rel="noopener" class="event-link">More Info</a></p>');
+              linkParts.push('<a href="' + desc.url + '" target="_blank" rel="noopener" class="event-link">More Info</a>');
+            }
+            if (linkParts.length) {
+              blocks.push('<p style="margin:0.8rem 0 0;display:flex;gap:0.85rem;flex-wrap:wrap;">' + linkParts.join('') + '</p>');
             }
             bodyEl.innerHTML  = blocks.join('');
             modal.style.display = 'flex';
@@ -471,21 +548,52 @@
         // ── TAB NAVIGATION ─────────────────────────────────────────────────────
         try {
           var navEl = document.getElementById('tab-nav-e5f6');
-          document.querySelectorAll('.tab-btn[data-tab]').forEach(function(btn) {
+          var sections = document.querySelectorAll('.dest-section');
+          var tabBtns  = document.querySelectorAll('.tab-btn[data-tab]');
+          function setActiveTab(sectionId) {
+            if (!sectionId) return;
+            tabBtns.forEach(function(b) { b.classList.toggle('active', b.dataset.tab === sectionId); });
+          }
+          function normalizeHashTarget(rawHash) {
+            var token = String(rawHash || '').replace(/^#/, '').trim();
+            if (!token) return '';
+            return token.indexOf('section-') === 0 ? token : ('section-' + token);
+          }
+          function scrollToSection(sectionId, behavior) {
+            var target = document.getElementById(sectionId);
+            if (!target) return false;
+            var navH = navEl ? navEl.offsetHeight : 64;
+            setActiveTab(sectionId);
+            window.scrollTo({ top: target.getBoundingClientRect().top + window.pageYOffset - navH - 16, behavior: behavior || 'smooth' });
+            return true;
+          }
+          function activateHashTarget(rawHash, behavior) {
+            var sectionId = normalizeHashTarget(rawHash);
+            if (!sectionId) return false;
+            return scrollToSection(sectionId, behavior || 'auto');
+          }
+
+          tabBtns.forEach(function(btn) {
             btn.addEventListener('click', function() {
-              document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
-              btn.classList.add('active');
-              var target = document.getElementById(btn.dataset.tab);
-              if (target) {
-                var navH = navEl ? navEl.offsetHeight : 64;
-                window.scrollTo({ top: target.getBoundingClientRect().top + window.pageYOffset - navH - 16, behavior: 'smooth' });
+              var sectionId = btn.dataset.tab;
+              if (!sectionId) return;
+              if (window.history && typeof window.history.replaceState === 'function') {
+                window.history.replaceState(null, '', '#' + sectionId.replace(/^section-/, ''));
+              } else {
+                window.location.hash = sectionId.replace(/^section-/, '');
               }
+              scrollToSection(sectionId, 'smooth');
             });
           });
 
+          if (window.location.hash) {
+            activateHashTarget(window.location.hash, 'auto');
+          }
+          window.addEventListener('hashchange', function() {
+            activateHashTarget(window.location.hash, 'smooth');
+          });
+
           // Active tab on scroll
-          var sections = document.querySelectorAll('.dest-section');
-          var tabBtns  = document.querySelectorAll('.tab-btn[data-tab]');
           var scrollTout;
           window.addEventListener('scroll', function() {
             if (scrollTout) return;
@@ -496,7 +604,7 @@
               sections.forEach(function(sec) {
                 if (sec.getBoundingClientRect().top < navH + 100) current = sec.id;
               });
-              if (current) tabBtns.forEach(function(b) { b.classList.toggle('active', b.dataset.tab === current); });
+              if (current) setActiveTab(current);
             }, 80);
           });
         } catch(e) { console.error('Tab nav error:', e); }

@@ -18,7 +18,7 @@ AI content generation produces restaurant names and descriptions only. URL disco
 
 Stored fields:
 - `url`: best discovered verified URL (maps place/listing or tripadvisor)
-- `maps_url`: deterministic Google Maps search fallback query
+- `maps_url`: optional diagnostic context query (non-canonical)
 
 ## Candidate Ranking and Relevance
 Discovery uses the shared strict selector (`_search_first` / `_search_first_strict`):
@@ -67,20 +67,27 @@ currently open and operational. The following mechanisms apply:
 
 
 
-Current selection order:
-1. Prefer normalized discovered `url`
-2. Else use normalized `maps_url`
-3. Else synthesize a maps-search query from name + destination
+Current publication order:
+1. Publish normalized discovered `url` only when it survives validation/audit
+2. If no canonical URL survives, render restaurant name without hyperlink
 
 Why this order:
-- Avoid overriding a valid discovered listing (for example TripAdvisor or a stable maps listing) with a potentially brittle generic maps-search query.
+- Preserve named-entity trust semantics and prevent ambiguous query links from appearing as if they were verified targets.
 
 **When the maps-search fallback is not acceptable:**
 A synthesized `maps/search/` query is never an acceptable published link for a **named restaurant**.
-If both `url` and `maps_url` are absent or resolve to a maps-search query, the correct
-behavior is to render the restaurant **without a hyperlink**, not to publish an area-query page.
+If canonical validation fails, the correct behavior is to render the restaurant **without a hyperlink**, not to publish an area-query page.
 Rationale: a named restaurant card with a search-query link implies a specific target that the
 link does not deliver, violating the named-entity fail-closed policy in §5 of the requirements.
+
+## Provenance Control
+
+Restaurant publication must be controlled by decisioned provenance state, not by name recoverability.
+
+Implications:
+- Candidate links discovered from search snippets are not publishable until validated.
+- Diagnostic `maps_url` values may be retained for traceability, but they are not a canonical substitute.
+- Renderer must consume the validated decision output and avoid synthesizing named-restaurant links.
 
 ## Why Some Maps Search Links Can Be Fragile
 A maps search query can still fail to resolve exactly if:

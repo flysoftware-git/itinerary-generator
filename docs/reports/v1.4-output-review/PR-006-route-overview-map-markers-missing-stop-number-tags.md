@@ -1,6 +1,6 @@
 # PR-006: Route overview map markers do not show stop numbers matching destination menu
 
-Labels: `review:v1.4-output`, `type:bug`, `status:open`, `severity:medium`, `area:html-output`, `area:map-ui`, `area:usability`
+Labels: `review:v1.4-output`, `type:bug`, `status:fixed`, `severity:medium`, `area:html-output`, `area:map-ui`, `area:usability`
 
 Manifest: `C:/Dev/Sandbox/sw_manifest.yaml`
 Output Artifact: `output/index.html`
@@ -21,18 +21,19 @@ The route overview map marker tags are hard to scan when comparing map pins with
   - dark/black background label for contrast
 - Number styling should be distinct enough that users can quickly correlate map stops with the numbered tabs.
 
-## Actual Behavior
+## Resolution
 
-- Overview map markers currently render month/day and location name, but no tab-index/stop number.
-- Destination tabs are numbered independently, which creates a visual mapping gap between the tab list and map pins.
-- Dense routes can be harder to interpret at a glance because markers are not index-anchored.
+- Destination markers render a stop index aligned to destination tab order (`idx` and `stop_index`).
+- Marker icons were made more compact to reduce overlap and improve scanability.
+- Secondary date/time text now appears centered under the destination label in a readable stacked layout.
+- Popup labeling preserves stop index and date context.
 
 ## Evidence
 
-- Marker rendering in [templates/v2.5_template.html](templates/v2.5_template.html) creates custom `L.divIcon` HTML using `s.mo`, `s.dy`, and `s.name` only.
-- Marker popup in [templates/v2.5_template.html](templates/v2.5_template.html) also displays only name and date, with no stop number.
-- Marker JSON builder in [generator/html_assembler.py](generator/html_assembler.py) currently emits entries with `c`, `mo`, `dy`, and `name`; there is no `stop_index` field.
-- Destination tab labels in [generator/html_assembler.py](generator/html_assembler.py) include `i + 1` numbering (`"{i + 1} · ..."`).
+- Marker JSON includes stop order metadata in [generator/html_assembler.py](generator/html_assembler.py).
+- Marker template now uses compact class-based rendering (`route-marker-*`) and reduced icon geometry in [templates/v2.5_template.html](templates/v2.5_template.html).
+- Regression assertions updated in [tests/test_html_assembler.py](tests/test_html_assembler.py).
+- Smoke output confirms updated marker markup in [output/index.html](output/index.html).
 
 ## Reproduction Context
 
@@ -53,28 +54,19 @@ The route overview map marker tags are hard to scan when comparing map pins with
 - Tab numbering is generated in a separate rendering path and is not propagated into marker metadata.
 - Without shared index data, map and tabs cannot present a consistent number-based navigation cue.
 
-## Scope of Likely Fix
+## Scope of Applied Fix
 
-- Add a marker index field (for example `idx`) in `_build_map_markers` aligned to destination order.
-- Update Leaflet marker icon HTML/CSS to render a smaller, clearer marker with:
-  - visible stop number
-  - date text above
-  - destination label below in smaller font on dark background
-- Keep existing popup behavior, adding stop number context where useful.
-- Maintain mobile readability and avoid regressions in fitBounds/popup anchoring.
+- Added/retained marker index metadata in payload (`idx`, `stop_index`) aligned to destination order.
+- Updated Leaflet marker icon HTML/CSS to use compact, wrapped labels with centered secondary date context.
+- Preserved popup behavior while improving stop-index context and date/time formatting.
+- Tuned icon geometry (`iconSize`, `iconAnchor`, `popupAnchor`) for better readability and overlap control.
 
-## Non-Breaking Validation Plan
+## Validation
 
-- Static validation:
-  - inspect generated `MAP_MARKERS_JSON` for index fields matching tab order.
-- UI verification:
-  - regenerate itinerary and confirm each marker number corresponds to tab number.
-  - verify readability on desktop and mobile widths.
-  - verify labels remain legible and do not excessively overlap for dense clusters.
-- Guardrails:
-  - do not break map initialization, pin placement, or route polyline rendering.
+- Unit tests: `tests/test_html_assembler.py` and `tests/test_url_discovery.py` passed (`169 passed`).
+- Smoke run: full generator execution completed successfully and produced updated marker markup in `output/index.html`.
+- Guardrails: map initialization and route polyline rendering remained intact.
 
 ## Notes
 
-- This report captures a usability/readability defect in map navigation affordance.
-- No implementation performed in this report; this is investigation and scoping only.
+- This issue is now closure-ready based on implemented marker UX updates and post-change validation.

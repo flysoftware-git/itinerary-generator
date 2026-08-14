@@ -14,11 +14,26 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 import requests
-from tenacity import retry, stop_after_attempt, wait_exponential
-from generator.llm_client import MultiLLMClient
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
+from generator.llm_client import MultiLLMClient, LLMCircuitOpenError
 
 logger = logging.getLogger(__name__)
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+
+# Retrying a KeyError/TypeError/AttributeError/IndexError just burns up to
+# ~14s of exponential backoff on a bug that identical inputs will never fix on
+# a later attempt -- narrow retries to genuinely transient conditions (network
+# errors, malformed LLM output) and let real bugs surface immediately.
+# LLMCircuitOpenError is excluded too: once the breaker is open, retrying
+# immediately just burns tenacity's own backoff sleeps against a call that's
+# guaranteed to fail fast anyway -- let it propagate so the caller's failure
+# handling (and the next destination in the queue) sees it right away.
+_NON_RETRYABLE_LLM_EXCEPTIONS = (KeyError, TypeError, AttributeError, IndexError, LLMCircuitOpenError)
+_retry_transient_llm_errors = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=30),
+    retry=retry_if_not_exception_type(_NON_RETRYABLE_LLM_EXCEPTIONS),
+)
 
 
 class AIContentGenerator:
@@ -69,12 +84,33 @@ class AIContentGenerator:
         self._drives_template = (PROMPTS_DIR / "scenic_drives.txt").read_text(encoding="utf-8")
         self._what_to_know_template = (PROMPTS_DIR / "what_to_know.txt").read_text(encoding="utf-8")
         self._weather_cache: dict[tuple[float, float, int], tuple[int, int] | None] = {}
+        self.last_banned_phrase_violations: dict[str, int] = {}
         self._enable_url_candidate_experiment = bool(
             self._config.get("ai", {}).get("enable_url_candidate_experiment", False)
         )
+        ai_cfg = self._config.get("ai", {}) or {}
+        try:
+            self._max_concurrent_destinations = max(1, int(ai_cfg.get("max_concurrent_destinations", 4)))
+        except (TypeError, ValueError):
+            self._max_concurrent_destinations = 4
+        try:
+            self._grok_max_concurrent_destinations = max(
+                1,
+                int(ai_cfg.get("grok_max_concurrent_destinations", 1)),
+            )
+        except (TypeError, ValueError):
+            self._grok_max_concurrent_destinations = 1
+
+    def _llm_stage_max_workers(self, destination_count: int) -> int:
+        provider = str(getattr(self._llm, "provider", "") or "").strip().lower()
+        if provider == "grok":
+            return max(1, min(destination_count, self._grok_max_concurrent_destinations))
+        return max(1, min(destination_count, self._max_concurrent_destinations))
 
     def generate_destination_content(self, trip: dict[str, Any]) -> None:
-        """Generate AI content for every destination. Attaches 'ai_content' in-place."""
+        """Generate AI content for every destination. Attaches 'ai_content',
+        'what_to_know', and 'scenic_drives' in-place (one combined LLM call
+        per destination — see _generate_destination_bundle)."""
         destinations = trip.get("destinations", [])
         prev_names = ["none"] + [d["name"] for d in destinations[:-1]]
         next_names = [d["name"] for d in destinations[1:]] + [""]
@@ -82,37 +118,120 @@ class AIContentGenerator:
         def _one(args: tuple[int, dict]) -> None:
             i, dest = args
             logger.info("Generating AI content for '%s'…", dest["name"])
-            dest["ai_content"] = self._generate_for_destination(dest, trip["trip"], prev_names[i], next_names[i])
-            dest["what_to_know"] = self._generate_what_to_know(dest, trip["trip"], prev_names[i], next_names[i])
+            bundle = self._generate_destination_bundle(dest, trip["trip"], prev_names[i], next_names[i])
+            dest["ai_content"] = bundle["destination_content"]
+            dest["what_to_know"] = bundle["what_to_know"]
+            dest["scenic_drives"] = bundle["scenic_drives"]
+            logger.debug(f"  Set scenic_drives for {dest['name']}: {len(bundle['scenic_drives'])} drives")
 
-        with ThreadPoolExecutor(max_workers=min(len(destinations), 4)) as pool:
+        with ThreadPoolExecutor(max_workers=self._llm_stage_max_workers(len(destinations))) as pool:
             futures = [pool.submit(_one, (i, d)) for i, d in enumerate(destinations)]
             for f in as_completed(futures):
                 f.result()
 
-    def generate_scenic_drive_descriptions(self, trip: dict[str, Any]) -> None:
-        """Generate scenic drive popup descriptions. Attaches 'scenic_drives' in-place."""
-        destinations = trip.get("destinations", [])
-
-        def _one(dest: dict) -> None:
-            logger.info("Generating scenic drives for '%s'…", dest["name"])
-            result = self._generate_drives(dest)
-            dest["scenic_drives"] = result
-            logger.debug(f"  Set scenic_drives for {dest['name']}: {len(result)} drives")
-
-        with ThreadPoolExecutor(max_workers=min(len(destinations), 4)) as pool:
-            futures = [pool.submit(_one, d) for d in destinations]
-            for f in as_completed(futures):
-                f.result()
-        
-        # Verify all destinations have scenic_drives
-        for dest in destinations:
-            count = len(dest.get("scenic_drives", []))
-            logger.info(f"✓ {dest['name']}: {count} scenic_drives")
-
     def generate_all(self, trip: dict[str, Any]) -> None:
         self.generate_destination_content(trip)
-        self.generate_scenic_drive_descriptions(trip)
+
+    # Marketing-cliché phrases banned from generated prose (system_prompt.txt's
+    # "Avoid without exception" list, kept in sync with prompts/scenic_drives.txt's
+    # own list -- the two had drifted apart before this was unified). The prompt
+    # instruction alone is routinely violated: an observed real run had 28
+    # occurrences despite "without exception" phrasing, with zero downstream
+    # enforcement existing before this. "must-see" is deliberately excluded --
+    # it's a structured badge label gated on verified rating data elsewhere
+    # (html_assembler.py), not a subjective prose claim.
+    BANNED_MARKETING_PHRASES = (
+        "hidden gem",
+        "off the beaten path",
+        "world-class",
+        "iconic",
+        "stunning",
+        "breathtaking",
+        "charming",
+        "nestled",
+        "boasts",
+        "spectacular",
+        "majestic",
+    )
+    _BANNED_PHRASE_PATTERN = re.compile(
+        r"\b(?:" + "|".join(re.escape(p) for p in BANNED_MARKETING_PHRASES) + r")\b",
+        re.IGNORECASE,
+    )
+    # Safety net for the common sentence-final predicate pattern these clichés
+    # often appear in ("is a hidden gem.", "is off the beaten path.") -- after
+    # the phrase itself is removed, this drops the now-dangling copula rather
+    # than leaving "is a." or "is." Known gap: a mid-sentence verb usage of
+    # "boasts" (e.g. "the inn boasts a patio") would leave a dangling subject
+    # with no verb -- not observed in practice yet, so not specially handled.
+    _DANGLING_COPULA_PATTERN = re.compile(
+        r"\b(?:is|are|was|were|remains?|becomes?)\s+(?:an?\s*)?(?=[.,;:!?]|$)",
+        re.IGNORECASE,
+    )
+    # Only these field names hold free-form prose; everything else (name,
+    # title, url, type, difficulty, cuisine, price_range, numeric fields...)
+    # must never be touched -- a restaurant genuinely named "The Charming
+    # Cafe" must survive intact.
+    _PROSE_FIELD_NAMES = frozenset(
+        {
+            "description",
+            "practical_note",
+            "summary",
+            "local_customs",
+            "best_times_of_day",
+            "transportation_quirks",
+            "route_summary",
+            "best_time",
+        }
+    )
+
+    @classmethod
+    def _strip_banned_marketing_language(cls, text: str, violation_counts: dict[str, int] | None = None) -> str:
+        raw = str(text or "")
+        if not raw or not cls._BANNED_PHRASE_PATTERN.search(raw):
+            return raw
+        if violation_counts is not None:
+            for match in cls._BANNED_PHRASE_PATTERN.finditer(raw):
+                key = match.group(0).lower()
+                violation_counts[key] = violation_counts.get(key, 0) + 1
+        cleaned = cls._BANNED_PHRASE_PATTERN.sub("", raw)
+        cleaned = cls._DANGLING_COPULA_PATTERN.sub("", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        cleaned = re.sub(r"\s+([.,;:!?])", r"\1", cleaned)
+        return cleaned.strip()
+
+    @classmethod
+    def _scrub_banned_language_in_place(cls, obj: Any, violation_counts: dict[str, int]) -> None:
+        """Recursively walk a dict/list structure, rewriting only allowlisted
+        prose fields in place. Structural fields (name, url, type, ...) are
+        never visited for rewriting, only traversed into."""
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if key in cls._PROSE_FIELD_NAMES and isinstance(value, str):
+                    obj[key] = cls._strip_banned_marketing_language(value, violation_counts)
+                else:
+                    cls._scrub_banned_language_in_place(value, violation_counts)
+        elif isinstance(obj, list):
+            for item in obj:
+                cls._scrub_banned_language_in_place(item, violation_counts)
+
+    def _enforce_banned_marketing_language(self, trip: dict[str, Any]) -> dict[str, int]:
+        violation_counts: dict[str, int] = {}
+        for dest in trip.get("destinations", []) or []:
+            if not isinstance(dest, dict):
+                continue
+            for key in ("ai_content", "what_to_know", "scenic_drives"):
+                if key in dest:
+                    self._scrub_banned_language_in_place(dest[key], violation_counts)
+        if violation_counts:
+            total = sum(violation_counts.values())
+            logger.info(
+                "Banned marketing-cliche enforcement: removed %d occurrence(s) across %d phrase(s): %s",
+                total,
+                len(violation_counts),
+                violation_counts,
+            )
+        self.last_banned_phrase_violations = violation_counts
+        return violation_counts
 
     def normalize_trip_content(self, trip: dict[str, Any]) -> None:
         """Post-generation normalization: cross-section and cross-destination dedup.
@@ -120,10 +239,76 @@ class AIContentGenerator:
         Runs after all parallel stages (events, images, URL discovery) complete
         so that both what_to_know and cultural_events data are available.
         """
+        self._enforce_banned_marketing_language(trip)
         self._deduplicate_cross_section_tips(trip)
         self._deduplicate_cross_destination_what_to_know(trip)
         self._filter_oversized_scenic_drives(trip)
         self._filter_departure_aligned_drives(trip)
+        self._deduplicate_cross_destination_scenic_drives(trip)
+
+    def _deduplicate_cross_destination_scenic_drives(self, trip: dict[str, Any]) -> None:
+        """Keep duplicate scenic drives only under the most relevant destination.
+
+        Regression guard: a destination-specific drive (e.g., Zion Canyon Scenic
+        Drive) should not remain duplicated under an unrelated destination.
+        """
+        destinations = trip.get("destinations", [])
+        if not isinstance(destinations, list) or len(destinations) < 2:
+            return
+
+        def _norm_title(title: str) -> str:
+            return re.sub(r"[^a-z0-9]+", " ", str(title or "").lower()).strip()
+
+        def _dest_tokens(name: str) -> set[str]:
+            raw = re.findall(r"[a-z0-9]+", str(name or "").lower())
+            stop = {"national", "state", "park", "city", "county", "town", "the", "and"}
+            return {t for t in raw if len(t) >= 3 and t not in stop}
+
+        owners: dict[str, list[tuple[int, int, dict[str, Any]]]] = {}
+        for dest_idx, dest in enumerate(destinations):
+            drives = dest.get("scenic_drives", []) if isinstance(dest.get("scenic_drives", []), list) else []
+            for drive_idx, drive in enumerate(drives):
+                if not isinstance(drive, dict):
+                    continue
+                title = _norm_title(str(drive.get("title", "") or ""))
+                if not title:
+                    continue
+                owners.setdefault(title, []).append((dest_idx, drive_idx, drive))
+
+        for title_key, entries in owners.items():
+            if len(entries) < 2:
+                continue
+
+            best: tuple[int, int, int] | None = None  # (score, -dest_idx, entry_pos)
+            for entry_pos, (dest_idx, _drive_idx, drive) in enumerate(entries):
+                dest_name = str(destinations[dest_idx].get("name", "") or "")
+                tokens = _dest_tokens(dest_name)
+                drive_blob = (
+                    str(drive.get("title", "") or "") + " " +
+                    str(drive.get("description", "") or "")
+                ).lower()
+                score = sum(1 for token in tokens if token in drive_blob)
+                candidate = (score, -dest_idx, entry_pos)
+                if best is None or candidate > best:
+                    best = candidate
+
+            if best is None:
+                continue
+            keep_entry_pos = best[2]
+
+            for entry_pos, (dest_idx, _drive_idx, drive) in enumerate(entries):
+                if entry_pos == keep_entry_pos:
+                    continue
+                dest = destinations[dest_idx]
+                drives = dest.get("scenic_drives", []) if isinstance(dest.get("scenic_drives", []), list) else []
+                if drive in drives:
+                    drives.remove(drive)
+                    dest["scenic_drives"] = drives
+                    logger.info(
+                        "  Cross-destination scenic dedup: removed '%s' from '%s'",
+                        drive.get("title", ""),
+                        dest.get("name", ""),
+                    )
 
     def _filter_oversized_scenic_drives(self, trip: dict[str, Any]) -> None:
         """Remove scenic drive entries that exceed daily time budget (PR-024).
@@ -360,7 +545,7 @@ class AIContentGenerator:
                         dest.get("name", ""),
                     )
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30))
+    @_retry_transient_llm_errors
     def _generate_what_to_know(
         self,
         dest: dict[str, Any],
@@ -383,6 +568,15 @@ class AIContentGenerator:
             next_destination=next_destination or "none",
             budget_guidance=self._build_budget_guidance(trip_meta),
         )
+        timing_context = self._build_trip_timing_context(
+            trip_meta=trip_meta,
+            destination_name=str(dest.get("name", "") or ""),
+            destination=dest,
+            previous_destination=previous_destination,
+            next_destination=next_destination,
+        )
+        if timing_context:
+            prompt += "\n\nTrip timing anchors:\n" + timing_context
 
         try:
             payload = self._llm.generate_json(
@@ -465,12 +659,21 @@ class AIContentGenerator:
             return "two-day stay"
         return f"{inferred}-day stay"
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30))
-    def _generate_for_destination(
+    @staticmethod
+    def _infer_region_for_destination(name: str) -> str:
+        region_map = {
+            "utah": "Utah", "colorado": "Colorado", "new mexico": "New Mexico",
+            "arizona": "Arizona", "nevada": "Nevada", "california": "California",
+        }
+        name_lower = str(name or "").lower()
+        return next((v for k, v in region_map.items() if k in name_lower), "Western United States")
+
+    @_retry_transient_llm_errors
+    def _generate_destination_bundle(
         self, dest: dict[str, Any], trip_meta: dict[str, Any], prev: str, next_dest: str
     ) -> dict[str, Any]:
         seeds = dest.get("seeds", [])
-        prompt = self._dest_template.format(
+        destination_prompt = self._dest_template.format(
             destination_name=dest["name"],
             dates=dest["dates"],
             trip_title=trip_meta["title"],
@@ -479,45 +682,135 @@ class AIContentGenerator:
             budget_guidance=self._build_budget_guidance(trip_meta),
             seeds="\n  ".join(f"- {s}" for s in seeds) if seeds else "  (none — generate full recommendations)",
         )
+        what_to_know_prompt = self._render_prompt_template(
+            self._what_to_know_template,
+            destination_name=dest.get("name", ""),
+            dates=dest.get("dates", ""),
+            season=self._season_from_dates(dest.get("dates", "")),
+            nearby_days=self._nearby_day_window(dest.get("dates", "")),
+            trip_type=str(trip_meta.get("subtitle", "") or trip_meta.get("title", "") or "road trip").strip(),
+            previous_destination=prev,
+            next_destination=next_dest or "none",
+            budget_guidance=self._build_budget_guidance(trip_meta),
+        )
+        # Folded in from what used to be a separate scenic-drives call/stage
+        # (generate_scenic_drive_descriptions) -- combining all three into one
+        # LLM call per destination halves Stage 3's call count and removes an
+        # entire second serialized pass over every destination.
+        drives_prompt = self._drives_template.format(
+            destination_name=dest["name"],
+            dates=dest["dates"],
+            region=self._infer_region_for_destination(dest["name"]),
+        )
+        timing_context = self._build_trip_timing_context(
+            trip_meta=trip_meta,
+            destination_name=str(dest.get("name", "") or ""),
+            destination=dest,
+            previous_destination=prev,
+            next_destination=next_dest,
+        )
+        timing_note = ""
+        if timing_context:
+            timing_note = (
+                "\n\nTrip timing anchors (enforce workable sequencing):\n"
+                + timing_context
+                + "\nKeep Day 1 and final-day activities feasible against these anchors."
+            )
+        prompt = (
+            "Return JSON only with exactly three top-level keys: destination_content, "
+            "what_to_know, and scenic_drives.\n\n"
+            "DESTINATION CONTENT REQUEST:\n"
+            f"{destination_prompt}{timing_note}\n\n"
+            "WHAT TO KNOW REQUEST:\n"
+            f"{what_to_know_prompt}{timing_note}\n\n"
+            "SCENIC DRIVES REQUEST:\n"
+            f"{drives_prompt}"
+        )
+        configured_max_tokens = self._config.get("ai", {}).get(
+            "max_tokens", self._config.get("azure_openai", {}).get("max_tokens", 4096)
+        )
         result = self._llm.generate_json(
             system_prompt=self._system_prompt,
             user_prompt=prompt,
-            operation=f"destination_content:{dest['id']}",
+            operation=f"destination_bundle:{dest['id']}",
             temperature=self._config.get("ai", {}).get("temperature", self._config.get("azure_openai", {}).get("temperature", 0.7)),
-            max_tokens=self._config.get("ai", {}).get("max_tokens", self._config.get("azure_openai", {}).get("max_tokens", 4096)),
+            # +2048 covers the scenic-drives section that used to have its own
+            # dedicated 2048-token budget as a separate call.
+            max_tokens=int(configured_max_tokens) + 2048,
         )
+        destination_content = result.get("destination_content", {}) if isinstance(result, dict) else {}
+        what_to_know = result.get("what_to_know", {}) if isinstance(result, dict) else {}
+        scenic_drives = result.get("scenic_drives", []) if isinstance(result, dict) else []
+        if not isinstance(destination_content, dict):
+            destination_content = {}
+        if not isinstance(what_to_know, dict):
+            what_to_know = {}
+        if not isinstance(scenic_drives, list):
+            scenic_drives = []
         if self._enable_url_candidate_experiment:
-            result = self._augment_with_url_candidates(result, dest)
-        return self._normalize_destination_content(
-            result,
-            dest.get("dates", ""),
-            dest,
-            trip_meta,
-            prev,
-            next_dest,
-        )
+            destination_content = self._augment_with_url_candidates(destination_content, dest)
+        return {
+            "destination_content": self._normalize_destination_content(
+                destination_content,
+                dest.get("dates", ""),
+                dest,
+                trip_meta,
+                prev,
+                next_dest,
+            ),
+            "what_to_know": self._normalize_what_to_know(what_to_know, dest),
+            "scenic_drives": scenic_drives,
+        }
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30))
-    def _generate_drives(self, dest: dict[str, Any]) -> list[dict[str, Any]]:
-        # Derive region from destination name
-        region_map = {"utah": "Utah", "colorado": "Colorado", "new mexico": "New Mexico",
-                      "arizona": "Arizona", "nevada": "Nevada", "california": "California"}
-        name_lower = dest["name"].lower()
-        region = next((v for k, v in region_map.items() if k in name_lower), "Western United States")
+    @staticmethod
+    def _build_trip_timing_context(
+        *,
+        trip_meta: dict[str, Any],
+        destination_name: str,
+        destination: dict[str, Any],
+        previous_destination: str,
+        next_destination: str,
+    ) -> str:
+        lines: list[str] = []
+        departure_name = str(trip_meta.get("departure", "") or "").strip()
+        departure_dt = str(trip_meta.get("departure_datetime", "") or "").strip()
+        return_name = str(trip_meta.get("return", "") or "").strip()
+        return_dt = str(trip_meta.get("return_datetime", "") or "").strip()
 
-        prompt = self._drives_template.format(
-            destination_name=dest["name"],
-            dates=dest["dates"],
-            region=region,
-        )
-        data = self._llm.generate_json(
-            system_prompt=self._system_prompt,
-            user_prompt=prompt,
-            operation=f"scenic_drives:{dest['id']}",
-            temperature=self._config.get("ai", {}).get("temperature", self._config.get("azure_openai", {}).get("temperature", 0.7)),
-            max_tokens=2048,
-        )
-        return data.get("scenic_drives", [])
+        if departure_name or departure_dt:
+            lines.append(f"- Trip departure anchor: {departure_name or 'departure location TBD'} @ {departure_dt or 'time TBD'}")
+        if return_name or return_dt:
+            lines.append(f"- Trip return anchor: {return_name or 'return location TBD'} @ {return_dt or 'time TBD'}")
+
+        lodging = destination.get("lodging", {}) if isinstance(destination.get("lodging", {}), dict) else {}
+        lodging_location = str(lodging.get("location", "") or "").strip()
+        lodging_checkin = str(lodging.get("checkin_time", "") or "").strip()
+        if lodging_location or lodging_checkin:
+            lines.append(
+                f"- Lodging anchor for {destination_name}: {lodging_location or 'lodging TBD'} @ {lodging_checkin or 'check-in time TBD'}"
+            )
+
+        if previous_destination == "none" and departure_dt:
+            lines.append(
+                f"- {destination_name}: do not schedule first-day activities before the departure anchor travel window."
+            )
+        if lodging_checkin:
+            lines.append(
+                f"- {destination_name}: keep first-day activities feasible around arrival, with lodging check-in near {lodging_checkin}."
+            )
+        if (not next_destination or next_destination == "none") and return_dt:
+            lines.append(
+                f"- {destination_name}: reserve realistic buffer for return travel before the return anchor."
+            )
+
+        return "\n".join(lines)
+
+    @_retry_transient_llm_errors
+    def _generate_for_destination(
+        self, dest: dict[str, Any], trip_meta: dict[str, Any], prev: str, next_dest: str
+    ) -> dict[str, Any]:
+        bundle = self._generate_destination_bundle(dest, trip_meta, prev, next_dest)
+        return bundle["destination_content"]
 
     def _build_budget_guidance(self, trip_meta: dict[str, Any]) -> str:
         budget = trip_meta.get("budget")
@@ -561,20 +854,35 @@ class AIContentGenerator:
         )
         normalized_attractions = self._normalize_attractions(payload.get("top_attractions", []))
         normalized_attractions = self._ensure_seed_attractions(normalized_attractions, seed_names)
-        payload["top_attractions"] = self._remove_enroute_stops_from_attractions(
+        normalized_attractions = self._remove_enroute_stops_from_attractions(
             normalized_attractions,
             payload.get("getting_here", {}),
+            protected_names=seed_names,
+        )
+        payload["top_attractions"] = self._apply_manifest_attraction_target(
+            normalized_attractions,
+            dates=dates,
+            attractions_per_day=self._resolve_attraction_target(dest, trip_meta),
             protected_names=seed_names,
         )
         payload["possible_daily_schedule"] = self._normalize_schedule(
             payload.get("possible_daily_schedule", {}),
             payload.get("dinner_recommendations", []),
             dates,
+            payload.get("top_attractions", []),
             payload.get("getting_here", {}),
             previous_destination,
             next_destination,
             str(trip_meta.get("departure", "") or "").strip(),
             str(trip_meta.get("return", "") or "").strip(),
+            str(trip_meta.get("departure_datetime", "") or "").strip(),
+            str(trip_meta.get("return_datetime", "") or "").strip(),
+            str((dest.get("lodging", {}) or {}).get("location", "") or "").strip(),
+            str((dest.get("lodging", {}) or {}).get("checkin_time", "") or "").strip(),
+            str(trip_meta.get("default_day_start_time", "") or "").strip(),
+            str(dest.get("schedule_start_time", "") or "").strip(),
+            trip_meta.get("default_daily_activity_hours", 5),
+            dest.get("daily_activity_hours", None),
         )
         payload["dinner_recommendations"] = self._normalize_restaurants(
             payload.get("dinner_recommendations", []),
@@ -628,7 +936,17 @@ class AIContentGenerator:
                 if attr_norm == stop_name:
                     is_enroute_match = True
                     break
-                if attr_norm in stop_name or stop_name in attr_norm:
+                # Substring containment is only trustworthy when the shorter
+                # name is a substantial fraction of the longer one -- e.g. an
+                # en-route stop like "Overlook Point" reduces to just "point"
+                # after norm() strips the generic word "overlook", and a bare
+                # "point" is a substring of nearly any attraction with "Point"
+                # in its name ("Sunset Point", "Inspiration Point", ...),
+                # producing false-positive removals unrelated to the actual
+                # stop. Require at least half the longer name's length to
+                # overlap before trusting containment alone.
+                shorter, longer = sorted((attr_norm, stop_name), key=len)
+                if shorter and shorter in longer and len(shorter) >= len(longer) * 0.5:
                     is_enroute_match = True
                     break
                 if SequenceMatcher(None, attr_norm, stop_name).ratio() >= 0.9:
@@ -826,6 +1144,19 @@ class AIContentGenerator:
             item = dict(attraction)
             item_type = str(item.get("type", "attraction") or "attraction").lower()
             item["type"] = item_type
+            item_name = str(item.get("name", "") or "").strip()
+            item_description = str(item.get("description", "") or "").strip().lower()
+            non_tourist_markers = (
+                "not a tourist attraction",
+                "not tourist attraction",
+                "hospital",
+                "medical center",
+                "urgent care",
+                "emergency room",
+                "clinic",
+            )
+            if any(marker in f"{item_name.lower()} {item_description}" for marker in non_tourist_markers):
+                continue
             item["url_candidates"] = self._normalize_url_candidates(item.get("url_candidates", []))
             if item.get("must_see") and must_see_budget > 0:
                 must_see_budget -= 1
@@ -884,12 +1215,22 @@ class AIContentGenerator:
         schedule: Any,
         restaurants: list[dict[str, Any]],
         dates: str,
-        getting_here: dict[str, Any],
-        previous_destination: str,
-        next_destination: str,
+        attractions: list[dict[str, Any]] | None = None,
+        getting_here: dict[str, Any] | None = None,
+        previous_destination: str = "",
+        next_destination: str = "",
         trip_origin: str = "",
         trip_return: str = "",
+        trip_departure_datetime: str = "",
+        trip_return_datetime: str = "",
+        lodging_location: str = "",
+        lodging_checkin_time: str = "",
+        default_day_start_time: str = "",
+        destination_day_start_time: str = "",
+        default_daily_activity_hours: Any = 5,
+        destination_daily_activity_hours: Any = None,
     ) -> list[dict[str, Any]]:
+        getting_here = getting_here or {}
         restaurant_names = [r.get("name", "") for r in restaurants if r.get("name")]
 
         def clean_text(text: str) -> str:
@@ -943,6 +1284,16 @@ class AIContentGenerator:
                 next_destination,
                 trip_origin,
                 trip_return,
+                trip_departure_datetime,
+                trip_return_datetime,
+                lodging_location,
+                lodging_checkin_time,
+                default_day_start_time,
+                destination_day_start_time,
+                attractions,
+                default_daily_activity_hours,
+                destination_daily_activity_hours,
+                restaurants=restaurants,
             )
 
         if isinstance(schedule, dict):
@@ -961,6 +1312,16 @@ class AIContentGenerator:
                     next_destination,
                     trip_origin,
                     trip_return,
+                    trip_departure_datetime,
+                    trip_return_datetime,
+                    lodging_location,
+                    lodging_checkin_time,
+                    default_day_start_time,
+                    destination_day_start_time,
+                    attractions,
+                    default_daily_activity_hours,
+                    destination_daily_activity_hours,
+                    restaurants=restaurants,
                 )
 
         return []
@@ -1011,7 +1372,14 @@ class AIContentGenerator:
         return self._dedupe_schedule_day_content(out)
 
     def _dedupe_schedule_day_content(self, days: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Ensure each day has at least one meaningful content difference from prior days."""
+        """Ensure each day has at least one meaningful content difference from prior days.
+
+        Runs before _inject_travel_realism's attraction-name rotation, so this
+        is the only defense against duplication in generic fallback text that
+        carries no canonical attraction/restaurant name for that later pass to
+        rotate in (e.g. _ensure_day_period_coverage's identical filler string
+        reused verbatim across every day missing a period).
+        """
         if len(days) <= 1:
             return days
 
@@ -1021,31 +1389,26 @@ class AIContentGenerator:
             "Evening": "Choose a different sunset zone or dining pocket than earlier nights.",
         }
 
+        # Detect and fix duplication per period, not only when an entire day's
+        # periods are all duplicates of prior days -- a day with 2 of 3
+        # periods repeated (but one genuinely new) previously triggered
+        # nothing at all.
         seen_summaries: set[str] = set()
         for day in days:
             periods = day.get("periods", []) or []
-            normalized_day_summaries = [
-                str(p.get("summary", "") or "").strip().lower()
-                for p in periods
-                if str(p.get("summary", "") or "").strip()
-            ]
-
-            # Day is too repetitive if every summary is already seen.
-            if normalized_day_summaries and all(s in seen_summaries for s in normalized_day_summaries):
-                for period in periods:
-                    label = str(period.get("period", "")).title()
-                    summary = str(period.get("summary", "") or "").strip()
-                    if not summary:
-                        continue
-                    suffix = period_variation_suffix.get(label, "Vary stops and pacing from previous days.")
-                    if suffix.lower() not in summary.lower():
-                        period["summary"] = f"{summary} {suffix}".strip()
-                    break
-
             for period in periods:
-                summary = str(period.get("summary", "") or "").strip().lower()
-                if summary:
-                    seen_summaries.add(summary)
+                label = str(period.get("period", "")).title()
+                summary = str(period.get("summary", "") or "").strip()
+                if not summary:
+                    continue
+                normalized = summary.lower()
+                if normalized in seen_summaries:
+                    suffix = period_variation_suffix.get(label, "Vary stops and pacing from previous days.")
+                    if suffix.lower() not in normalized:
+                        summary = f"{summary} {suffix}".strip()
+                        period["summary"] = summary
+                        normalized = summary.lower()
+                seen_summaries.add(normalized)
 
         return days
 
@@ -1057,9 +1420,21 @@ class AIContentGenerator:
         next_destination: str,
         trip_origin: str = "",
         trip_return: str = "",
+        trip_departure_datetime: str = "",
+        trip_return_datetime: str = "",
+        lodging_location: str = "",
+        lodging_checkin_time: str = "",
+        default_day_start_time: str = "",
+        destination_day_start_time: str = "",
+        attractions: list[dict[str, Any]] | None = None,
+        default_daily_activity_hours: Any = 5,
+        destination_daily_activity_hours: Any = None,
+        restaurants: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         if not days:
             return days
+
+        attractions = attractions or []
 
         def _is_heavy_activity_block(summary: str) -> bool:
             text = str(summary or "").lower()
@@ -1072,6 +1447,18 @@ class AIContentGenerator:
                 )
             )
 
+        def _is_arrival_logistics_summary(summary: str) -> bool:
+            text = str(summary or "").strip().lower()
+            if not text:
+                return False
+            if re.search(r"\b(check[- ]?in|lodging)\b", text):
+                return True
+            if re.search(r"\btravel from\b.*\barrival\b", text):
+                return True
+            if re.search(r"\bdrive from\b", text):
+                return True
+            return bool(re.search(r"\b(arrive|arrival)\b", text))
+
         is_first_destination = str(previous_destination or "").strip().lower() in {"", "none"}
         is_last_destination = not str(next_destination or "").strip()
 
@@ -1082,31 +1469,333 @@ class AIContentGenerator:
                     period["summary"] = summary
                     return
 
+        def _extract_hour(raw_dt: str) -> int | None:
+            text = str(raw_dt or "").strip().replace("T", " ")
+            match = re.match(r"^\d{4}-\d{2}-\d{2}(?:\s+(\d{1,2}):(\d{2})(?:\s*([APap][Mm]))?)?", text)
+            if not match or match.group(1) is None:
+                return None
+            hour = int(match.group(1))
+            ampm = str(match.group(3) or "").upper()
+            if ampm == "PM" and hour < 12:
+                hour += 12
+            if ampm == "AM" and hour == 12:
+                hour = 0
+            return max(0, min(23, hour))
+
+        def _format_anchor_time(raw_dt: str) -> str:
+            text = str(raw_dt or "").strip().replace("T", " ")
+            match = re.match(r"^\d{4}-\d{2}-\d{2}(?:\s+(\d{1,2}):(\d{2})(?:\s*([APap][Mm]))?)?", text)
+            if not match or match.group(1) is None:
+                return ""
+            hour = int(match.group(1))
+            minute = int(match.group(2) or "0")
+            ampm = str(match.group(3) or "").upper()
+            if ampm:
+                return f"{hour}:{minute:02d} {ampm}"
+            suffix = "AM" if hour < 12 else "PM"
+            hour12 = hour % 12
+            if hour12 == 0:
+                hour12 = 12
+            return f"{hour12}:{minute:02d} {suffix}"
+
+        def _parse_clock_minutes(raw: str) -> int | None:
+            text = str(raw or "").strip()
+            if not text:
+                return None
+            match = re.match(r"^(\d{1,2})(?::(\d{2}))?\s*([APap][Mm])?$", text)
+            if not match:
+                return None
+            hour = int(match.group(1))
+            minute = int(match.group(2) or "0")
+            ampm = str(match.group(3) or "").upper()
+            if ampm:
+                if hour == 12:
+                    hour = 0
+                if ampm == "PM":
+                    hour += 12
+            if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+                return None
+            return hour * 60 + minute
+
+        def _format_minutes_as_time(total_minutes: int) -> str:
+            clamped = max(0, min((24 * 60) - 1, total_minutes))
+            hour24 = clamped // 60
+            minute = clamped % 60
+            suffix = "AM" if hour24 < 12 else "PM"
+            hour12 = hour24 % 12
+            if hour12 == 0:
+                hour12 = 12
+            return f"{hour12}:{minute:02d} {suffix}"
+
+        def _parse_duration_minutes(raw: str) -> int:
+            text = str(raw or "").lower().strip()
+            if not text:
+                return 0
+            total = 0
+            found = False
+
+            hr_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)", text)
+            if hr_match:
+                total += int(round(float(hr_match.group(1)) * 60))
+                found = True
+
+            min_match = re.search(r"(\d+)\s*(?:m|min|mins|minute|minutes)", text)
+            if min_match:
+                total += int(min_match.group(1))
+                found = True
+
+            range_match = re.search(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)", text)
+            if range_match:
+                low = float(range_match.group(1))
+                high = float(range_match.group(2))
+                total = int(round(((low + high) / 2.0) * 60))
+                found = True
+
+            if found:
+                return max(0, total)
+
+            bare_hours = re.search(r"\b(\d+(?:\.\d+)?)\b", text)
+            if bare_hours:
+                return int(round(float(bare_hours.group(1)) * 60))
+
+            return 0
+
+        def _parse_hours_limit(value: Any, fallback_hours: float = 5.0) -> int:
+            try:
+                hours = float(value)
+                if hours <= 0:
+                    raise ValueError()
+                return int(round(hours * 60))
+            except Exception:
+                return int(round(fallback_hours * 60))
+
+        def _format_duration_compact(minutes: int) -> str:
+            mins = max(0, int(minutes))
+            if mins < 60:
+                return f"{mins}m"
+            h = mins // 60
+            m = mins % 60
+            if m == 0:
+                return f"{h}h"
+            return f"{h}h {m}m"
+
+        def _build_multi_activity_afternoon_summary(
+            activity_budget_minutes: int, *, start_offset: int = 0, arrival_day: bool = True
+        ) -> str:
+            if activity_budget_minutes <= 0 or not attractions:
+                return ""
+
+            # start_offset rotates which attractions are considered first, so
+            # Day 2+ (which shares the same attractions list as Day 1) doesn't
+            # greedily pick the exact same set every time it's called.
+            ordered = attractions[start_offset:] + attractions[:start_offset] if start_offset else attractions
+
+            picked: list[tuple[str, int]] = []
+            remaining = activity_budget_minutes
+            for attr in ordered:
+                if not isinstance(attr, dict):
+                    continue
+                name = str(attr.get("name", "") or "").strip()
+                if not name:
+                    continue
+                duration_raw = str(attr.get("duration", "") or "").strip()
+                duration_minutes = _parse_duration_minutes(duration_raw)
+                if duration_minutes <= 0:
+                    duration_minutes = 90
+                if duration_minutes > remaining:
+                    continue
+                picked.append((name, duration_minutes))
+                remaining -= duration_minutes
+                if len(picked) >= 3 or remaining < 45:
+                    break
+
+            if len(picked) < 2:
+                return ""
+
+            total_minutes = sum(item[1] for item in picked)
+            parts = [f"{name} ({_format_duration_compact(minutes)})" for name, minutes in picked]
+            if arrival_day:
+                return (
+                    f"After arrival, fit multiple activities within about {_format_duration_compact(total_minutes)}: "
+                    + ", ".join(parts)
+                    + ". Keep the afternoon realistic after travel."
+                )
+            return (
+                f"Fit multiple activities within about {_format_duration_compact(total_minutes)}: "
+                + ", ".join(parts)
+                + ". Keep transfer/parking buffers between stops."
+            )
+
+        attraction_names: list[str] = []
+        seen_attraction_names: set[str] = set()
+        for attr in attractions:
+            if not isinstance(attr, dict):
+                continue
+            name = str(attr.get("name", "") or "").strip()
+            key = name.lower()
+            if not name or key in seen_attraction_names:
+                continue
+            seen_attraction_names.add(key)
+            attraction_names.append(name)
+
+        def _day_focus_name(day_index: int, offset: int = 0) -> str:
+            if not attraction_names:
+                return ""
+            return attraction_names[(day_index - 1 + offset) % len(attraction_names)]
+
+        def _pick_non_repeating_focus(day_index: int, offset: int, recent_focuses: list[str]) -> str:
+            base_focus = _day_focus_name(day_index, offset)
+            if not base_focus or len(attraction_names) <= 1:
+                return base_focus
+            if base_focus.lower() not in recent_focuses:
+                return base_focus
+
+            start = (day_index - 1 + offset) % len(attraction_names)
+            for step in range(1, len(attraction_names)):
+                candidate = attraction_names[(start + step) % len(attraction_names)]
+                if candidate.lower() not in recent_focuses:
+                    return candidate
+            return base_focus
+
+        def _replace_first_attraction_mention(summary: str, replacement_name: str) -> str:
+            if not summary or not replacement_name:
+                return summary
+            for name in attraction_names:
+                if not name:
+                    continue
+                if re.search(re.escape(name), summary, re.IGNORECASE):
+                    return re.sub(re.escape(name), replacement_name, summary, count=1, flags=re.IGNORECASE)
+            return summary
+
+        def _record_focus_mentions(summary: str, recent_focuses: list[str]) -> None:
+            text = str(summary or "")
+            if not text:
+                return
+            for name in attraction_names:
+                if not name:
+                    continue
+                if re.search(re.escape(name), text, re.IGNORECASE):
+                    recent_focuses.append(name.lower())
+
+        def _rotate_restaurant_summary(summary: str, restaurant_name: str) -> str:
+            text = str(summary or "").strip()
+            if not text or not restaurant_name:
+                return text
+            low = text.lower()
+            if "dinner" in low:
+                # Normalize all dinner mentions to the day-assigned restaurant.
+                return re.sub(
+                    r"dinner(?:\s+at\s+[^.,;]+)?",
+                    f"dinner at {restaurant_name}",
+                    text,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+            if re.search(rf"\b(dine|eat)\s+at\s+{re.escape(restaurant_name.lower())}\b", low):
+                return re.sub(
+                    rf"\s*Plan dinner at\s+{re.escape(restaurant_name)}\.?\s*$",
+                    "",
+                    text,
+                    flags=re.IGNORECASE,
+                ).strip()
+            if restaurant_name.lower() in low and re.search(r"\b(dine|eat)\b", low):
+                return re.sub(
+                    r"\s*Plan dinner at\s+[^.]+\.?\s*$",
+                    "",
+                    text,
+                    flags=re.IGNORECASE,
+                ).strip()
+            if low.startswith("reserved for return travel") or "onward drive" in low:
+                return text
+            return f"{text} Plan dinner at {restaurant_name}."
+
+        effective_start_minutes = (
+            _parse_clock_minutes(destination_day_start_time)
+            or _parse_clock_minutes(default_day_start_time)
+            or (10 * 60)
+        )
+        effective_activity_budget_minutes = (
+            _parse_hours_limit(destination_daily_activity_hours, fallback_hours=5.0)
+            if destination_daily_activity_hours is not None
+            else _parse_hours_limit(default_daily_activity_hours, fallback_hours=5.0)
+        )
+
         if is_first_destination:
             origin_label = trip_origin or "trip origin"
-            _set_period_summary(
-                days[0],
-                "Morning",
-                f"Travel from {origin_label}.",
-            )
-            # Keep first-day arrival plans realistic by avoiding heavy activity
-            # blocks immediately after transit from origin.
-            first_afternoon = ""
-            for period in days[0].get("periods", []) or []:
-                if str(period.get("period", "")).title() == "Afternoon":
-                    first_afternoon = str(period.get("summary", "") or "")
-                    break
-            if _is_heavy_activity_block(first_afternoon):
+            departure_hour = _extract_hour(trip_departure_datetime)
+            departure_time_label = _format_anchor_time(trip_departure_datetime)
+            travel_period = "Morning"
+            if departure_hour is not None and departure_hour >= 17:
+                travel_period = "Evening"
+            elif departure_hour is not None and departure_hour >= 11:
+                travel_period = "Afternoon"
+
+            travel_summary = f"Travel from {origin_label}."
+            if departure_time_label:
+                travel_summary = f"Travel from {origin_label} (depart around {departure_time_label})."
+
+            if travel_period != "Morning":
                 _set_period_summary(
                     days[0],
-                    "Afternoon",
-                    "Arrival check-in, meal break, and a short orientation stop near lodging; keep activity light after travel.",
+                    "Morning",
+                    "Departure prep, airport transfer, and logistics before the main travel leg.",
+                )
+
+            _set_period_summary(days[0], travel_period, travel_summary)
+
+            # Keep first-day arrival plans realistic by avoiding heavy activity
+            # blocks immediately after transit from origin.
+            first_after_travel = ""
+            follow_period = {"Morning": "Afternoon", "Afternoon": "Evening", "Evening": ""}[travel_period]
+            for period in days[0].get("periods", []) or []:
+                if str(period.get("period", "")).title() == follow_period:
+                    first_after_travel = str(period.get("summary", "") or "")
+                    break
+            if follow_period and _is_heavy_activity_block(first_after_travel):
+                arrival_phrase = "After arriving"
+                if lodging_location:
+                    arrival_phrase += f" near {lodging_location}"
+                if lodging_checkin_time:
+                    arrival_phrase += f" around {lodging_checkin_time}"
+                _set_period_summary(
+                    days[0],
+                    follow_period,
+                    f"{arrival_phrase}, take a meal break and a short orientation stop; keep activity light after travel.",
                 )
 
         drive_time = str(getting_here.get("drive_time", "") or "").strip()
+        drive_minutes = _parse_duration_minutes(drive_time)
         first = days[0]
         first_periods = first.get("periods", [])
         if first_periods and not is_first_destination and (drive_time or previous_destination.lower() != "none"):
+            existing_morning_summary = ""
+            for period in first_periods:
+                if str(period.get("period", "")).title() == "Morning":
+                    existing_morning_summary = str(period.get("summary", "") or "")
+                    break
+            morning_already_arrival_aware = bool(
+                re.search(r"\b(arrive|arrival|drive|driving|route|i-\d+|us-\d+)\b", existing_morning_summary, re.IGNORECASE)
+            )
+            if drive_minutes > 0:
+                if not morning_already_arrival_aware:
+                    arrival_minutes = effective_start_minutes + drive_minutes
+                    arrival_label = _format_minutes_as_time(arrival_minutes)
+                    _set_period_summary(
+                        first,
+                        "Morning",
+                        f"Travel from {previous_destination} (depart around {_format_minutes_as_time(effective_start_minutes)}); arrival around {arrival_label}.",
+                    )
+                # The activity budget represents willingness/time to spend on
+                # activities in a normal full day -- on an arrival day, the
+                # drive itself eats directly into that allotment rather than
+                # being free time on top of it, so it must be subtracted
+                # before deciding what else fits in the afternoon.
+                packed_afternoon = _build_multi_activity_afternoon_summary(
+                    max(0, effective_activity_budget_minutes - drive_minutes)
+                )
+                if packed_afternoon:
+                    _set_period_summary(first, "Afternoon", packed_afternoon)
+
             existing = str(first_periods[0].get("summary", "") or "")
             if re.search(r"\b(arrive|arrival|drive|driving|route|i-\d+|us-\d+)\b", existing, re.IGNORECASE):
                 arrival_note = ""
@@ -1115,13 +1804,34 @@ class AIContentGenerator:
             if arrival_note:
                 first_periods[0]["summary"] = f"{arrival_note}. {existing}".strip()
 
+        # Extend capacity-aware Afternoon packing beyond the single arrival-day
+        # case above: any additional in-stay day (Day 2+) has the full activity
+        # budget available with no transit friction to subtract, so it's an
+        # even better candidate for a duration-aware multi-activity plan than
+        # a plain AI-written summary or a same-name-swapped rotation. Day
+        # index offsets which attractions are considered first so consecutive
+        # days don't greedily pick the identical set.
+        if len(days) > 1 and attractions:
+            for day_index, day in enumerate(days[1:], start=2):
+                if not (day.get("periods", []) or []):
+                    continue
+                packed = _build_multi_activity_afternoon_summary(
+                    effective_activity_budget_minutes,
+                    start_offset=(day_index - 1) % len(attractions),
+                    arrival_day=False,
+                )
+                if packed:
+                    _set_period_summary(day, "Afternoon", packed)
+
         if is_last_destination:
             return_label = trip_return or "base"
+            return_time_label = _format_anchor_time(trip_return_datetime)
+            return_time_suffix = f" around {return_time_label}" if return_time_label else ""
             last = days[-1]
             _set_period_summary(
                 last,
                 "Afternoon",
-                f"Reserved for return travel to {return_label}; begin checkout and departure logistics.",
+                f"Reserved for return travel to {return_label}{return_time_suffix}; begin checkout and departure logistics.",
             )
             _set_period_summary(
                 last,
@@ -1133,9 +1843,129 @@ class AIContentGenerator:
             last_periods = last.get("periods", [])
             if last_periods:
                 last_periods[-1]["summary"] = (
-                    f"Wrap key stops early and prepare for onward drive to {next_destination}. "
-                    f"{last_periods[-1].get('summary', '')}"
+                    f"Wrap key stops early and prepare for onward drive to {next_destination}; "
+                    "skip new sunset commitments and keep departure buffers."
                 ).strip()
+
+        if len(days) == 1:
+            day_one_periods = days[0].get("periods", []) or []
+            has_arrival_or_checkin = any(
+                _is_arrival_logistics_summary(str(period.get("summary", "") or ""))
+                for period in day_one_periods
+            )
+            has_explicit_checkin = any(
+                bool(re.search(r"\b(check[- ]?in|lodging)\b", str(period.get("summary", "") or ""), re.IGNORECASE))
+                for period in day_one_periods
+            )
+            existing_afternoon_summary = ""
+            for period in day_one_periods:
+                if str(period.get("period", "")).title() == "Afternoon":
+                    existing_afternoon_summary = str(period.get("summary", "") or "").strip()
+                    break
+            if day_one_periods and not has_explicit_checkin and not is_first_destination and not existing_afternoon_summary:
+                _set_period_summary(
+                    days[0],
+                    "Afternoon",
+                    "After arriving, check in and settle logistics before one short nearby highlight.",
+                )
+
+        # Expanded multi-day schedules can accidentally clone Day 1 arrival/check-in
+        # text into later mornings. Keep Day 1 arrival context, but remove it from
+        # Day 2+ so only the first day carries arrival logistics.
+        if len(days) > 1:
+            for day_index, day in enumerate(days[1:], start=2):
+                periods = day.get("periods", []) or []
+                for period in periods:
+                    label = str(period.get("period", "")).title()
+                    summary = str(period.get("summary", "") or "").strip()
+                    low_summary = summary.lower()
+                    if low_summary.startswith("reserved for return travel"):
+                        continue
+                    if label == "Morning" and _is_arrival_logistics_summary(summary):
+                        focus_name = _day_focus_name(day_index)
+                        if focus_name:
+                            period["summary"] = (
+                                f"Start with {focus_name}, then pivot to a different nearby area before midday crowds."
+                            )
+                        else:
+                            period["summary"] = (
+                                "Start with a different priority trailhead or district than Day 1, "
+                                "and keep parking buffers before midday crowds."
+                            )
+                    elif label == "Afternoon":
+                        if low_summary.startswith("after arrival"):
+                            focus_name = _day_focus_name(day_index, offset=1) or "one nearby highlight"
+                            period["summary"] = (
+                                f"After the morning start, allocate this block to {focus_name} "
+                                "and one nearby stop, keeping transfer buffers between activities."
+                            )
+                        elif re.search(r"\bcheck[- ]?in\b", low_summary) or re.search(r"\blodging\b", low_summary):
+                            focus_name = _day_focus_name(day_index, offset=1) or "one or two nearby highlights"
+                            period["summary"] = (
+                                f"After the morning start, focus on {focus_name} "
+                                "and a second nearby stop without repeating Day 1 transfer logistics."
+                            )
+                    elif _is_arrival_logistics_summary(summary):
+                        focus_name = _day_focus_name(day_index, offset=2)
+                        if focus_name:
+                            period["summary"] = (
+                                f"Keep this block destination-focused around {focus_name} "
+                                "without repeating arrival or check-in logistics."
+                            )
+                            continue
+                        period["summary"] = (
+                            "Keep this block destination-focused without repeating arrival or check-in logistics."
+                        )
+
+        # Day-level allocation pass: rotate attraction focus and dinner targets to
+        # prevent repeated day cards from reusing the same entities.
+        restaurant_names = [
+            str(r.get("name", "") or "").strip()
+            for r in (restaurants if isinstance(restaurants, list) else [])
+            if isinstance(r, dict) and str(r.get("name", "") or "").strip()
+        ]
+        recent_focuses: list[str] = []
+        if days:
+            for day_index, day in enumerate(days, start=1):
+                periods = day.get("periods", []) or []
+                dinner_name = restaurant_names[(day_index - 1) % len(restaurant_names)] if restaurant_names else ""
+                for period in periods:
+                    label = str(period.get("period", "")).title()
+                    summary = str(period.get("summary", "") or "").strip()
+                    if not summary:
+                        continue
+                    low_summary = summary.lower()
+                    if low_summary.startswith("reserved for return travel"):
+                        continue
+
+                    if label == "Morning":
+                        focus = _pick_non_repeating_focus(day_index, offset=0, recent_focuses=recent_focuses[-2:])
+                        if focus:
+                            updated = _replace_first_attraction_mention(summary, focus)
+                            period["summary"] = updated
+                            summary = updated
+                            low_summary = summary.lower()
+                            recent_focuses.append(focus.lower())
+
+                    elif label == "Afternoon":
+                        if "fit multiple activities" in low_summary:
+                            _record_focus_mentions(summary, recent_focuses)
+                            continue
+                        focus = _pick_non_repeating_focus(day_index, offset=1, recent_focuses=recent_focuses[-2:])
+                        if focus:
+                            updated = _replace_first_attraction_mention(summary, focus)
+                            period["summary"] = updated
+                            summary = updated
+                            low_summary = summary.lower()
+                            recent_focuses.append(focus.lower())
+
+                    if len(recent_focuses) > 6:
+                        recent_focuses = recent_focuses[-6:]
+
+                    _record_focus_mentions(summary, recent_focuses)
+
+                    if label == "Evening" and dinner_name:
+                        period["summary"] = _rotate_restaurant_summary(summary, dinner_name)
         return days
 
     def _infer_day_count(self, dates: str) -> int:
@@ -1193,6 +2023,95 @@ class AIContentGenerator:
             })
         return expanded
 
+    @staticmethod
+    def _coerce_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _resolve_attraction_target(self, dest: dict[str, Any], trip_meta: dict[str, Any]) -> int:
+        default_target = 2
+        trip_value = trip_meta.get("attractions_per_day") if isinstance(trip_meta, dict) else None
+        dest_value = dest.get("attractions_per_day") if isinstance(dest, dict) else None
+        candidate = dest_value if dest_value is not None else trip_value
+        try:
+            parsed = int(candidate)
+        except (TypeError, ValueError):
+            parsed = default_target
+        if parsed < 1:
+            parsed = default_target
+        return parsed
+
+    def _apply_manifest_attraction_target(
+        self,
+        attractions: list[dict[str, Any]],
+        *,
+        dates: str,
+        attractions_per_day: int,
+        protected_names: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(attractions, list):
+            return []
+        if not attractions:
+            return []
+
+        protected = {
+            self._canonical_seed_name(str(name or ""))
+            for name in (protected_names or [])
+            if self._canonical_seed_name(str(name or ""))
+        }
+
+        def score(item: dict[str, Any]) -> tuple[int, float, int, str]:
+            name = str(item.get("name", "") or "")
+            must_see = 1 if bool(item.get("must_see")) else 0
+            rating = self._coerce_float(item.get("rating"))
+            if rating is None:
+                rating = 0.0
+            votes = item.get("votes")
+            try:
+                vote_count = int(votes)
+            except (TypeError, ValueError):
+                vote_count = 0
+            difficulty = str(item.get("difficulty", "") or "").lower()
+            difficulty_rank = {"strenuous": 0, "moderate": 1, "easy": 2, "n/a": 3, "": 4}.get(difficulty, 4)
+            return (must_see, rating, vote_count, f"{difficulty_rank}:{name.lower()}")
+
+        ranked = sorted(attractions, key=score, reverse=True)
+        if protected:
+            protected_items = [
+                item for item in ranked
+                if self._canonical_seed_name(str(item.get("name", "") or "")) in protected
+            ]
+            remaining = [
+                item for item in ranked
+                if self._canonical_seed_name(str(item.get("name", "") or "")) not in protected
+            ]
+        else:
+            protected_items = []
+            remaining = ranked
+
+        day_count = max(1, self._infer_day_count(dates))
+        target = max(1, int(attractions_per_day) * day_count)
+        if len(ranked) <= target:
+            return ranked
+
+        selected = list(protected_items)
+        selected.extend(remaining[: max(0, target - len(selected))])
+        return selected
+
+    @staticmethod
+    def _canonical_restaurant_name(name: str) -> str:
+        text = str(name or "").lower().strip()
+        if not text:
+            return ""
+        text = text.replace("&", " and ")
+        text = re.sub(r"[’']", "", text)
+        text = re.sub(r"[^a-z0-9\s]", " ", text)
+        text = re.sub(r"\b(restaurant|restaurants|cafe|cafes|café|bar|bars|grill|grills|bistro|diner|kitchen|house)\b", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
     def _normalize_restaurants(self, restaurants: list[dict[str, Any]], budget: Any = None) -> list[dict[str, Any]]:
         normalized = []
         price_rank = {"$": 0, "$$": 1, "$$$": 2, "$$$$": 3}
@@ -1215,6 +2134,29 @@ class AIContentGenerator:
             if any(phrase in desc_lower for phrase in (
                 "permanently closed", "has closed", "is closed", "no longer open", "closed its doors"
             )):
+                continue
+
+            canonical_key = self._canonical_restaurant_name(name)
+            existing_idx = None
+            for idx, existing in enumerate(normalized):
+                if self._canonical_restaurant_name(str(existing.get("name", "") or "")) == canonical_key:
+                    existing_idx = idx
+                    break
+
+            if existing_idx is not None:
+                existing = normalized[existing_idx]
+                existing_desc = str(existing.get("description", "") or "")
+                candidate_desc = str(item.get("description", "") or "")
+                if description and (not existing_desc or len(candidate_desc) > len(existing_desc)):
+                    existing["description"] = description
+                if not existing.get("cuisine") and item.get("cuisine"):
+                    existing["cuisine"] = item.get("cuisine")
+                if not existing.get("price_range") and item.get("price_range"):
+                    existing["price_range"] = item.get("price_range")
+                if not existing.get("url") and item.get("url"):
+                    existing["url"] = item.get("url")
+                if not existing.get("maps_url") and item.get("maps_url"):
+                    existing["maps_url"] = item.get("maps_url")
                 continue
 
             tier = str(item.get("price_range", "")).strip()

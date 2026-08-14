@@ -295,3 +295,84 @@ def reconcile_trip_from_registry(trip: dict[str, Any], registry: dict[str, Any])
         dest["cultural_events"] = cultural_events
 
     return reconciled
+
+
+_SCHEDULE_FALLBACK_BY_PERIOD = {
+    "morning": "Start with a currently eligible priority stop and keep parking buffers before midday crowds.",
+    "afternoon": "Focus on currently eligible nearby highlights and realistic transition time between stops.",
+    "evening": "Wrap with an eligible low-friction stop and dinner near your base.",
+}
+_SCHEDULE_FALLBACK_GENERIC = "Use currently eligible activities for this block and avoid filtered-out stops."
+# An entity can stay "accepted" in the registry while carrying one of these
+# reason codes -- e.g. a trail demoted to a plain attraction for exceeding
+# the configured mileage threshold is still present, just no longer the
+# thing a schedule mention originally implied ("go hike this trail"). Such
+# mentions must still be scrubbed even though the entity itself survives.
+_SOFT_DEMOTION_REASONS = {"threshold_demoted_to_attraction"}
+
+
+def _schedule_summary_mentions_entity(summary: str, entity_name: str) -> bool:
+    text = str(summary or "")
+    name = str(entity_name or "").strip()
+    if not text or not name:
+        return False
+    pattern = r"\b" + re.escape(name).replace(r"\ ", r"\s+") + r"\b"
+    return bool(re.search(pattern, text, flags=re.IGNORECASE))
+
+
+def reconcile_schedule_from_registry(reconciled_trip: dict[str, Any], registry: dict[str, Any]) -> None:
+    """Strip stale schedule-text references to entities the registry rejected
+    or quarantined, across every section (not just top_attractions) -- mutates
+    reconciled_trip in place.
+
+    This must run after reconcile_trip_from_registry, against the final
+    entity state: an entity dropped anywhere in the pipeline (URL audit,
+    within-destination dedup, cross-destination reassignment, ...) is only
+    reliably knowable once the registry itself is final. Replaces the
+    affected period's summary with a generic-but-truthful fallback rather
+    than re-calling the LLM -- deterministic and consistent with the rest of
+    the pipeline's cost profile, at the cost of losing some specificity in
+    that one period.
+    """
+    entities = registry.get("entities", []) if isinstance(registry.get("entities", []), list) else []
+    blocked_by_destination: dict[str, set[str]] = {}
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        display_name = str(entity.get("display_name", "") or "").strip()
+        if not display_name:
+            continue
+        validation_status = str(entity.get("validation_status", "accepted") or "accepted")
+        rejection_reasons = {
+            str(reason or "") for reason in (entity.get("rejection_reasons", []) or []) if str(reason or "")
+        }
+        is_blocked = validation_status not in _ACCEPTED_STATUSES or bool(rejection_reasons & _SOFT_DEMOTION_REASONS)
+        if not is_blocked:
+            continue
+        destination_id = str(entity.get("destination_id", "") or "")
+        blocked_by_destination.setdefault(destination_id, set()).add(display_name)
+
+    if not blocked_by_destination:
+        return
+
+    for dest in reconciled_trip.get("destinations", []) or []:
+        destination_id = str(dest.get("id", "") or "")
+        blocked_names = blocked_by_destination.get(destination_id)
+        if not blocked_names:
+            continue
+        ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content", {}), dict) else {}
+        schedule = ai.get("possible_daily_schedule", []) if isinstance(ai.get("possible_daily_schedule", []), list) else []
+        for day in schedule:
+            if not isinstance(day, dict):
+                continue
+            periods = day.get("periods", []) if isinstance(day.get("periods", []), list) else []
+            for period in periods:
+                if not isinstance(period, dict):
+                    continue
+                summary = str(period.get("summary", "") or "").strip()
+                if not summary:
+                    continue
+                if not any(_schedule_summary_mentions_entity(summary, name) for name in blocked_names):
+                    continue
+                label = str(period.get("period", "") or "").strip().lower()
+                period["summary"] = _SCHEDULE_FALLBACK_BY_PERIOD.get(label, _SCHEDULE_FALLBACK_GENERIC)

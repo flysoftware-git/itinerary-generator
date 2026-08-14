@@ -44,6 +44,14 @@ Primary references:
 Primary regression surface:
 - [../../tests/test_url_discovery.py](../../tests/test_url_discovery.py)
 
+### 2.1 Provenance Controls Publication
+
+- Candidate discovery does not imply publishability.
+- Final publication for named entities must be driven by validated decision state
+	(registry/reconciled fields), not by renderer-level name-based fallback synthesis.
+- Diagnostic fallback/query URLs may exist as metadata, but they are not equivalent
+	to canonical named-entity links.
+
 ### 3. Trail-Like Attractions Do Not Downgrade to Generic Named-Entity Fallback Links
 
 - Trail-like items that do not retain a validated trail URL must render without a link.
@@ -66,6 +74,13 @@ Primary references:
 Primary regression surface:
 - [../../tests/test_ai_content_normalization.py](../../tests/test_ai_content_normalization.py)
 - [../../tests/test_html_assembler.py](../../tests/test_html_assembler.py)
+
+### 4.1 Multi-Day Rationalization Is Substantive
+
+- Multi-day schedules must include substantive day-level differentiation; superficial
+	rephrasing does not satisfy quality.
+- Boundary travel windows (arrival/departure) must remain route-owned and must not be
+	reclassified as ordinary in-stay activity content.
 
 ### 5. Transfer-Leg Ownership Remains Explicit
 

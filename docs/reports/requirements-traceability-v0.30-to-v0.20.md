@@ -1,7 +1,8 @@
-# Requirements Traceability to Tests (v0.30 to v0.20)
+# Requirements Traceability to Tests (v2.1 to v0.20)
 
-Date: 2026-07-29
-Scope: Changelog requirements from v0.30 through v0.20 in docs/requirements.md.
+Date: 2026-08-02
+Scope: Changelog requirements from v2.1 through v0.20 in docs/requirements.md,
+plus post-triage quality-hardening linkage for current provenance/schedule updates.
 
 Legend:
 - Tested: direct test evidence exists for the requirement behavior.
@@ -12,6 +13,11 @@ Legend:
 
 | Req ID | Requirement (short) | Evidence | Status | Recommendation |
 |---|---|---|---|---|
+| v2.1-1 | Configurable schedule start time (`trip.default_day_start_time`, destination override) | tests/test_content_normalization.py::test_inject_travel_realism_uses_default_day_start_time_for_arrival_leg; tests/test_content_normalization.py::test_inject_travel_realism_honors_destination_start_time_override | Tested | Keep |
+| v2.1-2 | Configurable daily activity-hour budget (`trip.default_daily_activity_hours`, destination override) | tests/test_content_normalization.py::test_inject_travel_realism_packs_multiple_afternoon_activities_with_default_budget; tests/test_content_normalization.py::test_inject_travel_realism_respects_destination_activity_hour_override | Tested | Keep |
+| v2.1-3 | Afternoon multi-activity packing only when durations fit budget after transit | tests/test_content_normalization.py::test_inject_travel_realism_packs_multiple_afternoon_activities_with_default_budget; tests/test_content_normalization.py::test_inject_travel_realism_respects_destination_activity_hour_override | Tested | Keep |
+| v2.1-4 | Named-entity rendering middle-ground (canonical first, explicit map fallback second, hide when neither available) | tests/test_html_assembler.py::test_build_restaurants_hides_items_without_link_or_fallback; tests/test_html_assembler.py::test_build_restaurants_uses_maps_fallback_when_canonical_missing; tests/test_html_assembler.py::test_build_attractions_without_canonical_url_renders_plain_text_no_maps_fallback; tests/test_html_assembler.py::test_build_getting_here_without_stop_url_renders_plain_stop_text | Tested | Keep |
+| v2.1-5 | Return leg time anchor shown in departure route card | tests/test_html_assembler.py::test_build_getting_there_includes_return_anchor_time; tests/test_html_assembler.py::test_build_map_markers_includes_sequential_stop_indices | Tested | Keep |
 | v0.30-1 | Last destination must render dedicated Getting There block | tests/test_html_assembler.py::test_build_getting_there_renders_departure_route_options | Tested | Keep |
 | v0.30-2 | Departure-aligned one-way drives moved to ai_content.getting_there.route_options | tests/test_ai_content_normalization.py::test_filter_departure_aligned_drives_moves_matching_one_way_drive_to_getting_there | Tested | Keep |
 | v0.30-3 | Marker payload has stop_index aligned with tabs; marker preserves date context while numbered | tests/test_html_assembler.py::test_build_map_markers_includes_sequential_stop_indices; tests/test_html_assembler.py::test_assembled_html_preserves_marker_date_context_alongside_stop_indices | Tested | Keep |
@@ -54,9 +60,42 @@ Legend:
 | v0.20-2 | What-to-Know schema trimmed to rendered fields only | tests/test_html_assembler.py::test_intro_note_omits_weather_and_photography_rows; tests/test_ai_content_normalization.py::test_normalize_what_to_know_does_not_require_or_emit_legacy_weather_photo_fields | Tested | Keep |
 | v0.20-3 | Scenic-drive popup optional verified More Info link; no generic fallback required | tests/test_html_assembler.py::test_drive_descriptions_include_popup_url_when_available; tests/test_html_assembler.py::test_drive_descriptions_omit_popup_url_when_unsafe | Tested | Keep |
 
-## Priority Gaps (Recommended Next Test Enhancements)
+## Post-Triage Hardening Addendum (v2.0)
 
-No remaining partial requirements in the v0.30 to v0.20 matrix.
+This addendum links the four agreed hardening steps to requirements and focused
+test gates. It is intentionally short-gate oriented (targeted suites first,
+single smoke run last).
+
+| Step | Requirement Linkage | Existing Evidence | Required Additions | Adequacy |
+|---|---|---|---|---|
+| 1. Renderer consumes fail-closed outcomes with explicit fallback mode | docs/requirements.md §5 fail-closed + fallback rendering policy; provenance-controlled publication requirement | tests/test_html_assembler.py::test_build_restaurants_hides_items_without_link_or_fallback; tests/test_html_assembler.py::test_build_restaurants_uses_maps_fallback_when_canonical_missing; tests/test_html_assembler.py::test_build_attractions_without_canonical_url_renders_plain_text_no_maps_fallback; tests/test_html_assembler.py::test_build_getting_here_without_stop_url_renders_plain_stop_text | None | Adequate |
+| 2. Restaurant credibility gate (historical/off-destination/hallucinated targets rejected) | docs/requirements.md §5 named-entity determinism; §4 restaurant freshness and reliability semantics | tests/test_url_discovery.py::test_is_restaurant_ineligible_via_name_denylist; tests/test_url_discovery.py::test_is_restaurant_ineligible_via_closure_page_text; tests/test_url_discovery.py::test_retain_url_rejects_google_maps_search_for_named_restaurant_in_enforce_mode | Add focused tests for: historical-place false positive (Gifford class), off-destination duplicate-name mismatch (Capitol Reef Cafe class), unresolved canonical -> fail-closed publish | Partial (needs targeted additions) |
+| 3. Category stoplist and offer-page suppression (guide/listing pages not treated as entity links) | docs/requirements.md §5 category-vs-entity + fail-closed policy | tests/test_url_discovery.py::test_discover_attractions_omits_maps_fallback_for_ambiguous_geographic_feature_name; docs/reports/v1.4-output-review/index.md PR-022 status tracking | Add targeted tests for activity-offer patterns (guide/listing pages) and explicit stoplist behavior for fly-fishing style category entities | Partial (open PR class, requires tests + fix) |
+| 4. Compact golden-manifest contract suite for reopened classes | docs/design/provenance-control-and-scheduling-rationalization.md validation strategy; docs/design/v2-issue-6-invariants.md | Existing focused suites provide components but not a single contract matrix pass | Add small contract suite (new test module) asserting no named maps-search primaries, no invalid AllTrails slugs, schedule day differentiation threshold, departure-route placement invariants | Partial (needs dedicated contract suite) |
+
+### Focused Gate Sequence (Before Any Full Run)
+
+1. Gate A (renderer fail-closed behavior)
+- `pytest tests/test_html_assembler.py -k "attractions_without_canonical_url or getting_here_without_stop_url or restaurants"`
+
+2. Gate B (URL discovery provenance/credibility gates)
+- `pytest tests/test_url_discovery.py -k "restaurant_ineligible or named_restaurant or category or ambiguous_geographic or alltrails"`
+
+3. Gate C (schedule rationalization + placement invariants)
+- `pytest tests/test_ai_content_normalization.py -k "unique_signal or reserves_first_day_morning or reserves_last_day_afternoon_evening"`
+- `pytest tests/test_html_assembler.py -k "departure_route_options or schedule_preserves_structured_one_day_schedule"`
+
+4. Gate D (compact contract suite)
+- `pytest tests/test_main_requirements.py -k "quality_contract|fail_closed|route_ownership|schedule"`
+
+5. Smoke gate (single end-to-end run)
+- One controlled `generator.main` run only after Gates A-D pass.
+
+## Priority Gaps (Updated)
+
+1. Restaurant credibility still benefits from more fixtures for historical-place and off-destination false positives.
+2. Category stoplist/offer-page suppression remains high-risk and should retain targeted regression pressure.
+3. A compact, dedicated quality-contract suite is still recommended before further optimization work.
 
 ## Requirements Better Verified by Inspection
 

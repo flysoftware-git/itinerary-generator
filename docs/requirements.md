@@ -1,5 +1,27 @@
 # Road Trip Itinerary Generator — Requirements Document
-**Version 2.0 · July 31, 2026**
+**Version 2.1 · August 2, 2026**
+
+### Changelog for v2.1
+| # | Section | Change |
+|---|---|---|
+| 1 | §3, §4 | Added configurable schedule-start anchors: `trip.default_day_start_time` with per-destination override `destination.schedule_start_time` |
+| 2 | §3, §4 | Added configurable daily activity-time budget: `trip.default_daily_activity_hours` with per-destination override `destination.daily_activity_hours` |
+| 3 | §4 | Added schedule-packing rule: when inbound transit consumes morning, afternoon should suggest multiple activities only if they fit within the configured activity-hour budget |
+| 4 | §5 | Clarified publication middle-ground for named entities: canonical URL is primary, explicit `maps_url` fallback may be rendered as a fallback link when canonical URL is unavailable, and items with neither link source remain hidden |
+| 5 | §5 | Fixed generic (non-AllTrails) relevance check to distinguish a blocked/transient fetch failure (403/401/timeout/5xx/SSL) from a definitively dead URL (404/410/DNS failure): a live page on a bot-blocking site (e.g. TripAdvisor) must not be treated as confirmed-dead, matching the AllTrails path's already-correct handling |
+| 6 | §5, §10 | Added generic per-domain fetch-block cooldown (`url_discovery.domain_block_cooldown_seconds`), generalizing the AllTrails-specific mechanism so any bot-blocking domain avoids repeated timeout-cost re-probing |
+| 7 | §5, §10 | Added per-key negative-result cooldown and in-flight coalescing for direct-batch harvest calls (`url_discovery.direct_batch_html_failure_cooldown_seconds`) so concurrent/repeat callers for the same destination/kind/dates share one failure instead of each re-triggering the network call |
+| 8 | §5, §10 | Added persistent on-disk caching for successful direct-batch harvest rows (`url_discovery.persistent_harvest_cache_ttl_hours`, default 24h) so a same-day repeat run of an unchanged manifest skips re-harvesting |
+| 9 | §5, §10 | Added `url_discovery.route_distance_live_fetch_enabled` (default `true`) to allow skipping the live Google Maps directions scrape in favor of the existing Haversine distance/time estimate |
+| 10 | §5 | Scoped the pre-HTML-assembly audit's proactive URL prewarm to skip already-high-confidence provenance (`.gov` domains, direct-batch-authoritative harvest rows) rather than force-fetching every discovered URL regardless of established confidence |
+| 11 | §4 | AI content generation now requests scenic-drive descriptions as part of the same per-destination call as destination content and "what to know" (previously a separate sequential pass); output schema and quantity rules (§4.2) are unchanged |
+| 12 | §4 | Schedule reconciliation against filtered/rejected entities now runs against the final entity registry state and spans every section (attractions, restaurants, scenic drives, en-route stops, route options, events), not just top_attractions as before; also fixed a gap where within-destination dedup could silently remove an attraction/scenic-drive with no registry trace |
+| 13 | §5, §10 | Fixed `_search_cached` permanently caching an empty search result for the run with no distinction between "genuinely no results" and "the request failed" — replaced with a bounded negative-result cooldown (`url_discovery.search_failure_cooldown_seconds`, default 180s), consistent with the direct-batch harvest cooldown |
+| 14 | §4 | Extended capacity-aware Afternoon activity packing to Day 2+ of a multi-day stay (previously only Day 1's arrival Afternoon ever got a duration-aware multi-activity plan); fixed the arrival-day activity budget to be discounted by the recorded drive duration rather than using the full undiscounted daily budget |
+| 15 | §4 | Fixed schedule day-content dedup to detect duplication per period rather than only when every period in a day was already a duplicate (a day with 2 of 3 periods repeated previously triggered no correction at all); known remaining gap: no cross-destination schedule-text dedup exists |
+| 16 | §11 | Fixed a manifest/config resolution gap: flat `trip.llm_model` (a manifest convenience key symmetric with the already-supported flat `trip.llm_provider`) was silently ignored — only nested `trip.llm.model` or the `--llm-model` CLI flag worked, so a manifest using the flat form (as this project's own `sw_manifest.yaml` does) silently fell back to `config.yaml`'s default model instead of the manifest's intended override, with no warning. Resolution logic extracted to `_resolve_llm_overrides` for direct test coverage of the precedence order (nested < flat-manifest < CLI) |
+| 17 | §5, §10 | Retuned the xAI search-harvest circuit breaker (`XAI_CIRCUIT_BREAKER_THRESHOLD`/`_WINDOW_SECONDS`: 5/20s → 4/30s) to match the real failure cadence under a sustained provider outage (25s per-attempt timeout, 4-concurrent semaphore cap) — the original values were mathematically nearly unreachable by that cadence, which is why the breaker never engaged during an observed 3.5-hour outage. Added an equivalent, separately-tuned circuit breaker (`LLM_CIRCUIT_BREAKER_THRESHOLD`/`_WINDOW_SECONDS`/`_COOLDOWN_SECONDS`, default 3/180s/45s) to `llm_client.py`'s content-generation calls, which previously had no cross-call failure protection at all. `main.py`'s selective-retry pass now skips entirely when the search circuit breaker is open, rather than firing a full second pass into a known-ongoing outage |
+| 18 | §4 | Added deterministic, code-level enforcement of the system prompt's banned marketing-cliché list (`generator/ai_content.py`'s `BANNED_MARKETING_PHRASES`) — the prompt instruction alone was routinely violated with zero downstream checking (28 occurrences observed in one real run, "stunning" ×20 alone). Enforcement is scoped to an explicit allowlist of prose fields (description, practical_note, summary, ...) so structural fields (name, url, type, ...) are never touched. `"must-see"` is removed from the banned list — it's now used as a deterministic UI badge label (see entry above on the Must-See badge policy), which made banning it from prose self-contradictory. See `docs/design/banned-marketing-language-enforcement.md` |
 
 ### Changelog for v2.0
 | # | Section | Change |
@@ -316,6 +338,8 @@ The manifest is intentionally minimal. All geocoding, NPS detection, URL discove
 | `budget` | ❌ optional | Budget guidance (string/number/object) passed into AI prompts |
 | `departure` | ❌ optional | Route origin location name for first leg and full-route map |
 | `return` | ❌ optional | Route final endpoint location name for full-route map |
+| `default_day_start_time` | ❌ optional | Default local start time anchor for schedule realism (e.g., `10:00 AM`) |
+| `default_daily_activity_hours` | ❌ optional | Default per-day activity-time budget in hours used for schedule packing (default `5`) |
 
 `trip.llm.provider` supports: `openai`, `anthropic`, `deepseek`, `gemini`.
 
@@ -335,6 +359,8 @@ The manifest is intentionally minimal. All geocoding, NPS detection, URL discove
 | `id` | ✅ | Unique slug (e.g., `zion`, `moab`) |
 | `name` | ✅ | Full destination name for geocoding and AI prompts |
 | `dates` | ✅ | Human-readable date range (e.g., `"October 7–9, 2026"`) |
+| `schedule_start_time` | ❌ optional | Destination-specific schedule start-time override (e.g., `8:30 AM`) |
+| `daily_activity_hours` | ❌ optional | Destination-specific activity-time budget override (hours) |
 | `planning_links[]` | ✅ | Array of `{label, url}` — Notion, TripIt, reservation links |
 | `seeds[]` | ❌ optional | Attraction/hike/experience **name hints only** — things the user specifically intends to include. No URLs. No scenic drive titles (AI discovers those). |
 
@@ -415,9 +441,14 @@ Restaurants that are clearly chain or fast-food picks must be removed during nor
 - For the final destination, last-day Afternoon and Evening are reserved for return travel.
 - For intermediate destinations, final evening should account for onward departure preparation to the next destination.
 - Day-level sequencing should remain feasible given same-day drive and activity load.
+- Day-level sequencing must honor the effective schedule start-time anchor (`destination.schedule_start_time` > `trip.default_day_start_time` > `10:00 AM`).
+- For non-first destinations, when inbound drive-time consumes morning capacity, Morning should be allocated to transit and Afternoon should shift to post-arrival activities.
+- Afternoon may include multiple activities only when their estimated durations fit inside the effective activity-time budget (`destination.daily_activity_hours` > `trip.default_daily_activity_hours` > `5h`).
 - Activities proposed after arrival to a destination must not duplicate CAN'T-MISS ENROUTE stops from that inbound leg.
 - For multi-day stops, each day must render Morning, Afternoon, and Evening periods after normalization (no sparse day cards).
 - For multi-day stops, each additional day should contain at least one meaningful planning variation relative to previously listed day summaries.
+- For multi-day stops, cosmetic rewording alone does not satisfy variation; each additional day must include at least one substantive differentiator (distinct area, activity focus, or transfer-duty context).
+- Renderer-level schedule synthesis must not override normalized structured schedule content when that content is present.
 
 ### 4.2 Scenic Drives & Viewpoints Schema
 
@@ -493,7 +524,7 @@ Attraction interest filtering policy:
 
 Every discovered URL is verified before storage, and strict candidates must also pass relevance checks against item/destination tokens. Live-but-generic search pages are rejected.
 
-For non-AllTrails candidates, page text must match enough of the item name to be credible; a single shared token is not sufficient when the requested attraction/hike name contains multiple meaningful tokens.
+For non-AllTrails candidates, page text must match enough of the item name to be credible; a single shared token is not sufficient when the requested attraction/hike name contains multiple meaningful tokens. When the page-text fetch itself fails, a blocked/transient failure (403/401/timeout/5xx/SSL) must not be treated as proof the link is dead — only an explicit not-found status (404/410) or DNS-level failure is definitive; a blocked fetch falls back to a secondary liveness probe and then candidate-metadata matching before rejection.
 
 The acceptance gate is stricter than HTTP liveness alone. Generic 404 pages, asset-detail pages, and other obviously non-target landing pages must be rejected even when they return 200.
 
@@ -514,9 +545,26 @@ SSL verification handling:
 - For approved trusted public hosts with known certificate-chain instability (for example `*.blm.gov`), an SSL-verify fallback may be used to avoid discarding otherwise valid destination links.
 
 Fallback policy for unresolved links:
-- If strict discovery does not produce a verified attraction/en-route/scenic URL, render a Google Maps query link so cards still resolve to actionable context.
-- Exception: trail-like attractions may use the generic map-link fallback only after the AllTrails variant sequence has been fully attempted and rejected.
-- Restaurant rendering should prefer verified discovered URLs first, then `maps_url`, then synthesized maps-search query fallback.
+- Named entities (attractions, restaurants, en-route stops, scenic drives, events) must fail closed at the canonical layer: strict discovery/audit determines whether an entity-specific URL is publishable.
+- Query-style fallback URLs (for example `google.com/maps/search`) are non-canonical diagnostics/context metadata and must not be published as primary links for named entities.
+- Category-level context links may use query-style fallbacks when no single named entity is implied.
+- Rendering middle-ground: when canonical URL is unavailable but an explicit `maps_url` fallback is available from normalized data, renderer may publish that fallback as a secondary link treatment; items with neither canonical URL nor explicit fallback should be hidden from the rendered list.
+
+Provenance-controlled publication requirement:
+- Link publication is controlled by validated provenance state, not by name recoverability.
+- Candidate discovery does not imply publishability.
+- Renderers must consume validated decision outputs and must not synthesize new named-entity links from names when URL state is unresolved or rejected.
+
+Fallback curation contract:
+- Fallback handling is a multi-stage contract, not a single rule.
+- URL discovery owns candidate harvesting (including snippet-extracted source links and explicit fallback metadata).
+- Qualification and audit own trust/validity curation (relevance, class policy, entity integrity, and section-specific constraints).
+- Renderer owns publication only and must apply section rules to curated fields rather than inventing canonical entity links.
+- Publication behavior by section:
+  - Attractions and en-route stops: if no publishable curated link exists, render plain text item names (no forced canonical link).
+  - Restaurants: if no curated canonical URL exists, renderer may use explicit lookup fallback (`google.com/search?q=<name + destination + restaurant>`).
+  - Events: if no normalized event URL exists, renderer may use query-based lookup fallback.
+- Authoritative direct-link-batch mode must still pass qualification/curation gates; harvested candidates are not auto-publishable.
 
 Final audit pass:
 - Before HTML assembly, a cleanup pass strips any remaining weak discovered URLs so hallucinated or low-confidence links do not reach the final itinerary.
@@ -549,8 +597,9 @@ AllTrails slug denylist:
 Fail-closed policy for named-entity links:
 - A link published for a named entity (attraction, restaurant, en-route stop, event) must resolve to a deterministic, entity-specific target — one that refers to that single entity and not a list, a search query, or an area-level reference.
 - A Google Maps search query of the form `maps/search/<name>+near+<destination>` is an area-reference query, not an entity-specific target, and must not be used as the published link for a named subject.
-- When no entity-specific URL survives discovery and audit, the correct behavior is to render the item with no link, not to publish the best-available query URL.
-- The synthesized `maps_url` search fallback is acceptable for rendering context only when the item is a category or type (not a specific named entity), or when the maps fallback is the configured last resort for a destination card and no other link is present.
+- Canonical publication remains fail-closed. If no entity-specific URL survives discovery/audit, canonical link output is empty.
+- The synthesized `maps_url` search fallback is acceptable as explicit fallback rendering context when no canonical URL is available and when fallback rendering is enabled for that card/section.
+- If neither canonical URL nor explicit fallback URL is available, the item must not render as an unlinked entry.
 
 URL policy rollout mode:
 - URL class enforcement must be configurable via a policy mode setting: `off` (no enforcement), `monitor` (log violations but do not reject), or `enforce` (reject blocked URL classes).
@@ -642,6 +691,13 @@ Options:
   --refresh-image-cache    Force refresh image-provider queries, bypassing local cache
   --skip-events            Skip cultural events discovery
   --skip-url-discovery     Skip URL discovery (AI content only)
+  --notrails               Disable trail link discovery and omit trail links
+  --alltrails-source TEXT  AllTrails source for trail-like attractions (`direct-link-batch`, `search`, or `apify-single-call`)
+  --attraction-source TEXT Source for non-trail attractions (`search` or `direct-link-batch`)
+  --restaurant-source TEXT Source for restaurant links (`search` or `direct-link-batch`)
+  --en-route-source TEXT   Source for en-route stops (`search` or `direct-link-batch`)
+  --alltrails-apify-actor-id TEXT
+                           Optional Apify actor id override for `apify-single-call`
   --noschedule             Suppress schedule rendering in output HTML
   --destination TEXT       Limit to specific destination id (repeatable)
   --first-destination      Process only first destination after any --destination filtering
@@ -673,6 +729,12 @@ Key configurable values:
 | `url_discovery.max_fallback_attempts` | `4` | Fallback query attempts per item |
 | `url_discovery.uninterested_attraction_keywords` | `['golf course','country club']` | Attraction keyword blacklist for categories that should not receive discovered links |
 | `url_discovery.seasonal_uninterested.ski` | Keywords + months | Ski/snow attraction suppression outside configured in-season month numbers |
+| `url_discovery.domain_block_cooldown_seconds` | `8.0` | Generic per-domain fetch-block cooldown: after a 401/403, further fetches to other URLs on that domain short-circuit for this many seconds |
+| `url_discovery.direct_batch_html_failure_cooldown_seconds` | `180.0` | Negative-result cooldown for a failed direct-batch harvest call, keyed per destination/kind/dates |
+| `url_discovery.persistent_harvest_cache_ttl_hours` | `24` | On-disk TTL for successful direct-batch harvest rows |
+| `url_discovery.route_distance_live_fetch_enabled` | `true` | When `false`, always use the Haversine distance/time estimate instead of live-scraping Google Maps directions HTML |
+| `url_discovery.search_failure_cooldown_seconds` | `180.0` | Negative-result cooldown for a failed generic search query (`_search_cached`), keyed per query string |
+| `ai.grok_max_concurrent_destinations` | `1` | Max concurrent per-destination AI-generation calls when Grok is the active provider (kept conservative pending live-load validation of newer resilience protections) |
 | `validation.min_images_per_section` | `2` | HTML validator image count threshold |
 
 ---
@@ -773,3 +835,18 @@ Related popup requirement:
 - CAN'T-MISS ENROUTE entries should display detour overhead (`detour_distance_miles`, `detour_time_minutes`) when available.
 - Zero-detour stops should remain valid and may display as on-route.
 - Stop cards should use content-appropriate iconography (trail, viewpoint, food, market, etc.) and should avoid forced em-dash-only sentence formatting.
+
+---
+
+## 19. Requirements Testing Linkage
+
+- The authoritative requirements-to-tests linkage matrix is maintained in:
+  `docs/reports/requirements-traceability-v0.30-to-v0.20.md`.
+- Post-triage quality-hardening linkage and gate sequencing (provenance control,
+  fail-closed publication, category stoplist handling, multi-day schedule
+  rationalization) are tracked in the same report under the v2.0 addendum.
+
+Validation cadence requirement:
+1. Run focused contract gates mapped to changed requirement areas.
+2. Run one controlled end-to-end smoke execution only after focused gates pass.
+3. Treat smoke output as confirmation, not primary defect discovery.

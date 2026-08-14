@@ -37,8 +37,12 @@ Seasonal specificity: Every description should reflect the actual travel month.
       "October" is different from "July" — honor that difference explicitly.
 
 Avoid without exception:
-  - "hidden gem", "must-see", "off the beaten path", "world-class", "iconic",
-    "stunning", "breathtaking", "charming", "nestled", "boasts"
+  - "hidden gem", "off the beaten path", "world-class", "iconic",
+    "stunning", "breathtaking", "charming", "nestled", "boasts",
+    "spectacular", "majestic"
+    ("must-see" is a deliberate exception -- it's used as a structured badge
+    label elsewhere in this app, gated on verified rating data, not a
+    subjective claim you make in prose)
   - Passive constructions where active works ("the trail climbs" not "the trail
     is climbed")
   - Superlatives you cannot verify ("the most beautiful", "the best")

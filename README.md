@@ -77,6 +77,8 @@ trip:
   title: "Pacific Coast Highway"
   subtitle: "September 2026 — California"
   theme_color: "#2E6B8A"
+  default_day_start_time: "10:00 AM"
+  default_daily_activity_hours: 5
   llm:
     provider: "openai"
     model: "gpt-4o-mini"
@@ -87,6 +89,8 @@ destinations:
   - id: sf
     name: "San Francisco, California"
     dates: "September 5–7, 2026"
+    schedule_start_time: "9:30 AM"      # optional per-destination override
+    daily_activity_hours: 6              # optional per-destination override
     planning_links:
       - label: "Hotel Reservation"
         url: "https://..."
@@ -107,6 +111,11 @@ destinations:
 ```
 
 Seeds are **name hints only** — attractions, hikes, or experiences you specifically want included. The AI discovers scenic drives, cultural events, and restaurants independently.
+
+Schedule controls:
+- `trip.default_day_start_time` sets the default daily planning start anchor.
+- `trip.default_daily_activity_hours` sets the default activity-time budget used for multi-activity schedule packing.
+- `destination.schedule_start_time` and `destination.daily_activity_hours` override those defaults for a specific stop.
 
 ### 5. Generate
 
@@ -140,6 +149,17 @@ python -m generator.main [OPTIONS]
   --refresh-image-cache    Force refresh image provider queries (bypass local image cache)
   --skip-events            Skip cultural events discovery
   --skip-url-discovery     Skip URL discovery (AI content only)
+  --notrails               Disable trail link discovery and omit trail links
+  --alltrails-source [direct-link-batch|search|apify-single-call]
+                           AllTrails source for trail-like attractions (default: direct-link-batch)
+  --attraction-source [search|direct-link-batch]
+                           Source for non-trail attractions
+  --restaurant-source [search|direct-link-batch]
+                           Source for restaurant links
+  --en-route-source [search|direct-link-batch]
+                           Source for en-route stop links
+  --alltrails-apify-actor-id TEXT
+                           Optional Apify actor id override for apify-single-call mode
   --destination TEXT       Limit to specific destination id (repeatable)
   --verbose                Enable debug logging
 ```
@@ -158,6 +178,18 @@ python -m generator.main --manifest trip.yaml --log-level warning
 
 # Fast iteration (skip images and events)
 python -m generator.main --manifest trip.yaml --skip-images --skip-events
+
+# Disable trail links entirely
+python -m generator.main --manifest trip.yaml --notrails
+
+# Use one Apify call per destination for trail-like link sourcing
+python -m generator.main --manifest trip.yaml --alltrails-source apify-single-call
+
+# Use direct-link batch mode for attractions and restaurants too
+python -m generator.main --manifest trip.yaml --attraction-source direct-link-batch --restaurant-source direct-link-batch
+
+# Use direct-link batch mode for en-route stop discovery
+python -m generator.main --manifest trip.yaml --en-route-source direct-link-batch
 
 # Re-run with fresh image-provider lookup (ignore local cache index)
 python -m generator.main --manifest trip.yaml --refresh-image-cache

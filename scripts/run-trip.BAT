@@ -13,6 +13,7 @@ REM Program name from argument
 if "%1"=="" (
     echo You must specify a program name
     echo Example: run-trip.bat SW2026 dev
+    echo Example with custom output dir: run-trip.bat SW2026 dev "C:\Temp\RoadTripRuns\SW2026-dipstick"
     pause
     exit /b
 )
@@ -21,9 +22,15 @@ set PROGRAM=%1
 REM Optional environment (dev/test/prod)
 set ENVIRONMENT=%2
 
+REM Optional absolute or relative custom output directory
+set CUSTOM_OUTPUT_DIR=%3
+
 REM Output root
 set OUTPUT_ROOT=C:\Users\bryan\OneDrive\RoadTripOutput
 set OUTPUT_DIR=%OUTPUT_ROOT%\%PROGRAM%
+if not "%CUSTOM_OUTPUT_DIR%"=="" (
+    set OUTPUT_DIR=%CUSTOM_OUTPUT_DIR%
+)
 
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 

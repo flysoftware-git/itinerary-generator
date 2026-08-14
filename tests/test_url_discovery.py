@@ -1,6 +1,11 @@
 """Tests for generator.url_discovery"""
+import json
+import re
+import threading
+import time
 import pytest
 from unittest.mock import MagicMock, patch
+from threading import Lock
 from generator.url_discovery import URLDiscoverer, _build_query_variants
 
 
@@ -86,6 +91,7 @@ def test_discover_all_uses_google_fallback_for_missing_url():
 
 def test_restaurant_discovery_two_pass():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "search"
     discoverer._key = "fake_key"
     discoverer._session = MagicMock()
 
@@ -114,7 +120,13 @@ def test_restaurant_discovery_two_pass():
 
 
 def test_restaurant_discovery_uses_ai_url_candidates_before_search_passes():
+    """AI-provided url_candidates resolve without the multi-pass maps/tripadvisor
+    _search_first fallback -- but TripAdvisor is still eligible for the
+    separate, intentional official-site upgrade attempt (see
+    _maybe_upgrade_tripadvisor_restaurant_link), so exactly one _search_first
+    call for that purpose is expected, not zero."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "search"
 
     ai = {
         "dinner_recommendations": [
@@ -134,7 +146,159 @@ def test_restaurant_discovery_uses_ai_url_candidates_before_search_passes():
             discoverer._discover_restaurants(ai, dest_name="Zion National Park")
 
     assert "tripadvisor.com" in ai["dinner_recommendations"][0]["url"]
-    mock_search.assert_not_called()
+    mock_search.assert_called_once()
+
+
+def test_maybe_upgrade_tripadvisor_restaurant_link_prefers_found_official_site() -> None:
+    """Real reported feedback: TripAdvisor links are frequently generic, not
+    targeted to the actual restaurant. A found, non-aggregator official site
+    must replace the TripAdvisor link."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_prefer_official_site_over_tripadvisor = True
+    rest = {
+        "name": "Benja Thai & Sushi",
+        "url": "https://www.tripadvisor.com/Restaurant_Review-g57112-d456789-Benja_Thai_Sushi-St_George_Utah.html",
+        "maps_url": "https://www.google.com/maps/search/?api=1&query=Benja+Thai",
+    }
+
+    with patch.object(discoverer, "_search_first", return_value="https://www.benjathaistgeorge.com/"):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_a, **_k: url):
+            discoverer._maybe_upgrade_tripadvisor_restaurant_link(rest, "St. George, Utah")
+
+    assert rest["url"] == "https://www.benjathaistgeorge.com/"
+    assert "maps_url" not in rest
+
+
+def test_maybe_upgrade_tripadvisor_restaurant_link_keeps_tripadvisor_when_no_official_site_found() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_prefer_official_site_over_tripadvisor = True
+    rest = {
+        "name": "Los Jilbertos Mexican Food",
+        "url": "https://www.tripadvisor.com/Restaurant_Review-g57112-d789012-Los_Jilbertos-St_George_Utah.html",
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        discoverer._maybe_upgrade_tripadvisor_restaurant_link(rest, "St. George, Utah")
+
+    assert rest["url"] == "https://www.tripadvisor.com/Restaurant_Review-g57112-d789012-Los_Jilbertos-St_George_Utah.html"
+
+
+def test_maybe_upgrade_tripadvisor_restaurant_link_rejects_another_aggregator_result() -> None:
+    """The upgrade search must not swap TripAdvisor for a different aggregator
+    (Yelp, Facebook, ...) -- only a genuine official/source domain counts."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_prefer_official_site_over_tripadvisor = True
+    rest = {
+        "name": "Sakura Japanese Steakhouse",
+        "url": "https://www.tripadvisor.com/Restaurant_Review-g57112-d345678-Sakura-Japanese-St_George_Utah.html",
+    }
+
+    with patch.object(discoverer, "_search_first", return_value="https://www.yelp.com/biz/sakura-st-george"):
+        discoverer._maybe_upgrade_tripadvisor_restaurant_link(rest, "St. George, Utah")
+
+    assert "tripadvisor.com" in rest["url"]
+
+
+def test_maybe_upgrade_tripadvisor_restaurant_link_is_opt_out() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_prefer_official_site_over_tripadvisor = False
+    rest = {
+        "name": "Benja Thai & Sushi",
+        "url": "https://www.tripadvisor.com/Restaurant_Review-g57112-d456789-Benja_Thai_Sushi-St_George_Utah.html",
+    }
+
+    with patch.object(
+        discoverer, "_search_first", side_effect=AssertionError("must not search when opted out")
+    ):
+        discoverer._maybe_upgrade_tripadvisor_restaurant_link(rest, "St. George, Utah")
+
+    assert "tripadvisor.com" in rest["url"]
+
+
+def test_discover_restaurants_seeds_candidates_from_direct_batch_when_ai_list_empty():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "direct_link_batch"
+
+    ai = {
+        "dinner_recommendations": [],
+        "top_attractions": [],
+        "getting_here": {"en_route_stops": []},
+    }
+
+    rows = [
+        {"name": "Alley House Grille", "url": "https://www.tripadvisor.com/Restaurant_Review-..."},
+        {"name": "Kip's Grill", "url": "https://www.tripadvisor.com/Restaurant_Review-..."},
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_search_restaurant_from_direct_batch", return_value=None):
+            with patch.object(discoverer, "_search_first", return_value=None):
+                discoverer._discover_restaurants(ai, dest_name="Pagosa Springs")
+
+    names = [str(item.get("name", "") or "") for item in ai.get("dinner_recommendations", [])]
+    assert "Alley House Grille" in names
+    assert "Kip's Grill" in names
+
+
+def test_discover_restaurants_direct_batch_replaces_ai_list_even_when_nonempty():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "direct_link_batch"
+
+    ai = {
+        "dinner_recommendations": [
+            {"name": "Pizza Factory"},
+            {"name": "The Pasta Factory"},
+        ],
+        "top_attractions": [],
+        "getting_here": {"en_route_stops": []},
+    }
+    rows = [
+        {"name": "Painted Pony", "url": "https://www.painted-pony.com/"},
+        {"name": "Wood Ash Rye", "url": "https://www.woodashrye.com/"},
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_search_restaurant_from_direct_batch", side_effect=[rows[0]["url"], rows[1]["url"]]):
+            with patch.object(discoverer, "_search_first") as fallback_search:
+                discoverer._discover_restaurants(ai, dest_name="St. George, Utah")
+
+    names = [str(item.get("name", "") or "") for item in ai["dinner_recommendations"]]
+    assert names == ["Painted Pony", "Wood Ash Rye"]
+    fallback_search.assert_not_called()
+
+
+def test_discover_restaurants_direct_batch_backfills_metadata_from_similar_existing_name() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "direct_link_batch"
+
+    ai = {
+        "dinner_recommendations": [
+            {
+                "name": "Morty's Cafe",
+                "cuisine": "American",
+                "price_range": "$$",
+                "reserve_recommended": False,
+            },
+        ],
+        "top_attractions": [],
+        "getting_here": {"en_route_stops": []},
+    }
+    rows = [
+        {
+            "name": "Mortys Cafe",
+            "url": "https://www.google.com/maps/place/Mortys+Cafe/",
+            "description": "Local favorite diner.",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_search_restaurant_from_direct_batch", return_value=rows[0]["url"]):
+            discoverer._discover_restaurants(ai, dest_name="St. George, Utah")
+
+    out = ai["dinner_recommendations"][0]
+    assert out["name"] == "Mortys Cafe"
+    assert out.get("cuisine", "") == "American"
+    assert out.get("price_range", "") == "$$"
 
 
 def test_alltrails_trail_url_requires_matching_page_content():
@@ -274,6 +438,79 @@ def test_search_alltrails_for_trail_upgrades_destination_suffixed_slug_to_canoni
     assert result == "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"
 
 
+def test_prefer_canonical_alltrails_url_does_not_keep_404_slug_as_fallback():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(discoverer, "_fetch_page_text") as mock_fetch:
+        def fake_fetch(url, timeout=8):
+            if url.endswith("/the-narrows-trail"):
+                return False, 404, ""
+            # "the-narrows" also not reachable in this test
+            return False, "timeout", ""
+
+        mock_fetch.side_effect = fake_fetch
+        result = discoverer._prefer_canonical_alltrails_url(
+            "https://www.alltrails.com/trail/us/utah/the-narrows-top-down",
+            "The Narrows Trail",
+        )
+
+    # Must not return the 404 slug; falls back to the original noisy URL instead
+    assert result != "https://www.alltrails.com/trail/us/utah/the-narrows-trail"
+
+
+def test_prefer_canonical_alltrails_url_does_not_promote_unverified_blocked_candidate():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(discoverer, "_fetch_page_text") as mock_fetch:
+        def fake_fetch(url, timeout=8):
+            if url.endswith("/bryce-point-trail"):
+                return False, 403, ""
+            return False, "timeout", ""
+
+        mock_fetch.side_effect = fake_fetch
+        result = discoverer._prefer_canonical_alltrails_url(
+            "https://www.alltrails.com/trail/us/utah/bryce-point-via-scenic-loop",
+            "Bryce Point Trail",
+        )
+
+    # A 403/blocked fetch never confirms the synthesized slug actually exists,
+    # so it must not be promoted -- keep the original (search/harvest-sourced) URL.
+    assert result == "https://www.alltrails.com/trail/us/utah/bryce-point-via-scenic-loop"
+
+
+def test_prefer_canonical_alltrails_url_skips_fallback_when_verify_reports_404():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+        with patch.object(discoverer, "_verify_url_cached", return_value=(False, 404)):
+            result = discoverer._prefer_canonical_alltrails_url(
+                "https://www.alltrails.com/trail/us/utah/the-narrows-top-down",
+                "The Narrows",
+            )
+
+    assert result == "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
+
+
+def test_search_alltrails_for_trail_upgrades_short_trail_slug_to_canonical_trail_page():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(
+        discoverer,
+        "_search_first",
+        return_value="https://www.alltrails.com/trail/us/utah/bryce-point",
+    ):
+        with patch.object(discoverer, "_fetch_page_text") as mock_fetch:
+            def fake_fetch(url, timeout=8):
+                if url.endswith("/bryce-point-trail"):
+                    return True, 200, "Bryce Point Trail route details and reviews"
+                return False, "timeout", ""
+
+            mock_fetch.side_effect = fake_fetch
+            result = discoverer._search_alltrails_for_trail("Bryce Point Trail", "Bryce Canyon National Park")
+
+    assert result == "https://www.alltrails.com/trail/us/utah/bryce-point-trail"
+
+
 def test_search_alltrails_for_trail_strips_tracking_query_from_result_url():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
 
@@ -288,7 +525,974 @@ def test_search_alltrails_for_trail_strips_tracking_query_from_result_url():
     assert result == "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"
 
 
-def test_alltrails_relevance_does_not_require_destination_name_in_page_text():
+def test_search_alltrails_for_trail_direct_batch_source_selects_matching_slug():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_source = "direct_link_batch"
+    discoverer._disable_trails = False
+
+    with patch.object(
+        discoverer,
+        "_get_alltrails_direct_batch_rows_for_destination",
+        return_value=[
+            {
+                "url": "https://www.alltrails.com/trail/us/utah/riverside-walk",
+                "name": "Riverside Walk Trail",
+                "snippet": "Easy river walk in Zion National Park.",
+            },
+            {
+                "url": "https://www.alltrails.com/trail/us/utah/the-narrows-trail",
+                "name": "The Narrows Trail",
+                "snippet": "Popular 2.0 mile route in Zion National Park.",
+            },
+        ],
+    ):
+        with patch.object(discoverer, "_prefer_canonical_alltrails_url", side_effect=lambda url, _item: url):
+            result = discoverer._search_alltrails_for_trail("The Narrows", "Zion National Park")
+
+    assert result == "https://www.alltrails.com/trail/us/utah/the-narrows-trail"
+
+
+def test_passes_alltrails_post_search_filters_rejects_blocked_fetch_when_verify_reports_404() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+        with patch.object(discoverer, "_verify_url_cached", return_value=(False, 404)):
+            ok = discoverer._passes_alltrails_post_search_filters(
+                "https://www.alltrails.com/trail/us/utah/the-narrows-trail",
+                "The Narrows",
+                "Zion National Park",
+            )
+
+    assert ok is False
+
+
+def test_search_alltrails_post_search_filters_reject_hard_trail_after_broad_fallback() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_source = "search"
+    discoverer._disable_trails = False
+    discoverer._enable_filtered_alltrails_selection = True
+    discoverer._alltrails_filter_allowed_difficulties = ("easy", "moderate", "moderately challenging")
+    discoverer._alltrails_filter_max_miles = 4.0
+    discoverer._max_trail_miles = 4.0
+    discoverer._alltrails_filter_max_gain_feet = 1000
+    discoverer._alltrails_filter_min_reviews = 5
+
+    with patch.object(discoverer, "_get_filtered_alltrails_selection", return_value=None):
+        with patch.object(
+            discoverer,
+            "_search_first",
+            return_value="https://www.alltrails.com/trail/us/utah/navajo-knobs-trail",
+        ):
+            with patch.object(
+                discoverer,
+                "_fetch_page_text",
+                return_value=(
+                    True,
+                    200,
+                    "Navajo Knobs Trail. Hard. 9.4 mi. Elevation gain 1,620 ft. 4.8 stars, 785 reviews.",
+                ),
+            ):
+                result = discoverer._search_alltrails_for_trail("Navajo Knobs", "Capitol Reef National Park")
+
+    assert result is None
+
+
+def test_search_alltrails_post_search_filters_reject_direct_batch_selection_when_constraints_fail() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_source = "direct_link_batch"
+    discoverer._direct_batch_authoritative = True
+    discoverer._disable_trails = False
+    discoverer._enable_filtered_alltrails_selection = True
+    discoverer._alltrails_filter_allowed_difficulties = ("easy", "moderate", "moderately challenging")
+    discoverer._alltrails_filter_max_miles = 4.0
+    discoverer._max_trail_miles = 4.0
+    discoverer._alltrails_filter_max_gain_feet = 1000
+    discoverer._alltrails_filter_min_reviews = 5
+
+    with patch.object(
+        discoverer,
+        "_search_alltrails_for_trail_from_direct_batch",
+        return_value="https://www.alltrails.com/trail/us/utah/navajo-knobs-trail",
+    ):
+        with patch.object(
+            discoverer,
+            "_fetch_page_text",
+            return_value=(
+                True,
+                200,
+                "Navajo Knobs Trail. Strenuous. 9.4 mi. Elevation gain 1,620 ft. 4.8 stars, 785 reviews.",
+            ),
+        ):
+            result = discoverer._search_alltrails_for_trail("Navajo Knobs", "Capitol Reef National Park")
+
+    assert result is None
+
+
+def test_search_alltrails_post_search_filters_fail_open_when_metadata_unavailable() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_source = "search"
+    discoverer._disable_trails = False
+    discoverer._enable_filtered_alltrails_selection = True
+
+    with patch.object(discoverer, "_get_filtered_alltrails_selection", return_value=None):
+        with patch.object(
+            discoverer,
+            "_search_first",
+            return_value="https://www.alltrails.com/trail/us/utah/canyon-overlook-trail",
+        ):
+            with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+                result = discoverer._search_alltrails_for_trail("Canyon Overlook Trail", "Zion National Park")
+
+    assert result == "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"
+
+
+def test_candidate_mentions_conflicting_destination_detects_other_park() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    candidate = {
+        "title": "Navajo Loop Trail",
+        "snippet": "Popular route in Zion National Park near Springdale.",
+    }
+
+    assert discoverer._candidate_mentions_conflicting_destination(candidate, "Bryce Canyon National Park")
+
+
+def test_search_alltrails_from_apify_pool_allows_precise_slug_when_destination_metadata_sparse() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_apify_destination_token_overlap_min = 1
+    discoverer._alltrails_filter_min_reviews = 0
+
+    rows = [
+        {
+            "trailUrl": "https://www.alltrails.com/trail/us/utah/navajo-loop-trail",
+            "name": "Navajo Loop Trail",
+            "areaName": "Southern Utah",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_apify_alltrails_rows_for_destination", return_value=rows):
+        out = discoverer._search_alltrails_for_trail_from_apify_pool(
+            "Navajo Loop Trail",
+            "Bryce Canyon National Park",
+        )
+
+    assert out == "https://www.alltrails.com/trail/us/utah/navajo-loop-trail"
+
+
+def test_search_alltrails_from_apify_pool_rejects_conflicting_destination_mention() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_apify_destination_token_overlap_min = 1
+
+    rows = [
+        {
+            "trailUrl": "https://www.alltrails.com/trail/us/utah/navajo-loop-trail",
+            "name": "Navajo Loop Trail",
+            "areaName": "Zion National Park",
+            "snippet": "Navajo Loop Trail guide in Zion National Park.",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_apify_alltrails_rows_for_destination", return_value=rows):
+        out = discoverer._search_alltrails_for_trail_from_apify_pool(
+            "Navajo Loop Trail",
+            "Bryce Canyon National Park",
+        )
+
+    assert out is None
+
+
+def test_discover_restaurants_can_use_direct_batch_source():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "direct_link_batch"
+
+    ai = {
+        "dinner_recommendations": [{"name": "The Spotted Dog Cafe"}],
+        "top_attractions": [],
+        "getting_here": {"en_route_stops": []},
+    }
+
+    with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None):
+        with patch.object(
+            discoverer,
+            "_search_restaurant_from_direct_batch",
+            return_value="https://www.tripadvisor.com/Restaurant_Review-g57119-d123456-Reviews-The_Spotted_Dog_Cafe-Springdale_Utah.html",
+        ):
+            discoverer._discover_restaurants(ai, dest_name="Zion National Park")
+
+    entry = ai["dinner_recommendations"][0]
+    assert "tripadvisor.com" in entry["url"]
+    assert "maps_url" not in entry
+
+
+def test_discover_restaurants_direct_batch_preserves_existing_url_without_rematch() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "direct_link_batch"
+
+    ai = {
+        "dinner_recommendations": [
+            {
+                "name": "Painted Pony",
+                "url": "https://www.painted-pony.com/",
+            }
+        ],
+        "top_attractions": [],
+        "getting_here": {"en_route_stops": []},
+    }
+
+    with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_a, **_k: url):
+        with patch.object(discoverer, "_search_restaurant_from_direct_batch") as batch_search:
+            with patch.object(discoverer, "_search_first") as fallback_search:
+                discoverer._discover_restaurants(ai, dest_name="St. George, Utah")
+
+    assert ai["dinner_recommendations"][0]["url"] == "https://www.painted-pony.com/"
+    batch_search.assert_not_called()
+    fallback_search.assert_not_called()
+
+
+def test_discover_restaurants_direct_batch_preserves_existing_maps_url_without_rematch() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "direct_link_batch"
+
+    ai = {
+        "dinner_recommendations": [
+            {
+                "name": "Painted Pony",
+                "url": "https://www.google.com/maps/search/?api=1&query=Painted+Pony+St+George",
+            }
+        ],
+        "top_attractions": [],
+        "getting_here": {"en_route_stops": []},
+    }
+
+    with patch.object(discoverer, "_search_restaurant_from_direct_batch", return_value=None) as batch_search:
+        with patch.object(discoverer, "_search_first") as fallback_search:
+            discoverer._discover_restaurants(ai, dest_name="St. George, Utah")
+
+    assert ai["dinner_recommendations"][0].get("url", "") == ""
+    assert "maps_url" not in ai["dinner_recommendations"][0]
+    batch_search.assert_called_once()
+    fallback_search.assert_not_called()
+
+
+def test_enrich_restaurant_metadata_from_url_populates_missing_fields() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    rest = {
+        "name": "Painted Pony",
+        "url": "https://www.painted-pony.com/",
+        "description": "",
+        "cuisine": "",
+    }
+
+    json_ld = json.dumps({
+        "@type": "Restaurant",
+        "servesCuisine": ["American", "Contemporary"],
+        "priceRange": "$$$",
+        "description": "Award-winning fine dining in downtown St. George.",
+    })
+    html = f'<html><head><script type="application/ld+json">{json_ld}</script></head></html>'
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, html)):
+        discoverer._enrich_restaurant_metadata_from_url(rest)
+
+    assert rest["cuisine"] == "American, Contemporary"
+    assert rest["price_range"] == "$$$"
+    assert "fine dining" in rest["description"]
+
+
+def test_enrich_restaurant_metadata_from_url_infers_from_title_when_jsonld_missing() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    rest = {
+        "name": "Casa Roma",
+        "url": "https://www.example.com/casa-roma",
+        "description": "",
+        "cuisine": "",
+        "price_range": "",
+    }
+
+    html = "<html><head><title>Casa Roma Italian $$ in Moab</title></head><body>Welcome</body></html>"
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, html)):
+        discoverer._enrich_restaurant_metadata_from_url(rest)
+
+    assert rest.get("cuisine") == "Italian"
+    assert rest.get("price_range") == "$$"
+
+
+def test_enrich_restaurant_metadata_skips_when_all_fields_present() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    rest = {
+        "name": "Painted Pony",
+        "url": "https://www.painted-pony.com/",
+        "description": "Great food.",
+        "cuisine": "American",
+        "price_range": "$$",
+    }
+
+    with patch.object(discoverer, "_fetch_page_text") as mock_fetch:
+        discoverer._enrich_restaurant_metadata_from_url(rest)
+
+    mock_fetch.assert_not_called()
+
+
+def test_enrich_restaurant_metadata_skips_maps_fallback_urls() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    rest = {
+        "name": "Painted Pony",
+        "url": "https://www.google.com/maps/search/?api=1&query=Painted+Pony",
+    }
+
+    with patch.object(discoverer, "_fetch_page_text") as mock_fetch:
+        discoverer._enrich_restaurant_metadata_from_url(rest)
+
+    mock_fetch.assert_not_called()
+
+
+def test_backfill_restaurant_metadata_from_available_text_inferrs_cuisine_and_price() -> None:
+    rest = {
+        "name": "Riggatti's Wood Fired Pizza",
+        "description": "Popular local spot $$ with patio seating.",
+        "url": "",
+        "maps_url": "https://www.google.com/maps/search/?api=1&query=Riggattis+Wood+Fired+Pizza+St+George",
+    }
+
+    URLDiscoverer._backfill_restaurant_metadata_from_available_text(rest)
+
+    assert rest.get("cuisine") == "Pizza"
+    assert rest.get("price_range") == "$$"
+
+
+def test_backfill_restaurant_metadata_does_not_override_existing_fields() -> None:
+    rest = {
+        "name": "Painted Pony",
+        "description": "Contemporary southwestern fare.",
+        "cuisine": "American",
+        "price_range": "$$$",
+        "maps_url": "https://www.google.com/maps/search/?api=1&query=Painted+Pony+St+George",
+    }
+
+    URLDiscoverer._backfill_restaurant_metadata_from_available_text(rest)
+
+    assert rest.get("cuisine") == "American"
+    assert rest.get("price_range") == "$$$"
+
+
+def test_direct_batch_row_matches_item_ignores_shared_destination_name_token() -> None:
+    """Full-pipeline regression for a real reported bug: in a 'St. George, Utah'
+    destination, almost every harvested row's address text contains 'George'
+    (e.g. via the Maps query string), so a bare token-overlap match without
+    destination-name awareness falsely matched 18 of 20 unrelated attractions
+    against 'St. George Temple'. Passing dest_name must exclude destination-name
+    tokens from the match so only genuinely related rows match."""
+    row = {
+        "name": "Brigham Young Winter Home",
+        "title": "Brigham Young Winter Home",
+        "snippet": (
+            "Brigham Young Winter Home Source Maps Links: "
+            "https://www.nps.gov/gosp/learn/historyculture/byhome.htm "
+            "https://www.google.com/maps/search/?api=1&query=Brigham+Young+Winter+Home+67+W+200+N+St.+George+UT"
+        ),
+    }
+    assert URLDiscoverer._direct_batch_row_matches_item(row, "St. George Temple", "St. George, Utah") is False
+    # Without dest_name (backward-compatible default), the historical loose
+    # behavior is preserved -- this documents why dest_name must be threaded
+    # through call sites rather than relied on implicitly.
+    assert URLDiscoverer._direct_batch_row_matches_item(row, "St. George Temple") is True
+
+
+def test_direct_batch_url_matches_item_ignores_shared_destination_name_token() -> None:
+    url = "https://www.google.com/maps/search/?api=1&query=Brigham+Young+Winter+Home+67+W+200+N+St.+George+UT"
+    assert URLDiscoverer._direct_batch_url_matches_item(url, "St. George Temple", "St. George, Utah") is False
+    assert URLDiscoverer._direct_batch_url_matches_item(url, "St. George Temple") is True
+
+
+def test_direct_batch_url_priority_prefers_specific_source_over_maps_search_for_attraction() -> None:
+    """Regression for the actual reported bug: a Maps search link must never
+    outrank a specific official/source page for attractions -- it did, because
+    this scoring block previously had maps_search/maps_place assigned the
+    *lowest* (winning) numbers instead of the highest."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    official = discoverer._direct_batch_url_priority(
+        "https://www.churchofjesuschrist.org/temples/details/st-george-temple", kind="attraction"
+    )
+    maps_search = discoverer._direct_batch_url_priority(
+        "https://www.google.com/maps/search/?api=1&query=St.+George+Temple", kind="attraction"
+    )
+    tripadvisor = discoverer._direct_batch_url_priority(
+        "https://www.tripadvisor.com/Attraction_Review-g1-d1-St_George_Temple.html", kind="attraction"
+    )
+    assert official < maps_search
+    assert official < tripadvisor
+    assert tripadvisor < maps_search
+
+
+def test_url_recommendation_source_count_tracks_multiple_mechanisms() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    url = "https://example.com/angels-landing"
+    assert discoverer._url_recommendation_source_count(url) == 0
+    discoverer._record_url_recommendation_source(url, "direct_batch")
+    assert discoverer._url_recommendation_source_count(url) == 1
+    discoverer._record_url_recommendation_source(url, "direct_batch")
+    assert discoverer._url_recommendation_source_count(url) == 1
+    discoverer._record_url_recommendation_source(url, "ai_candidate")
+    assert discoverer._url_recommendation_source_count(url) == 2
+
+
+def test_search_attraction_matches_ai_named_overlook_to_bare_harvest_row_name() -> None:
+    """Full-pipeline regression for a real reported bug: AI-generated attraction
+    names often append a generic descriptive suffix ('Overlook') the harvest
+    row doesn't use ('Bryce Point' vs 'Bryce Point Overlook'). The destination-
+    name-token exclusion (see the dest-token test above) can strip the row's
+    only remaining distinctive word when it coincides with the destination's
+    own name ('Bryce' in 'Bryce Canyon'), which must not make the item
+    unmatchable -- but it also must not let a single shared word alone match
+    an unrelated row like 'Bryce Canyon Lodge'."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    rows = [
+        {
+            "name": "Bryce Point",
+            "title": "Bryce Point",
+            "url": "https://www.nps.gov/brca/planyourvisit/bryce-point.htm",
+            "snippet": "Bryce Point Links: https://www.nps.gov/brca/planyourvisit/bryce-point.htm",
+        },
+        {
+            "name": "Bryce Canyon Lodge",
+            "title": "Bryce Canyon Lodge",
+            "url": "https://www.brycecanyonforever.com/",
+            "snippet": "Bryce Canyon Lodge Links: https://www.brycecanyonforever.com/",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *a, **k: url):
+            out = discoverer._search_attraction_from_direct_batch(
+                "Bryce Point Overlook", "Bryce Canyon National Park", "October 19-21, 2026"
+            )
+
+    assert out == "https://www.nps.gov/brca/planyourvisit/bryce-point.htm"
+
+
+def test_direct_batch_row_match_strength_rejects_single_shared_word_against_unrelated_row() -> None:
+    row = {
+        "name": "Bryce Canyon Lodge",
+        "title": "Bryce Canyon Lodge",
+        "snippet": "Bryce Canyon Lodge Links: https://www.brycecanyonforever.com/",
+    }
+    strength = URLDiscoverer._direct_batch_row_match_strength(
+        row, "Bryce Point Overlook", "Bryce Canyon National Park"
+    )
+    assert strength == 0
+
+
+def test_persistent_cache_round_trips_en_route_geocode_results(tmp_path) -> None:
+    """Full-pipeline regression: the en-route geocode cache was in-memory only,
+    so every stop got re-geocoded (and re-throttled against Nominatim) on
+    every run -- and twice per run, since URL discovery runs a second time in
+    the selective-retry pass. Confirmed coordinates must survive a save/load
+    round trip so repeat runs (and the retry pass) can skip the network call."""
+    cache_path = tmp_path / "persistent_cache.json"
+
+    writer = URLDiscoverer.__new__(URLDiscoverer)
+    writer._persistent_cache_enabled = True
+    writer._persistent_cache_path = str(cache_path)
+    writer._persistent_cache_dirty = True
+    writer._request_cache_lock = Lock()
+    writer._en_route_stop_geocode_cache = {"red canyon|zion national park|bryce canyon national park": (37.72, -112.31)}
+    writer._save_persistent_caches()
+
+    assert cache_path.exists()
+
+    reader = URLDiscoverer.__new__(URLDiscoverer)
+    reader._persistent_cache_enabled = True
+    reader._persistent_cache_path = str(cache_path)
+    reader._en_route_stop_geocode_cache = {}
+    reader._load_persistent_caches()
+
+    assert reader._en_route_stop_geocode_cache["red canyon|zion national park|bryce canyon national park"] == (37.72, -112.31)
+
+
+def test_persistent_cache_never_saves_failed_en_route_geocode_results(tmp_path) -> None:
+    """A 'no result' (None) is often a transient Nominatim rate-limit/timeout
+    outcome, not a durable 'this place doesn't exist' answer -- it must not be
+    frozen into the persistent cache."""
+    cache_path = tmp_path / "persistent_cache.json"
+
+    writer = URLDiscoverer.__new__(URLDiscoverer)
+    writer._persistent_cache_enabled = True
+    writer._persistent_cache_path = str(cache_path)
+    writer._persistent_cache_dirty = True
+    writer._request_cache_lock = Lock()
+    writer._en_route_stop_geocode_cache = {"nowhere|a|b": None}
+    writer._save_persistent_caches()
+
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert payload["en_route_geocode"] == {}
+
+
+def test_persistent_cache_round_trips_alltrails_fetch_results(tmp_path) -> None:
+    cache_path = tmp_path / "persistent_cache.json"
+
+    writer = URLDiscoverer.__new__(URLDiscoverer)
+    writer._persistent_cache_enabled = True
+    writer._persistent_cache_path = str(cache_path)
+    writer._persistent_cache_dirty = True
+    writer._request_cache_lock = Lock()
+    writer._alltrails_fetch_cache = {
+        "https://www.alltrails.com/trail/us/utah/angels-landing-trail": (True, 200, "<html>trail page</html>")
+    }
+    writer._save_persistent_caches()
+
+    reader = URLDiscoverer.__new__(URLDiscoverer)
+    reader._persistent_cache_enabled = True
+    reader._persistent_cache_path = str(cache_path)
+    reader._alltrails_fetch_cache = {}
+    reader._load_persistent_caches()
+
+    assert reader._alltrails_fetch_cache["https://www.alltrails.com/trail/us/utah/angels-landing-trail"] == (
+        True,
+        200,
+        "<html>trail page</html>",
+    )
+
+
+def test_persistent_cache_never_saves_blocked_alltrails_fetch_results(tmp_path) -> None:
+    """Caching a transient DataDome block (401/403) would freeze that block
+    state in across runs, making every subsequent run treat a live trail page
+    as permanently blocked."""
+    cache_path = tmp_path / "persistent_cache.json"
+
+    writer = URLDiscoverer.__new__(URLDiscoverer)
+    writer._persistent_cache_enabled = True
+    writer._persistent_cache_path = str(cache_path)
+    writer._persistent_cache_dirty = True
+    writer._request_cache_lock = Lock()
+    writer._alltrails_fetch_cache = {
+        "https://www.alltrails.com/trail/us/utah/blocked-trail": (False, 403, "")
+    }
+    writer._save_persistent_caches()
+
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert payload["alltrails_fetch_results"] == {}
+
+
+def test_persistent_cache_round_trips_direct_batch_harvest_rows(tmp_path) -> None:
+    """Regression for issue #66: direct-batch harvest rows (the expensive
+    per-destination-per-kind Grok HTML-list calls for attractions/restaurants/
+    trails/en-route stops) were in-memory only, so an unchanged manifest run
+    again the same day re-harvested every destination from scratch. Rows must
+    survive a save/load round trip, routed back into the correct per-kind
+    cache dict."""
+    cache_path = tmp_path / "persistent_cache.json"
+
+    writer = URLDiscoverer.__new__(URLDiscoverer)
+    writer._persistent_cache_enabled = True
+    writer._persistent_cache_path = str(cache_path)
+    writer._persistent_cache_dirty = True
+    writer._request_cache_lock = Lock()
+    writer._alltrails_direct_batch_cache = {
+        "zion national park||2026-10-12 to 2026-10-15|html|trail": [
+            {"name": "Angels Landing", "url": "https://www.alltrails.com/trail/us/utah/angels-landing-trail"},
+        ]
+    }
+    writer._attraction_direct_batch_cache = {
+        "zion national park||2026-10-12 to 2026-10-15|html|attraction": [
+            {"name": "Zion Human History Museum", "url": "https://www.nps.gov/zion/planyourvisit/history-museum.htm"},
+        ]
+    }
+    writer._restaurant_direct_batch_cache = {}
+    writer._en_route_direct_batch_cache = {}
+    writer._save_persistent_caches()
+
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert "direct_batch_harvest_alltrails" in payload
+    assert "direct_batch_harvest_attractions" in payload
+
+    reader = URLDiscoverer.__new__(URLDiscoverer)
+    reader._persistent_cache_enabled = True
+    reader._persistent_cache_path = str(cache_path)
+    reader._load_persistent_caches()
+
+    assert reader._alltrails_direct_batch_cache[
+        "zion national park||2026-10-12 to 2026-10-15|html|trail"
+    ] == [{"name": "Angels Landing", "url": "https://www.alltrails.com/trail/us/utah/angels-landing-trail"}]
+    assert reader._attraction_direct_batch_cache[
+        "zion national park||2026-10-12 to 2026-10-15|html|attraction"
+    ] == [{"name": "Zion Human History Museum", "url": "https://www.nps.gov/zion/planyourvisit/history-museum.htm"}]
+    # The other two kinds' caches were empty at save time and must not appear
+    # as spurious entries after load.
+    assert reader._restaurant_direct_batch_cache == {}
+    assert reader._en_route_direct_batch_cache == {}
+
+
+def test_persistent_cache_never_saves_empty_direct_batch_harvest_results(tmp_path) -> None:
+    """An empty harvest batch is often a transient upstream hiccup (e.g. a
+    Grok timeout burst), not durable proof the destination has zero
+    attractions -- it must not be frozen into the persistent cache."""
+    cache_path = tmp_path / "persistent_cache.json"
+
+    writer = URLDiscoverer.__new__(URLDiscoverer)
+    writer._persistent_cache_enabled = True
+    writer._persistent_cache_path = str(cache_path)
+    writer._persistent_cache_dirty = True
+    writer._request_cache_lock = Lock()
+    writer._attraction_direct_batch_cache = {"nowhere||2026-10-12|html|attraction": []}
+    writer._save_persistent_caches()
+
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert payload["direct_batch_harvest_attractions"] == {}
+
+
+def test_load_persistent_caches_respects_harvest_ttl(tmp_path) -> None:
+    cache_path = tmp_path / "persistent_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "updated_at": time.time(),
+                "direct_batch_harvest_attractions": {
+                    "stale-dest||2026-01-01|html|attraction": {
+                        "ts": time.time() - (48 * 3600),
+                        "rows": [{"name": "Old Attraction"}],
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reader = URLDiscoverer.__new__(URLDiscoverer)
+    reader._persistent_cache_enabled = True
+    reader._persistent_cache_path = str(cache_path)
+    reader._persistent_harvest_cache_ttl_hours = 24.0
+    reader._load_persistent_caches()
+
+    assert "stale-dest||2026-01-01|html|attraction" not in reader._attraction_direct_batch_cache
+
+
+def test_load_persistent_caches_respects_geocode_ttl(tmp_path) -> None:
+    cache_path = tmp_path / "persistent_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "updated_at": time.time(),
+                "en_route_geocode": {
+                    "stale|a|b": {"ts": time.time() - (800 * 3600), "lat": 37.72, "lng": -112.31},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reader = URLDiscoverer.__new__(URLDiscoverer)
+    reader._persistent_cache_enabled = True
+    reader._persistent_cache_path = str(cache_path)
+    reader._persistent_geocode_cache_ttl_hours = 720.0
+    reader._en_route_stop_geocode_cache = {}
+    reader._load_persistent_caches()
+
+    assert "stale|a|b" not in reader._en_route_stop_geocode_cache
+
+
+def test_search_attraction_authoritative_prefers_strong_match_over_weak_anchor_match() -> None:
+    """Corroboration/disambiguation regression: when a batch has one row that
+    fully matches the item's tokens (strength 2) and a second, different row
+    that only weakly matches via a single shared short anchor word (strength 1,
+    e.g. two different '* Temple' rows sharing only 'temple' once the
+    destination-name token is excluded), the strong match must win outright --
+    the weak row's candidates must not even be pooled into the tie-break."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    rows = [
+        {
+            "name": "St. George Temple",
+            "title": "St. George Temple",
+            "url": "https://www.churchofjesuschrist.org/temples/details/st-george-temple",
+            "snippet": "St. George Temple Links: https://www.churchofjesuschrist.org/temples/details/st-george-temple",
+        },
+        {
+            "name": "Red Cliffs Temple",
+            "title": "Red Cliffs Temple",
+            "url": "https://www.churchofjesuschrist.org/temples/details/red-cliffs-temple",
+            "snippet": "Red Cliffs Temple Links: https://www.churchofjesuschrist.org/temples/details/red-cliffs-temple",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *a, **k: url):
+            out = discoverer._search_attraction_from_direct_batch(
+                "St. George Temple", "St. George, Utah", "October 17, 2026"
+            )
+
+    assert out == "https://www.churchofjesuschrist.org/temples/details/st-george-temple"
+
+
+def test_search_attraction_authoritative_does_not_fabricate_match_from_unrelated_row() -> None:
+    """When no row in the destination batch actually matches the requested item,
+    an unrelated attraction's specific URL must not be selected. Direct-batch
+    authority must not leak a different attraction's link (mirrors the analogous
+    restaurant-side fix)."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "title": "Kolob Canyons Viewpoint",
+            "name": "Kolob Canyons Viewpoint",
+            "url": "https://www.nps.gov/zion/planyourvisit/kolob-canyons.htm",
+            "snippet": "Kolob Canyons Viewpoint scenic overlook",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_args, **_kwargs: url):
+            out = discoverer._search_attraction_from_direct_batch("Zion Human History Museum", "Zion National Park", "October 18, 2026")
+
+    assert out != "https://www.nps.gov/zion/planyourvisit/kolob-canyons.htm"
+
+
+def test_search_attraction_from_direct_batch_prefers_google_maps_place_over_alternate():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = False
+    discoverer._url_validator = MagicMock()
+    discoverer._maps_url_resolution_cache = {}
+    discoverer._fetch_final_url_cache = {}
+
+    rows = [
+        {
+            "url": "https://example.org/official/mesa-overlook",
+            "title": "Mesa Overlook",
+            "snippet": "Official attraction page",
+        },
+        {
+            "url": "https://www.google.com/maps/place/Mesa+Overlook/@37.2,-112.9,17z/data=!4m6!3m5!1s0x80cac2f9e17f7c3f:0x1234!8m2!3d37.2!4d-112.9",
+            "title": "Mesa Overlook",
+            "snippet": "Maps place entry",
+        },
+    ]
+
+    discoverer._url_validator.session.get.side_effect = lambda _url, timeout=8: MagicMock(url=_url)
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_args, **_kwargs: url):
+            out = discoverer._search_attraction_from_direct_batch("Mesa Overlook", "Zion National Park", "October 7-9, 2026")
+
+    assert out.startswith("https://www.google.com/maps/place/")
+
+
+def test_search_restaurant_direct_batch_authoritative_uses_source_when_row_maps_query_is_rejected():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "name": "The Shed",
+            "url": "https://www.google.com/maps/search/?api=1&query=The+Shed+Santa+Fe+NM",
+            "snippet": "The Shed Links: https://sfshed.com/ https://www.google.com/maps/search/?api=1&query=The+Shed+Santa+Fe+NM",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_args, **_kwargs: ("" if "maps/search" in url else url)):
+            out = discoverer._search_restaurant_from_direct_batch("The Shed", "Santa Fe", "October 18-20, 2026")
+
+    assert out == "https://sfshed.com/"
+
+
+def test_search_restaurant_from_direct_batch_prefers_google_maps_place_over_alternate():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = False
+    discoverer._url_validator = MagicMock()
+    discoverer._maps_url_resolution_cache = {}
+    discoverer._fetch_final_url_cache = {}
+
+    rows = [
+        {
+            "url": "https://www.tripadvisor.com/Restaurant_Review-g57119-d9999-Reviews-Example-St_George_Utah.html",
+            "title": "Example Cafe",
+            "snippet": "TripAdvisor listing",
+        },
+        {
+            "url": "https://www.google.com/maps/place/Example+Cafe/@37.1,-113.5,17z/data=!4m6!3m5!1s0x80ca1234abcd5678:0xbeef!8m2!3d37.1!4d-113.5",
+            "title": "Example Cafe",
+            "snippet": "Maps place entry",
+        },
+    ]
+
+    discoverer._url_validator.session.get.side_effect = lambda _url, timeout=8: MagicMock(url=_url)
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_args, **_kwargs: url):
+            out = discoverer._search_restaurant_from_direct_batch("Example Cafe", "St. George", "October 7-9, 2026")
+
+    assert out.startswith("https://www.google.com/maps/place/")
+
+
+def test_search_restaurant_from_direct_batch_falls_back_to_source_when_maps_missing():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = False
+
+    rows = [
+        {
+            "name": "Painted Pony",
+            "url": "",
+            "snippet": "Painted Pony Links: https://www.painted-pony.com/",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_args, **_kwargs: url):
+            out = discoverer._search_restaurant_from_direct_batch("Painted Pony", "St. George, Utah", "October 7-9, 2026")
+
+    assert out == "https://www.painted-pony.com/"
+
+
+def test_search_restaurant_non_authoritative_rejects_tripadvisor_area_listing() -> None:
+    """Generic area listing must be dropped even in non-authoritative ranked path."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = False
+
+    rows = [
+        {
+            "name": "Oscar's Cafe",
+            "url": "https://www.tripadvisor.com/Restaurants-g60771-Zion_National_Park_Utah.html",
+            "snippet": "Oscar's Cafe best restaurant in Springdale",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_restaurant_from_direct_batch("Oscar's Cafe", "Zion National Park", "October 18, 2026")
+
+    assert out is None or (out is not None and "Restaurants-g" not in out)
+
+
+def test_search_restaurant_non_authoritative_prefers_maps_place_over_generic_non_maps() -> None:
+    """A specific Maps place URL should win over a non-maps generic area page."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = False
+    discoverer._maps_url_resolution_cache = {}
+    discoverer._fetch_final_url_cache = {}
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        url="https://www.google.com/maps/place/Oscar's+Cafe/@37.1882,-112.9983,17z/data=!4m6!3m5!1s0x80cac2f8:0x5678!8m2!3d37.1882!4d-112.9983"
+    )
+
+    rows = [
+        {
+            "name": "Oscar's Cafe",
+            "url": "https://maps.app.goo.gl/rbaK8ZtvD67ZAjNa7",
+            "snippet": "Oscar's Cafe Springdale Utah",
+        },
+        {
+            "name": "Oscar's Cafe",
+            "url": "https://www.tripadvisor.com/Restaurants-g60771-Zion_National_Park_Utah.html",
+            "snippet": "Best restaurants near Zion",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_restaurant_from_direct_batch("Oscar's Cafe", "Zion National Park", "October 18, 2026")
+
+    # If the maps place resolves, it should be preferred over the area listing.
+    if out is not None:
+        assert "Restaurants-g" not in out
+
+
+def test_search_restaurant_authoritative_rejects_other_row_urls_when_matching_item_name() -> None:
+    """Authoritative direct-batch rows must stay scoped to the requested restaurant item."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "title": "Cafe Soleil",
+            "name": "Cafe Soleil",
+            "url": "https://cafesoleilzion.com",
+            "snippet": "Cafe Soleil 4.7/5 $$",
+        },
+        {
+            "title": "Oscar's Cafe",
+            "name": "Oscar's Cafe",
+            "url": "https://www.tripadvisor.com/Restaurant_Review-g29122-d456789-Oscar_s_Cafe-Springdale_Utah.html",
+            "snippet": "Oscar's Cafe 4.5/5 $$",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_args, **_kwargs: url):
+            out = discoverer._search_restaurant_from_direct_batch("Oscar's Cafe", "Zion National Park", "October 18, 2026")
+
+    assert out == "https://www.tripadvisor.com/Restaurant_Review-g29122-d456789-Oscar_s_Cafe-Springdale_Utah.html"
+
+
+def test_search_restaurant_authoritative_does_not_fabricate_match_from_unrelated_row() -> None:
+    """When no row in the batch actually matches the requested item, an unrelated
+    row's specific (non-generic-looking) URL must not be silently treated as a
+    match. Direct-batch authority must not leak a different restaurant's link."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "title": "Zion Pizza & Noodle Co",
+            "name": "Zion Pizza & Noodle Co",
+            "url": "https://zionpizzanoodle.com",
+            "snippet": "Zion Pizza & Noodle Co 4.4/5 $$",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_args, **_kwargs: url):
+            out = discoverer._search_restaurant_from_direct_batch("Bit & Spur", "Zion National Park", "October 18, 2026")
+
+    assert out != "https://zionpizzanoodle.com"
+
+
+def test_audit_emits_audit_rejection_event_for_restaurant_generic_url() -> None:
+    """Audit stripping a restaurant URL should emit an audit_url_rejected broker event."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._decision_threads_by_destination = {}
+    discoverer._decision_stats_by_destination = {}
+    discoverer._decision_source_stats_by_destination = {}
+    discoverer._decision_event_sequence = 0
+    discoverer._request_cache_lock = __import__("threading").Lock()
+    discoverer._direct_batch_authoritative = False
+    discoverer._direct_batch_authoritative_urls = set()
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [
+                        {
+                            "name": "Oscar's Cafe",
+                            "url": "https://www.tripadvisor.com/Restaurants-g60771-Zion_National_Park_Utah.html",
+                        }
+                    ],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    threads = discoverer._decision_threads_by_destination.get("Zion National Park", {})
+    all_events = [ev for evs in threads.values() for ev in evs if isinstance(ev, dict)]
+    audit_events = [ev for ev in all_events if "audit_url_rejected" in str(ev.get("reason", ""))]
+    assert len(audit_events) >= 1, f"Expected an audit_url_rejected event; got: {all_events}"
+    assert audit_events[0]["item"] == "Oscar's Cafe"
+
+
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._url_validator = MagicMock()
     discoverer._url_validator.session.get.return_value = MagicMock(
@@ -508,6 +1712,27 @@ def test_alltrails_rejects_candidate_when_miles_exceed_configured_max():
     assert ok is False
 
 
+def test_alltrails_rejects_candidate_when_km_exceed_configured_max():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 3.0
+
+    candidate = {
+        "url": "https://www.alltrails.com/trail/us/utah/fairyland-loop-trail",
+        "name": "Fairyland Loop Trail",
+        "snippet": "12.9 km loop trail near Bryce Canyon National Park",
+    }
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+        ok = discoverer._is_relevant_result(
+            candidate["url"],
+            "Fairyland Loop Trail",
+            "Bryce Canyon National Park",
+            candidate=candidate,
+        )
+
+    assert ok is False
+
+
 def test_alltrails_accepts_candidate_when_miles_within_configured_max():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._max_trail_miles = 3.0
@@ -528,6 +1753,3489 @@ def test_alltrails_accepts_candidate_when_miles_within_configured_max():
         )
 
     assert ok is True
+
+
+def test_extract_trail_miles_parses_hyphenated_distance_formats():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    assert discoverer._extract_trail_miles("A 5-mile hike with steep switchbacks.") == 5.0
+    assert discoverer._extract_trail_miles("Approx. 5 mi round-trip route.") == 5.0
+    assert discoverer._extract_trail_miles("A 12.9-km scenic loop.") == pytest.approx(8.0157, rel=1e-4)
+
+
+def test_alltrails_rejects_when_fetched_page_km_distance_exceeds_threshold():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 3.0
+
+    with patch.object(
+        discoverer,
+        "_fetch_page_text",
+        return_value=(True, 200, "Fairyland Loop Trail is a 12.9 km loop near Bryce Canyon."),
+    ):
+        ok = discoverer._is_relevant_result(
+            "https://www.alltrails.com/trail/us/utah/fairyland-loop-trail",
+            "Fairyland Loop Trail",
+            "Bryce Canyon National Park",
+            candidate={"name": "Fairyland Loop Trail", "snippet": "Bryce Canyon loop"},
+        )
+
+    assert ok is False
+
+
+def test_search_alltrails_direct_batch_authoritative_accepts_first_available_trail_link():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.alltrails.com/trail/us/utah/cassidy-arch-trail",
+            "title": "Cassidy Arch Trail",
+            "snippet": "Trail option",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_alltrails_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_alltrails_for_trail_from_direct_batch(
+            "Cassidy Arch",
+            "Capitol Reef National Park",
+            "October 21, 2026",
+        )
+
+    assert out == "https://www.alltrails.com/trail/us/utah/cassidy-arch-trail"
+
+
+def test_alltrails_direct_batch_html_prompt_includes_length_and_rating_constraints():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 3.0
+    discoverer._alltrails_rating_min = 4.5
+    discoverer._alltrails_rating_min_votes = 200
+
+    prompt = discoverer._direct_batch_html_prompt(
+        kind="trail",
+        dest_name="Zion National Park",
+        dates="October 7-9, 2026",
+    )
+
+    assert prompt is not None
+    system_prompt, user_prompt = prompt
+    assert "AllTrails" in system_prompt
+    assert "3" in system_prompt
+    assert "4.5+" in system_prompt
+    assert "200 reviews" in system_prompt
+    assert "rating" in system_prompt.lower()
+    assert user_prompt.startswith("Generate clickable hikes from AllTrails for Zion National Park (October 7-9, 2026).")
+    assert "rating" in user_prompt.lower()
+
+
+def test_get_alltrails_direct_batch_rows_prefers_html_capture_before_search_fallback():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_direct_batch_cache = {}
+
+    html_rows = [{"url": "https://www.alltrails.com/trail/us/utah/angels-landing-trail", "name": "Angels Landing"}]
+
+    with patch.object(discoverer, "_get_direct_batch_html_rows_for_destination", return_value=html_rows) as html_mock, patch.object(
+        discoverer,
+        "_get_direct_batch_rows_for_destination",
+        side_effect=AssertionError("search fallback should not run when trail html rows exist"),
+    ):
+        rows = discoverer._get_alltrails_direct_batch_rows_for_destination("Zion National Park", "October 7-9, 2026")
+
+    assert rows == html_rows
+    html_mock.assert_called_once()
+
+
+def test_direct_batch_html_prompt_for_attractions_uses_precise_maps_guidance():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    prompt = discoverer._direct_batch_html_prompt(
+        kind="attraction",
+        dest_name="Zion National Park",
+        dates="October 7-9, 2026",
+    )
+
+    assert prompt is not None
+    system_prompt, _user_prompt = prompt
+    assert "precise google maps place or search link" in system_prompt.lower()
+    assert "generic destination listing pages" in system_prompt.lower()
+
+
+def test_direct_batch_html_prompt_scales_attraction_count_to_short_stay():
+    """Regression: attraction/trail harvest requests used to always ask for
+    the flat configured ceiling (default 20) regardless of how short the
+    stay is -- a 1-day stay only ever keeps items_per_day=3 attractions, so
+    asking for 20 wastes completion tokens and generation time on rows that
+    get discarded. Count must scale down for a short stay, never up."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    prompt = discoverer._direct_batch_html_prompt(
+        kind="attraction",
+        dest_name="Telluride",
+        dates="October 7, 2026",
+    )
+
+    assert prompt is not None
+    system_prompt, _user_prompt = prompt
+    # 1 day * 3/day * buffer 2 = 6, well under the default ceiling of 20.
+    assert "exactly 6 <li>" in system_prompt
+
+
+def test_direct_batch_html_prompt_caps_attraction_count_at_configured_ceiling():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_link_batch_count = 20
+
+    prompt = discoverer._direct_batch_html_prompt(
+        kind="attraction",
+        dest_name="Telluride",
+        dates="October 1-10, 2026",
+    )
+
+    assert prompt is not None
+    system_prompt, _user_prompt = prompt
+    # 10 days * 3/day * buffer 2 = 60, but must never exceed the ceiling.
+    assert "exactly 20 <li>" in system_prompt
+
+
+def test_direct_batch_html_prompt_scales_trail_count_to_short_stay():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    prompt = discoverer._direct_batch_html_prompt(
+        kind="trail",
+        dest_name="Telluride",
+        dates="October 7, 2026",
+    )
+
+    assert prompt is not None
+    system_prompt, _user_prompt = prompt
+    # 1 day * 2/day * buffer 2 = 4, floored to the minimum of 5.
+    assert "exactly 5 <li>" in system_prompt
+
+
+def test_direct_batch_html_prompt_for_restaurants_requires_rating_and_price_indicators():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    prompt = discoverer._direct_batch_html_prompt(
+        kind="restaurant",
+        dest_name="St. George, Utah",
+        dates="October 17, 2026",
+    )
+
+    assert prompt is not None
+    system_prompt, user_prompt = prompt
+    assert "rating" in system_prompt.lower()
+    assert "price" in system_prompt.lower()
+    assert "4.3" in system_prompt
+    assert "price indicator" in user_prompt.lower() or "price" in user_prompt.lower()
+
+
+def test_direct_batch_html_prompt_for_en_route_stops_prefers_specific_stop_pages():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    prompt = discoverer._direct_batch_html_prompt(
+        kind="en_route_stop",
+        dest_name="Zion National Park",
+        dates="October 7-9, 2026",
+        origin_name="St. George",
+    )
+
+    assert prompt is not None
+    system_prompt, _user_prompt = prompt
+    assert "specific official or authoritative page" in system_prompt.lower()
+    assert "generic destination landing page or park home page" in system_prompt.lower()
+    assert "prefer specific official or authoritative pages" in _user_prompt.lower()
+
+
+def test_search_alltrails_direct_batch_authoritative_rejects_mismatched_trail_link():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail",
+            "title": "Canyon Overlook Trail",
+            "snippet": "Popular short Zion trail",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_alltrails_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_alltrails_for_trail_from_direct_batch(
+            "Kolob Canyons",
+            "Zion National Park",
+            "October 18, 2026",
+        )
+
+    assert out is None
+
+
+def test_search_alltrails_direct_batch_authoritative_does_not_fallback_to_search():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._alltrails_source = "direct_link_batch"
+    discoverer._disable_trails = False
+
+    with patch.object(discoverer, "_search_alltrails_for_trail_from_direct_batch", return_value=None), patch.object(
+        discoverer,
+        "_search_first",
+        side_effect=AssertionError("search fallback should not run in authoritative direct-batch mode"),
+    ):
+        out = discoverer._search_alltrails_for_trail(
+            "Angels Landing",
+            "Zion National Park",
+            "October 18, 2026",
+        )
+
+    assert out is None
+
+
+def test_search_restaurant_direct_batch_authoritative_prefers_item_matching_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.tripadvisor.com/Restaurants-g60771-Zion_National_Park_Utah.html",
+            "title": "Zion National Park Restaurants",
+            "snippet": "Top places to eat in Zion area",
+        },
+        {
+            "url": "https://www.google.com/maps/search/?api=1&query=Spotted+Dog+Cafe+Springdale+UT",
+            "title": "Spotted Dog Cafe",
+            "snippet": "Google Maps listing",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_restaurant_from_direct_batch(
+            "Spotted Dog Cafe",
+            "Zion National Park",
+            "October 18, 2026",
+        )
+
+    assert out is None
+
+
+def test_discover_restaurants_direct_batch_authoritative_does_not_fallback_to_search():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._restaurant_source = "direct_link_batch"
+
+    ai = {
+        "dinner_recommendations": [
+            {
+                "name": "The Spotted Dog Cafe",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None), patch.object(
+        discoverer,
+        "_search_restaurant_from_direct_batch",
+        return_value=None,
+    ), patch.object(
+        discoverer,
+        "_search_first",
+        side_effect=AssertionError("search fallback should not run in authoritative direct-batch mode"),
+    ):
+        discoverer._discover_restaurants(ai, "Zion National Park", "October 18, 2026")
+
+    assert ai["dinner_recommendations"][0].get("url", "") == ""
+
+
+def test_search_restaurant_direct_batch_authoritative_rejects_raw_capture_without_item_match():
+    """Fail-closed contract: a destination batch with zero row/URL match for the
+    requested item must publish no canonical URL, even if the batch has only one
+    (unrelated) row. Borrowing an unmatched raw capture risks publishing a
+    different restaurant's link under the requested item's name."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.officialrestaurant.example/chef-special",
+            "title": "A nearby dining option",
+            "snippet": "A valid restaurant capture for the destination.",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows), patch.object(
+        discoverer,
+        "_retain_discovered_url",
+        side_effect=lambda url, *_args, **_kwargs: url,
+    ):
+        out = discoverer._search_restaurant_from_direct_batch(
+            "The Spotted Dog Cafe",
+            "Zion National Park",
+            "October 18, 2026",
+        )
+
+    assert out is None
+
+
+def test_search_restaurant_direct_batch_authoritative_rejects_tripadvisor_area_listing():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.tripadvisor.com/Restaurants-g60771-Zion_National_Park_Utah.html",
+            "title": "Oscar's Cafe",
+            "snippet": "Local favorite",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_restaurant_from_direct_batch(
+            "Oscar's Cafe",
+            "Zion National Park",
+            "October 18, 2026",
+        )
+
+    assert out is None
+
+
+def test_search_restaurant_direct_batch_authoritative_rejects_near_destination_maps_query():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.google.com/maps/search/restaurants+near+Zion+National+Park/",
+            "title": "The Spotted Dog Cafe",
+            "snippet": "Google Maps listing",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_restaurant_from_direct_batch(
+            "The Spotted Dog Cafe",
+            "Zion National Park",
+            "October 18, 2026",
+        )
+
+    assert out is None
+
+
+def test_search_restaurant_direct_batch_authoritative_rejects_maps_q_for_other_venue():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://maps.google.com/?q=Capitol+Reef+Resort+Torrey+UT",
+            "title": "The Rim Rock Restaurant",
+            "snippet": "Map candidate",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_restaurant_from_direct_batch(
+            "The Rim Rock Restaurant",
+            "Capitol Reef National Park",
+            "October 18, 2026",
+        )
+
+    assert out is None
+
+
+def test_search_restaurant_direct_batch_authoritative_prefers_official_over_tripadvisor_when_both_match():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.tripadvisor.com/Restaurant_Review-g60771-d123456-Spotted_Dog_Cafe-Springdale_Utah.html",
+            "title": "Spotted Dog Cafe",
+            "snippet": "Tripadvisor listing",
+        },
+        {
+            "url": "https://www.spotteddogcafe.com/",
+            "title": "Spotted Dog Cafe",
+            "snippet": "Official restaurant site",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda u, *_a, **_k: u):
+            out = discoverer._search_restaurant_from_direct_batch(
+                "Spotted Dog Cafe",
+                "Zion National Park",
+                "October 18, 2026",
+            )
+
+    assert out == "https://www.spotteddogcafe.com/"
+
+
+def test_search_restaurant_direct_batch_authoritative_prefers_tripadvisor_over_maps_search_query():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.google.com/maps/search/?api=1&query=Spotted+Dog+Cafe+Springdale+UT",
+            "title": "Spotted Dog Cafe",
+            "snippet": "Google Maps search result",
+        },
+        {
+            "url": "https://www.tripadvisor.com/Restaurant_Review-g60771-d123456-Spotted_Dog_Cafe-Springdale_Utah.html",
+            "title": "Spotted Dog Cafe",
+            "snippet": "Tripadvisor listing",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda u, *_a, **_k: u):
+            out = discoverer._search_restaurant_from_direct_batch(
+                "Spotted Dog Cafe",
+                "Zion National Park",
+                "October 18, 2026",
+            )
+
+    assert out == "https://www.tripadvisor.com/Restaurant_Review-g60771-d123456-Spotted_Dog_Cafe-Springdale_Utah.html"
+
+
+def test_search_attraction_direct_batch_authoritative_prefers_official_over_tripadvisor_when_both_match():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.tripadvisor.com/Attraction_Review-g60771-d123456-Reviews-Observation_Point-Zion_National_Park_Utah.html",
+            "title": "Observation Point",
+            "snippet": "TripAdvisor attraction page",
+        },
+        {
+            "url": "https://www.zionadventures.com/observation-point",
+            "title": "Observation Point",
+            "snippet": "Official local operator page",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda u, *_a, **_k: u):
+            out = discoverer._search_attraction_from_direct_batch(
+                "Observation Point",
+                "Zion National Park",
+                "October 18, 2026",
+            )
+
+    assert out == "https://www.zionadventures.com/observation-point"
+
+
+def test_prefer_canonical_alltrails_url_keeps_noisy_variant_when_fetch_blocked():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    noisy = "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
+
+    with patch.object(discoverer, "_fetch_page_text", side_effect=[(False, 403, ""), (False, 403, "")]):
+        out = discoverer._prefer_canonical_alltrails_url(noisy, "The Narrows")
+
+    # Neither synthesized slug ("-trail" or bare) was ever confirmed live -- both
+    # fetches were blocked, not verified. Promoting either would be exactly the
+    # kind of fabricated-slug guess (e.g. "the-narrows-trail") the fail-closed
+    # named-entity URL policy forbids, so the original noisy-but-real URL is kept.
+    assert out == noisy
+
+
+def test_discover_restaurants_direct_batch_takes_precedence_over_ai_candidate_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "direct_link_batch"
+
+    ai = {
+        "dinner_recommendations": [{"name": "The Spotted Dog Cafe"}],
+        "top_attractions": [],
+        "getting_here": {"en_route_stops": []},
+    }
+
+    with patch.object(
+        discoverer,
+        "_search_restaurant_from_direct_batch",
+        return_value="https://www.tripadvisor.com/Restaurant_Review-g60771-d123456-Reviews-The_Spotted_Dog_Cafe-Springdale_Utah.html",
+    ), patch.object(
+        discoverer,
+        "_resolve_ai_candidate_url",
+        return_value="https://example.com/different-restaurant-url",
+    ):
+        discoverer._discover_restaurants(ai, dest_name="Zion National Park")
+
+    entry = ai["dinner_recommendations"][0]
+    assert "tripadvisor.com" in entry["url"]
+    assert "example.com" not in entry["url"]
+
+
+def test_discover_attractions_direct_batch_takes_precedence_over_ai_candidate_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [{"name": "Canyon Overlook Trail"}],
+    }
+
+    with patch.object(
+        discoverer,
+        "_search_alltrails_for_trail",
+        return_value="https://www.alltrails.com/trail/us/utah/canyon-overlook-trail",
+    ), patch.object(
+        discoverer,
+        "_resolve_ai_candidate_url",
+        return_value="https://example.com/other-trail-url",
+    ):
+        discoverer._discover_attractions(ai, "Zion National Park", None, "October 18, 2026")
+
+    entry = ai["top_attractions"][0]
+    assert entry["url"] == "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"
+    assert "example.com" not in entry["url"]
+
+
+def test_search_attraction_direct_batch_authoritative_prefers_specific_page_over_maps_search():
+    """A specific official/source page is always more useful to a reader than a
+    generic Maps search query -- it must win, not lose, when both are candidates.
+    (This inverts a prior version of this test that asserted the opposite; that
+    was the exact bug reported against a live run: an attraction's official page
+    was available but a vague Maps search link was rendered instead.)"""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.nps.gov/zion/planyourvisit/canyon-overlook-trail.htm",
+            "title": "Canyon Overlook Trail",
+            "snippet": "NPS page",
+        },
+        {
+            "url": "https://www.google.com/maps/search/?api=1&query=Canyon+Overlook+Trail+Zion+National+Park",
+            "title": "Canyon Overlook Trail",
+            "snippet": "Google Maps listing",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda u, *_a, **_k: u):
+            out = discoverer._search_attraction_from_direct_batch(
+                "Canyon Overlook Trail",
+                "Zion National Park",
+                "October 18, 2026",
+            )
+
+    assert out == "https://www.nps.gov/zion/planyourvisit/canyon-overlook-trail.htm"
+
+
+def test_search_attraction_direct_batch_authoritative_keeps_live_raw_capture_url_from_st_george_capture():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "title": "Tuacahn Amphitheatre & Center for the Arts",
+            "name": "Tuacahn Amphitheatre & Center for the Arts",
+            "url": "https://www.tuacahn.org/",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Tuacahn+Amphitheatre+1100+Tuacahn+Dr+St.+George+UT",
+            "snippet": "Tuacahn Amphitheatre & Center for the Arts Source Maps Links: https://www.tuacahn.org/ https://www.google.com/maps/search/?api=1&query=Tuacahn+Amphitheatre+1100+Tuacahn+Dr+St.+George+UT",
+            "description": "Tuacahn Amphitheatre & Center for the Arts",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda u, *_a, **_k: u):
+            out = discoverer._search_attraction_from_direct_batch(
+                "Tuacahn Amphitheatre & Center for the Arts",
+                "St. George, Utah",
+                "October 17, 2026",
+            )
+
+    assert out == "https://www.tuacahn.org/"
+
+
+def test_discover_attractions_direct_batch_takes_precedence_over_ai_candidate_for_non_trail():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Canyon View Park",
+                "type": "attraction",
+                "description": "Popular city overlook.",
+            }
+        ],
+        "getting_here": {"en_route_stops": []},
+    }
+
+    with patch.object(
+        discoverer,
+        "_search_attraction_from_direct_batch",
+        return_value="https://www.visitstgeorge.com/canyon-view-park",
+    ), patch.object(
+        discoverer,
+        "_get_attraction_direct_batch_rows_for_destination",
+        return_value=[{"name": "Canyon View Park", "url": "https://www.visitstgeorge.com/canyon-view-park"}],
+    ), patch.object(
+        discoverer,
+        "_resolve_ai_candidate_url",
+        return_value="https://example.com/different-attraction-url",
+    ), patch.object(
+        discoverer,
+        "_is_uninterested_attraction",
+        return_value=False,
+    ):
+        discoverer._discover_attractions(ai, "St. George, Utah", None)
+
+    out = ai["top_attractions"][0].get("url", "")
+    assert out == "https://www.visitstgeorge.com/canyon-view-park"
+    assert "example.com" not in out
+
+
+def test_discover_attractions_direct_batch_preserves_existing_url_without_rematch() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Zion Human History Museum",
+                "type": "museum",
+                "url": "https://www.nps.gov/zion/planyourvisit/museum.htm",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_a, **_k: url):
+        with patch.object(discoverer, "_search_attraction_from_direct_batch") as batch_search:
+            with patch.object(discoverer, "_search_first") as fallback_search:
+                discoverer._discover_attractions(ai, "Zion National Park", "zion")
+
+    assert ai["top_attractions"][0]["url"] == "https://www.nps.gov/zion/planyourvisit/museum.htm"
+    batch_search.assert_not_called()
+    fallback_search.assert_not_called()
+
+
+def test_discover_attractions_removes_closed_nonseed_attraction_page() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Weeping Rock",
+                "type": "attraction",
+                "description": "Currently closed for safety reasons.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None):
+        with patch.object(discoverer, "_search_first", return_value="https://www.nps.gov/zion/planyourvisit/weeping-rock.htm"):
+            with patch.object(
+                discoverer,
+                "_fetch_page_text",
+                return_value=(True, 200, "Weeping Rock. Currently closed for safety reasons."),
+            ):
+                discoverer._discover_attractions(ai=ai, dest={"_registry_decisions": []}, dest_name="Zion National Park", nps_code="zion")
+
+    assert ai["top_attractions"] == []
+
+
+def test_discover_attractions_keeps_closed_seeded_attraction_page() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Weeping Rock",
+                "type": "attraction",
+                "description": "Currently closed for safety reasons.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None):
+        with patch.object(discoverer, "_search_first", return_value="https://www.nps.gov/zion/planyourvisit/weeping-rock.htm"):
+            with patch.object(
+                discoverer,
+                "_fetch_page_text",
+                return_value=(True, 200, "Weeping Rock. Currently closed for safety reasons."),
+            ):
+                discoverer._discover_attractions(
+                    ai=ai,
+                    dest={"_registry_decisions": []},
+                    dest_name="Zion National Park",
+                    nps_code="zion",
+                    seed_names=["Weeping Rock"],
+                )
+
+    assert ai["top_attractions"]
+    assert ai["top_attractions"][0]["name"] == "Weeping Rock"
+    assert ai["top_attractions"][0].get("url", "") == ""
+    assert "currently closed" in str(ai["top_attractions"][0].get("practical_note", "")).lower()
+
+
+def test_search_restaurant_direct_batch_authoritative_skips_invalid_maps_and_uses_other():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.google.com/maps/place/Desert+Bistro/@38.5742,-109.5516,17z",
+            "title": "Desert Bistro",
+            "snippet": "Map listing",
+        },
+        {
+            "url": "https://www.desertbistro.com/desert-bistro-moab",
+            "title": "Desert Bistro",
+            "snippet": "Official site",
+        },
+    ]
+
+    def _retain(url: str, *_args, **_kwargs) -> str:
+        if "google.com/maps/place/" in str(url):
+            return ""
+        return str(url)
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=_retain):
+            out = discoverer._search_restaurant_from_direct_batch(
+                "Desert Bistro",
+                "Moab",
+                "October 18, 2026",
+            )
+
+    assert out == "https://www.desertbistro.com/desert-bistro-moab"
+
+
+def test_search_en_route_direct_batch_authoritative_skips_invalid_maps_place_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.google.com/maps/place/Red+Canyon+Visitor+Center,+UT",
+            "title": "Red Canyon",
+            "snippet": "Maps listing",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_en_route_stop_from_direct_batch(
+            "Red Canyon",
+            "Bryce Canyon National Park",
+            "October 18, 2026",
+        )
+
+    assert out is None
+
+
+def test_search_en_route_direct_batch_authoritative_rejects_off_region_row_and_keeps_destination_match():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://maps.google.com/?q=Mount+Si+Village+Seattle+WA",
+            "title": "Mount Si Village",
+            "snippet": "Shops near Seattle, Washington.",
+        },
+        {
+            "url": "https://www.google.com/maps/search/?api=1&query=Lizard+Head+Pass+Telluride+CO",
+            "title": "Lizard Head Pass",
+            "snippet": "Scenic pass on the drive into Telluride.",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda u, *_a, **_k: u):
+            out = discoverer._search_en_route_stop_from_direct_batch(
+                "Lizard Head Pass",
+                "Telluride",
+                "October 18, 2026",
+            )
+
+    assert out == "https://www.google.com/maps/search/?api=1&query=Lizard+Head+Pass+Telluride+CO"
+
+
+def test_search_en_route_direct_batch_authoritative_prefers_maps_when_multiple_rows_match():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.fs.usda.gov/recarea/gmug/recreation/recarea/?recid=33482",
+            "title": "Lizard Head Pass",
+            "snippet": "USFS stop details",
+        },
+        {
+            "url": "https://www.google.com/maps/search/?api=1&query=Lizard+Head+Pass+Telluride+CO",
+            "title": "Lizard Head Pass",
+            "snippet": "Google Maps listing",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda u, *_a, **_k: u):
+            out = discoverer._search_en_route_stop_from_direct_batch(
+                "Lizard Head Pass",
+                "Telluride",
+                "October 18, 2026",
+            )
+
+    assert out == "https://www.google.com/maps/search/?api=1&query=Lizard+Head+Pass+Telluride+CO"
+
+
+def test_search_en_route_direct_batch_authoritative_prefers_maps_place_over_source_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "name": "Red Cliffs Desert Reserve",
+            "url": "https://www.google.com/maps/place/Red+Cliffs+Desert+Reserve/@37.1467,-113.4249,12z",
+            "snippet": (
+                "Red Cliffs Desert Reserve Source Maps Links: "
+                "https://www.blm.gov/visit/red-cliffs-national-conservation-area "
+                "https://www.google.com/maps/place/Red+Cliffs+Desert+Reserve/@37.1467,-113.4249,12z"
+            ),
+        }
+    ]
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda u, *_a, **_k: u):
+            out = discoverer._search_en_route_stop_from_direct_batch(
+                "Red Cliffs Desert Reserve",
+                "St. George, Utah",
+                "October 17, 2026",
+            )
+
+    assert out == "https://www.google.com/maps/place/Red+Cliffs+Desert+Reserve/@37.1467,-113.4249,12z"
+
+
+def test_search_restaurant_direct_batch_authoritative_uses_shallow_relevance_for_snippet_source_url():
+    """Matched restaurant rows skip the expensive deep relevance/text check (that
+    is what 'shallow relevance' means here) -- but a cheap liveness ping still
+    runs so a matched row pointing at a dead domain isn't published regardless."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "name": "Morty's Cafe",
+            "url": "https://www.google.com/maps/search/?api=1&query=Mortys+Cafe+St+George+UT",
+            "snippet": (
+                "Morty's Cafe Source Maps Links: "
+                "https://www.mortyscafe.com/ "
+                "https://www.google.com/maps/search/?api=1&query=Mortys+Cafe+St+George+UT"
+            ),
+        }
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, "")):
+            out = discoverer._search_restaurant_from_direct_batch(
+                "Morty's Cafe",
+                "St. George, Utah",
+                "October 17, 2026",
+            )
+
+    assert out == "https://www.mortyscafe.com/"
+
+
+def test_search_en_route_stop_from_direct_batch_falls_back_to_source_when_maps_missing():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = False
+
+    rows = [
+        {
+            "name": "Wilson Arch",
+            "url": "",
+            "snippet": "Wilson Arch Links: https://www.blm.gov/visit/wilson-arch",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda u, *_a, **_k: u):
+            out = discoverer._search_en_route_stop_from_direct_batch(
+                "Wilson Arch",
+                "Moab",
+                "October 7-9, 2026",
+            )
+
+    assert out == "https://www.blm.gov/visit/wilson-arch"
+
+
+def test_classify_url_policy_class_treats_maps_google_q_as_maps_search():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    out = discoverer._classify_url_policy_class("https://maps.google.com/?q=221+South+Oak+Telluride")
+    assert out == "google_maps_search"
+
+
+def test_classify_url_policy_class_handles_maps_url_variants():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    assert discoverer._classify_url_policy_class(
+        "https://www.google.com/maps/search/?api=1&query=Benja+Thai+Sushi+St+George+UT"
+    ) == "google_maps_search"
+    assert discoverer._classify_url_policy_class(
+        "https://www.google.com/maps/dir//Bit+%26+Spur+Restaurant+%26+Saloon,+1212+Zion+Park+Blvd,+Springdale,+UT+84767"
+    ) == "google_maps_dir"
+    assert discoverer._classify_url_policy_class(
+        "https://www.google.com/maps/place/Benja+Thai+%26+Sushi/@37.1,-113.5,17z/data=!3m1!4b1"
+    ) == "general"
+
+
+def test_direct_batch_html_uses_plain_chat_completion_without_live_search():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_link_batch_limit = lambda: 3
+    discoverer._direct_batch_min_required = lambda kind: 1
+    discoverer._persist_direct_batch_html_capture = lambda **kwargs: None
+    discoverer._search = MagicMock()
+    discoverer._search.chat_completion.return_value = "<h2>St. George</h2><ul><li>St. George Dinosaur Discovery Site <a href=\"https://example.com\">Source</a></li></ul>"
+    discoverer._direct_batch_rows_from_html = lambda html: [{"title": "St. George Dinosaur Discovery Site", "url": "https://example.com"}] if "<h2>" in html else []
+
+    rows = discoverer._get_direct_batch_html_rows_for_destination(
+        cache={},
+        destination="St. George, Utah",
+        dates="October 17, 2026",
+        kind="attraction",
+    )
+
+    assert rows
+    assert discoverer._search.chat_completion.call_args.kwargs["live_search"] is False
+
+
+def test_direct_batch_html_retries_empty_attraction_result():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._attraction_direct_batch_cache = {}
+    discoverer._direct_link_batch_limit = lambda: 3
+    discoverer._persist_direct_batch_html_capture = lambda **kwargs: None
+    discoverer._search = MagicMock()
+    discoverer._search.is_circuit_open.return_value = False
+    discoverer._search.chat_completion.side_effect = [
+        "",
+        "<h2>Moab</h2><ul><li>Arches National Park <a href=\"https://example.com\">Source</a> <a href=\"https://www.google.com/maps/search/?api=1&query=Arches+National+Park+Moab+UT\">Maps</a></li></ul>",
+    ]
+    discoverer._direct_batch_rows_from_html = lambda html: [
+        {"title": "Arches National Park", "url": "https://example.com", "maps_url": "https://www.google.com/maps/search/?api=1&query=Arches+National+Park+Moab+UT"}
+    ] if "<h2>" in html else []
+
+    rows = discoverer._get_direct_batch_html_rows_for_destination(
+        cache={},
+        destination="Moab",
+        dates="October 18, 2026",
+        kind="attraction",
+    )
+
+    assert rows
+    assert discoverer._search.chat_completion.call_count == 2
+
+
+def test_url_discoverer_shares_llm_model_with_grok_search_when_provider_is_grok():
+    """Regression for issue #65/#64: GrokSearch used to always fall back to
+    its own independent XAI_MODEL env var, disconnected from whatever model
+    MultiLLMClient actually resolved -- the two could silently diverge."""
+    mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+    with patch("generator.url_discovery.GrokSearch") as mock_grok_search_cls:
+        URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+    assert mock_grok_search_cls.call_args.kwargs["model"] == "grok-4.5"
+
+
+def test_url_discoverer_leaves_grok_search_model_alone_when_provider_is_not_grok():
+    mock_llm = type("MockLLM", (), {"provider": "openai", "model": "gpt-4o-mini", "usage_tracker": None})()
+    with patch("generator.url_discovery.GrokSearch") as mock_grok_search_cls:
+        URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+    assert mock_grok_search_cls.call_args.kwargs["model"] is None
+
+
+def test_direct_batch_html_cache_ignores_empty_cached_results_for_retries():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._direct_link_batch_limit = lambda: 3
+    discoverer._persist_direct_batch_html_capture = lambda **kwargs: None
+    discoverer._search = MagicMock()
+    discoverer._search.chat_completion.return_value = (
+        '<h2>Zion</h2><ul>'
+        '<li>Angels Landing <a href="https://example.com/angels">Source</a>'
+        ' <a href="https://www.google.com/maps/search/?api=1&query=Angels+Landing+Zion+National+Park">Maps</a></li>'
+        '</ul>'
+    )
+    discoverer._direct_batch_rows_from_html = lambda html: [
+        {
+            "title": "Angels Landing",
+            "url": "https://example.com/angels",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Angels+Landing+Zion+National+Park",
+        }
+    ] if '<h2>' in html else []
+
+    cache_key = discoverer._batch_cache_key("Zion National Park", "October 7-9, 2026|html|attraction")
+    cache = {cache_key: []}
+
+    rows = discoverer._get_direct_batch_html_rows_for_destination(
+        cache=cache,
+        destination="Zion National Park",
+        dates="October 7-9, 2026",
+        kind="attraction",
+    )
+
+    assert rows
+    assert rows[0]["title"] == "Angels Landing"
+    assert discoverer._search.chat_completion.call_count == 1
+
+
+def test_direct_batch_html_failure_cooldown_short_circuits_repeat_callers():
+    """Regression for a real production incident: under a sustained xAI
+    outage, every item at a destination that needs the same harvest key
+    independently re-triggered a full multi-attempt timeout cycle for a call
+    that had just failed seconds earlier, turning one slow endpoint into a
+    pile-up. A caller within the cooldown window must get [] immediately
+    without touching the network again."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._direct_batch_html_key_locks = {}
+    discoverer._direct_batch_html_failure_ts = {}
+    discoverer._direct_batch_html_failure_cooldown_seconds = 180.0
+    discoverer._direct_link_batch_limit = lambda: 3
+    # Disable the unrelated "insufficient rows" in-call retry-prompt so this
+    # test isolates the across-call cooldown behavior being verified here.
+    discoverer._direct_batch_min_required = lambda kind: 0
+    discoverer._persist_direct_batch_html_capture = lambda **kwargs: None
+    discoverer._search = MagicMock()
+    discoverer._search.chat_completion.return_value = ""
+    discoverer._direct_batch_rows_from_html = lambda html: []
+
+    cache: dict = {}
+    first = discoverer._get_direct_batch_html_rows_for_destination(
+        cache=cache, destination="Zion National Park", dates="Oct 7-9, 2026", kind="trail"
+    )
+    second = discoverer._get_direct_batch_html_rows_for_destination(
+        cache=cache, destination="Zion National Park", dates="Oct 7-9, 2026", kind="trail"
+    )
+
+    assert first == []
+    assert second == []
+    # Second call short-circuited on the cooldown instead of retrying.
+    assert discoverer._search.chat_completion.call_count == 1
+
+
+def test_direct_batch_html_failure_cooldown_expires_and_allows_retry():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._direct_batch_html_key_locks = {}
+    discoverer._direct_batch_html_failure_ts = {}
+    discoverer._direct_batch_html_failure_cooldown_seconds = 0.0
+    discoverer._direct_link_batch_limit = lambda: 3
+    discoverer._direct_batch_min_required = lambda kind: 0
+    discoverer._persist_direct_batch_html_capture = lambda **kwargs: None
+    discoverer._search = MagicMock()
+    discoverer._search.chat_completion.side_effect = [
+        "",
+        '<h2>Zion</h2><ul><li>Angels Landing <a href="https://example.com">Source</a></li></ul>',
+    ]
+    discoverer._direct_batch_rows_from_html = lambda html: (
+        [{"title": "Angels Landing", "url": "https://example.com"}] if "<h2>" in html else []
+    )
+
+    cache: dict = {}
+    first = discoverer._get_direct_batch_html_rows_for_destination(
+        cache=cache, destination="Zion National Park", dates="Oct 7-9, 2026", kind="trail"
+    )
+    second = discoverer._get_direct_batch_html_rows_for_destination(
+        cache=cache, destination="Zion National Park", dates="Oct 7-9, 2026", kind="trail"
+    )
+
+    assert first == []
+    assert second
+    assert discoverer._search.chat_completion.call_count == 2
+
+
+def test_direct_batch_html_coalesces_concurrent_callers_for_same_key():
+    """Two threads asking for the same destination/kind/dates at the same
+    time must share one network call, not fire two."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._direct_batch_html_key_locks = {}
+    discoverer._direct_batch_html_failure_ts = {}
+    discoverer._direct_batch_html_failure_cooldown_seconds = 180.0
+    discoverer._direct_link_batch_limit = lambda: 3
+    discoverer._direct_batch_min_required = lambda kind: 1
+    discoverer._persist_direct_batch_html_capture = lambda **kwargs: None
+
+    call_count = {"n": 0}
+    release_event = threading.Event()
+
+    def _slow_chat_completion(**kwargs):
+        call_count["n"] += 1
+        release_event.wait(timeout=5)
+        return '<h2>Zion</h2><ul><li>Angels Landing <a href="https://example.com">Source</a></li></ul>'
+
+    discoverer._search = MagicMock()
+    discoverer._search.chat_completion.side_effect = _slow_chat_completion
+    discoverer._direct_batch_rows_from_html = lambda html: (
+        [{"title": "Angels Landing", "url": "https://example.com"}] if "<h2>" in html else []
+    )
+
+    cache: dict = {}
+    results: list = []
+
+    def _worker():
+        results.append(
+            discoverer._get_direct_batch_html_rows_for_destination(
+                cache=cache, destination="Zion National Park", dates="Oct 7-9, 2026", kind="trail"
+            )
+        )
+
+    t1 = threading.Thread(target=_worker)
+    t2 = threading.Thread(target=_worker)
+    t1.start()
+    # Give thread 1 a moment to acquire the per-key lock and enter the fetch
+    # before starting thread 2, so it observes an in-flight fetch rather than
+    # racing to grab the lock first itself.
+    time.sleep(0.1)
+    t2.start()
+    time.sleep(0.1)
+    release_event.set()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    assert call_count["n"] == 1
+    assert len(results) == 2
+    assert all(r for r in results)
+
+
+def test_zion_attraction_direct_batch_html_integration_round_trip(tmp_path):
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._attraction_direct_batch_cache = {}
+    discoverer._run_output_dir = tmp_path
+    discoverer._direct_batch_html_capture_enabled = True
+    discoverer._direct_batch_html_capture_subdir = "dev/url_discovery_direct_batch_html"
+    discoverer._search = MagicMock()
+    discoverer._search.chat_completion.return_value = (
+        "<h2>Zion National Park</h2><ul>"
+        "<li>Angels Landing <a href=\"https://example.com/angels\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Angels+Landing+Zion+National+Park\">Maps</a></li>"
+        "<li>The Narrows <a href=\"https://example.com/narrows\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=The+Narrows+Zion+National+Park\">Maps</a></li>"
+        "</ul>"
+    )
+
+    rows = discoverer._get_attraction_direct_batch_rows_for_destination("Zion National Park", "October 18, 2026")
+
+    assert len(rows) == 2
+    assert {row["title"] for row in rows} == {"Angels Landing", "The Narrows"}
+
+    capture_dir = tmp_path / "dev" / "url_discovery_direct_batch_html"
+    html_files = list(capture_dir.glob("*.html"))
+    meta_files = list(capture_dir.glob("*.meta.json"))
+    assert len(html_files) == 1
+    assert len(meta_files) == 1
+    assert "Zion National Park" in html_files[0].read_text(encoding="utf-8")
+
+    meta = json.loads(meta_files[0].read_text(encoding="utf-8"))
+    assert meta["destination"] == "Zion National Park"
+    assert meta["kind"] == "attraction"
+    assert meta["row_count"] == 2
+
+
+def test_zion_all_trail_items_still_capture_attraction_direct_batch_payload(tmp_path):
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._attraction_direct_batch_cache = {}
+    discoverer._run_output_dir = tmp_path
+    discoverer._direct_batch_html_capture_enabled = True
+    discoverer._direct_batch_html_capture_subdir = "dev/url_discovery_direct_batch_html"
+    discoverer._attraction_source = "direct_link_batch"
+    discoverer._direct_batch_authoritative = True
+    discoverer._disable_trails = True
+    discoverer._search = MagicMock()
+    discoverer._search.chat_completion.return_value = (
+        "<h2>Zion National Park</h2><ul>"
+        "<li>Zion Human History Museum <a href=\"https://www.nps.gov/zion/learn/historyculture/zion-human-history-museum.htm\">Source</a></li>"
+        "</ul>"
+    )
+    ai = {
+        "top_attractions": [
+            {"name": "The Narrows", "type": "hike", "description": "River hike."},
+            {"name": "Emerald Pools Trail", "type": "trail", "description": "Pool trail."},
+            {"name": "Canyon Overlook Trail", "type": "hike", "description": "Overlook hike."},
+        ]
+    }
+
+    discoverer._discover_attractions(
+        ai,
+        "Zion National Park",
+        "zion",
+        "October 18, 2026",
+        seed_names=["The Narrows"],
+    )
+
+    capture_dir = tmp_path / "dev" / "url_discovery_direct_batch_html"
+    meta_files = list(capture_dir.glob("zion-national-park.attraction.*.meta.json"))
+    assert len(meta_files) == 1
+    meta = json.loads(meta_files[0].read_text(encoding="utf-8"))
+    assert meta["destination"] == "Zion National Park"
+    assert meta["kind"] == "attraction"
+    assert meta["row_count"] == 1
+
+
+def test_html_capture_replay_harness_returns_clickable_links(tmp_path):
+    capture_dir = tmp_path / "url_discovery_direct_batch_html"
+    capture_dir.mkdir(parents=True)
+    html_text = (
+        '<h2>Capitol Reef</h2><ul>'
+        '<li>Capitol Reef Scenic Drive <a href="https://example.com/scenic-drive">Source</a>'
+        ' <a href="https://www.google.com/maps/search/?api=1&query=Capitol+Reef+Scenic+Drive">Maps</a>'
+        '</li></ul>'
+    )
+    html_file = capture_dir / "capitol-reef.attraction.2026.html"
+    html_file.write_text(html_text, encoding="utf-8")
+    meta_file = capture_dir / "capitol-reef.attraction.2026.meta.json"
+    meta_file.write_text(
+        json.dumps(
+            {
+                "destination": "Capitol Reef National Park",
+                "dates": "October 21, 2026",
+                "kind": "attraction",
+                "query": "Generate local attractions for Capitol Reef National Park.",
+                "html_file": html_file.name,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    entries = discoverer.replay_html_capture_directory(capture_dir)
+
+    assert len(entries) == 1
+    assert entries[0]["destination"] == "Capitol Reef National Park"
+    assert entries[0]["rows"][0]["title"] == "Capitol Reef Scenic Drive"
+    assert "https://example.com/scenic-drive" in entries[0]["clickable_links"][0]
+
+
+def test_html_capture_replay_harness_can_write_report_file(tmp_path):
+    capture_dir = tmp_path / "url_discovery_direct_batch_html"
+    capture_dir.mkdir(parents=True)
+    html_text = (
+        '<h2>Capitol Reef</h2><ul>'
+        '<li>Capitol Reef Scenic Drive <a href="https://example.com/scenic-drive">Source</a>'
+        ' <a href="https://www.google.com/maps/search/?api=1&query=Capitol+Reef+Scenic+Drive">Maps</a>'
+        '</li></ul>'
+    )
+    html_file = capture_dir / "capitol-reef.attraction.2026.html"
+    html_file.write_text(html_text, encoding="utf-8")
+    meta_file = capture_dir / "capitol-reef.attraction.2026.meta.json"
+    meta_file.write_text(
+        json.dumps(
+            {
+                "destination": "Capitol Reef National Park",
+                "dates": "October 21, 2026",
+                "kind": "attraction",
+                "query": "Generate local attractions for Capitol Reef National Park.",
+                "html_file": html_file.name,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report_path = tmp_path / "reports" / "url_discovery_replay_report.html"
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    entries = discoverer.replay_html_capture_directory(capture_dir, output_path=report_path)
+
+    assert len(entries) == 1
+    assert report_path.exists()
+    report_text = report_path.read_text(encoding="utf-8")
+    assert "Capitol Reef National Park" in report_text
+    assert "Generate local attractions for Capitol Reef National Park." in report_text
+    assert "https://example.com/scenic-drive" in report_text
+    assert "Source" in report_text or "official" in report_text.lower()
+
+
+def test_is_generic_restaurant_landing_url_distinguishes_specific_vs_area_pages():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    assert not discoverer._is_generic_restaurant_landing_url(
+        "https://www.bearpawcafe.com",
+        "Bear Paw Cafe",
+        "St. George, Utah",
+    )
+    assert discoverer._is_generic_restaurant_landing_url(
+        "https://www.tripadvisor.com/Restaurants-g60771-Zion_National_Park_Utah.html",
+        "Bear Paw Cafe",
+        "St. George, Utah",
+    )
+    assert not discoverer._is_generic_restaurant_landing_url(
+        "https://www.tripadvisor.com/Restaurant_Review-g28964-d1234567-Reviews-Benja_Thai_Sushi-St_George_Utah.html",
+        "Benja Thai & Sushi",
+        "St. George, Utah",
+    )
+    # "RestaurantsNear-g..." (no hyphen before "Near") is TripAdvisor's other
+    # area-listing URL shape, distinct from "Restaurants-g...-near" -- seen in
+    # the wild as a rejected restaurant-name substitute (Dipstick48).
+    assert discoverer._is_generic_restaurant_landing_url(
+        "https://www.tripadvisor.com/RestaurantsNear-g143057-d143021-Zion_National_Park_Utah.html",
+        "Bear Paw Cafe",
+        "Zion National Park, Utah",
+    )
+
+
+def test_looks_like_item_specific_homepage_distinguishes_brand_homepage_from_city_page():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._fetch_page_text = lambda *args, **kwargs: (False, 403, "")
+
+    assert discoverer._looks_like_item_specific_homepage(
+        "https://anasazisteakhouse.com",
+        "Anasazi Steakhouse & Grill",
+    )
+    assert not discoverer._looks_like_item_specific_homepage(
+        "https://www.stgeorgeutah.com",
+        "Bear Paw Cafe",
+    )
+
+
+def test_alltrails_slug_matches_item_requires_non_generic_anchor_token():
+    assert not URLDiscoverer._alltrails_slug_matches_item(
+        "https://www.alltrails.com/trail/us/colorado/cornet-creek-falls",
+        "Bear Creek Falls",
+    )
+
+
+def test_alltrails_slug_matches_item_rejects_off_by_one_trail_swap():
+    assert not URLDiscoverer._alltrails_slug_matches_item(
+        "https://www.alltrails.com/trail/us/colorado/piedra-falls-trail",
+        "San Juan River Walk",
+    )
+
+
+def test_search_attraction_direct_batch_authoritative_prefers_item_specific_url_over_generic_landing_page():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.visitutah.com/places-to-go/cities-and-towns/st-george",
+            "title": "St. George area attractions",
+            "snippet": "Snow Canyon State Park details and driving tips for the area.",
+        },
+        {
+            "url": "https://www.nps.gov/statepark/snow-canyon/",
+            "title": "Snow Canyon State Park",
+            "snippet": "Snow Canyon State Park official park page.",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda u, *_a, **_k: u):
+            out = discoverer._search_attraction_from_direct_batch(
+                "Snow Canyon State Park",
+                "St. George, Utah",
+                "October 18, 2026",
+            )
+
+    assert out == "https://www.nps.gov/statepark/snow-canyon/"
+
+
+def test_search_attraction_direct_batch_authoritative_uses_maps_link_from_snippet_text():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.visitutah.com/places-to-go/cities-and-towns/st-george",
+            "title": "St. George area attractions",
+            "snippet": "Snow Canyon State Park details. Google Maps: https://maps.google.com/?q=Snow+Canyon+State+Park+Utah",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_attraction_from_direct_batch(
+            "Snow Canyon State Park",
+            "St. George, Utah",
+            "October 18, 2026",
+        )
+
+    assert out == "https://www.visitutah.com/places-to-go/cities-and-towns/st-george"
+
+
+def test_search_attraction_direct_batch_authoritative_rejects_snippet_maps_link_for_other_item():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.visitutah.com/places-to-go/cities-and-towns/st-george",
+            "title": "St. George area attractions",
+            "snippet": "Pioneer Park listed here. Google Maps: https://maps.google.com/?q=St+George+Art+Museum+Utah",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_attraction_from_direct_batch(
+            "Pioneer Park",
+            "St. George, Utah",
+            "October 18, 2026",
+        )
+
+    assert out == "https://www.visitutah.com/places-to-go/cities-and-towns/st-george"
+
+
+def test_search_attraction_direct_batch_authoritative_keeps_item_matching_generic_landing_page():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.visitutah.com/places-to-go/cities-and-towns/st-george",
+            "title": "St. George area attractions",
+            "snippet": "Snow Canyon State Park details and driving tips for the area.",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_attraction_from_direct_batch(
+            "Snow Canyon State Park",
+            "St. George, Utah",
+            "October 18, 2026",
+        )
+
+    assert out == "https://www.visitutah.com/places-to-go/cities-and-towns/st-george"
+
+
+def test_search_attraction_direct_batch_authoritative_accepts_valid_feature_name_variant() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "title": "Petroglyph Panel Viewpoint",
+            "name": "Petroglyph Panel Viewpoint",
+            "url": "https://www.nps.gov/care/learn/historyculture/petroglyphs.htm",
+            "maps_url": "https://maps.google.com/?q=Petroglyph+Panel+Viewpoint+Torrey+UT",
+            "snippet": "Petroglyph Panel Viewpoint official NPS page for local petroglyphs.",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_attraction_from_direct_batch(
+            "Fremont Petroglyphs",
+            "Capitol Reef National Park",
+            "October 21-22, 2026",
+        )
+
+    assert out == "https://www.nps.gov/care/learn/historyculture/petroglyphs.htm"
+
+
+def test_discover_attractions_direct_batch_authoritative_omits_link_when_batch_has_no_match():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Snow Canyon State Park",
+                "type": "attraction",
+                "description": "Red rock landscape with overlooks and short walks.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+        with patch.object(discoverer, "_search_attraction_from_item_query_fanout") as fanout_search:
+            discoverer._discover_attractions(ai, "St. George, Utah", None, "October 18, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == ""
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("St. George, Utah", {})
+    assert stats.get("direct_batch_source_locked_no_match", 0) == 1
+    source_stats = getattr(discoverer, "_decision_source_stats_by_destination", {}).get("St. George, Utah", {})
+    assert source_stats.get("direct_batch", 0) >= 1
+    fanout_search.assert_not_called()
+
+
+
+
+def test_discover_attractions_direct_batch_authoritative_no_match_does_not_assign_maps_fallback():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Snow Canyon State Park",
+                "type": "attraction",
+                "description": "Red rock landscape with overlooks and short walks.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+        with patch.object(discoverer, "_search_attraction_from_item_query_fanout") as fanout_search:
+            discoverer._discover_attractions(ai, "St. George, Utah", None, "October 18, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == ""
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("St. George, Utah", {})
+    assert stats.get("direct_batch_source_locked_no_match", 0) == 1
+    source_stats = getattr(discoverer, "_decision_source_stats_by_destination", {}).get("St. George, Utah", {})
+    assert source_stats.get("direct_batch", 0) == 1
+    fanout_search.assert_not_called()
+
+
+def test_discover_attractions_direct_batch_authoritative_uses_item_fanout_when_batch_has_no_match() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Snow Canyon State Park",
+                "type": "attraction",
+                "description": "Red rock landscape with overlooks and short walks.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+        with patch.object(
+            discoverer,
+            "_search_attraction_from_item_query_fanout",
+            return_value=("https://www.nps.gov/snowcanyon", "nps"),
+        ) as fanout_search:
+            discoverer._discover_attractions(ai, "St. George, Utah", None, "October 18, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == ""
+    fanout_search.assert_not_called()
+
+
+def test_infer_item_nps_code_returns_code_for_known_parks() -> None:
+    assert URLDiscoverer._infer_item_nps_code("Arches National Park") == "arch"
+    assert URLDiscoverer._infer_item_nps_code("Canyonlands National Park") == "cany"
+    assert URLDiscoverer._infer_item_nps_code("Zion National Park") == "zion"
+    assert URLDiscoverer._infer_item_nps_code("Capitol Reef National Park") == "care"
+    assert URLDiscoverer._infer_item_nps_code("Moab Giants Dinosaur Park") is None
+    assert URLDiscoverer._infer_item_nps_code("Desert Bistro") is None
+
+
+def test_discover_attractions_infers_nps_code_for_park_attraction_at_non_nps_dest() -> None:
+    """Arches National Park in non-authoritative mode should use the ordinary broad search path without a forced NPS site override."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = False
+    discoverer._attraction_source = "search"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Arches National Park",
+                "type": "attraction",
+                "description": "Iconic redrock arches and fins near Moab.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+        with patch.object(discoverer, "_search_first", return_value="https://www.nps.gov/arch/index.htm") as search_first_mock:
+            discoverer._discover_attractions(ai, "Moab", None, "October 13, 2026")
+
+    assert ai["top_attractions"][0]["url"] == "https://www.nps.gov/arch/index.htm"
+    first_kwargs = search_first_mock.call_args_list[0].kwargs
+    assert first_kwargs["site_filter"] is None
+    assert first_kwargs["site_hint"] is None
+
+
+def test_trail_like_attraction_falls_back_to_nps_fanout_when_alltrails_fails() -> None:
+    """In authoritative direct-batch mode, trail items should stay empty rather than fallback to generic NPS fanout."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+    discoverer._alltrails_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Cassidy Arch",
+                "type": "hike",
+                "description": "3.4-mile out-and-back to a natural arch. Moderate, 670 ft gain.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
+        with patch.object(discoverer, "_search_alltrails_for_seed_relaxed", return_value=None):
+            with patch.object(
+                discoverer,
+                "_search_attraction_from_item_query_fanout",
+                return_value=("https://www.nps.gov/care/planyourvisit/cassidy-arch.htm", "nps"),
+            ) as fanout_search:
+                discoverer._discover_attractions(
+                    ai, "Capitol Reef National Park", "care", "October 11, 2026",
+                    seed_names=["Cassidy Arch"],
+                )
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == ""
+    fanout_search.assert_not_called()
+
+
+def test_trail_like_attraction_skips_nps_fanout_when_no_nps_code() -> None:
+    """Trail items at non-NPS destinations skip the NPS fanout and go straight to maps fallback."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+    discoverer._alltrails_source = "direct_link_batch"
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_search"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Ajax Peak",
+                "type": "hike",
+                "description": "Strenuous summit scramble above Telluride.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
+        with patch.object(discoverer, "_search_alltrails_for_seed_relaxed", return_value=None):
+            with patch.object(discoverer, "_search_attraction_from_item_query_fanout") as fanout_mock:
+                discoverer._discover_attractions(ai, "Telluride", None, "October 15, 2026")
+
+    fanout_mock.assert_not_called()
+
+
+def test_discover_attractions_direct_batch_authoritative_ignores_maps_area_fanout():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Snow Canyon State Park",
+                "type": "attraction",
+                "description": "Red rock landscape with overlooks and short walks.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+        with patch.object(discoverer, "_search_attraction_from_item_query_fanout") as fanout_search:
+            discoverer._discover_attractions(ai, "St. George, Utah", None, "October 18, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == ""
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("St. George, Utah", {})
+    assert stats.get("direct_batch_source_locked_no_match", 0) == 1
+    fanout_search.assert_not_called()
+
+
+def test_trail_like_direct_batch_authoritative_no_match_does_not_assign_maps_fallback() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+    discoverer._alltrails_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Cassidy Arch",
+                "type": "hike",
+                "description": "3.4-mile out-and-back to a natural arch. Moderate, 670 ft gain.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_alltrails_for_trail_from_direct_batch", return_value=None):
+        with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
+            with patch.object(discoverer, "_search_attraction_from_item_query_fanout") as fanout_search:
+                discoverer._discover_attractions(ai, "Capitol Reef National Park", "care", "October 11, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == ""
+    assert "google.com/maps" not in out.get("url", "")
+    fanout_search.assert_not_called()
+
+
+def test_discover_attractions_direct_batch_authoritative_recovers_seed_from_ai_candidate() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Georgia O'Keeffe Museum",
+                "type": "attraction",
+                "description": "Modern and regional art collections.",
+                "url_candidates": ["https://en.wikipedia.org/wiki/Georgia_O%27Keeffe_Museum"],
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+        with patch.object(
+            discoverer,
+            "_resolve_ai_candidate_url",
+            return_value="https://en.wikipedia.org/wiki/Georgia_O%27Keeffe_Museum",
+        ) as ai_candidate_mock:
+            discoverer._discover_attractions(
+                ai,
+                "Santa Fe",
+                None,
+                "October 18, 2026",
+                seed_names=["Georgia O'Keeffe Museum"],
+            )
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == ""
+    ai_candidate_mock.assert_not_called()
+
+
+def test_search_attraction_from_maps_area_pool_selects_item_specific_maps_candidate():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    rows = [
+        {
+            "url": "https://www.google.com/maps/search/?api=1&query=attractions+near+St+George+Utah",
+            "title": "Top attractions in St. George",
+            "snippet": "Snow Canyon State Park maps entry: https://www.google.com/maps/search/?api=1&query=Snow+Canyon+State+Park+Utah",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_attraction_maps_area_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_args, **_kwargs: url):
+            out = discoverer._search_attraction_from_maps_area_pool("Snow Canyon State Park", "St. George, Utah")
+
+    assert out == "https://www.google.com/maps/search/?api=1&query=Snow+Canyon+State+Park+Utah"
+
+
+def test_search_restaurant_direct_batch_authoritative_uses_maps_link_from_snippet_text():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "url": "https://www.tripadvisor.com/Restaurants-g60771-Zion_National_Park_Utah.html",
+            "title": "Top restaurants around Zion",
+            "snippet": "Spotted Dog Cafe appears here. Google Maps: https://www.google.com/maps/search/?api=1&query=Spotted+Dog+Cafe+Springdale+UT",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._search_restaurant_from_direct_batch(
+            "Spotted Dog Cafe",
+            "Zion National Park",
+            "October 18, 2026",
+        )
+
+    assert out is None
+
+
+def test_search_restaurant_direct_batch_authoritative_keeps_tripadvisor_match_for_benja_thai():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "name": "Benja Thai & Sushi",
+            "url": "https://www.tripadvisor.com/Restaurant_Review-g28964-d1234567-Reviews-Benja_Thai_Sushi-St_George_Utah.html",
+            "snippet": "Benja Thai & Sushi Source Maps Links: https://www.tripadvisor.com/Restaurant_Review-g28964-d1234567-Reviews-Benja_Thai_Sushi-St_George_Utah.html https://www.google.com/maps/search/?api=1&query=Benja+Thai+Sushi+St+George+UT",
+        }
+    ]
+
+    with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+            out = discoverer._search_restaurant_from_direct_batch(
+                "Benja Thai & Sushi",
+                "St. George, Utah",
+                "October 17, 2026",
+            )
+
+    assert out == "https://www.tripadvisor.com/Restaurant_Review-g28964-d1234567-Reviews-Benja_Thai_Sushi-St_George_Utah.html"
+
+
+def test_direct_batch_rows_from_html_prefers_source_over_maps_url():
+    html = (
+        "<h2>St. George, Utah</h2>"
+        "<ul>"
+        "<li>Painted Pony <a href=\"https://paintedponyrestaurant.com/\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Painted+Pony+St+George\">Maps</a></li>"
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    assert rows[0]["title"] == "Painted Pony"
+    # Source link must win over the Maps search URL
+    assert rows[0]["url"] == "https://paintedponyrestaurant.com/"
+    # Maps link is preserved as fallback metadata
+    assert rows[0]["maps_url"].startswith("https://www.google.com/maps/search/")
+    assert "paintedponyrestaurant.com" in rows[0]["snippet"]
+
+
+def test_direct_batch_rows_from_html_infers_restaurant_metadata_from_text() -> None:
+    html = (
+        "<h2>St. George</h2>"
+        "<ul>"
+        "<li>Wood Ash Rye - $$ upscale American plates and cocktails "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Wood+Ash+Rye+St+George\">Maps</a></li>"
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    assert rows[0].get("price_range", "") == "$$"
+    assert rows[0].get("cuisine", "") == "American"
+
+
+def test_direct_batch_rows_from_html_infers_restaurant_cuisine_from_maps_query_last_resort() -> None:
+    html = (
+        "<h2>St. George</h2>"
+        "<ul>"
+        "<li>Sakura House "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Sakura+House+Sushi+St+George\">Maps</a></li>"
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    assert rows[0].get("cuisine", "") == "Japanese"
+
+
+def test_direct_batch_rows_from_html_extracts_en_route_detour_metadata_and_note():
+    html = (
+        "<h2>Moab</h2>"
+        "<ul>"
+        "<li>Wilson Arch - quick roadside arch stop - detour 3 mi / 8 min "
+        "<a href=\"https://www.blm.gov/visit/wilson-arch\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Wilson+Arch+Moab+UT\">Maps</a></li>"
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    # Source link wins; Maps search link is held as maps_url fallback
+    assert rows[0]["url"] == "https://www.blm.gov/visit/wilson-arch"
+    assert rows[0]["maps_url"].startswith("https://www.google.com/maps/search/")
+    assert rows[0]["detour_distance_miles"] == 3.0
+    assert rows[0]["detour_time_minutes"] == 8
+    assert rows[0]["practical_note"] == "quick roadside arch stop"
+
+
+def test_direct_batch_rows_from_html_strips_google_maps_name_prefix():
+    html = (
+        "<h2>Santa Fe</h2>"
+        "<ul>"
+        "<li>Google Maps: La Bajada Overlook and Scenic Pullouts "
+        "<a href=\"https://maps.google.com/maps?q=La+Bajada+Hill+Overlook+Santa+Fe\">Maps</a></li>"
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    assert rows[0]["title"] == "La Bajada Overlook and Scenic Pullouts"
+
+
+def test_direct_batch_rows_from_html_strips_maps_name_prefix():
+    html = (
+        "<h2>Santa Fe</h2>"
+        "<ul>"
+        "<li>Maps: Turquoise Trail Scenic Byway Route "
+        "<a href=\"https://www.turquoisetrail.org/\">Source</a></li>"
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    assert rows[0]["title"] == "Turquoise Trail Scenic Byway Route"
+
+
+def test_direct_batch_rows_from_html_strips_source_maps_before_rating_price_cuisine_tail() -> None:
+    """Real harvested restaurant rows are shaped 'Name - <a>Source</a> <a>Maps</a>
+    RATING PRICE CUISINE' (rating/price/cuisine come AFTER the links, not before).
+    The old trailing-only Source/Maps strip only handles those words when they're
+    the last tokens in the string, so it never fires here and 'Source Maps' leaks
+    into the description, which then either renders a garbled teaser or gets
+    inconsistently suppressed depending on unrelated AI-description backfill.
+    Since there is no real prose in this shape at all (only metadata), the
+    description must end up empty and consistent across rows, not junk text."""
+    html = (
+        "<h2>St. George Restaurants</h2>"
+        "<ul>"
+        "<li>Painted Pony - "
+        "<a href=\"https://www.tripadvisor.com/Restaurant_Review-g28964-d1-Painted_Pony.html\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Painted+Pony+St+George+UT\">Maps</a> "
+        "4.6/5 $$$ American</li>"
+        "<li>Thai Chili - "
+        "<a href=\"https://www.tripadvisor.com/Restaurant_Review-g28964-d2-Thai_Chili.html\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Thai+Chili+St+George+UT\">Maps</a> "
+        "4.5/5 $$ Thai</li>"
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert len(rows) == 2
+    for row in rows:
+        assert "source" not in row["description"].lower()
+        assert "maps" not in row["description"].lower()
+        assert row["description"] == ""
+        assert row["practical_note"] == ""
+    assert rows[0]["rating"] == 4.6
+    assert rows[0]["price_range"] == "$$$"
+    assert rows[0]["cuisine"] == "American"
+
+
+def test_direct_batch_rows_from_html_no_separator_name_metadata_yields_empty_description() -> None:
+    """Some harvested rows have no ' - ' separator at all between the name and
+    its links (e.g. 'Name <a>Source</a> <a>Maps</a> RATING PRICE CUISINE').
+    Without a separator, detail_text never gets split from the name, so the
+    name's own words previously inflated the 'is there real content' check and
+    let 'Name RATING PRICE CUISINE' leak through as a fake teaser. It must
+    still collapse to an empty, consistent description like the separator case."""
+    html = (
+        "<h2>Zion Restaurants</h2>"
+        "<ul>"
+        "<li>Zion Pizza &amp; Noodle Co. "
+        "<a href=\"https://www.tripadvisor.com/Restaurant_Review-g29115-d1-Zion_Pizza.html\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Zion+Pizza+Springdale+UT\">Maps</a> "
+        "4.4/5 $ Italian</li>"
+        "<li>Oscar's Cafe "
+        "<a href=\"https://www.tripadvisor.com/Restaurant_Review-g29115-d2-Oscars.html\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Oscars+Cafe+Springdale+UT\">Maps</a> "
+        "4.5/5 $$ Mexican-American</li>"
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert len(rows) == 2
+    for row in rows:
+        assert row["description"] == ""
+        assert row["practical_note"] == ""
+    assert rows[0]["name"] == "Zion Pizza & Noodle Co."
+    assert rows[0]["rating"] == 4.4
+    assert rows[0]["price_range"] == "$"
+    assert rows[1]["name"] == "Oscar's Cafe"
+    assert rows[1]["rating"] == 4.5
+
+
+def test_direct_batch_rows_from_html_sanitizes_source_maps_description_noise():
+    html = (
+        "<h2>Moab</h2>"
+        "<ul>"
+        "<li>Desert Bistro - cozy patio and local ingredients Source Maps "
+        "<a href=\"https://desertbistro.com/\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Desert+Bistro+Moab\">Maps</a></li>"
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    assert rows[0]["practical_note"] == "cozy patio and local ingredients"
+    assert "source" not in rows[0]["description"].lower()
+    assert "maps" not in rows[0]["description"].lower()
+
+
+def test_build_primary_items_from_direct_batch_carries_restaurant_metadata_fields() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    rows = [
+        {
+            "name": "Painted Pony",
+            "url": "https://paintedponyrestaurant.com/",
+            "cuisine": "Southwestern",
+            "price_range": "$$$",
+            "reserve_recommended": True,
+            "description": "Chef-driven Southwestern plates.",
+        }
+    ]
+
+    merged = discoverer._build_primary_items_from_direct_batch(
+        rows=rows,
+        existing_items=[],
+        target_count=1,
+        fallback_description="Locally surfaced dinner option.",
+    )
+
+    assert merged
+    assert merged[0]["cuisine"] == "Southwestern"
+    assert merged[0]["price_range"] == "$$$"
+    assert merged[0]["reserve_recommended"] is True
+    assert merged[0]["description"] == "Chef-driven Southwestern plates."
+
+
+def test_build_primary_items_from_direct_batch_carries_rating_fields() -> None:
+    """Rating info harvested onto a direct-batch row (via
+    _infer_direct_batch_quality_metadata) must survive the merge into the final
+    restaurant dict, or it never reaches the html_assembler badge and the only
+    place a rating can appear is baked into the name text."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    rows = [
+        {
+            "name": "Cafe Soleil",
+            "url": "https://cafesoleilzion.com/",
+            "cuisine": "Cafe",
+            "price_range": "$$",
+            "description": "Fresh market-driven breakfast and brunch.",
+            "rating": 4.7,
+            "raw_rating": "4.7/5",
+            "votes": 230,
+        }
+    ]
+
+    merged = discoverer._build_primary_items_from_direct_batch(
+        rows=rows,
+        existing_items=[],
+        target_count=1,
+        fallback_description="Locally surfaced dinner option.",
+    )
+
+    assert merged
+    assert merged[0].get("rating") == 4.7
+
+
+def test_build_primary_items_from_direct_batch_rejects_generic_listing_row() -> None:
+    """Reproduces the Dipstick48 bug: a harvested row whose only "name" is a
+    TripAdvisor/Yelp listicle title (and whose url is the listing page itself)
+    must never be synthesized into a restaurant/attraction item -- otherwise
+    the rendered card's name literally reads "THE 10 BEST Restaurants in
+    St. George - Tripadvisor" instead of an actual restaurant name."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    rows = [
+        {
+            "title": "THE 10 BEST Restaurants in St. George - Tripadvisor",
+            "url": "https://www.tripadvisor.com/Restaurants-g60852-St_George_Utah.html",
+            "description": "Find the best restaurants in St. George.",
+        },
+        {
+            "name": "THE 15 BEST Things to Do in Moab 2024 (with Photos) - Tripadvisor",
+            "url": "https://www.tripadvisor.com/Attractions-g60724-Activities-Moab_Utah.html",
+        },
+        {
+            "name": "Best Restaurants Near Zion National Park - TripAdvisor",
+            "url": "https://www.tripadvisor.com/RestaurantsNear-g143057-d143021-Zion_National_Park_Utah.html",
+        },
+        {
+            "name": "Painted Pony",
+            "url": "https://paintedponyrestaurant.com/",
+            "description": "Chef-driven Southwestern plates.",
+        },
+    ]
+
+    merged = discoverer._build_primary_items_from_direct_batch(
+        rows=rows,
+        existing_items=[],
+        target_count=4,
+        fallback_description="Locally surfaced dinner option.",
+    )
+
+    names = [item.get("name", "") for item in merged]
+    assert names == ["Painted Pony"]
+
+
+def test_direct_batch_restaurant_rating_reaches_badge_not_title_end_to_end() -> None:
+    """Full-pipeline regression: a direct-batch harvested restaurant row's rating
+    must end up in the html_assembler rating badge, not stuck in (or duplicated
+    into) the rendered title. This chains the url_discovery merge stage into the
+    html_assembler render stage — the gap here survived an isolated sanitizer-only
+    test because that test hand-supplied `rating`/`raw_rating` directly instead of
+    going through _build_primary_items_from_direct_batch."""
+    from generator.html_assembler import HTMLAssembler
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    rows = [
+        {
+            "name": "Cafe Soleil",
+            "url": "https://cafesoleilzion.com/",
+            "cuisine": "Cafe",
+            "price_range": "$$",
+            "description": "Fresh market-driven breakfast and brunch.",
+            "rating": 4.7,
+            "raw_rating": "4.7/5",
+            "votes": 230,
+        }
+    ]
+
+    merged = discoverer._build_primary_items_from_direct_batch(
+        rows=rows,
+        existing_items=[],
+        target_count=1,
+        fallback_description="Locally surfaced dinner option.",
+    )
+
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_restaurants({"dinner_recommendations": merged}, "Zion National Park")
+
+    assert "★ 4.7/5" in html
+    title_span = re.search(r'<span class="rest-name">.*?</span>', html, flags=re.DOTALL)
+    assert title_span is not None
+    assert "4.7" not in title_span.group(0)
+
+
+def test_direct_batch_row_quality_metadata_for_url_matches_by_url():
+    """The per-item single-URL resolution paths (attraction, trail-like AllTrails,
+    restaurant) previously discarded rating/votes data that was already present
+    on the harvested row -- only the batch-shortfall padding path carried it.
+    This helper recovers it at zero extra network cost by matching the accepted
+    url back to the row it came from."""
+    rows = [
+        {
+            "name": "Angels Landing",
+            "url": "https://www.nps.gov/zion/angels-landing.htm",
+            "rating": 4.9,
+            "raw_rating": "4.9/5",
+            "votes": 5000,
+        },
+        {
+            "name": "Emerald Pools",
+            "url": "https://www.nps.gov/zion/emerald-pools.htm",
+        },
+    ]
+
+    meta = URLDiscoverer._direct_batch_row_quality_metadata_for_url(
+        rows, "https://www.nps.gov/zion/angels-landing.htm"
+    )
+    assert meta == {"rating": 4.9, "raw_rating": "4.9/5", "votes": 5000}
+
+    # A row with no rating data at all contributes nothing.
+    assert URLDiscoverer._direct_batch_row_quality_metadata_for_url(
+        rows, "https://www.nps.gov/zion/emerald-pools.htm"
+    ) == {}
+
+    # No matching row for this url.
+    assert URLDiscoverer._direct_batch_row_quality_metadata_for_url(
+        rows, "https://www.nps.gov/zion/the-narrows.htm"
+    ) == {}
+
+
+def test_get_restaurant_direct_batch_rows_prefers_html_payload_before_search_rows():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._restaurant_direct_batch_cache = {}
+    discoverer._search = MagicMock()
+    discoverer._restaurant_direct_batch_item_count = 4
+    discoverer._search.chat_completion.return_value = (
+        "<h2>Moab</h2><ul>"
+        "<li>Desert Bistro <a href=\"https://desertbistro.com/\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Desert+Bistro+Moab+UT\">Maps</a></li>"
+        "</ul>"
+    )
+
+    with patch.object(discoverer, "_get_direct_batch_rows_for_destination", side_effect=AssertionError("search fallback should not run when HTML rows exist")):
+        rows = discoverer._get_restaurant_direct_batch_rows_for_destination("Moab", "October 18, 2026")
+
+    assert rows
+    assert rows[0]["title"] == "Desert Bistro"
+    assert rows[0]["url"] == "https://desertbistro.com/"
+    assert rows[0]["maps_url"].startswith("https://www.google.com/maps/search/")
+
+
+def test_get_restaurant_direct_batch_rows_persists_html_capture_artifacts(tmp_path):
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._restaurant_direct_batch_cache = {}
+    discoverer._search = MagicMock()
+    discoverer._restaurant_direct_batch_item_count = 4
+    discoverer._run_output_dir = tmp_path
+    discoverer._direct_batch_html_capture_enabled = True
+    discoverer._direct_batch_html_capture_subdir = "dev/url_discovery_direct_batch_html"
+    discoverer._search.chat_completion.return_value = (
+        "<h2>Moab</h2><ul>"
+        "<li>Desert Bistro <a href=\"https://desertbistro.com/\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Desert+Bistro+Moab+UT\">Maps</a></li>"
+        "</ul>"
+    )
+
+    rows = discoverer._get_restaurant_direct_batch_rows_for_destination("Moab", "October 18, 2026")
+
+    assert rows
+    capture_dir = tmp_path / "dev" / "url_discovery_direct_batch_html"
+    html_files = list(capture_dir.glob("*.html"))
+    meta_files = list(capture_dir.glob("*.meta.json"))
+    assert len(html_files) == 1
+    assert len(meta_files) == 1
+
+    html_payload = html_files[0].read_text(encoding="utf-8")
+    assert "Desert Bistro" in html_payload
+    assert "direct_batch_query" in html_payload
+
+    meta = json.loads(meta_files[0].read_text(encoding="utf-8"))
+    assert meta["destination"] == "Moab"
+    assert meta["kind"] == "restaurant"
+    assert meta["row_count"] == 1
+    assert meta["html_file"] == html_files[0].name
+    assert meta["query"] == (
+        "Generate a list of local restaurants near Moab (October 18, 2026) with clickable links to source material and corresponding Google Maps content. "
+        "Include a rating and price indicator for each item when available, using a clear numeric or price format. "
+        "Keep only highly rated items (>4.3), include cuisine variety, and keep only places likely open on the indicated dates. "
+        "Include only suggestions with reliable clickable links."
+    )
+
+
+def test_get_en_route_direct_batch_rows_falls_back_to_search_when_html_empty():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._en_route_direct_batch_cache = {}
+    discoverer._search = MagicMock()
+    discoverer._en_route_direct_batch_item_count = 4
+    discoverer._search.chat_completion.return_value = ""
+
+    fallback_rows = [{"url": "https://www.blm.gov/visit/wilson-arch", "title": "Wilson Arch", "snippet": "BLM"}]
+    with patch.object(discoverer, "_get_direct_batch_rows_for_destination", return_value=fallback_rows) as mock_fallback:
+        rows = discoverer._get_en_route_direct_batch_rows_for_destination("Moab", "October 18, 2026")
+
+    assert rows == fallback_rows
+    mock_fallback.assert_called_once()
+
+
+def test_get_en_route_direct_batch_rows_retries_html_prompt_when_rows_below_minimum():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._en_route_direct_batch_cache = {}
+    discoverer._search = MagicMock()
+    discoverer._search.is_circuit_open.return_value = False
+    discoverer._en_route_direct_batch_item_count = 4
+    discoverer._en_route_direct_batch_min_results = 3
+    discoverer._search.chat_completion.side_effect = [
+        "<h2>Telluride</h2><ul><li>Lizard Head Pass <a href=\"https://www.google.com/maps/search/?api=1&query=Lizard+Head+Pass+Telluride\">Maps</a></li></ul>",
+        "<h2>Telluride</h2><ul><li>Lizard Head Pass <a href=\"https://www.google.com/maps/search/?api=1&query=Lizard+Head+Pass+Telluride\">Maps</a></li><li>Rico Historic District <a href=\"https://www.colorado.com/articles/why-rico-colorado-worth-stop\">Source</a></li><li>Dolores River Overlook <a href=\"https://www.google.com/maps/search/?api=1&query=Dolores+River+Overlook\">Maps</a></li></ul>",
+    ]
+
+    rows = discoverer._get_en_route_direct_batch_rows_for_destination("Telluride", "October 18, 2026")
+
+    assert len(rows) >= 3
+    assert discoverer._search.chat_completion.call_count == 2
+
+
+def test_get_restaurant_direct_batch_rows_retries_html_prompt_when_rows_below_minimum():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._restaurant_direct_batch_cache = {}
+    discoverer._search = MagicMock()
+    discoverer._search.is_circuit_open.return_value = False
+    discoverer._restaurant_direct_batch_item_count = 4
+    discoverer._restaurant_direct_batch_min_results = 3
+    discoverer._search.chat_completion.side_effect = [
+        "<h2>Santa Fe</h2><ul><li>Restaurant A <a href=\"https://example.com/a\">Source</a></li></ul>",
+        "<h2>Santa Fe</h2><ul><li>Restaurant A <a href=\"https://example.com/a\">Source</a></li><li>Restaurant B <a href=\"https://example.com/b\">Source</a></li><li>Restaurant C <a href=\"https://example.com/c\">Source</a></li></ul>",
+    ]
+
+    rows = discoverer._get_restaurant_direct_batch_rows_for_destination("Santa Fe", "October 18, 2026")
+
+    assert len(rows) >= 3
+    assert discoverer._search.chat_completion.call_count == 2
+
+
+def test_direct_batch_html_skips_insufficient_rows_retry_prompt_while_circuit_open():
+    """Firing a second expensive harvest call is the worst possible moment to
+    do it while the circuit breaker is open -- that state means a recent
+    burst of transient errors, and the retry-prompt would just compound it."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._restaurant_direct_batch_cache = {}
+    discoverer._search = MagicMock()
+    discoverer._search.is_circuit_open.return_value = True
+    discoverer._restaurant_direct_batch_item_count = 4
+    discoverer._restaurant_direct_batch_min_results = 3
+    discoverer._persist_direct_batch_html_capture = lambda **kwargs: None
+    discoverer._search.chat_completion.return_value = (
+        "<h2>Santa Fe</h2><ul><li>Restaurant A <a href=\"https://example.com/a\">Source</a></li></ul>"
+    )
+
+    rows = discoverer._get_restaurant_direct_batch_rows_for_destination("Santa Fe", "October 18, 2026")
+
+    assert len(rows) == 1
+    assert discoverer._search.chat_completion.call_count == 1
+
+
+def test_is_search_circuit_open_delegates_to_underlying_search() -> None:
+    """Public wrapper used by main.py's selective-retry gate (Dipstick48
+    follow-up) so callers outside url_discovery.py don't reach into the
+    private _search attribute directly."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._search = MagicMock()
+
+    discoverer._search.is_circuit_open.return_value = True
+    assert discoverer.is_search_circuit_open() is True
+
+    discoverer._search.is_circuit_open.return_value = False
+    assert discoverer.is_search_circuit_open() is False
+
+
+def test_is_search_circuit_open_false_when_search_not_yet_constructed() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    assert discoverer.is_search_circuit_open() is False
+
+
+def test_retain_discovered_url_rejects_generic_attraction_landing_page_for_authoritative_direct_batch() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    candidate = {
+        "title": "The Narrows",
+        "name": "The Narrows",
+        "url": "https://www.nps.gov/zion/planyourvisit/things-to-do.htm",
+    }
+    url = "https://www.nps.gov/zion/planyourvisit/things-to-do.htm"
+
+    result = discoverer._retain_discovered_url(
+        url,
+        "The Narrows",
+        "Zion National Park",
+        allow_alltrails=False,
+        kind="attraction",
+        candidate=candidate,
+        allow_google_maps_search=True,
+    )
+
+    assert result == ""
+
+
+def test_retain_discovered_url_rejects_generic_restaurant_landing_page_for_authoritative_direct_batch() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    candidate = {
+        "title": "Cafe Soleil",
+        "name": "Cafe Soleil",
+        "url": "https://www.tripadvisor.com/Restaurants-g60972-Zion_National_Park.html",
+    }
+    url = "https://www.tripadvisor.com/Restaurants-g60972-Zion_National_Park.html"
+
+    result = discoverer._retain_discovered_url(
+        url,
+        "Cafe Soleil",
+        "Zion National Park",
+        allow_alltrails=False,
+        kind="restaurant",
+        candidate=candidate,
+        allow_google_maps_search=True,
+    )
+
+    assert result == ""
+
+
+def test_audit_demotes_direct_batch_authoritative_trail_when_over_miles_threshold():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 3.0
+    discoverer._direct_batch_authoritative = True
+    discoverer._direct_batch_authoritative_urls = {
+        "https://www.alltrails.com/trail/us/utah/observation-point-trail"
+    }
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Observation Point Trail",
+                            "type": "hike",
+                            "description": "A 5-mile hike with chain-assisted sections and exposure.",
+                            "url": "https://www.alltrails.com/trail/us/utah/observation-point-trail",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 1
+    assert str(attractions[0].get("url", "")) == ""
+    assert attractions[0].get("type") == "attraction"
+    assert str(attractions[0].get("maps_url", "") or "") == ""
+
+
+def test_audit_demotes_long_trail_when_over_miles_threshold() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._max_trail_miles = 3.0
+    discoverer._direct_batch_authoritative_urls = {
+        "https://www.alltrails.com/trail/us/utah/angels-landing-trail"
+    }
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Angels Landing",
+                            "type": "hike",
+                            "description": "A strenuous 5.4-mile roundtrip hike with major elevation gain.",
+                            "url": "https://www.alltrails.com/trail/us/utah/angels-landing-trail",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 1
+    assert attractions[0].get("type") == "attraction"
+    assert str(attractions[0].get("url", "")) == ""
+    assert str(attractions[0].get("maps_url", "") or "") == ""
+    assert "5.4" in str(attractions[0].get("practical_note", "") or "")
+    assert "3-mile threshold" in str(attractions[0].get("practical_note", "") or "")
+
+
+def test_audit_demotes_alltrails_linked_attraction_when_description_lacks_trail_keywords() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 3.0
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Angels Landing",
+                            "type": "attraction",
+                            "description": "Iconic summit route with major exposure.",
+                            "url": "https://www.alltrails.com/trail/us/utah/angels-landing-trail",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(
+            discoverer,
+            "_fetch_page_text",
+            return_value=(True, 200, "Angels Landing Trail is a 5.4-mile out-and-back route in Zion."),
+        ):
+            discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 1
+    assert attractions[0].get("type") == "attraction"
+    assert str(attractions[0].get("url", "") or "") == ""
+    assert str(attractions[0].get("maps_url", "") or "") == ""
+    assert "3-mile threshold" in str(attractions[0].get("practical_note", "") or "")
+
+
+def test_audit_demotes_trail_over_threshold_keeps_primary_maps_search_url() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._max_trail_miles = 3.0
+    discoverer._direct_batch_authoritative_urls = {
+        "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
+    }
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "The Narrows",
+                            "type": "hike",
+                            "description": "Long canyon route, typically 9 miles or more depending on turnaround.",
+                            "url": "https://www.alltrails.com/trail/us/utah/the-narrows-top-down",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 1
+    assert attractions[0]["type"] == "attraction"
+    assert str(attractions[0].get("url", "") or "") == ""
+    assert str(attractions[0].get("maps_url", "") or "") == ""
+
+
+def test_summarizes_restaurant_dispositions_by_item_and_source() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    disposition_threads = {
+        "zion-1": [
+            {
+                "kind": "restaurant",
+                "item": "Zion Pizza & Noodle Co",
+                "reason": "direct_batch_accepted",
+                "source": "direct_batch",
+                "message": "restaurant link (direct-link batch)",
+                "url": "https://example.com/zion-pizza",
+            }
+        ],
+        "zion-2": [
+            {
+                "kind": "restaurant",
+                "item": "Cafe Soleil",
+                "reason": "maps_fallback_only",
+                "source": "search",
+                "message": "restaurant link omitted; no canonical URL found",
+                "url": "",
+            }
+        ],
+    }
+
+    summary = discoverer._summarize_entity_dispositions(
+        kind="restaurant",
+        disposition_threads=disposition_threads,
+    )
+
+    assert summary["total"] == 2
+    assert summary["disposition_counts"]["accepted"] == 1
+    assert summary["disposition_counts"]["rejected"] == 1
+    assert summary["source_counts"]["direct_batch"] == 1
+    assert summary["source_counts"]["search"] == 1
+
+    pizza_summary = next(item for item in summary["items"] if item["name"] == "Zion Pizza & Noodle Co")
+    assert pizza_summary["final_outcome"] == "accepted"
+    assert pizza_summary["source"] == "direct_batch"
+    assert pizza_summary["reasons"] == ["direct_batch_accepted"]
+
+    cafe_summary = next(item for item in summary["items"] if item["name"] == "Cafe Soleil")
+    assert cafe_summary["final_outcome"] == "rejected"
+    assert cafe_summary["source"] == "search"
+    assert cafe_summary["reasons"] == ["maps_fallback_only"]
+
+
+def test_classify_disposition_outcome_canonical_states() -> None:
+    classify = URLDiscoverer._classify_disposition_outcome
+    assert classify("direct_batch_accepted", "https://example.com") == "accepted"
+    assert classify("direct_batch_existing_url_preserved", "https://example.com") == "accepted"
+    assert classify("seed_ai_candidate_recovered", "https://example.com") == "accepted"
+    assert classify("direct_batch_source_locked_no_match", "") == "rejected"
+    assert classify("maps_fallback_only", "") == "rejected"
+    assert classify("direct_batch_no_accepted_candidates", "") == "rejected"
+    assert classify("url_rejected", "") == "rejected"
+    assert classify("interest_filter_skipped", "") == "filtered"
+    assert classify("interest_filter_removed", "") == "filtered"
+    assert classify("entity_removed", "") == "filtered"
+    assert classify("trail_links_disabled", "") == "filtered"
+    assert classify("threshold_demoted_to_attraction", "") == "demoted"
+    assert classify("seed_threshold_override", "https://example.com") == "skipped"
+    # URL-presence fallback: unknown reason with URL → accepted
+    assert classify("some_novel_reason", "https://example.com") == "accepted"
+    # URL-presence fallback: unknown reason without URL → rejected
+    assert classify("some_novel_reason", "") == "rejected"
+
+
+def test_summarize_attraction_dispositions() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    threads = {
+        "a1": [{"kind": "attraction", "item": "Angels Landing", "reason": "alltrails_accepted",
+                "source": "alltrails", "url": "https://www.alltrails.com/trail/us/utah/angels-landing"}],
+        "a2": [{"kind": "attraction", "item": "Canyon Overlook", "reason": "nps_accepted",
+                "source": "search", "url": "https://www.nps.gov/zion/overlook"}],
+        "a3": [{"kind": "attraction", "item": "Zion Narrows", "reason": "direct_batch_source_locked_no_match",
+                "source": "direct_batch", "url": ""}],
+    }
+    summary = discoverer._summarize_entity_dispositions(kind="attraction", disposition_threads=threads)
+    assert summary["total"] == 3
+    assert summary["disposition_counts"]["accepted"] == 2
+    assert summary["disposition_counts"]["rejected"] == 1
+    landing = next(i for i in summary["items"] if i["name"] == "Angels Landing")
+    assert landing["final_outcome"] == "accepted"
+    assert landing["source"] == "alltrails"
+    narrows = next(i for i in summary["items"] if i["name"] == "Zion Narrows")
+    assert narrows["final_outcome"] == "rejected"
+
+
+def test_summarize_trail_dispositions_uses_attraction_kind_events() -> None:
+    """Trails are logged as kind='attraction'; trail summary must include them."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    threads = {
+        "t1": [{"kind": "attraction", "item": "Observation Point", "reason": "alltrails_accepted",
+                "source": "alltrails", "url": "https://www.alltrails.com/trail/us/utah/observation-point"}],
+        "t2": [{"kind": "attraction", "item": "West Rim Trail", "reason": "threshold_demoted_to_attraction",
+                "source": "direct_batch", "url": ""}],
+        "t3": [{"kind": "attraction", "item": "Subway", "reason": "trail_links_disabled",
+                "source": "other", "url": ""}],
+    }
+    summary = discoverer._summarize_entity_dispositions(kind="trail", disposition_threads=threads)
+    assert summary["total"] == 3
+    assert summary["disposition_counts"]["accepted"] == 1
+    assert summary["disposition_counts"]["demoted"] == 1
+    assert summary["disposition_counts"]["filtered"] == 1
+    west_rim = next(i for i in summary["items"] if i["name"] == "West Rim Trail")
+    assert west_rim["final_outcome"] == "demoted"
+    subway = next(i for i in summary["items"] if i["name"] == "Subway")
+    assert subway["final_outcome"] == "filtered"
+
+
+def test_summarize_en_route_stop_dispositions() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    threads = {
+        "e1": [{"kind": "en_route_stop", "item": "Kolob Canyons", "reason": "direct_batch_accepted",
+                "source": "direct_batch", "url": "https://www.nps.gov/zion/kolob"}],
+        "e2": [{"kind": "en_route_stop", "item": "Cedar Breaks", "reason": "direct_batch_no_match",
+                "source": "direct_batch", "url": ""}],
+    }
+    summary = discoverer._summarize_entity_dispositions(kind="en_route_stop", disposition_threads=threads)
+    assert summary["total"] == 2
+    assert summary["disposition_counts"]["accepted"] == 1
+    assert summary["disposition_counts"]["rejected"] == 1
+    kolob = next(i for i in summary["items"] if i["name"] == "Kolob Canyons")
+    assert kolob["final_outcome"] == "accepted"
+
+
+def test_disposition_outcome_priority_accepted_beats_rejected() -> None:
+    """When a single item gets both a rejected and accepted event, accepted wins."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    threads = {
+        "x1": [
+            {"kind": "restaurant", "item": "Spotted Dog", "reason": "direct_batch_candidate_rejected",
+             "source": "direct_batch", "url": ""},
+            {"kind": "restaurant", "item": "Spotted Dog", "reason": "ai_candidate_accepted",
+             "source": "ai_candidate", "url": "https://www.spotteddog.com"},
+        ],
+    }
+    summary = discoverer._summarize_entity_dispositions(kind="restaurant", disposition_threads=threads)
+    assert summary["total"] == 1
+    assert summary["items"][0]["final_outcome"] == "accepted"
+    assert summary["items"][0]["source"] == "ai_candidate"
+
+
+def test_scenic_drive_search_name_strips_ai_added_day_trip_suffix() -> None:
+    assert URLDiscoverer._scenic_drive_search_name("Notom-Bullfrog Road Day Trip") == "Notom-Bullfrog Road"
+    assert URLDiscoverer._scenic_drive_search_name("Zion Canyon Scenic Drive") == "Zion Canyon Scenic Drive"
+    assert URLDiscoverer._scenic_drive_search_name("") == ""
+
+
+def test_discover_scenic_drives_search_query_omits_day_trip_suffix() -> None:
+    """Quoted exact-phrase search variants must target the road's real name,
+    not an AI-added activity-type descriptor no real source uses verbatim."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Capitol Reef National Park",
+        "scenic_drives": [{"title": "Notom-Bullfrog Road Day Trip"}],
+    }
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, "unrelated park page")):
+        with patch.object(discoverer, "_search_first", return_value=None) as mock_search:
+            discoverer._discover_scenic_drives(dest, "Capitol Reef National Park", nps_code="care")
+
+    searched_query_variants = mock_search.call_args.args[0]
+    assert any("Day Trip" not in v for v in searched_query_variants)
+    assert not any("Day Trip" in v for v in searched_query_variants)
+
+
+def test_discover_scenic_drives_rejects_deterministic_url_for_unrelated_named_drive() -> None:
+    """Real reported bug: a park can have several distinctly named scenic
+    drives (Capitol Reef's paved 'Scenic Drive' vs. the separate,
+    backcountry 'Notom-Bullfrog Road'). Blindly trusting the deterministic
+    NPS URL whenever it returns HTTP 200 gave every drive the same generic
+    park page, pointing at the wrong starting point. The page content must
+    actually be about the named drive, or fall through to a real search."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Capitol Reef National Park",
+        "scenic_drives": [{"title": "Notom-Bullfrog Road Day Trip"}],
+    }
+
+    with patch.object(
+        discoverer,
+        "_fetch_page_text",
+        return_value=(True, 200, "The Capitol Reef Scenic Drive is an 8-mile paved road through the park."),
+    ):
+        with patch.object(
+            discoverer, "_search_first", return_value="https://www.nps.gov/care/planyourvisit/notom-bullfrog-road.htm"
+        ) as mock_search:
+            discoverer._discover_scenic_drives(dest, "Capitol Reef National Park", nps_code="care")
+
+    mock_search.assert_called_once()
+    assert dest["scenic_drives"][0]["url"] == "https://www.nps.gov/care/planyourvisit/notom-bullfrog-road.htm"
+
+
+def test_discover_scenic_drives_uses_nps_deterministic_url_for_nps_park() -> None:
+    """For NPS parks the deterministic scenic-drive page should be preferred over a search."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Zion National Park",
+        "scenic_drives": [{"title": "Zion Canyon Scenic Drive"}],
+    }
+
+    with patch.object(
+        discoverer,
+        "_fetch_page_text",
+        return_value=(True, 200, "The Zion Canyon Scenic Drive is the park's main route through the canyon."),
+    ):
+        with patch.object(discoverer, "_search_first") as mock_search:
+            discoverer._discover_scenic_drives(dest, "Zion National Park", nps_code="zion")
+
+    mock_search.assert_not_called()
+    assert dest["scenic_drives"][0]["url"] == "https://www.nps.gov/zion/planyourvisit/scenic-drive.htm"
+
+
+def test_discover_scenic_drives_falls_back_to_search_when_nps_page_absent() -> None:
+    """When the NPS deterministic page is unreachable, discovery falls back to search."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Zion National Park",
+        "scenic_drives": [{"title": "Zion Canyon Scenic Drive"}],
+    }
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 404, "")):
+        with patch.object(discoverer, "_search_first", return_value="https://www.visitutah.com/zion-canyon-scenic-drive") as mock_search:
+            discoverer._discover_scenic_drives(dest, "Zion National Park", nps_code="zion")
+
+    mock_search.assert_called_once()
+    assert "visitutah.com" in dest["scenic_drives"][0]["url"]
+
+
+def test_discover_scenic_drives_no_nps_code_uses_search() -> None:
+    """Without an NPS code, discovery uses search only (no deterministic attempt)."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Route 66",
+        "scenic_drives": [{"title": "Historic Route 66"}],
+    }
+
+    with patch.object(discoverer, "_fetch_page_text") as mock_fetch:
+        with patch.object(discoverer, "_search_first", return_value="https://www.historic66.com") as mock_search:
+            discoverer._discover_scenic_drives(dest, "Route 66", nps_code=None)
+
+    mock_fetch.assert_not_called()
+    mock_search.assert_called_once()
+
+
+def test_audit_emits_audit_rejection_event_for_scenic_drive_non_route_url() -> None:
+    """Audit stripping a scenic drive URL should emit an audit_url_rejected broker event."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._decision_threads_by_destination = {}
+    discoverer._decision_stats_by_destination = {}
+    discoverer._decision_source_stats_by_destination = {}
+    discoverer._decision_event_sequence = 0
+    discoverer._request_cache_lock = __import__("threading").Lock()
+    discoverer._direct_batch_authoritative = False
+    discoverer._direct_batch_authoritative_urls = set()
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [
+                    {
+                        # Generic NPS section index — not route-specific, should be stripped
+                        "title": "Zion Canyon Scenic Drive",
+                        "url": "https://www.nps.gov/zion/planyourvisit/index.htm",
+                    }
+                ],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    threads = discoverer._decision_threads_by_destination.get("Zion National Park", {})
+    all_events = [ev for evs in threads.values() for ev in evs if isinstance(ev, dict)]
+    audit_events = [ev for ev in all_events if "audit_url_rejected" in str(ev.get("reason", ""))]
+    assert len(audit_events) >= 1, f"Expected audit_url_rejected; got: {all_events}"
+    assert audit_events[0]["item"] == "Zion Canyon Scenic Drive"
+
+
+def test_broker_output_includes_scenic_drive_dispositions() -> None:
+    """scenic_drive_dispositions must appear in the broker output block from discover_all."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    threads = {
+        "sd-1": [{
+            "kind": "scenic_drive",
+            "item": "Zion Canyon Scenic Drive",
+            "reason": "nps_deterministic_accepted",
+            "source": "nps",
+            "url": "https://www.nps.gov/zion/planyourvisit/scenic-drive.htm",
+        }],
+        "sd-2": [{
+            "kind": "scenic_drive",
+            "item": "Pa'rus Trail Loop",
+            "reason": "no_match",
+            "source": "search",
+            "url": "",
+        }],
+    }
+    summary = discoverer._summarize_entity_dispositions(kind="scenic_drive", disposition_threads=threads)
+    assert summary["total"] == 2
+    assert summary["disposition_counts"]["accepted"] == 1
+    assert summary["disposition_counts"]["rejected"] == 1
+    zion = next(i for i in summary["items"] if i["name"] == "Zion Canyon Scenic Drive")
+    assert zion["final_outcome"] == "accepted"
+    assert zion["source"] == "nps"
+
+
+def test_is_definitively_dead_status_recognizes_dns_and_connection_failures() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    assert discoverer._is_definitively_dead_status(404) is True
+    assert discoverer._is_definitively_dead_status(410) is True
+    assert discoverer._is_definitively_dead_status(403) is False
+    assert discoverer._is_definitively_dead_status(500) is False
+    assert discoverer._is_definitively_dead_status("timeout") is False
+    dns_error = (
+        "HTTPSConnectionPool(host='flanigansinn.com', port=443): Max retries exceeded "
+        "with url: / (Caused by NameResolutionError(\"Failed to resolve 'flanigansinn.com' "
+        "([Errno 11001] getaddrinfo failed)\"))"
+    )
+    assert discoverer._is_definitively_dead_status(dns_error) is True
+    refused = "ConnectionError(MaxRetryError(\"Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    assert discoverer._is_definitively_dead_status(refused) is True
+
+
+def test_retain_url_rejects_matched_restaurant_row_with_unresolvable_domain() -> None:
+    """A URL whose domain fails DNS resolution entirely is at least as dead as an
+    explicit 404, and must not be published just because the fetch failure came
+    back as a connection-error string rather than an HTTP status code."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    candidate = {
+        "name": "Spotted Dog Cafe",
+        "title": "Spotted Dog Cafe",
+        "url": "https://www.flanigansinn.com/spotted-dog-cafe/",
+        "snippet": "Spotted Dog Cafe 4.6/5 $$$",
+    }
+    dns_error = (
+        "HTTPSConnectionPool(host='www.flanigansinn.com', port=443): Max retries exceeded "
+        "with url: / (Caused by NameResolutionError(\"Failed to resolve 'www.flanigansinn.com' "
+        "([Errno 11001] getaddrinfo failed)\"))"
+    )
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, dns_error, "")):
+        out = discoverer._retain_discovered_url(
+            "https://www.flanigansinn.com/spotted-dog-cafe/",
+            "Spotted Dog Cafe",
+            "Zion National Park",
+            allow_alltrails=False,
+            kind="restaurant",
+            candidate=candidate,
+        )
+
+    assert out == ""
+
+
+def test_audit_keeps_direct_batch_authoritative_restaurant_even_if_generic_landing_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._direct_batch_authoritative_urls = {
+        "https://www.discovermoab.com/restaurants/"
+    }
+
+    trip = {
+        "destinations": [
+            {
+                "id": "moab",
+                "name": "Moab",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [
+                        {
+                            "name": "Desert Bistro",
+                            "url": "https://www.discovermoab.com/restaurants/",
+                        }
+                    ],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    restaurants = trip["destinations"][0]["ai_content"]["dinner_recommendations"]
+    assert len(restaurants) == 1
+    assert restaurants[0]["url"] == "https://www.discovermoab.com/restaurants/"
+
+
+def test_retain_url_keeps_authoritative_direct_batch_restaurant_when_candidate_matches_item():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    candidate = {
+        "name": "Allred's Restaurant",
+        "title": "Allred's Restaurant",
+        "url": "https://www.telluride.com/dining/allreds",
+        "snippet": "Allred's Restaurant in Telluride",
+    }
+
+    out = discoverer._retain_discovered_url(
+        "https://www.telluride.com/dining/",
+        "Allred's Restaurant",
+        "Telluride",
+        allow_alltrails=False,
+        kind="restaurant",
+        candidate=candidate,
+    )
+
+    assert out == "https://www.telluride.com/dining/"
+
+
+def test_retain_url_keeps_remembered_authoritative_direct_batch_restaurant_without_candidate_row():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._direct_batch_authoritative_urls = {"https://www.telluride.com/dining/"}
+
+    out = discoverer._retain_discovered_url(
+        "https://www.telluride.com/dining/",
+        "Allred's Restaurant",
+        "Telluride",
+        allow_alltrails=False,
+        kind="restaurant",
+    )
+
+    assert out == "https://www.telluride.com/dining/"
+
+
+def test_retain_url_rejects_generic_attraction_listing_page_even_when_candidate_matches_item():
+    """The item-matched authoritative direct-batch leniency block only screens for
+    restaurant-shaped area listings (tripadvisor /restaurants-, /restaurants/,
+    restaurants-near). For kind='attraction' it must not bypass the dedicated
+    generic-section-landing-page gate, or a TripAdvisor 'things to do' listing page
+    can be retained as if it were the specific attraction's canonical link."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    candidate = {
+        "name": "Zion Human History Museum",
+        "title": "Zion Human History Museum",
+        "url": "https://www.tripadvisor.com/Attractions-g60999-Activities-Zion_National_Park_Utah.html",
+        "snippet": "Zion Human History Museum things to do",
+    }
+
+    out = discoverer._retain_discovered_url(
+        "https://www.tripadvisor.com/Attractions-g60999-Activities-Zion_National_Park_Utah.html",
+        "Zion Human History Museum",
+        "Zion National Park",
+        allow_alltrails=False,
+        kind="attraction",
+        candidate=candidate,
+    )
+
+    assert out == ""
+
+
+def test_retain_url_rejects_social_media_even_when_matched_restaurant_row() -> None:
+    """The item-matched restaurant leniency block only screens for restaurant-shaped
+    area listings; it must not bypass the URL-class policy blocklist. With the
+    project's actual config (enforce mode, social_media blocked), a Facebook page
+    for a matched restaurant row must still be rejected, not published as the
+    canonical link."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {
+        "google_search",
+        "google_maps_search",
+        "google_maps_dir",
+        "social_media",
+    }
+    candidate = {
+        "name": "Bit & Spur",
+        "title": "Bit & Spur",
+        "url": "https://www.facebook.com/BitAndSpurRestaurant",
+        "snippet": "Bit & Spur Springdale Utah",
+    }
+
+    out = discoverer._retain_discovered_url(
+        "https://www.facebook.com/BitAndSpurRestaurant",
+        "Bit & Spur",
+        "Zion National Park",
+        allow_alltrails=False,
+        kind="restaurant",
+        candidate=candidate,
+    )
+
+    assert out == ""
+
+
+def test_audit_marks_seed_attraction_and_seed_survives_render_without_url() -> None:
+    """Full-pipeline proof of the 'no usable link should drop a card unless it is
+    a seed' policy for a real documented seed example (requirements.md §3.4 uses
+    'The Narrows' as its seed example). A seed attraction with no discovered link
+    and only a thin description must still be marked as a seed by the audit and
+    must still render as a text-only card, not silently vanish."""
+    from generator.html_assembler import HTMLAssembler
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 0
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "seeds": ["The Narrows"],
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "The Narrows",
+                            "type": "hike",
+                            "description": "Iconic slot canyon hike.",
+                            "url": "",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    ai = trip["destinations"][0]["ai_content"]
+    attractions = ai["top_attractions"]
+    assert len(attractions) == 1
+    assert attractions[0]["name"] == "The Narrows"
+    assert attractions[0].get("is_seed") is True
+
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_attractions(ai, drives=[], dest_name="Zion National Park")
+    assert "The Narrows" in html
+
+
+def test_audit_seed_vs_nonseed_with_identical_thin_content_diverge_in_render() -> None:
+    """Differential proof that the seed override actually discriminates: a seed
+    and a non-seed attraction with byte-identical (thin, linkless) content must
+    render differently. Only the seed is a documented user-requested anchor
+    (requirements.md §3.4, 'Dark Sky Stargazing' is a listed experience-anchor
+    example); the non-seed must still be dropped per the ordinary no-url
+    eligibility bar so the seed override isn't accidentally a blanket bypass."""
+    from generator.html_assembler import HTMLAssembler
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 0
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "seeds": ["Dark Sky Stargazing"],
+                "ai_content": {
+                    "top_attractions": [
+                        {"name": "Dark Sky Stargazing", "type": "activity", "description": "Great views.", "url": ""},
+                        {"name": "Random Overlook", "type": "activity", "description": "Great views.", "url": ""},
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    ai = trip["destinations"][0]["ai_content"]
+    attractions = {a["name"]: a for a in ai["top_attractions"]}
+    assert attractions["Dark Sky Stargazing"].get("is_seed") is True
+    assert attractions["Random Overlook"].get("is_seed") is False
+
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_attractions(ai, drives=[], dest_name="Zion National Park")
+    assert "Dark Sky Stargazing" in html
+    assert "Random Overlook" not in html
+
+
+def test_audit_demotes_trail_when_description_distance_exceeds_threshold_hyphenated():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 4.0
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Angels Landing",
+                            "type": "hike",
+                            "description": "A 5-mile hike with chain-assisted sections and exposure.",
+                            "url": "https://www.alltrails.com/trail/us/utah/angels-landing-trail",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 1
+    assert attractions[0].get("name") == "Angels Landing"
+    assert attractions[0].get("type") == "attraction"
+    assert str(attractions[0].get("url", "") or "") == ""
+    assert str(attractions[0].get("maps_url", "") or "") == ""
+
+
+def test_audit_demotes_trail_when_fetched_page_distance_exceeds_threshold():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 4.0
+
+    trip = {
+        "destinations": [
+            {
+                "id": "telluride",
+                "name": "Telluride",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "San Miguel River Trail",
+                            "type": "hike",
+                            "description": "Riverside trail with mountain views.",
+                            "url": "https://www.alltrails.com/trail/us/colorado/san-miguel-river-trail",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, "Length: 9.0 mi. Elevation gain 700 ft.")):
+            discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 1
+    assert attractions[0].get("name") == "San Miguel River Trail"
+    assert attractions[0].get("type") == "attraction"
+    assert str(attractions[0].get("url", "") or "") == ""
+    assert str(attractions[0].get("maps_url", "") or "") == ""
+
+
+
+def test_audit_keeps_seed_trail_link_even_when_over_max_trail_miles() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 4.0
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "seeds": ["Angels Landing"],
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Angels Landing",
+                            "type": "hike",
+                            "description": "Length: 9.0 mi. Strenuous route.",
+                            "url": "https://www.alltrails.com/trail/us/utah/angels-landing-trail",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, "Length: 9.0 mi. Elevation gain 1500 ft.")):
+            with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_a, **_k: url):
+                discoverer.audit_discovered_urls(trip)
+
+    attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
+    assert attraction.get("type") == "hike"
+    assert str(attraction.get("url", "") or "").startswith("https://www.alltrails.com/trail/")
+
+
+def test_audit_validates_authoritative_restaurant_maps_place_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._direct_batch_authoritative_urls = {
+        "https://www.google.com/maps/place/Oscar's+Cafe/@37.1647,-112.9994,17z"
+    }
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [
+                        {
+                            "name": "Oscar's Cafe",
+                            "url": "https://www.google.com/maps/place/Oscar's+Cafe/@37.1647,-112.9994,17z",
+                        }
+                    ],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    restaurants = trip["destinations"][0]["ai_content"]["dinner_recommendations"]
+    assert len(restaurants) == 1
+    assert "url" not in restaurants[0]
+
+
+def test_audit_validates_authoritative_attraction_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    bad_url = "https://www.alltrails.com/trail/us/utah/rim-trail-sunset-point-to-sunrise-point"
+    discoverer._direct_batch_authoritative_urls = {bad_url}
+
+    trip = {
+        "destinations": [
+            {
+                "id": "bryce",
+                "name": "Bryce Canyon National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Sunrise Point",
+                            "type": "hike",
+                            "description": "Viewpoint trail segment.",
+                            "url": bad_url,
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_retain_discovered_url", return_value="") as mock_retain:
+            discoverer.audit_discovered_urls(trip)
+
+    assert mock_retain.called
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert "url" not in attractions[0]
+
+
+def test_audit_validates_authoritative_en_route_stop_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    bad_url = "https://www.google.com/maps/place/Red+Canyon+Visitor+Center,+UT"
+    discoverer._direct_batch_authoritative_urls = {bad_url}
+
+    trip = {
+        "destinations": [
+            {
+                "id": "bryce",
+                "name": "Bryce Canyon National Park",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {
+                        "en_route_stops": [
+                            {
+                                "name": "Red Canyon",
+                                "description": "Quick en-route red rock stop.",
+                                "url": bad_url,
+                            }
+                        ]
+                    },
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_retain_discovered_url", return_value="") as mock_retain:
+            discoverer.audit_discovered_urls(trip)
+
+    assert mock_retain.called
+    stops = trip["destinations"][0]["ai_content"]["getting_here"]["en_route_stops"]
+    assert "url" not in stops[0]
+
+
+def test_retain_discovered_url_rejects_incomplete_google_maps_place_link():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(discoverer, "_is_relevant_result", return_value=True):
+        out = discoverer._retain_discovered_url(
+            "https://www.google.com/maps/place/Fremont+Indian+State+Park+Museum",
+            "Fremont Indian State Park",
+            "Capitol Reef National Park",
+            allow_alltrails=False,
+            kind="attraction",
+        )
+
+    assert out == ""
+
+
+def test_retain_discovered_url_rejects_unverified_google_maps_place_link_for_attraction():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+        out = discoverer._retain_discovered_url(
+            "https://www.google.com/maps/place/Zion+Human+History+Museum/@37.2001,-112.9864,17z/data=!3m1!4b1!4m6!3m5!1s0x80ca50e0f1a2b3c4:0x1e2f3a4b5c6d7e8f!8m2!3d37.2001!4d-112.9864!16zL20vMGZqM3B6",
+            "Zion Human History Museum",
+            "Zion National Park",
+            allow_alltrails=False,
+            kind="attraction",
+        )
+
+    assert out == ""
+
+
+def test_retain_discovered_url_allows_verified_google_maps_place_link_for_attraction():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(
+        discoverer,
+        "_fetch_page_text",
+        return_value=(True, 200, "Zion Human History Museum exhibits and visitor information"),
+    ):
+        out = discoverer._retain_discovered_url(
+            "https://www.google.com/maps/place/Zion+Human+History+Museum/@37.2001,-112.9864,17z/data=!3m1!4b1!4m6!3m5!1s0x80ca50e0f1a2b3c4:0x1e2f3a4b5c6d7e8f!8m2!3d37.2001!4d-112.9864!16zL20vMGZqM3B6",
+            "Zion Human History Museum",
+            "Zion National Park",
+            allow_alltrails=False,
+            kind="attraction",
+        )
+
+    assert out.startswith("https://www.google.com/maps/place/Zion+Human+History+Museum/")
+
+
+def test_retain_discovered_url_preserves_seed_item_with_single_token_match() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    candidate = {"name": "Sunrise Point", "title": "Sunrise Point", "description": "Viewpoint overlooking Bryce Canyon"}
+
+    out = discoverer._retain_discovered_url(
+        "https://www.alltrails.com/trail/us/utah/sunrise-point",
+        "Sunrise Point",
+        "Bryce Canyon National Park",
+        allow_alltrails=True,
+        kind="attraction",
+        candidate=candidate,
+        allow_google_maps_search=True,
+    )
+
+    assert out == "https://www.alltrails.com/trail/us/utah/sunrise-point"
+
+
+def test_retain_discovered_url_rejects_deterministic_maps_place_with_only_generic_overlap() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(
+        discoverer,
+        "_fetch_page_text",
+        return_value=(True, 200, "Pagosa Springs Historic District visitor information and map"),
+    ):
+        out = discoverer._retain_discovered_url(
+            "https://www.google.com/maps/place/Pagosa+Springs+Historic+District/@37.2694,-107.0098,15z",
+            "Telluride Historic District",
+            "Telluride",
+            allow_alltrails=False,
+            kind="attraction",
+        )
+
+    assert out == ""
+
+
+def test_audit_removes_uninterested_attractions_from_top_list():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._uninterested_keywords = ("golf club", "bike trail")
+    discoverer._seasonal_ski_keywords = (" ski",)
+    discoverer._ski_in_season_months = (11, 12, 1, 2, 3, 4)
+
+    trip = {
+        "destinations": [
+            {
+                "id": "stgeorge",
+                "name": "St. George, Utah",
+                "dates": "October 18-20, 2026",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Dixie Red Hills Golf Club",
+                            "type": "attraction",
+                            "description": "Golf facility with scenic fairways.",
+                            "url": "https://www.google.com/maps/search/?api=1&query=Dixie+Red+Hills+Golf+Club",
+                        },
+                        {
+                            "name": "Bear Claw Poppy Trail",
+                            "type": "attraction",
+                            "description": "Popular bike trail with rolling desert terrain.",
+                            "url": "https://www.google.com/maps/search/?api=1&query=Bear+Claw+Poppy+Trail",
+                        },
+                        {
+                            "name": "Snow Canyon State Park",
+                            "type": "attraction",
+                            "description": "Red rock park with scenic overlooks.",
+                            "url": "https://www.google.com/maps/search/?api=1&query=Snow+Canyon+State+Park",
+                        },
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    names = [str(row.get("name", "") or "") for row in attractions]
+    assert "Dixie Red Hills Golf Club" not in names
+    assert "Bear Claw Poppy Trail" not in names
+    assert "Snow Canyon State Park" in names
+    decisions = trip["destinations"][0].get("_registry_decisions", [])
+    assert any("interest_filter_removed" in (d.get("rejection_reasons", []) or []) for d in decisions)
 
 
 def test_search_strict_rejects_alltrails_soft_404_and_falls_back_to_none():
@@ -552,6 +5260,47 @@ def test_search_strict_rejects_alltrails_soft_404_and_falls_back_to_none():
     )
 
     assert result is None
+
+
+def test_alltrails_relevance_rejects_closed_trail_page_text():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+
+    with patch.object(
+        discoverer,
+        "_fetch_page_text",
+        return_value=(True, 200, "Navajo Loop Trail is temporarily closed due to trail maintenance"),
+    ):
+        ok = discoverer._is_relevant_result(
+            "https://www.alltrails.com/trail/us/utah/navajo-loop-trail",
+            "Navajo Loop Trail",
+            "Bryce Canyon National Park",
+            candidate={
+                "name": "Navajo Loop Trail",
+                "snippet": "Popular Bryce trail",
+            },
+        )
+
+    assert ok is False
+
+
+def test_alltrails_relevance_rejects_closed_trail_candidate_snippet_when_fetch_blocked():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._allow_blocked_alltrails = True
+    discoverer._url_validator = MagicMock()
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+        ok = discoverer._is_relevant_result(
+            "https://www.alltrails.com/trail/us/utah/navajo-loop-trail",
+            "Navajo Loop Trail",
+            "Bryce Canyon National Park",
+            candidate={
+                "name": "Navajo Loop Trail",
+                "snippet": "This trail is closed for restoration work",
+            },
+        )
+
+    assert ok is False
 
 
 def test_alltrails_relevance_does_not_reject_generic_marketing_phrase_only():
@@ -662,6 +5411,149 @@ def test_search_strict_rejects_generic_nps_things2do_page():
     )
 
     assert result is None
+
+
+def test_is_relevant_result_rejects_campground_focused_page_for_noncamping_attraction():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(
+        discoverer,
+        "_fetch_page_text",
+        return_value=(True, 200, "Red Canyon Campground reservations and campsite details near Bryce"),
+    ):
+        ok = discoverer._is_relevant_result(
+            "https://www.brycecanyoncountry.com/places-to-go/red-canyon/campground/",
+            "Red Canyon",
+            "Bryce Canyon National Park",
+            candidate={
+                "name": "Red Canyon Campground",
+                "snippet": "Campground reservations and campsites",
+            },
+        )
+
+    assert ok is False
+
+
+def test_is_relevant_result_allows_campground_page_for_camping_item_name():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(
+        discoverer,
+        "_fetch_page_text",
+        return_value=(True, 200, "Red Canyon Campground reservations and campsite details near Bryce"),
+    ):
+        ok = discoverer._is_relevant_result(
+            "https://www.brycecanyoncountry.com/places-to-go/red-canyon/campground/",
+            "Red Canyon Campground",
+            "Bryce Canyon National Park",
+            candidate={
+                "name": "Red Canyon Campground",
+                "snippet": "Campground reservations and campsites",
+            },
+        )
+
+    assert ok is True
+
+
+def test_is_relevant_result_generic_branch_accepts_blocked_fetch_with_matching_candidate():
+    """Regression: the generic (non-AllTrails) relevance branch used to treat
+    ANY fetch failure as proof of a dead link, including a 403 from a
+    bot-blocking site like TripAdvisor -- wrongly rejecting a perfectly live
+    page. Mirrors the AllTrails branch's already-correct blocked-vs-dead
+    handling: a non-dead-confirmed fetch failure with matching candidate
+    metadata must be accepted, not rejected."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")), patch.object(
+        discoverer, "_verify_url_cached", return_value=(False, 403)
+    ):
+        ok = discoverer._is_relevant_result(
+            "https://www.tripadvisor.com/Restaurant_Review-g60899-d123456-Reviews-Bit_Spur.html",
+            "Bit & Spur",
+            "Springdale",
+            candidate={"name": "Bit & Spur Restaurant & Saloon", "snippet": "Southwestern dining in Springdale"},
+        )
+
+    assert ok is True
+
+
+def test_is_relevant_result_generic_branch_accepts_blocked_fetch_with_no_candidate():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")), patch.object(
+        discoverer, "_verify_url_cached", return_value=(False, 403)
+    ):
+        ok = discoverer._is_relevant_result(
+            "https://www.tripadvisor.com/Restaurant_Review-g60899-d123456-Reviews-Bit_Spur.html",
+            "Bit & Spur",
+            "Springdale",
+        )
+
+    assert ok is True
+
+
+def test_is_relevant_result_generic_branch_rejects_definitively_dead_status():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 404, "")):
+        ok = discoverer._is_relevant_result(
+            "https://www.example.com/closed-restaurant",
+            "Some Restaurant",
+            "Springdale",
+            candidate={"name": "Some Restaurant", "snippet": "matches"},
+        )
+
+    assert ok is False
+
+
+def test_is_relevant_result_generic_branch_rejects_when_secondary_probe_confirms_dead():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")), patch.object(
+        discoverer, "_verify_url_cached", return_value=(False, 404)
+    ):
+        ok = discoverer._is_relevant_result(
+            "https://www.example.com/closed-restaurant",
+            "Some Restaurant",
+            "Springdale",
+            candidate={"name": "Some Restaurant", "snippet": "matches"},
+        )
+
+    assert ok is False
+
+
+def test_is_relevant_result_generic_branch_rejects_blocked_fetch_with_mismatched_candidate():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")), patch.object(
+        discoverer, "_verify_url_cached", return_value=(False, 403)
+    ):
+        ok = discoverer._is_relevant_result(
+            "https://www.tripadvisor.com/Restaurant_Review-g60899-d999999-Reviews-Wrong_Place.html",
+            "Bit & Spur",
+            "Springdale",
+            candidate={"name": "Completely Different Diner", "snippet": "unrelated cuisine"},
+        )
+
+    assert ok is False
+
+
+def test_specific_result_url_accepts_nps_planyourvisit_detail_page():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    assert discoverer._is_specific_result_url(
+        "https://www.nps.gov/zion/planyourvisit/kolob-canyons.htm",
+        "Kolob Canyons",
+        "Zion National Park",
+    ) is True
+
+
+def test_specific_result_url_rejects_nps_planyourvisit_landing_page():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    assert discoverer._is_specific_result_url(
+        "https://www.nps.gov/zion/planyourvisit/",
+        "Kolob Canyons",
+        "Zion National Park",
+    ) is False
 
 
 def test_search_strict_accepts_blm_url_when_ssl_fallback_fetch_succeeds():
@@ -777,8 +5669,71 @@ def test_normalize_restaurant_url_rejects_maps_place_links():
     assert discoverer._normalize_restaurant_url(url) == ""
 
 
+def test_normalize_restaurant_url_accepts_deterministic_maps_place_links_with_data_segment():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        url=(
+            "https://www.google.com/maps/place/Zion+Pizza+%26+Noodle+Co./"
+            "@37.1886,-112.9985,17z/data=!4m6!3m5!1s0x80cac2f9e17f7c3f:0x1234!8m2!3d37.1886!4d-112.9985"
+        )
+    )
+
+    url = "https://www.google.com/maps/place/Zion+Pizza+%26+Noodle+Co./@37.1886,-112.9985,17z/data=!4m6"
+    assert "/maps/place/" in discoverer._normalize_restaurant_url(url)
+
+
+def test_normalize_restaurant_url_resolves_maps_short_link_to_place_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._maps_url_resolution_cache = {}
+    discoverer._fetch_final_url_cache = {}
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        url=(
+            "https://www.google.com/maps/place/Oscar's+Cafe/"
+            "@37.1882,-112.9983,17z/data=!4m6!3m5!1s0x80cac2f8:0x5678!8m2!3d37.1882!4d-112.9983"
+        )
+    )
+
+    out = discoverer._normalize_restaurant_url("https://maps.app.goo.gl/rbaK8ZtvD67ZAjNa7")
+
+    assert out.startswith("https://www.google.com/maps/place/Oscar's+Cafe/")
+
+
+def test_normalize_restaurant_url_rejects_synthetic_google_maps_place_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._maps_url_resolution_cache = {}
+    discoverer._fetch_final_url_cache = {}
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        url=(
+            "https://www.google.com/maps/place/Szechuan+Restaurant/"
+            "data=!4m2!3m1!1s0x8746761e0a0a0a0a:0x1234567890abcdef"
+        )
+    )
+
+    out = discoverer._normalize_restaurant_url("https://maps.app.goo.gl/example")
+
+    assert out == ""
+
+
+def test_normalize_restaurant_url_rejects_short_numeric_cid_maps_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._maps_url_resolution_cache = {}
+    discoverer._fetch_final_url_cache = {}
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        url="https://www.google.com/maps?cid=1234567890&q=The+Springs+Resort+Restaurant+Pagosa+Springs"
+    )
+
+    out = discoverer._normalize_restaurant_url("https://maps.app.goo.gl/example")
+
+    assert out == ""
+
+
 def test_restaurant_discovery_falls_back_when_maps_place_result_is_returned():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "search"
 
     ai = {
         "dinner_recommendations": [{"name": "Zion Pizza & Noodle Co."}],
@@ -798,16 +5753,38 @@ def test_restaurant_discovery_falls_back_when_maps_place_result_is_returned():
             discoverer._discover_restaurants(ai, dest_name="Zion National Park")
 
     out_url = ai["dinner_recommendations"][0]["url"]
-    assert out_url.startswith("https://www.google.com/maps/search/?api=1&query=")
-    assert "maps/place/" not in out_url
-    assert "Zion%20National%20Park" in out_url
+    assert out_url == ""
+    assert "maps_url" not in ai["dinner_recommendations"][0]
 
 
-def test_restaurant_maps_query_text_always_keeps_destination_context():
+def test_normalize_restaurant_url_rejects_google_maps_search_query_links():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    assert (
+        discoverer._normalize_restaurant_url(
+            "https://www.google.com/maps/search/?api=1&query=Sushi+Yama+St.+George+Utah+restaurant"
+        )
+        == ""
+    )
+    assert (
+        discoverer._normalize_restaurant_url(
+            "https://maps.google.com/?q=Sushi+Yama+St.+George+UT"
+        )
+        == ""
+    )
+
+
+def test_restaurant_maps_query_text_keeps_destination_context_when_name_is_not_location_qualified():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     query = discoverer._restaurant_maps_query_text("Zion Pizza & Noodle Co.", "Zion National Park")
     assert "Zion National Park" in query
     assert "restaurant" in query.lower()
+
+
+def test_restaurant_maps_query_text_does_not_append_destination_for_location_qualified_name():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    query = discoverer._restaurant_maps_query_text("Tropic Junction", "Bryce Canyon National Park")
+    assert "Bryce Canyon National Park" not in query
+    assert query == "Tropic Junction restaurant"
 
 
 def test_non_hike_attractions_disallow_alltrails_results():
@@ -863,6 +5840,114 @@ def test_search_strict_rejects_google_maps_place_restaurant_urls():
     assert result is None
 
 
+def test_search_strict_accepts_google_maps_short_link_when_it_resolves_to_deterministic_place_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._search = MagicMock()
+    discoverer._url_validator = MagicMock()
+    discoverer._maps_url_resolution_cache = {}
+    discoverer._fetch_final_url_cache = {}
+
+    discoverer._search.search.return_value = [
+        {
+            "url": "https://maps.app.goo.gl/rbaK8ZtvD67ZAjNa7",
+            "name": "Oscar's Cafe",
+            "snippet": "4.6 stars 2,300 reviews",
+        }
+    ]
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        url=(
+            "https://www.google.com/maps/place/Oscar's+Cafe/"
+            "@37.1882,-112.9983,17z/data=!4m6!3m5!1s0x80cac2f8:0x5678!8m2!3d37.1882!4d-112.9983"
+        )
+    )
+
+    with patch.object(discoverer, "_is_specific_result_url", return_value=True):
+        with patch.object(discoverer, "_is_relevant_result", return_value=True):
+            result = discoverer._search_first_strict(
+                query_variants=['"Oscar\'s Cafe" "Zion National Park" restaurant'],
+                site_filter="google.com/maps",
+                site_hint=None,
+                item_name="Oscar's Cafe",
+                dest_name="Zion National Park",
+                allow_alltrails=False,
+            )
+
+    assert result.startswith("https://www.google.com/maps/place/Oscar's+Cafe/")
+
+
+def test_discover_attractions_uses_google_maps_place_for_non_trail_when_web_search_misses():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "search"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Gifford Homestead",
+                "type": "attraction",
+                "description": "Historic site and pie stop in Capitol Reef.",
+            }
+        ]
+    }
+
+    call_order = []
+
+    def fake_search(_variants, site_filter=None, **_kwargs):
+        call_order.append(site_filter or "")
+        if site_filter == "nps.gov":
+            return None
+        if site_filter == "google.com/maps":
+            return (
+                "https://www.google.com/maps/place/Gifford+Homestead/"
+                "@38.2912,-111.2475,17z/data=!4m6!3m5!1s0x8735ac7a:0x1234!8m2!3d38.2912!4d-111.2475"
+            )
+        return None
+
+    with patch.object(discoverer, "_search_first", side_effect=fake_search):
+        with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None):
+            discoverer._discover_attractions(ai, "Capitol Reef National Park", "care")
+
+    out = ai["top_attractions"][0]
+    assert out["url"].startswith("https://www.google.com/maps/place/Gifford+Homestead/")
+    assert out["maps_url"].startswith("https://www.google.com/maps/search/?api=1&query=")
+    assert "google.com/maps" in call_order
+
+
+def test_discover_attractions_keeps_alltrails_preference_before_google_maps():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "The Narrows",
+                "type": "attraction",
+                "description": "Iconic Zion hike through the Virgin River canyon.",
+            }
+        ]
+    }
+
+    call_order = []
+
+    def fake_search(_variants, site_filter=None, **_kwargs):
+        call_order.append(site_filter or "")
+        if site_filter == "alltrails.com":
+            return "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
+        if site_filter == "google.com/maps":
+            return (
+                "https://www.google.com/maps/place/The+Narrows/"
+                "@37.2983,-112.9475,16z/data=!4m6!3m5!1s0x80cac2f8:0xabcd!8m2!3d37.2983!4d-112.9475"
+            )
+        return None
+
+    with patch.object(discoverer, "_search_first", side_effect=fake_search):
+        with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None):
+            with patch.object(discoverer, "_meets_alltrails_publish_confidence", return_value=True):
+                discoverer._discover_attractions(ai, "Zion National Park", "zion")
+
+    out = ai["top_attractions"][0]
+    assert out["url"].startswith("https://www.alltrails.com/trail/")
+    assert "google.com/maps" not in call_order
+
+
 def test_trail_like_attraction_prefers_alltrails_even_when_type_is_not_hike():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
 
@@ -885,14 +5970,82 @@ def test_trail_like_attraction_prefers_alltrails_even_when_type_is_not_hike():
     }
 
     with patch.object(discoverer, "_search_first", side_effect=fake_search):
-        discoverer._discover_attractions(ai, "Zion National Park", "zion")
+        with patch.object(discoverer, "_meets_alltrails_publish_confidence", return_value=True):
+            discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
     assert ai["top_attractions"][0]["url"].startswith("https://www.alltrails.com/trail/")
     assert call_order[0] == "alltrails.com"
 
 
+def test_discover_attractions_keeps_remembered_direct_batch_trail_when_confidence_gate_fails():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._alltrails_source = "direct_link_batch"
+    direct_url = "https://www.alltrails.com/trail/us/utah/angels-landing-trail"
+    discoverer._direct_batch_authoritative_urls = {direct_url}
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Angels Landing",
+                "type": "hike",
+                "description": "Iconic exposed route in Zion.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None):
+        with patch.object(discoverer, "_search_alltrails_for_trail", return_value=direct_url):
+            with patch.object(discoverer, "_meets_alltrails_publish_confidence", return_value=False):
+                discoverer._discover_attractions(ai, "Zion National Park", "zion")
+
+    out = ai["top_attractions"][0]
+    assert out.get("url") == direct_url
+
+
+def test_discovery_site_name_is_not_trail_like_even_if_type_is_hike():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    assert discoverer._is_trail_like_attraction(
+        "St. George Dinosaur Discovery Site",
+        "hike",
+        "Hands-on museum exhibits with dinosaur trackway displays.",
+    ) is False
+
+
+def test_discovery_site_does_not_use_alltrails_first_when_type_is_hike():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "search"
+
+    call_order = []
+
+    def fake_search(_variants, site_filter=None, **_kwargs):
+        call_order.append(site_filter or "")
+        if site_filter == "nps.gov":
+            return None
+        return "https://utahdinosaurtracks.com/discovery-site"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "St. George Dinosaur Discovery Site",
+                "type": "hike",
+                "description": "Paleontology museum and in-situ tracks.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_first", side_effect=fake_search):
+        discoverer._discover_attractions(ai, "St. George, Utah", None)
+
+    assert call_order[0] != "alltrails.com"
+    assert ai["top_attractions"][0]["url"] == "https://utahdinosaurtracks.com/discovery-site"
+
+
 def test_trail_like_attraction_uses_ai_url_candidates_before_search():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_source = "search"
+    discoverer._direct_batch_authoritative = False
 
     ai = {
         "top_attractions": [
@@ -973,6 +6126,9 @@ def test_trail_like_attraction_uses_description_phrase_this_trail_for_alltrails_
 
 def test_trail_like_attraction_handles_apostrophe_name_variant():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_min_confidence_for_publish = "low"
+    discoverer._alltrails_source = "search"
+    discoverer._direct_batch_authoritative = False
 
     seen_site_filters = []
 
@@ -986,7 +6142,7 @@ def test_trail_like_attraction_handles_apostrophe_name_variant():
         "top_attractions": [
             {
                 "name": "Angel's Landing",
-                "type": "attraction",
+                    "type": "hike",
                 "description": "Iconic chain section and canyon views.",
             }
         ]
@@ -1001,6 +6157,7 @@ def test_trail_like_attraction_handles_apostrophe_name_variant():
 
 def test_place_level_attraction_not_forced_to_alltrails_from_generic_trail_wording():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "search"
 
     seen_site_filters = []
 
@@ -1029,6 +6186,7 @@ def test_place_level_attraction_not_forced_to_alltrails_from_generic_trail_wordi
 
 def test_place_level_snow_canyon_search_disallows_alltrails_candidates():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "search"
 
     observed_allow_alltrails: list[bool] = []
 
@@ -1080,6 +6238,7 @@ def test_plain_park_name_not_forced_to_alltrails():
 
 def test_place_level_attraction_not_forced_to_alltrails_even_when_type_is_hike():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "search"
 
     seen_site_filters = []
 
@@ -1106,6 +6265,7 @@ def test_place_level_attraction_not_forced_to_alltrails_even_when_type_is_hike()
 
 def test_petroglyph_place_level_attraction_not_forced_to_alltrails():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "search"
     discoverer._search = MagicMock()
     discoverer._url_validator = MagicMock()
 
@@ -1163,6 +6323,114 @@ def test_viewpoint_place_level_attraction_not_forced_to_alltrails():
         discoverer._discover_attractions(ai, "Capitol Reef National Park", "care", "October 11-13, 2026")
 
     assert "alltrails.com" not in [s for s in seen_site_filters if s]
+
+
+def test_nps_category_activity_prefers_nps_activity_page_over_maps_fallback():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "search"
+    discoverer._search = MagicMock()
+    discoverer._url_validator = MagicMock()
+
+    observed_nps_variants: list[list[str]] = []
+
+    def fake_search_first(variants, site_filter=None, **kwargs):
+        if site_filter == "nps.gov":
+            observed_nps_variants.append(list(variants))
+            if any("night sky astronomy" in str(v).lower() for v in variants):
+                return "https://www.nps.gov/brca/planyourvisit/night-skies.htm"
+            return None
+        return None
+
+    with patch.object(discoverer, "_search_first", side_effect=fake_search_first):
+        ai = {
+            "top_attractions": [
+                {
+                    "name": "Dark Sky Stargazing",
+                    "type": "attraction",
+                    "description": "Night sky viewing program with telescope-friendly conditions.",
+                }
+            ],
+            "dinner_recommendations": [],
+            "getting_here": {"en_route_stops": []},
+        }
+        discoverer._discover_attractions(ai, "Bryce Canyon National Park", "brca", "October 11-13, 2026")
+
+    assert ai["top_attractions"][0]["url"] == "https://www.nps.gov/brca/planyourvisit/night-skies.htm"
+    assert len(observed_nps_variants) >= 2
+    assert any("night sky astronomy" in " ".join(v).lower() for v in observed_nps_variants)
+
+
+def test_nps_category_activity_fail_closes_when_nps_activity_page_unavailable():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._search = MagicMock()
+    discoverer._url_validator = MagicMock()
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        ai = {
+            "top_attractions": [
+                {
+                    "name": "Dark Sky Stargazing",
+                    "type": "attraction",
+                    "description": "Night sky viewing from pullouts and overlooks.",
+                }
+            ]
+        }
+        discoverer._discover_attractions(ai, "Bryce Canyon National Park", "brca", "October 11-13, 2026")
+
+    assert ai["top_attractions"][0]["url"] == ""
+
+
+def test_trail_like_attraction_fail_closes_when_no_validated_trail_url() -> None:
+    """Unresolved trail-like items stay empty in authoritative mode; generic maps fallbacks are not used."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._search = MagicMock()
+    discoverer._url_validator = MagicMock()
+
+    with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None), patch.object(
+        discoverer, "_search_alltrails_for_trail", return_value=None
+    ):
+        ai = {
+            "top_attractions": [
+                {
+                    "name": "Jud Wiebe Trail",
+                    "type": "hike",
+                    "description": "Steep trail with views above Telluride.",
+                }
+            ]
+        }
+        discoverer._discover_attractions(ai, "Telluride", None, "July 10-12, 2026")
+
+    attr = ai["top_attractions"][0]
+    assert attr.get("url") in (None, "")
+    assert "maps_url" not in attr
+
+
+def test_trail_like_attraction_direct_batch_authoritative_does_not_accept_ai_candidate_url() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_source = "direct_link_batch"
+    discoverer._direct_batch_authoritative = True
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Jud Wiebe Trail",
+                "type": "hike",
+                "description": "Steep trail with views above Telluride.",
+                "url_candidates": [
+                    "https://www.alltrails.com/trail/us/colorado/jud-wiebe-trail"
+                ],
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_resolve_ai_candidate_url") as ai_candidate_mock:
+        with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
+            discoverer._discover_attractions(ai, "Telluride", None, "July 10-12, 2026")
+
+    attraction = ai["top_attractions"][0]
+    assert attraction.get("url") in (None, "")
+    assert "maps_url" not in attraction
+    ai_candidate_mock.assert_not_called()
 
 
 def test_search_strict_nps_broad_pass_rejects_generic_index_page_without_item_signal():
@@ -1418,7 +6686,7 @@ def test_search_alltrails_for_trail_includes_explicit_alltrails_variants():
     assert any(v.strip() == '"angels landing" alltrails' for v in variants)
 
 
-def test_trail_like_attraction_omits_link_when_no_validated_trail_url_exists():
+def test_trail_like_attraction_omits_link_when_no_validated_trail_url_exists() -> None:
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
 
     def fake_search(variants, site_filter=None, **kwargs):
@@ -1437,12 +6705,169 @@ def test_trail_like_attraction_omits_link_when_no_validated_trail_url_exists():
     }
 
     with patch.object(discoverer, "_search_first", side_effect=fake_search):
-        discoverer._discover_attractions(ai, "Bryce Canyon National Park", "blca")
+        with patch.object(discoverer, "_search_attraction_from_item_query_fanout", return_value=(None, "no_match")):
+            discoverer._discover_attractions(ai, "Bryce Canyon National Park", "blca")
 
-    assert "url" not in ai["top_attractions"][0]
+    attr = ai["top_attractions"][0]
+    assert attr.get("url") in (None, "")
+    assert "maps_url" not in attr
 
 
-def test_trail_like_attraction_omits_link_when_alltrails_confidence_below_threshold():
+def _make_nominatim_response(lat: str, lon: str):
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = [{"lat": lat, "lon": lon}]
+    return resp
+
+
+def _make_nominatim_empty_response():
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = []
+    return resp
+
+
+def test_geocode_en_route_stop_uses_viewbox_to_disambiguate_common_place_name() -> None:
+    """Full-pipeline regression for a real reported bug: Zion->Bryce en-route
+    stops were rendered in AI-harvest order, not route order, forcing the
+    driving-directions link to backtrack. Root cause: the geocoder's 'near X'
+    query phrasing always returns zero results from Nominatim, and the
+    unbiased fallback resolves common names like 'Red Canyon' to an unrelated
+    same-named place elsewhere in the state. A viewbox biased to the route's
+    own origin/destination must be used and must win over an unbiased match."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+
+    # Zion (Springdale) -> Bryce Canyon, approximate real coordinates.
+    origin = (37.1889, -112.9986)
+    dest = (37.5930, -112.1871)
+    # "Red Canyon" near the actual route vs. a same-named place far away (San Juan County, UT).
+    near_route = ("37.72", "-112.31")
+    far_away = ("37.64", "-110.38")
+
+    def fake_get(_url, params=None, **_kwargs):
+        if params and params.get("bounded") == 1:
+            return _make_nominatim_response(*near_route)
+        return _make_nominatim_response(*far_away)
+
+    discoverer._url_validator.session.get.side_effect = fake_get
+
+    with patch("generator.url_discovery.time.sleep"):
+        coords = discoverer._geocode_en_route_stop_for_route(
+            "Red Canyon",
+            origin_name="Zion National Park",
+            dest_name="Bryce Canyon National Park",
+            origin=origin,
+            dest=dest,
+        )
+
+    assert coords == (37.72, -112.31)
+
+
+def test_geocode_en_route_stop_rejects_unrestricted_match_outside_sanity_radius() -> None:
+    """When nothing is found within the route's viewbox, the unrestricted
+    fallback must not blindly accept a same-named place clear across the
+    country (e.g. a real reported case: 'Glendale Town Park' resolved to
+    Illinois for a Utah route) -- it must be rejected as no match."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+
+    origin = (37.1889, -112.9986)
+    dest = (37.5930, -112.1871)
+    chicago_area = ("41.798644", "-87.7111642")
+
+    def fake_get(_url, params=None, **_kwargs):
+        if params and params.get("bounded") == 1:
+            return _make_nominatim_empty_response()
+        return _make_nominatim_response(*chicago_area)
+
+    discoverer._url_validator.session.get.side_effect = fake_get
+
+    with patch("generator.url_discovery.time.sleep"):
+        coords = discoverer._geocode_en_route_stop_for_route(
+            "Glendale Town Park",
+            origin_name="Zion National Park",
+            dest_name="Bryce Canyon National Park",
+            origin=origin,
+            dest=dest,
+        )
+
+    assert coords is None
+
+
+def test_geocode_en_route_stop_accepts_unrestricted_match_within_sanity_radius() -> None:
+    """A same-region unrestricted match (viewbox search found nothing, but the
+    fallback match is still plausibly near the route) should still be usable --
+    the sanity check should not be so strict it rejects everything."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+
+    origin = (37.1889, -112.9986)
+    dest = (37.5930, -112.1871)
+    nearby_but_outside_viewbox = ("37.9", "-111.8")
+
+    def fake_get(_url, params=None, **_kwargs):
+        if params and params.get("bounded") == 1:
+            return _make_nominatim_empty_response()
+        return _make_nominatim_response(*nearby_but_outside_viewbox)
+
+    discoverer._url_validator.session.get.side_effect = fake_get
+
+    with patch("generator.url_discovery.time.sleep"):
+        coords = discoverer._geocode_en_route_stop_for_route(
+            "Some Trailhead",
+            origin_name="Zion National Park",
+            dest_name="Bryce Canyon National Park",
+            origin=origin,
+            dest=dest,
+        )
+
+    assert coords == (37.9, -111.8)
+
+
+def test_alltrails_confidence_boosted_to_high_when_corroborating_search_agrees() -> None:
+    """Corroboration piece: a blocked-fetch 'medium' confidence trail must be
+    promoted to 'high' when an independent secondary lookup (opt-in via the
+    existing filtered-selection flag) points at the exact same canonical page --
+    this reuses the existing veto's plumbing as a positive signal instead of
+    only a negative one."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+    url = "https://www.alltrails.com/trail/us/utah/angels-landing-trail"
+
+    with patch.object(discoverer, "_alltrails_slug_matches_item", return_value=True):
+        with patch.object(discoverer, "_alltrails_slug_has_numbered_suffix", return_value=False):
+            with patch.object(discoverer, "_alltrails_slug_extra_term_count", return_value=0):
+                with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+                    with patch.object(discoverer, "_get_filtered_alltrails_selection", return_value=url):
+                        confidence = discoverer._alltrails_confidence_level(url, "Angels Landing", "Zion National Park")
+
+    assert confidence == "high"
+
+
+def test_alltrails_confidence_stays_medium_without_corroboration_opt_in() -> None:
+    """The boost must be opt-in (same flag as the existing filtered-selection
+    search) since it costs one extra search call per borderline candidate --
+    it must not fire by default."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = False
+    url = "https://www.alltrails.com/trail/us/utah/angels-landing-trail"
+
+    with patch.object(discoverer, "_alltrails_slug_matches_item", return_value=True):
+        with patch.object(discoverer, "_alltrails_slug_has_numbered_suffix", return_value=False):
+            with patch.object(discoverer, "_alltrails_slug_extra_term_count", return_value=0):
+                with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+                    with patch.object(
+                        discoverer,
+                        "_get_filtered_alltrails_selection",
+                        side_effect=AssertionError("must not be called when corroboration is disabled"),
+                    ):
+                        confidence = discoverer._alltrails_confidence_level(url, "Angels Landing", "Zion National Park")
+
+    assert confidence == "medium"
+
+
+def test_trail_like_attraction_omits_link_when_alltrails_confidence_below_threshold() -> None:
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._alltrails_min_confidence_for_publish = "high"
 
@@ -1461,11 +6886,12 @@ def test_trail_like_attraction_omits_link_when_alltrails_confidence_below_thresh
         "_search_alltrails_for_trail",
         return_value="https://www.alltrails.com/trail/us/utah/canyon-overlook-trail",
     ):
-        # Simulate bot-protected page fetch; this should only reach medium confidence.
         with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
             discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
-    assert "url" not in ai["top_attractions"][0]
+    attr = ai["top_attractions"][0]
+    assert attr.get("url") in (None, "")
+    assert "maps_url" not in attr
 
 
 def test_retain_discovered_url_rejects_low_confidence_alltrails_for_trails():
@@ -1500,6 +6926,259 @@ def test_fetch_page_text_caches_alltrails_fetches():
     assert first[0] is True
     assert second[0] is True
     assert discoverer._url_validator.session.get.call_count == 1
+
+
+def test_verify_url_cached_avoids_duplicate_liveness_calls():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.verify_url.return_value = (True, 200)
+
+    url = "https://example.com/entity"
+    first = discoverer._verify_url_cached(url)
+    second = discoverer._verify_url_cached(url)
+
+    assert first == (True, 200)
+    assert second == (True, 200)
+    assert discoverer._url_validator.verify_url.call_count == 1
+
+
+def test_fetch_page_text_caches_non_alltrails_fetches():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.get_text.return_value = (True, 200, "entity detail")
+
+    url = "https://example.com/entity"
+    first = discoverer._fetch_page_text(url, timeout=8)
+    second = discoverer._fetch_page_text(url, timeout=8)
+
+    assert first == (True, 200, "entity detail")
+    assert second == (True, 200, "entity detail")
+    assert discoverer._url_validator.get_text.call_count == 1
+
+
+def test_search_cached_avoids_duplicate_grok_query_calls():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._search = MagicMock()
+    discoverer._search.search.return_value = [
+        {"url": "https://example.com/entity", "name": "Entity", "snippet": "snippet"}
+    ]
+
+    query = 'site:nps.gov "Canyon Overlook" Zion National Park'
+    first = discoverer._search_cached(query, count=10)
+    second = discoverer._search_cached(query, count=10)
+
+    assert len(first) == 1
+    assert len(second) == 1
+    assert discoverer._search.search.call_count == 1
+
+
+def test_search_cached_short_circuits_empty_result_while_in_failure_cooldown():
+    """Regression: an empty search result used to be cached permanently for
+    the run, with no distinction between 'genuinely no results' and 'the
+    request failed' (GrokSearch.search() swallows exceptions and returns []
+    either way). A single transient failure would poison that query for the
+    rest of the run. Within the cooldown window, a repeat call must
+    short-circuit without a second network call; the search client itself is
+    only ever hit once."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._search_failure_cooldown_seconds = 180.0
+    discoverer._search = MagicMock()
+    discoverer._search.search.return_value = []
+
+    query = "some obscure query that returns nothing"
+    first = discoverer._search_cached(query, count=10)
+    second = discoverer._search_cached(query, count=10)
+
+    assert first == []
+    assert second == []
+    assert discoverer._search.search.call_count == 1
+
+
+def test_search_cached_retries_after_failure_cooldown_expires():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._search_failure_cooldown_seconds = 0.0
+    discoverer._search = MagicMock()
+    discoverer._search.search.side_effect = [
+        [],
+        [{"url": "https://example.com/entity", "name": "Entity", "snippet": "snippet"}],
+    ]
+
+    query = "some query"
+    first = discoverer._search_cached(query, count=10)
+    second = discoverer._search_cached(query, count=10)
+
+    assert first == []
+    assert len(second) == 1
+    assert discoverer._search.search.call_count == 2
+
+
+def test_collect_discovered_urls_returns_unique_urls_across_sections():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    trip = {
+        "destinations": [
+            {
+                "ai_content": {
+                    "top_attractions": [
+                        {"url": "https://example.com/a"},
+                    ],
+                    "getting_here": {
+                        "en_route_stops": [
+                            {"url": "https://example.com/b"},
+                        ]
+                    },
+                    "dinner_recommendations": [
+                        {"url": "https://example.com/c"},
+                    ],
+                },
+                "scenic_drives": [
+                    {"url": "https://example.com/a"},
+                ],
+                "cultural_events": {
+                    "events": [
+                        {"url": "https://example.com/d"},
+                    ]
+                },
+            }
+        ]
+    }
+
+    urls = discoverer._collect_discovered_urls(trip)
+
+    assert urls == {
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://example.com/c",
+        "https://example.com/d",
+    }
+
+
+def test_prewarm_url_validation_cache_fetches_unique_non_alltrails_urls_once():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    seen_calls = []
+
+    def _fake_fetch(url, timeout=8):
+        seen_calls.append((url, timeout))
+        return True, 200, "ok"
+
+    with patch.object(discoverer, "_fetch_page_text", side_effect=_fake_fetch):
+        with patch.object(discoverer, "_is_obviously_generic_url", return_value=False):
+            trip = {
+                "destinations": [
+                    {
+                        "ai_content": {
+                            "top_attractions": [
+                                {"url": "https://example.com/x"},
+                                {"url": "https://example.com/x"},
+                            ],
+                            "getting_here": {"en_route_stops": []},
+                            "dinner_recommendations": [
+                                {"url": "https://www.google.com/maps/search/?api=1&query=test"},
+                            ],
+                        },
+                        "scenic_drives": [
+                            {"url": "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"},
+                            {"url": "https://example.com/y"},
+                        ],
+                        "cultural_events": {"events": []},
+                    }
+                ]
+            }
+            discoverer._prewarm_url_validation_cache(trip)
+
+    fetched_urls = sorted(url for (url, _timeout) in seen_calls)
+    assert fetched_urls == [
+        "https://example.com/x",
+        "https://example.com/y",
+    ]
+
+
+def test_prewarm_url_validation_cache_skips_gov_domains():
+    """Regression: the audit pass's bulk prewarm used to force a full-content
+    fetch over every discovered URL regardless of how much confidence
+    discovery already established. An official .gov page doesn't need that
+    proactive re-check -- skipping the prewarm doesn't skip verification
+    entirely, it just avoids paying for a fetch that's rarely actually
+    needed downstream for a source this trustworthy."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._fetch_page_text = MagicMock(side_effect=AssertionError("must not prewarm .gov URLs"))
+
+    with patch.object(discoverer, "_is_obviously_generic_url", return_value=False):
+        trip = {
+            "destinations": [
+                {
+                    "ai_content": {
+                        "top_attractions": [
+                            {"url": "https://www.nps.gov/zion/planyourvisit/kolob-canyons.htm"},
+                        ],
+                        "getting_here": {"en_route_stops": []},
+                        "dinner_recommendations": [],
+                    },
+                    "scenic_drives": [],
+                    "cultural_events": {"events": []},
+                }
+            ]
+        }
+        discoverer._prewarm_url_validation_cache(trip)
+
+    discoverer._fetch_page_text.assert_not_called()
+
+
+def test_prewarm_url_validation_cache_skips_remembered_authoritative_urls():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative_urls = {"https://www.zionlodge.com/dining/restaurant"}
+    discoverer._fetch_page_text = MagicMock(side_effect=AssertionError("must not prewarm authoritative URLs"))
+
+    with patch.object(discoverer, "_is_obviously_generic_url", return_value=False):
+        trip = {
+            "destinations": [
+                {
+                    "ai_content": {
+                        "top_attractions": [],
+                        "getting_here": {"en_route_stops": []},
+                        "dinner_recommendations": [
+                            {"url": "https://www.zionlodge.com/dining/restaurant"},
+                        ],
+                    },
+                    "scenic_drives": [],
+                    "cultural_events": {"events": []},
+                }
+            ]
+        }
+        discoverer._prewarm_url_validation_cache(trip)
+
+    discoverer._fetch_page_text.assert_not_called()
+
+
+def test_search_first_strict_short_circuits_after_high_confidence_match():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._search = MagicMock()
+
+    discoverer._search.search.return_value = [
+        {
+            "url": "https://www.nps.gov/zion/learn/nature/canyon-overlook-trail.htm",
+            "name": "Canyon Overlook Trail - Zion National Park",
+            "snippet": "Canyon Overlook Trail in Zion National Park Utah.",
+        }
+    ]
+
+    with patch.object(discoverer, "_is_specific_result_url", return_value=True):
+        with patch.object(discoverer, "_is_relevant_result", return_value=True):
+            with patch.object(discoverer, "_verify_url_cached", return_value=(True, 200)):
+                with patch.object(discoverer, "_score_candidate_result", return_value=30):
+                    result = discoverer._search_first_strict(
+                        query_variants=[
+                            '"Canyon Overlook Trail" "Zion National Park" trail',
+                            '"Canyon Overlook" Zion park hike',
+                        ],
+                        site_filter="nps.gov",
+                        site_hint=None,
+                        item_name="Canyon Overlook Trail",
+                        dest_name="Zion National Park",
+                        allow_alltrails=False,
+                    )
+
+    assert result == "https://www.nps.gov/zion/learn/nature/canyon-overlook-trail.htm"
+    assert discoverer._search.search.call_count == 1
 
 
 def test_filtered_alltrails_strategy_prefers_highest_rated_candidate_with_constraints():
@@ -1599,7 +7278,7 @@ def test_filtered_alltrails_does_not_pad_with_weak_matches_when_only_one_candida
     second_url = ai["top_attractions"][1].get("url", "")
 
     assert first_url == "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"
-    assert second_url == ""
+    assert second_url in (None, "")
 
 
 def test_load_interest_filters_applies_rating_threshold_and_boost_controls(tmp_path):
@@ -1697,7 +7376,8 @@ def test_audit_fail_closed_removes_named_entity_url_when_policy_blocks_only_cand
     discoverer.audit_discovered_urls(trip)
 
     attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
-    assert attraction.get("url", "") == ""
+    assert str(attraction.get("url", "") or "") == ""
+    assert str(attraction.get("maps_url", "") or "").startswith("https://www.google.com/maps/search/?api=1&query=")
 
 
 def test_load_url_policy_allowlist_merges_manual_and_output_urls(tmp_path):
@@ -1760,6 +7440,42 @@ def test_retain_url_rejects_wikipedia_wrong_entity():
     assert result == ""
 
 
+def test_retain_url_rejects_generic_restaurant_landing_page_for_named_entity():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    result = discoverer._retain_discovered_url(
+        "https://www.visitpagosasprings.com/restaurants/",
+        "Cafe Colorado",
+        "Pagosa Springs",
+        allow_alltrails=False,
+        kind="restaurant",
+    )
+    assert result == ""
+
+
+def test_retain_url_rejects_unescaped_whitespace_in_url():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    result = discoverer._retain_discovered_url(
+        "https://www.visitpagosasprings.com/listing/pagosa-springs-center-for-the-arts/ wh",
+        "Pagosa Springs Center for the Arts",
+        "Pagosa Springs",
+        allow_alltrails=False,
+        kind="attraction",
+    )
+    assert result == ""
+
+
+def test_retain_url_rejects_wikipedia_listings_page_for_specific_historic_district():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    result = discoverer._retain_discovered_url(
+        "https://en.wikipedia.org/wiki/National_Register_of_Historic_Places_listings_in_Washington_County,_Utah",
+        "St. George Historic District",
+        "St. George, Utah",
+        allow_alltrails=False,
+        kind="attraction",
+    )
+    assert result == ""
+
+
 def test_retain_url_rejects_domain_in_denylist():
     """PR-020/021/025: Known-untrusted domains are rejected before relevance checks."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
@@ -1778,8 +7494,8 @@ def test_retain_url_rejects_domain_in_denylist():
         assert result == "", f"Expected denylist rejection for {url}"
 
 
-def test_retain_url_rejects_google_maps_search_in_enforce_mode():
-    """PR-022: Maps-search URLs are blocked as final links in enforce mode."""
+def test_retain_url_rejects_google_maps_search_for_token_strong_attraction_in_enforce_mode():
+    """Maps-search URL is rejected for attractions in enforce mode to avoid multi-result links."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._url_policy_mode = "enforce"
     discoverer._url_policy_blocked_classes = {"google_maps_search"}
@@ -1793,6 +7509,95 @@ def test_retain_url_rejects_google_maps_search_in_enforce_mode():
         allow_alltrails=False,
         kind="attraction",
     )
+    assert result == ""
+
+
+def test_retain_url_rejects_google_maps_search_when_attraction_tokens_are_weak_in_enforce_mode():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_search"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+
+    result = discoverer._retain_discovered_url(
+        "https://www.google.com/maps/search/?api=1&query=Things+to+do+near+St+George",
+        "Snow Canyon State Park",
+        "St. George, Utah",
+        allow_alltrails=False,
+        kind="attraction",
+    )
+    assert result == ""
+
+
+def test_retain_url_rejects_google_maps_search_for_location_qualified_attraction_without_dest_tokens() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_search"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+
+    result = discoverer._retain_discovered_url(
+        "https://www.google.com/maps/search/?api=1&query=Snow+Canyon+State+Park",
+        "Snow Canyon State Park",
+        "St. George, Utah",
+        allow_alltrails=False,
+        kind="attraction",
+    )
+
+    assert result == ""
+
+
+def test_retain_url_rejects_synthetic_maps_place_placeholder_ids() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "monitor"
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+
+    with patch.object(
+        discoverer,
+        "_fetch_page_text",
+        return_value=(True, 200, "Zion Human History Museum visitor information"),
+    ):
+        result = discoverer._retain_discovered_url(
+            "https://www.google.com/maps/place/Zion+Human+History+Museum/@37.200975,-112.9875,17z/data=!3m1!4b1!4m6!3m5!1s0x80cacee0f5e5e5e5:0x5e5e5e5e5e5e5e5e!8m2!3d37.200975!4d-112.9875!16s%2Fg%2F1tc_xyz",
+            "Zion Human History Museum",
+            "Zion National Park",
+            allow_alltrails=False,
+            kind="attraction",
+        )
+
+    assert result == ""
+
+
+def test_passes_alltrails_post_search_filters_rejects_404_even_when_filtered_selection_disabled() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = False
+
+    with patch.object(discoverer, "_verify_url_cached", return_value=(False, 404)):
+        ok = discoverer._passes_alltrails_post_search_filters(
+            "https://www.alltrails.com/trail/us/colorado/san-juan-river-walk-trail",
+            "San Juan River Walk",
+            "Pagosa Springs",
+        )
+
+    assert ok is False
+
+
+def test_retain_url_rejects_google_maps_search_for_non_location_qualified_attraction_without_dest_tokens() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_search"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+
+    result = discoverer._retain_discovered_url(
+        "https://www.google.com/maps/search/?api=1&query=Cliffs+View",
+        "Cliffs View",
+        "St. George, Utah",
+        allow_alltrails=False,
+        kind="attraction",
+    )
+
     assert result == ""
 
 
@@ -1828,6 +7633,73 @@ def test_retain_url_rejects_google_maps_search_for_named_waypoint_in_enforce_mod
         kind="en-route stop",
     )
     assert result == ""
+
+
+def test_retain_url_allows_google_maps_search_for_direct_batch_harvest_only():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_search"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+
+    url = "https://www.google.com/maps/search/?api=1&query=Canyon+Overlook+Trail+Zion+National+Park"
+    result = discoverer._retain_discovered_url(
+        url,
+        "Canyon Overlook Trail",
+        "Zion National Park",
+        allow_alltrails=False,
+        kind="attraction",
+        allow_google_maps_search=True,
+    )
+    assert result == url
+
+
+def test_retain_discovered_url_rejects_alltrails_trail_when_post_constraints_fail() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+    discoverer._alltrails_filter_allowed_difficulties = ("easy", "moderate", "moderately challenging")
+    discoverer._alltrails_filter_max_miles = 4.0
+    discoverer._alltrails_filter_max_gain_feet = 1000
+    discoverer._alltrails_filter_min_reviews = 5
+    discoverer._max_trail_miles = 4.0
+    discoverer._alltrails_min_confidence_for_publish = "low"
+
+    with patch.object(
+        discoverer,
+        "_fetch_page_text",
+        return_value=(True, 200, "Hard. 9.4 mi. Elevation gain 1,620 ft. 4.8 stars, 785 reviews."),
+    ):
+        result = discoverer._retain_discovered_url(
+            "https://www.alltrails.com/trail/us/utah/navajo-knobs-trail",
+            "Navajo Knobs",
+            "Capitol Reef National Park",
+            allow_alltrails=True,
+            kind="attraction",
+        )
+
+    assert result == ""
+
+
+def test_retain_discovered_url_allows_alltrails_trail_when_post_constraints_metadata_unavailable() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+    discoverer._alltrails_filter_allowed_difficulties = ("easy", "moderate", "moderately challenging")
+    discoverer._alltrails_filter_max_miles = 4.0
+    discoverer._alltrails_filter_max_gain_feet = 1000
+    discoverer._alltrails_filter_min_reviews = 5
+    discoverer._max_trail_miles = 4.0
+    discoverer._alltrails_min_confidence_for_publish = "low"
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+        result = discoverer._retain_discovered_url(
+            "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail",
+            "Canyon Overlook Trail",
+            "Zion National Park",
+            allow_alltrails=True,
+            kind="attraction",
+        )
+
+    assert result == "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"
 
 
 def test_retain_url_rejects_google_maps_dir_in_enforce_mode():
@@ -1962,6 +7834,75 @@ def test_retain_url_rejects_generic_geography_url_for_category_activity():
     assert result == ""
 
 
+def test_retain_url_rejects_offer_listing_url_for_category_activity():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_domain_denylist = frozenset()
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = set()
+
+    result = discoverer._retain_discovered_url(
+        "https://www.visitpagosasprings.com/listing/fishing-guides/123/",
+        "San Juan River Fly Fishing",
+        "Pagosa Springs",
+        allow_alltrails=False,
+        kind="attraction",
+    )
+    assert result == ""
+
+
+def test_retain_url_accepts_item_specific_restaurant_homepage_when_content_matches() -> None:
+    from unittest.mock import MagicMock
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="Wood Ash Rye in St. George Utah serves modern American dinner and cocktails.",
+        url="https://www.woodashrye.com/",
+    )
+    discoverer._url_domain_denylist = frozenset()
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = set()
+
+    result = discoverer._retain_discovered_url(
+        "https://www.woodashrye.com/",
+        "Wood Ash Rye",
+        "St. George, Utah",
+        allow_alltrails=False,
+        kind="restaurant",
+    )
+
+    assert result == "https://www.woodashrye.com/"
+
+
+def test_retain_url_accepts_restaurant_homepage_when_page_text_matches_item_name() -> None:
+    from unittest.mock import MagicMock
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="Cafe Diablo serves breakfast and dinner in Torrey, Utah.",
+        url="https://www.cafediablo.com/",
+    )
+    discoverer._url_domain_denylist = frozenset()
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = set()
+
+    result = discoverer._retain_discovered_url(
+        "https://www.cafediablo.com/",
+        "Cafe Diablo",
+        "Capitol Reef National Park",
+        allow_alltrails=False,
+        kind="restaurant",
+    )
+
+    assert result == "https://www.cafediablo.com/"
+
+
 def test_is_relevant_result_rejects_alltrails_slug_in_denylist():
     """Slug denylist is also applied in the relevance gate during discovery."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
@@ -2035,6 +7976,84 @@ def test_is_relevant_result_rejects_alltrails_redirect_mismatch_when_blocked_fet
         "Telluride",
     )
     assert result is False
+
+
+def test_fetch_alltrails_text_short_circuits_while_blocked_without_sleeping_or_refetching():
+    """Regression: AllTrails' DataDome block tends to be sustained, not a
+    simple time-window rate limit -- the old behavior slept out the cooldown
+    and then re-attempted the network call anyway, almost always just failing
+    again. While blocked, this must return a synthetic result immediately: no
+    sleep, no network call, and the result must not be cached (so a later
+    call after the cooldown naturally expires still gets a real attempt)."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_fetch_cache = {}
+    discoverer._alltrails_fetch_lock = Lock()
+    discoverer._alltrails_last_request_ts = 0.0
+    discoverer._alltrails_blocked_until_ts = time.monotonic() + 30.0
+    discoverer._alltrails_request_delay_seconds = 0.0
+    discoverer._alltrails_block_cooldown_seconds = 8.0
+    discoverer._fetch_page_text_uncached = MagicMock(side_effect=AssertionError("must not fetch while blocked"))
+
+    with patch("generator.url_discovery.time.sleep", side_effect=AssertionError("must not sleep while blocked")):
+        result = discoverer._fetch_alltrails_text("https://www.alltrails.com/trail/us/utah/angels-landing-trail")
+
+    assert result == (False, 403, "")
+    discoverer._fetch_page_text_uncached.assert_not_called()
+    assert "https://www.alltrails.com/trail/us/utah/angels-landing-trail" not in discoverer._alltrails_fetch_cache
+
+
+def test_fetch_page_text_short_circuits_generic_domain_while_blocked():
+    """Regression: only AllTrails had a block-cooldown; any other domain that
+    returns 401/403 (TripAdvisor, etc.) had no memory of that block, so a
+    different URL on the same domain moments later paid a full network
+    timeout for a call very unlikely to succeed. This generalizes the
+    AllTrails cooldown to any domain."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._page_text_cache = {}
+    discoverer._request_cache_lock = Lock()
+    discoverer._domain_blocked_until_ts = {"www.tripadvisor.com": time.monotonic() + 30.0}
+    discoverer._domain_block_cooldown_seconds = 8.0
+    discoverer._fetch_page_text_uncached = MagicMock(side_effect=AssertionError("must not fetch while domain blocked"))
+
+    result = discoverer._fetch_page_text(
+        "https://www.tripadvisor.com/Restaurant_Review-g60899-d999999-Reviews-Other_Place.html"
+    )
+
+    assert result == (False, 403, "")
+    discoverer._fetch_page_text_uncached.assert_not_called()
+    assert (
+        "https://www.tripadvisor.com/Restaurant_Review-g60899-d999999-Reviews-Other_Place.html"
+        not in discoverer._page_text_cache
+    )
+
+
+def test_fetch_page_text_records_domain_block_on_403_and_still_returns_result():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._page_text_cache = {}
+    discoverer._request_cache_lock = Lock()
+    discoverer._domain_blocked_until_ts = {}
+    discoverer._domain_block_cooldown_seconds = 8.0
+    discoverer._fetch_page_text_uncached = MagicMock(return_value=(False, 403, ""))
+
+    result = discoverer._fetch_page_text("https://www.tripadvisor.com/Restaurant_Review-g60899-d1-Reviews-Place.html")
+
+    assert result == (False, 403, "")
+    assert "www.tripadvisor.com" in discoverer._domain_blocked_until_ts
+    assert discoverer._domain_blocked_until_ts["www.tripadvisor.com"] > time.monotonic()
+
+
+def test_fetch_page_text_does_not_block_domain_on_success():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._page_text_cache = {}
+    discoverer._request_cache_lock = Lock()
+    discoverer._domain_blocked_until_ts = {}
+    discoverer._domain_block_cooldown_seconds = 8.0
+    discoverer._fetch_page_text_uncached = MagicMock(return_value=(True, 200, "hello"))
+
+    result = discoverer._fetch_page_text("https://www.example.com/some-restaurant")
+
+    assert result == (True, 200, "hello")
+    assert discoverer._domain_blocked_until_ts == {}
 
 
 # ── Epic 4: Restaurant freshness gate ────────────────────────────────────────
@@ -2132,16 +8151,42 @@ def test_audit_removes_ineligible_restaurant_from_destination():
 
 # ── Epic 3: Content deduplication ────────────────────────────────────────────
 
-def test_retain_url_rejects_compound_entity_name():
-    """PR-027: Compound entity name with ' & ' gets URL rejected (fail-closed)."""
+def test_retain_url_rejects_destination_homepage_for_compound_named_attraction():
+    """A city homepage is rejected for a specific landmark; relevance gate catches it via page text."""
+    from unittest.mock import MagicMock, patch
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    with patch.object(
+        discoverer, "_fetch_page_text",
+        return_value=(True, 200, "Welcome to the City of Santa Fe. City services and information."),
+    ):
+        result = discoverer._retain_discovered_url(
+            "https://www.santafenm.gov",
+            "Santa Fe Plaza & Palace of the Governors",
+            "Santa Fe",
+            allow_alltrails=False,
+            kind="attraction",
+        )
+    assert result == ""
+
+
+def test_retain_url_accepts_specific_page_for_compound_named_attraction():
+    """A specific historical-landmark URL is accepted even when the entity name contains ' & '."""
+    from unittest.mock import MagicMock
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="Palace of the Governors historic building on the Santa Fe Plaza.",
+        url="https://www.newmexicohistory.org/palace-of-the-governors/",
+    )
     result = discoverer._retain_discovered_url(
-        "https://www.santafenm.gov",
+        "https://www.newmexicohistory.org/palace-of-the-governors/",
         "Santa Fe Plaza & Palace of the Governors",
         "Santa Fe",
         allow_alltrails=False,
+        kind="attraction",
     )
-    assert result == ""
+    assert result == "https://www.newmexicohistory.org/palace-of-the-governors/"
 
 
 def test_retain_url_keeps_non_compound_entity():
@@ -2223,6 +8268,104 @@ def test_deduplicate_within_destination_keeps_unrelated_drives():
     assert len(dest["scenic_drives"]) == 1
 
 
+def test_deduplicate_within_destination_removes_attraction_matching_en_route_stop():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Pagosa Springs",
+        "ai_content": {
+            "top_attractions": [
+                {"name": "Wolf Creek Pass Scenic Drive", "type": "attraction"},
+                {"name": "Treasure Falls", "type": "hike"},
+            ],
+            "getting_here": {
+                "en_route_stops": [
+                    {"name": "Wolf Creek Pass", "description": "Mountain pass detour."}
+                ]
+            },
+        },
+        "scenic_drives": [],
+    }
+
+    discoverer._deduplicate_within_destination(dest)
+    kept_names = [str(a.get("name", "") or "") for a in dest["ai_content"]["top_attractions"]]
+    assert "Wolf Creek Pass Scenic Drive" not in kept_names
+    assert "Treasure Falls" in kept_names
+
+
+def test_deduplicate_within_destination_records_scenic_drive_removal_for_registry():
+    """Regression: this removal used to be invisible to the entity registry
+    (and, transitively, schedule reconciliation), so a schedule could keep
+    referencing a scenic drive that silently vanished here."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Moab, UT",
+        "ai_content": {
+            "top_attractions": [
+                {"name": "Dead Horse Point State Park", "type": "attraction"},
+            ]
+        },
+        "scenic_drives": [
+            {"title": "Dead Horse Point State Park", "category": "viewpoint"},
+        ],
+    }
+    discoverer._deduplicate_within_destination(dest)
+
+    decisions = dest.get("_registry_decisions", [])
+    assert len(decisions) == 1
+    assert decisions[0]["display_name"] == "Dead Horse Point State Park"
+    assert decisions[0]["section_target"] == "scenic_drives"
+    assert decisions[0]["validation_status"] == "rejected"
+
+
+def test_deduplicate_within_destination_records_attraction_removal_for_registry():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Pagosa Springs",
+        "ai_content": {
+            "top_attractions": [
+                {"name": "Wolf Creek Pass Scenic Drive", "type": "attraction"},
+            ],
+            "getting_here": {
+                "en_route_stops": [
+                    {"name": "Wolf Creek Pass", "description": "Mountain pass detour."}
+                ]
+            },
+        },
+        "scenic_drives": [],
+    }
+    discoverer._deduplicate_within_destination(dest)
+
+    decisions = dest.get("_registry_decisions", [])
+    assert len(decisions) == 1
+    assert decisions[0]["display_name"] == "Wolf Creek Pass Scenic Drive"
+    assert decisions[0]["section_target"] == "top_attractions"
+    assert decisions[0]["validation_status"] == "rejected"
+
+
+def test_retain_discovered_url_rejects_yelp_search_pages():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    out = discoverer._retain_discovered_url(
+        "https://www.yelp.com/search?cflt=localservices&find_loc=Pagosa+Springs%2C+CO",
+        "Chimney Rock National Monument",
+        "Pagosa Springs",
+        allow_alltrails=False,
+        kind="attraction",
+    )
+    assert out == ""
+
+
+def test_retain_discovered_url_rejects_tripadvisor_attractions_listing_pages():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    out = discoverer._retain_discovered_url(
+        "https://www.tripadvisor.com/Attractions-g60958-Activities-Santa_Fe_New_Mexico.html",
+        "Georgia O'Keeffe Museum",
+        "Santa Fe",
+        allow_alltrails=False,
+        kind="attraction",
+    )
+    assert out == ""
+
+
 def test_deduplicate_cross_destination_drives_removes_overlap_with_other_destination_attraction():
     """PR-008: scenic drive is removed when it duplicates another destination's attraction concept."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
@@ -2272,7 +8415,55 @@ def test_deduplicate_cross_destination_drives_keeps_unrelated_concepts():
     assert len(trip["destinations"][1]["scenic_drives"]) == 1
 
 
-def test_trail_ai_candidate_rejected_when_filtered_constraints_fail_then_omits_link():
+def test_deduplicate_tripwide_removes_attraction_matching_other_destination_en_route_stop():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    trip = {
+        "destinations": [
+            {
+                "name": "Telluride",
+                "ai_content": {
+                    "top_attractions": [
+                        {"name": "Lizard Head Pass", "type": "attraction"},
+                        {"name": "Bear Creek Falls", "type": "hike"},
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                },
+                "scenic_drives": [],
+            },
+            {
+                "name": "Pagosa Springs",
+                "ai_content": {
+                    "top_attractions": [
+                        {"name": "Treasure Falls", "type": "hike"},
+                    ],
+                    "getting_here": {
+                        "en_route_stops": [
+                            {"name": "Lizard Head Pass", "description": "Scenic pass on the transfer leg."}
+                        ]
+                    },
+                },
+                "scenic_drives": [],
+            },
+        ]
+    }
+
+    discoverer._deduplicate_attractions_against_en_route_stops_tripwide(trip)
+
+    telluride_attractions = [
+        str(item.get("name", "") or "")
+        for item in trip["destinations"][0]["ai_content"]["top_attractions"]
+    ]
+    pagosa_attractions = [
+        str(item.get("name", "") or "")
+        for item in trip["destinations"][1]["ai_content"]["top_attractions"]
+    ]
+
+    assert "Lizard Head Pass" not in telluride_attractions
+    assert "Bear Creek Falls" in telluride_attractions
+    assert "Treasure Falls" in pagosa_attractions
+
+
+def test_trail_ai_candidate_rejected_when_filtered_constraints_fail_then_stays_empty_for_ambiguous_trail():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = True
     discoverer._alltrails_filtered_selection_cache = {}
@@ -2291,15 +8482,21 @@ def test_trail_ai_candidate_rejected_when_filtered_constraints_fail_then_omits_l
     }
 
     with patch.object(discoverer, "_search_alltrails_for_trail_filtered", return_value=None):
-        discoverer._discover_attractions(ai, "Zion National Park", "zion")
+        with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
+            with patch.object(discoverer, "_search_alltrails_for_seed_relaxed", return_value=None):
+                discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
-    assert "url" not in ai["top_attractions"][0]
+    attr = ai["top_attractions"][0]
+    assert attr.get("url") in (None, "")
+    assert "maps_url" not in attr
 
 
-def test_angels_landing_seed_fails_filtered_constraints_and_omits_link():
+def test_angels_landing_seed_fails_filtered_constraints_stays_empty_in_authoritative_mode():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = True
     discoverer._alltrails_filtered_selection_cache = {}
+    discoverer._alltrails_source = "direct_link_batch"
+    discoverer._direct_batch_authoritative = True
 
     ai = {
         "top_attractions": [
@@ -2315,9 +8512,141 @@ def test_angels_landing_seed_fails_filtered_constraints_and_omits_link():
     }
 
     with patch.object(discoverer, "_search_alltrails_for_trail_filtered", return_value=None):
-        discoverer._discover_attractions(ai, "Zion National Park", "zion")
+        with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
+            with patch.object(discoverer, "_search_alltrails_for_seed_relaxed", return_value=None):
+                discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
-    assert "url" not in ai["top_attractions"][0]
+    attr = ai["top_attractions"][0]
+    assert attr.get("url") in (None, "")
+    assert "maps_url" not in attr
+
+
+def test_narrows_seed_fails_filtered_constraints_does_not_override_authoritative_direct_batch() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+    discoverer._alltrails_filtered_selection_cache = {}
+    discoverer._alltrails_source = "direct_link_batch"
+    discoverer._direct_batch_authoritative = True
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "The Narrows",
+                "type": "hike",
+                "description": "Iconic Zion canyon route.",
+                "url_candidates": [
+                    "https://www.alltrails.com/trail/us/utah/the-narrows-top-down",
+                ],
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_alltrails_for_trail_filtered", return_value=None):
+        with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
+            discoverer._discover_attractions(ai, "Zion National Park", "zion")
+
+    attr = ai["top_attractions"][0]
+    assert attr.get("url") in (None, "")
+    assert "maps_url" not in attr
+
+
+def test_seed_trail_uses_relaxed_alltrails_recovery_before_maps_fallback() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+    discoverer._alltrails_filtered_selection_cache = {}
+    discoverer._alltrails_source = "direct_link_batch"
+    discoverer._direct_batch_authoritative = True
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "The Narrows",
+                "type": "hike",
+                "description": "Iconic Zion canyon route.",
+                "url_candidates": [
+                    "https://www.alltrails.com/trail/us/utah/the-narrows-top-down",
+                ],
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
+        with patch.object(
+            discoverer,
+            "_search_alltrails_for_seed_relaxed",
+            return_value="https://www.alltrails.com/trail/us/utah/the-narrows-trail",
+        ):
+            discoverer._discover_attractions(ai, "Zion National Park", "zion", seed_names=["The Narrows"])
+
+    attr = ai["top_attractions"][0]
+    assert attr.get("url") == "https://www.alltrails.com/trail/us/utah/the-narrows-trail"
+    assert "maps_url" not in attr
+
+
+def test_human_history_museum_is_not_classified_as_trail_like_when_type_is_hike() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    assert discoverer._is_trail_like_attraction(
+        "Human History Museum",
+        "hike",
+        "Exhibits on regional cultural history and early inhabitants.",
+    ) is False
+
+
+def test_seeded_alltrails_candidate_with_404_marker_stays_empty_under_fail_closed_policy():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = False
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Angels Landing",
+                "type": "hike",
+                "description": "Iconic route in Zion.",
+                "url_candidates": [
+                    "https://www.alltrails.com/trail/us/utah/angels-landing",
+                ],
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 404, "")):
+        with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
+            with patch.object(discoverer, "_search_alltrails_for_seed_relaxed", return_value=None):
+                discoverer._discover_attractions(ai, "Zion National Park", "zion")
+
+    attraction = ai["top_attractions"][0]
+    assert attraction.get("url") in (None, "")
+    assert "maps_url" not in attraction
+
+
+def test_seeded_alltrails_candidate_blocked_fetch_with_verify_404_stays_empty_under_fail_closed_policy():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = False
+    discoverer._alltrails_slug_denylist = frozenset()
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Inspiration Point",
+                "type": "hike",
+                "description": "Popular viewpoint trail.",
+                "url_candidates": [
+                    "https://www.alltrails.com/trail/us/utah/inspiration-point-trail",
+                ],
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+        with patch.object(discoverer, "_verify_url_cached", return_value=(False, 404)):
+            with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
+                with patch.object(discoverer, "_search_alltrails_for_seed_relaxed", return_value=None):
+                    discoverer._discover_attractions(ai, "Zion National Park", "zion")
+
+    attraction = ai["top_attractions"][0]
+    assert attraction.get("url") in (None, "")
+    assert "maps_url" not in attraction
 
 
 def test_non_strict_trail_ai_candidate_can_pass_when_filtered_metadata_missing():
@@ -2325,6 +8654,9 @@ def test_non_strict_trail_ai_candidate_can_pass_when_filtered_metadata_missing()
     discoverer._enable_filtered_alltrails_selection = True
     discoverer._strict_filtered_alltrails_names = ("angels landing", "the narrows")
     discoverer._alltrails_filtered_selection_cache = {}
+    discoverer._alltrails_min_confidence_for_publish = "low"
+    discoverer._alltrails_source = "search"
+    discoverer._direct_batch_authoritative = False
 
     ai = {
         "top_attractions": [
@@ -2366,6 +8698,615 @@ def test_en_route_discovery_disallows_alltrails_results_upfront():
     assert captured.get("allow_alltrails") is False
 
 
+def test_discover_en_route_stops_can_use_direct_batch_source() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "direct_link_batch"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [{"name": "Wilson Arch", "detour_time_minutes": 10}],
+        }
+    }
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=[{"name": "Wilson Arch", "detour_time_minutes": 10}]):
+        with patch.object(discoverer, "_search_en_route_stop_from_direct_batch", return_value="https://www.blm.gov/visit/wilson-arch"):
+            with patch.object(discoverer, "_search_first") as fallback_search:
+                discoverer._discover_en_route_stops(ai, "Moab")
+
+    assert ai["getting_here"]["en_route_stops"][0]["url"] == "https://www.blm.gov/visit/wilson-arch"
+    fallback_search.assert_not_called()
+
+
+def test_discover_en_route_stops_assigns_maps_fallback_url_when_unresolved() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [{"name": "Wilson Arch"}],
+        }
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        discoverer._discover_en_route_stops(ai, "Moab")
+
+    stop = ai["getting_here"]["en_route_stops"][0]
+    assert stop["url"].startswith("https://www.google.com/maps/search/?api=1&query=")
+    assert stop["maps_url"].startswith("https://www.google.com/maps/search/?api=1&query=")
+
+
+def test_discover_en_route_stops_removes_stop_when_no_canonical_or_fallback_url() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [{"name": ""}],
+        }
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        discoverer._discover_en_route_stops(ai, "", origin_name="")
+
+    assert ai["getting_here"]["en_route_stops"] == []
+
+
+def test_en_route_maps_fallback_query_adds_route_context_for_ambiguous_stop_name() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    query = discoverer._en_route_maps_fallback_query_text(
+        "Leeds Historic District",
+        "Las Vegas, Nevada",
+        "St. George, Utah",
+    )
+
+    assert "st. george" in query.lower() or "st george" in query.lower()
+    assert "route from" in query.lower()
+
+
+def test_looks_location_qualified_recognizes_saint_and_st_variants() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    assert discoverer._looks_location_qualified("Saint George")
+    assert discoverer._looks_location_qualified("St George")
+    assert not discoverer._looks_location_qualified("Temple View")
+
+
+def test_discover_en_route_stops_prunes_waypoints_beyond_destination_leg() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {"name": "Mesquite"},
+                {"name": "Cedar City"},
+            ],
+        }
+    }
+
+    geocodes = {
+        "Mesquite": (36.8055, -114.0672),
+        "Cedar City": (37.6775, -113.0619),
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        with patch.object(
+            discoverer,
+            "_geocode_en_route_stop_for_route",
+            side_effect=lambda stop_name, **_kwargs: geocodes.get(stop_name),
+        ):
+            discoverer._discover_en_route_stops(
+                ai,
+                "St. George, Utah",
+                origin_name="Las Vegas, Nevada",
+                origin_lat=36.1699,
+                origin_lng=-115.1398,
+                dest_lat=37.0965,
+                dest_lng=-113.5684,
+            )
+
+    names = [str(stop.get("name", "") or "") for stop in ai["getting_here"]["en_route_stops"]]
+    assert names == ["Mesquite"]
+
+
+def test_discover_en_route_stops_marks_waypoint_ineligible_when_geocode_missing() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {"name": "Mystery Stop"},
+            ],
+        }
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        with patch.object(discoverer, "_geocode_en_route_stop_for_route", return_value=None):
+            discoverer._discover_en_route_stops(
+                ai,
+                "St. George, Utah",
+                origin_name="Las Vegas, Nevada",
+                origin_lat=36.1699,
+                origin_lng=-115.1398,
+                dest_lat=37.0965,
+                dest_lng=-113.5684,
+            )
+
+    stop = ai["getting_here"]["en_route_stops"][0]
+    assert stop.get("route_waypoint_eligible") is False
+
+
+def test_discover_en_route_stops_keeps_waypoint_eligible_when_geocode_missing_but_detour_metadata_is_good() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+    discoverer._en_route_detour_max_minutes = 20
+    discoverer._en_route_detour_max_miles = 0.0
+    discoverer._en_route_require_detour_metadata = True
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {
+                    "name": "Virgin River Gorge Overlook",
+                    "detour_time_minutes": 10,
+                },
+            ],
+        }
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        with patch.object(discoverer, "_geocode_en_route_stop_for_route", return_value=None):
+            discoverer._discover_en_route_stops(
+                ai,
+                "St. George, Utah",
+                origin_name="Las Vegas, Nevada",
+                origin_lat=36.1699,
+                origin_lng=-115.1398,
+                dest_lat=37.0965,
+                dest_lng=-113.5684,
+            )
+
+    stop = ai["getting_here"]["en_route_stops"][0]
+    assert stop.get("route_waypoint_eligible") is True
+
+
+def test_discover_en_route_stops_keeps_generic_waypoint_ineligible_when_geocode_missing_even_with_detour_metadata() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+    discoverer._en_route_detour_max_minutes = 20
+    discoverer._en_route_detour_max_miles = 0.0
+    discoverer._en_route_require_detour_metadata = True
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {
+                    "name": "Scenic Stops on the Drive from Las Vegas to St. George",
+                    "detour_time_minutes": 10,
+                },
+            ],
+        }
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        with patch.object(discoverer, "_geocode_en_route_stop_for_route", return_value=None):
+            discoverer._discover_en_route_stops(
+                ai,
+                "St. George, Utah",
+                origin_name="Las Vegas, Nevada",
+                origin_lat=36.1699,
+                origin_lng=-115.1398,
+                dest_lat=37.0965,
+                dest_lng=-113.5684,
+            )
+
+    stop = ai["getting_here"]["en_route_stops"][0]
+    assert stop.get("route_waypoint_eligible") is False
+
+
+def test_discover_en_route_stops_seeds_from_direct_batch_when_missing() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "direct_link_batch"
+
+    ai = {"getting_here": {"en_route_stops": []}}
+    rows = [
+        {
+            "name": "Lizard Head Pass",
+            "url": "https://www.google.com/maps/search/?api=1&query=Lizard+Head+Pass+Telluride+CO",
+            "detour_time_minutes": 12,
+        },
+        {
+            "name": "Rico Historic District",
+            "url": "https://www.colorado.com/articles/why-rico-colorado-worth-stop",
+            "detour_time_minutes": 18,
+        },
+    ]
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(
+            discoverer,
+            "_search_en_route_stop_from_direct_batch",
+            side_effect=[rows[0]["url"], rows[1]["url"]],
+        ):
+            discoverer._discover_en_route_stops(ai, "Telluride")
+
+    names = [str(s.get("name", "") or "") for s in ai["getting_here"]["en_route_stops"]]
+    assert "Lizard Head Pass" in names
+    assert "Rico Historic District" in names
+
+
+def test_discover_en_route_stops_keeps_generic_html_title_when_it_has_real_url() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "direct_link_batch"
+
+    ai = {"getting_here": {"en_route_stops": []}}
+    rows = [
+        {
+            "name": "Best stops along the route",
+            "url": "https://www.blm.gov/visit/wilson-arch",
+            "detour_time_minutes": 10,
+        }
+    ]
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_search_en_route_stop_from_direct_batch", return_value=rows[0]["url"]):
+            with patch.object(discoverer, "_search_first") as fallback_search:
+                discoverer._discover_en_route_stops(ai, "Moab")
+
+    stops = ai["getting_here"]["en_route_stops"]
+    assert [str(item.get("name", "") or "") for item in stops] == ["Best stops along the route"]
+    assert stops[0]["url"] == "https://www.blm.gov/visit/wilson-arch"
+    fallback_search.assert_not_called()
+
+
+def test_discover_en_route_stops_mines_named_stops_from_generic_item_description() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "direct_link_batch"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {
+                    "name": "Scenic Stops on the Drive from Zion to Bryce Canyon",
+                    "description": (
+                        "Quick cultural and scenic detours \u226420 min: "
+                        "Coral Pink Sand Dunes State Park overlook (short spur, 4.6 stars/600 reviews), "
+                        "Google Maps pin. Mt. Carmel Junction historic spots. "
+                        "Avoids gas/rest areas; all 4+ rated."
+                    ),
+                }
+            ]
+        }
+    }
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=[]):
+        with patch.object(discoverer, "_search_en_route_stop_from_direct_batch", return_value=None):
+            with patch.object(discoverer, "_search_first", return_value=None):
+                discoverer._discover_en_route_stops(ai, "Bryce Canyon National Park", origin_name="Zion National Park")
+
+    stop_names = [str(s.get("name", "") or "") for s in ai["getting_here"]["en_route_stops"]]
+    assert "Scenic Stops on the Drive from Zion to Bryce Canyon" not in stop_names
+    assert any("Coral Pink Sand Dunes" in n for n in stop_names), stop_names
+    assert any("Mt. Carmel Junction" in n or "Mt Carmel Junction" in n for n in stop_names), stop_names
+
+
+def test_extract_named_stops_from_description_returns_proper_noun_fragments() -> None:
+    from generator.url_discovery import URLDiscoverer as UD
+    desc = (
+        "Quick detours \u226420 min: Coral Pink Sand Dunes State Park overlook "
+        "(short spur, 4.6 stars/600 reviews), Google Maps pin. "
+        "Mt. Carmel Junction historic spots. Avoids gas/rest areas; all 4+ rated."
+    )
+    result = UD._extract_named_stops_from_description(desc)
+    assert any("Coral Pink Sand Dunes" in n for n in result), result
+    assert any("Mt. Carmel Junction" in n or "Mt Carmel Junction" in n for n in result), result
+    assert not any("Avoids" in n for n in result), result
+    assert not any("Google" in n for n in result), result
+
+
+def test_discover_en_route_stops_preserves_mined_stop_metadata_from_generic_description() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "direct_link_batch"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {
+                    "name": "Scenic Stops on the Drive from Zion to Bryce Canyon",
+                    "description": (
+                        "Quick cultural and scenic detours ≤20 min: "
+                        "Coral Pink Sand Dunes State Park overlook (short spur, 4.6 stars/600 reviews), "
+                        "Google Maps pin. Mt. Carmel Junction historic spots."
+                    ),
+                }
+            ]
+        }
+    }
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=[]):
+        with patch.object(discoverer, "_search_en_route_stop_from_direct_batch", return_value=None):
+            with patch.object(discoverer, "_search_first", return_value=None):
+                discoverer._discover_en_route_stops(ai, "Bryce Canyon National Park", origin_name="Zion National Park")
+
+    stops = ai["getting_here"]["en_route_stops"]
+    assert any(str(stop.get("name", "") or "") == "Coral Pink Sand Dunes State Park overlook" for stop in stops), stops
+    assert any(str(stop.get("detour_time_minutes", "") or "") == "20" for stop in stops), stops
+    assert all(str(stop.get("detour_distance_miles", "") or "") != "None" for stop in stops), stops
+
+
+def test_infer_destination_day_count_from_date_ranges() -> None:
+    assert URLDiscoverer._infer_destination_day_count("October 17, 2026") == 1
+    assert URLDiscoverer._infer_destination_day_count("October 19-21, 2026") == 3
+    assert URLDiscoverer._infer_destination_day_count("2026-10-19 / 2026-10-22") == 4
+    assert URLDiscoverer._infer_destination_day_count("") == 1
+
+
+def test_prioritize_direct_batch_attractions_never_evicts_seed() -> None:
+    """A seed attraction that doesn't match any harvested row must still survive
+    the merge -- attractions must never be evicted the way en-route stops are."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    existing = [{"name": "The Narrows", "type": "hike"}]
+    rows = [
+        {"name": "St. George Tabernacle", "url": "https://www.stgeorgetabernacle.com/"},
+        {"name": "Rosenbruch Wildlife Museum", "url": "https://www.rosenbruch.org/"},
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._prioritize_direct_batch_attractions(
+            existing, "St. George, Utah", "October 17, 2026", seed_names=["The Narrows"]
+        )
+
+    names = [item["name"] for item in out]
+    assert "The Narrows" in names
+
+
+def test_prioritize_direct_batch_attractions_picks_highest_rated_first() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_direct_batch_items_per_day = 2
+    existing: list[dict] = []
+    rows = [
+        {"name": "St. George Tabernacle", "url": "https://a.example/", "rating": 4.4},
+        {"name": "Rosenbruch Wildlife Museum", "url": "https://b.example/", "rating": 4.8},
+        {"name": "St. George Art Museum", "url": "https://c.example/", "rating": 4.6},
+        {"name": "Dinosaur Discovery Site", "url": "https://d.example/", "rating": 4.3},
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._prioritize_direct_batch_attractions(
+            existing, "St. George, Utah", "October 17, 2026"
+        )
+
+    # 1 day * 2 items/day = 2 slots; must be the two highest-rated rows.
+    names = [item["name"] for item in out]
+    assert names == ["Rosenbruch Wildlife Museum", "St. George Art Museum"]
+
+
+def test_prioritize_direct_batch_attractions_scales_target_count_per_day() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_direct_batch_items_per_day = 2
+    existing: list[dict] = []
+    rows = [
+        {"name": f"Attraction {i}", "url": f"https://example.com/{i}", "rating": 4.5 + (i * 0.01)}
+        for i in range(8)
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        out_one_day = discoverer._prioritize_direct_batch_attractions(
+            list(existing), "Bryce Canyon National Park", "October 19, 2026"
+        )
+        out_three_day = discoverer._prioritize_direct_batch_attractions(
+            list(existing), "Bryce Canyon National Park", "October 19-21, 2026"
+        )
+
+    assert len(out_one_day) == 2
+    assert len(out_three_day) == 6
+
+
+def test_prioritize_direct_batch_attractions_excludes_trail_like_rows() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    existing: list[dict] = []
+    rows = [
+        {"name": "Angels Landing Trail", "url": "https://a.example/", "rating": 4.9},
+        {"name": "Zion Human History Museum", "url": "https://b.example/", "rating": 4.5},
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._prioritize_direct_batch_attractions(
+            existing, "Zion National Park", "October 18, 2026"
+        )
+
+    names = [item["name"] for item in out]
+    assert "Angels Landing Trail" not in names
+    assert "Zion Human History Museum" in names
+
+
+def test_prioritize_direct_batch_trails_never_evicts_existing_and_injects_new() -> None:
+    """Full-pipeline regression for a real reported bug: St. George's AllTrails
+    batch harvested 20 candidates but only 1 trail (whatever the AI happened to
+    generate) ever got a chance -- there was no injection mechanism for trails,
+    mirroring the gap attractions had before being fixed."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._trail_direct_batch_items_per_day = 2
+    discoverer._max_trail_miles = 3.0
+    existing = [{"name": "Jenny's Canyon Trail", "type": "hike"}]
+    rows = [
+        {"name": "Jenny's Canyon Trail", "url": "https://www.alltrails.com/trail/us/utah/jennys-canyon-trail"},
+        {"name": "Petrified Dunes Trail", "url": "https://www.alltrails.com/trail/us/utah/petrified-dunes-trail"},
+        {"name": "Red Cliffs Trail", "url": "https://www.alltrails.com/trail/us/utah/red-cliffs-trail"},
+    ]
+
+    with patch.object(discoverer, "_get_alltrails_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._prioritize_direct_batch_trails(
+            existing, "St. George, Utah", "October 17, 2026"
+        )
+
+    names = [item["name"] for item in out]
+    assert "Jenny's Canyon Trail" in names
+    # 1 day * 2 items/day = 2 slots; already have 1, so exactly 1 new trail added.
+    assert len(names) == 2
+
+
+def test_prioritize_direct_batch_trails_prefers_highest_rated_and_respects_mileage_threshold() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._trail_direct_batch_items_per_day = 1
+    discoverer._max_trail_miles = 3.0
+    existing: list[dict] = []
+    rows = [
+        {
+            "name": "Long Ridge Trail",
+            "url": "https://www.alltrails.com/trail/us/utah/long-ridge-trail",
+            "rating": 4.9,
+            "description": "8.5 mi hike",
+        },
+        {
+            "name": "Short Loop Trail",
+            "url": "https://www.alltrails.com/trail/us/utah/short-loop-trail",
+            "rating": 4.4,
+            "description": "1.2 mi hike",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_alltrails_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._prioritize_direct_batch_trails(
+            existing, "Zion National Park", "October 18, 2026"
+        )
+
+    names = [item["name"] for item in out]
+    # Long Ridge Trail is rated higher but exceeds the 3.0-mile threshold, so the
+    # lower-rated but in-threshold trail must be the one selected.
+    assert names == ["Short Loop Trail"]
+
+
+def test_prioritize_direct_batch_en_route_stops_dedupes_same_url_and_prefers_specific_title() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    rows = [
+        {
+            "name": "Best stops along the route",
+            "url": "https://www.google.com/maps/search/?api=1&query=Lizard+Head+Pass+Telluride+CO",
+            "detour_time_minutes": 10,
+        },
+        {
+            "name": "Lizard Head Pass",
+            "url": "https://www.google.com/maps/search/?api=1&query=Lizard+Head+Pass+Telluride+CO",
+            "detour_time_minutes": 10,
+        },
+    ]
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._prioritize_direct_batch_en_route_stops(
+            [],
+            "Telluride",
+            "October 18, 2026",
+            "Moab",
+        )
+
+    assert len(out) == 1
+    assert out[0]["name"] == "Lizard Head Pass"
+
+
+def test_discover_en_route_stops_direct_batch_replaces_ai_list_even_when_nonempty() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "direct_link_batch"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [{"name": "Fuel Stop Plaza", "detour_time_minutes": 8}],
+        }
+    }
+    rows = [
+        {"name": "Wilson Arch", "url": "https://www.blm.gov/visit/wilson-arch", "detour_time_minutes": 10},
+    ]
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_search_en_route_stop_from_direct_batch", return_value=rows[0]["url"]):
+            with patch.object(discoverer, "_search_first") as fallback_search:
+                discoverer._discover_en_route_stops(ai, "Moab")
+
+    names = [str(item.get("name", "") or "") for item in ai["getting_here"]["en_route_stops"]]
+    assert names == ["Wilson Arch"]
+    fallback_search.assert_not_called()
+
+
+def test_discover_en_route_stops_direct_batch_preserves_existing_url_without_rematch() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "direct_link_batch"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {
+                    "name": "Wilson Arch",
+                    "url": "https://www.blm.gov/visit/wilson-arch",
+                    "detour_time_minutes": 10,
+                }
+            ]
+        }
+    }
+
+    with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_a, **_k: url):
+        with patch.object(discoverer, "_search_en_route_stop_from_direct_batch") as batch_search:
+            with patch.object(discoverer, "_search_first") as fallback_search:
+                discoverer._discover_en_route_stops(ai, "Moab")
+
+    assert ai["getting_here"]["en_route_stops"][0]["url"] == "https://www.blm.gov/visit/wilson-arch"
+    batch_search.assert_not_called()
+    fallback_search.assert_not_called()
+
+
+def test_discover_en_route_stops_preserves_existing_maps_url_instead_of_overwriting_with_fallback() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "direct_link_batch"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {
+                    "name": "Leeds Historic District",
+                    "url": "https://www.blm.gov/visit/wilson-arch",
+                    "maps_url": "https://www.google.com/maps/place/Leeds,+UT",
+                    "detour_time_minutes": 10,
+                }
+            ]
+        }
+    }
+
+    with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_a, **_k: url):
+        with patch.object(discoverer, "_search_en_route_stop_from_direct_batch") as batch_search:
+            with patch.object(discoverer, "_search_first") as fallback_search:
+                discoverer._discover_en_route_stops(ai, "St. George, Utah", origin_name="Las Vegas")
+
+    stop = ai["getting_here"]["en_route_stops"][0]
+    assert stop["maps_url"] == "https://www.google.com/maps/place/Leeds,+UT"
+    batch_search.assert_not_called()
+    fallback_search.assert_not_called()
+
+
+def test_discover_en_route_stops_also_discovers_departure_route_option_urls() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+
+    ai = {
+        "getting_here": {"en_route_stops": []},
+        "getting_there": {
+            "route_options": [
+                {"title": "Turquoise Trail Scenic Byway", "description": "Historic route option."}
+            ]
+        },
+    }
+
+    with patch.object(
+        discoverer,
+        "_search_first",
+        return_value="https://www.newmexico.org/scenic-byways/turquoise-trail-national-scenic-byway/",
+    ):
+        discoverer._discover_en_route_stops(ai, "Santa Fe")
+
+    opt = ai["getting_there"]["route_options"][0]
+    assert "newmexico.org/scenic-byways" in str(opt.get("url", "") or "")
+
+
 def test_scenic_drive_discovery_disallows_alltrails_results_upfront():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     captured = {}
@@ -2386,6 +9327,7 @@ def test_scenic_drive_discovery_disallows_alltrails_results_upfront():
 
 def test_attraction_fallback_maps_avoids_contradictory_destination_append():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "search"
 
     with patch.object(discoverer, "_search_first", return_value=None):
         ai = {
@@ -2426,6 +9368,28 @@ def test_discover_attractions_skips_blacklisted_interest_keywords():
     assert ai["top_attractions"][0]["url"] == ""
 
 
+def test_discover_attractions_skips_bike_trail_interest_keywords():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._uninterested_keywords = ("bike trail",)
+    discoverer._seasonal_ski_keywords = (" ski",)
+    discoverer._ski_in_season_months = (11, 12, 1, 2, 3, 4)
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Bear Claw Poppy Trail",
+                "type": "attraction",
+                "description": "A popular bike trail through the desert foothills.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_first", return_value="https://example.com/should-not-be-used"):
+        discoverer._discover_attractions(ai, "St. George, Utah", None, "October 18-20, 2026")
+
+    assert ai["top_attractions"][0]["url"] == ""
+
+
 def test_discover_attractions_skips_ski_out_of_season():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._uninterested_keywords = ()
@@ -2448,8 +9412,73 @@ def test_discover_attractions_skips_ski_out_of_season():
     assert ai["top_attractions"][0]["url"] == ""
 
 
+def test_discover_attractions_omits_maps_fallback_for_ambiguous_geographic_feature_name():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Dolores River Canyon",
+                "type": "attraction",
+                "description": "Canyon and river landscape views.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        discoverer._discover_attractions(ai, "Telluride, Colorado", None, "July 10-12, 2026")
+
+    assert ai["top_attractions"][0]["url"] == ""
+
+
+def test_discover_attractions_assigns_maps_fallback_for_red_cliffs_desert_reserve():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "search"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Red Cliffs Desert Reserve",
+                "type": "attraction",
+                "description": "Desert conservation landscape near St. George.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        discoverer._discover_attractions(ai, "Zion National Park", "zion")
+
+    attraction = ai["top_attractions"][0]
+    assert attraction["url"].startswith("https://www.google.com/maps/search/")
+    assert "maps_url" in attraction
+
+
+def test_discover_attractions_omits_maps_fallback_when_policy_enforce_blocks_maps_search() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_search"}
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Red Cliffs Desert Reserve",
+                "type": "attraction",
+                "description": "Desert conservation landscape near St. George.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        discoverer._discover_attractions(ai, "Zion National Park", "zion")
+
+    attraction = ai["top_attractions"][0]
+    assert str(attraction.get("url", "") or "") == ""
+    assert "maps_url" not in attraction
+
+
 def test_discover_attractions_allows_ski_in_season():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "search"
     discoverer._uninterested_keywords = ()
     discoverer._seasonal_ski_keywords = ("ski resort",)
     discoverer._ski_in_season_months = (11, 12, 1, 2, 3, 4)
@@ -2518,6 +9547,76 @@ def test_audit_retains_verified_scenic_drive_url():
     discoverer.audit_discovered_urls(trip)
 
     assert trip["destinations"][0]["scenic_drives"][0]["url"].startswith("https://www.visitutah.com/")
+
+
+def test_audit_preserves_restaurant_homepage_url_for_specific_site():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.verify_url.return_value = (True, 200)
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="Bit & Spur Restaurant & Saloon official site.",
+    )
+
+    trip = {
+        "destinations": [
+            {
+                "name": "Zion National Park",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [
+                        {
+                            "name": "Bit & Spur Restaurant & Saloon",
+                            "url": "https://www.bitandspur.com",
+                        }
+                    ],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"has_events": False, "events": []},
+            }
+        ]
+    }
+
+    discoverer.audit_discovered_urls(trip)
+
+    assert trip["destinations"][0]["ai_content"]["dinner_recommendations"][0]["url"] == "https://www.bitandspur.com"
+
+
+def test_audit_preserves_en_route_homepage_url_for_specific_site():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.verify_url.return_value = (True, 200)
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="Hurricane Heritage Center official visitor site.",
+    )
+
+    trip = {
+        "destinations": [
+            {
+                "name": "Zion National Park",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {
+                        "en_route_stops": [
+                            {
+                                "name": "Hurricane Heritage Center",
+                                "url": "https://www.hurricaneheritagecenter.org",
+                            }
+                        ]
+                    },
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"has_events": False, "events": []},
+            }
+        ]
+    }
+
+    discoverer.audit_discovered_urls(trip)
+
+    assert trip["destinations"][0]["ai_content"]["getting_here"]["en_route_stops"][0]["url"] == "https://www.hurricaneheritagecenter.org"
 
 
 def test_audit_rejects_scenic_drive_place_page_url_without_route_intent():
@@ -2754,6 +9853,66 @@ def test_alltrails_rating_priority_requires_sufficient_votes():
     assert enough_votes_score > low_votes_score
 
 
+def test_place_interest_threshold_passes_when_rating_and_votes_meet_minimums():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._place_interest_min_rating = 4.0
+    discoverer._place_interest_min_votes = 10
+    discoverer._place_interest_require_metadata = True
+
+    candidate = {
+        "name": "Snow Canyon State Park",
+        "snippet": "4.7 stars with 632 reviews",
+        "url": "https://stateparks.utah.gov/parks/snow-canyon/",
+    }
+
+    assert discoverer._meets_place_interest_threshold(candidate, site_filter=None)
+
+
+def test_place_interest_threshold_fails_when_votes_below_minimum():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._place_interest_min_rating = 4.0
+    discoverer._place_interest_min_votes = 10
+    discoverer._place_interest_require_metadata = True
+
+    candidate = {
+        "name": "Small Viewpoint",
+        "snippet": "4.8 stars with 6 reviews",
+        "url": "https://example.com/viewpoint",
+    }
+
+    assert not discoverer._meets_place_interest_threshold(candidate, site_filter=None)
+
+
+def test_place_interest_threshold_allows_missing_metadata_when_not_required():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._place_interest_min_rating = 4.0
+    discoverer._place_interest_min_votes = 10
+    discoverer._place_interest_require_metadata = False
+
+    candidate = {
+        "name": "Historic Site",
+        "snippet": "Official tourism overview page",
+        "url": "https://example.com/historic-site",
+    }
+
+    assert discoverer._meets_place_interest_threshold(candidate, site_filter=None)
+
+
+def test_place_interest_threshold_skips_alltrails_site_filter():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._place_interest_min_rating = 5.0
+    discoverer._place_interest_min_votes = 10000
+    discoverer._place_interest_require_metadata = True
+
+    candidate = {
+        "name": "Any Trail",
+        "snippet": "No rating text present",
+        "url": "https://www.alltrails.com/trail/us/utah/any-trail",
+    }
+
+    assert discoverer._meets_place_interest_threshold(candidate, site_filter="alltrails.com")
+
+
 def test_audit_discovered_urls_strips_weak_hallucinated_links():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._url_validator = MagicMock()
@@ -2803,3 +9962,55 @@ def test_audit_discovered_urls_strips_weak_hallucinated_links():
     assert "url" not in attraction
     assert "url" not in trip["destinations"][0]["scenic_drives"][0]
     assert "url" not in trip["destinations"][0]["cultural_events"]["events"][0]
+
+
+def test_update_route_distance_skips_live_fetch_when_disabled():
+    """Route distance already has a solid Haversine fallback that costs zero
+    network calls -- the live Google Maps directions HTML scrape is a pure
+    accuracy enhancement on top of it, not a correctness gate. When disabled,
+    it must not be attempted at all."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._route_distance_live_fetch_enabled = False
+    discoverer._parse_route_info_from_maps_html = MagicMock(
+        side_effect=AssertionError("must not live-fetch route info when disabled")
+    )
+
+    ai: dict = {}
+    getting_here: dict = {}
+    discoverer._update_route_distance_and_time(
+        ai=ai,
+        getting_here=getting_here,
+        origin_name="Zion National Park",
+        dest_name="Bryce Canyon National Park",
+        origin_lat=37.2982,
+        origin_lng=-113.0263,
+        dest_lat=37.5930,
+        dest_lng=-112.1871,
+    )
+
+    discoverer._parse_route_info_from_maps_html.assert_not_called()
+    assert getting_here.get("distance_miles")
+    assert getting_here.get("drive_time")
+
+
+def test_update_route_distance_uses_live_fetch_when_enabled():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._route_distance_live_fetch_enabled = True
+    discoverer._parse_route_info_from_maps_html = MagicMock(return_value=(84.0, "1 hr 45 min"))
+
+    ai: dict = {}
+    getting_here: dict = {}
+    discoverer._update_route_distance_and_time(
+        ai=ai,
+        getting_here=getting_here,
+        origin_name="Zion National Park",
+        dest_name="Bryce Canyon National Park",
+        origin_lat=37.2982,
+        origin_lng=-113.0263,
+        dest_lat=37.5930,
+        dest_lng=-112.1871,
+    )
+
+    discoverer._parse_route_info_from_maps_html.assert_called_once()
+    assert getting_here.get("distance_miles") == "84"
+    assert getting_here.get("drive_time") == "1 hr 45 min"

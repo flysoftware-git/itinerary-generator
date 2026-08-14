@@ -5,7 +5,7 @@ Strategy:
   1. NPS API first for national parks (requires nps_park_code)
   2. Wikimedia MediaSearch for all destinations
   3. Automatic fallback query sequence (up to 4 attempts) on failure
-  4. Hard fail if < min_per_destination verified images found
+    4. Warn (do not hard fail) if < min_per_destination verified images found
 
 Images are embedded as data URIs in the HTML (base64) OR stored as
 relative paths in output/images/ depending on config.
@@ -67,6 +67,15 @@ GLOBAL_IMAGE_BLACKLIST_TERMS = {
 
 
 class ImageFetcher:
+    _COUNTER_LOCK = threading.Lock()
+    _COUNTERS: dict[str, int] = {
+        "nps_api_calls": 0,
+        "wikimedia_api_calls": 0,
+        "unsplash_api_calls": 0,
+        "image_download_requests": 0,
+        "cache_hits": 0,
+    }
+
     def __init__(
         self,
         config_path: str | Path = "config.yaml",
@@ -100,6 +109,16 @@ class ImageFetcher:
         self._cache_index = self._load_cache_index()
         self._session_local = threading.local()
 
+    @classmethod
+    def _increment_counter(cls, key: str) -> None:
+        with cls._COUNTER_LOCK:
+            cls._COUNTERS[key] = int(cls._COUNTERS.get(key, 0) or 0) + 1
+
+    @classmethod
+    def snapshot_counters(cls) -> dict[str, int]:
+        with cls._COUNTER_LOCK:
+            return {k: int(v or 0) for k, v in cls._COUNTERS.items()}
+
     def _get_session(self) -> requests.Session:
         if not hasattr(self._session_local, "session"):
             s = requests.Session()
@@ -115,12 +134,14 @@ class ImageFetcher:
         def _fetch_one(dest: dict) -> None:
             logger.info("Fetching images for '%s'…", dest["name"])
             imgs = self._fetch_for_dest(dest)
-            if len(imgs) < self._min_per_dest:
-                raise RuntimeError(
-                    f"Image fetch failed for '{dest['name']}': "
-                    f"only {len(imgs)} image(s) verified (min: {self._min_per_dest})"
-                )
             dest["images"] = imgs
+            if len(imgs) < self._min_per_dest:
+                logger.warning(
+                    "  Image shortfall for '%s': only %d image(s) verified (min: %d)",
+                    dest.get("name", ""),
+                    len(imgs),
+                    self._min_per_dest,
+                )
             logger.info("  %d image(s) acquired for '%s'", len(imgs), dest["name"])
 
         with ThreadPoolExecutor(max_workers=min(len(destinations), 4)) as pool:
@@ -139,6 +160,7 @@ class ImageFetcher:
         if not self._force_refresh:
             cached_images = self._get_cached_images(cache_key)
             if cached_images:
+                self._increment_counter("cache_hits")
                 logger.info("  Reusing cached image candidates for '%s'", dest_name)
                 verified_cached = self._verify_and_materialize(cached_images, dest_name)
                 if len(verified_cached) >= self._min_per_dest:
@@ -451,6 +473,7 @@ class ImageFetcher:
 
     def _fetch_from_nps(self, park_code: str) -> list[dict[str, Any]]:
         try:
+            self._increment_counter("nps_api_calls")
             resp = self._get_session().get(
                 f"{NPS_API_BASE}/multimedia/galleries/assets",
                 params={"parkCode": park_code, "limit": 6},
@@ -478,6 +501,7 @@ class ImageFetcher:
 
     def _fetch_from_wikimedia(self, query: str, limit: int = 4) -> list[dict[str, Any]]:
         try:
+            self._increment_counter("wikimedia_api_calls")
             resp = self._get_session().get(
                 WIKIMEDIA_SEARCH,
                 params={
@@ -525,6 +549,7 @@ class ImageFetcher:
             return []
 
         try:
+            self._increment_counter("unsplash_api_calls")
             url = "https://api.unsplash.com/search/photos"
             params = {
                 "query": query,
@@ -569,6 +594,7 @@ class ImageFetcher:
         if local_path.exists():
             return local_path
         try:
+            self._increment_counter("image_download_requests")
             resp = self._get_session().get(url, timeout=20, stream=True)
             resp.raise_for_status()
             with local_path.open("wb") as f:

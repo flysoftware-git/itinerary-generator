@@ -37,17 +37,20 @@ AllTrails-specific behavior for trail-like attractions:
 Attraction:
 - Trail-like attractions prefer AllTrails first.
 - Non-trail-like attractions prefer NPS-scoped results when an NPS code exists.
-- On miss, fallback maps URL is generated.
+- On canonical miss, named attractions fail closed at canonical layer and may
+	carry `maps_url` fallback metadata for renderer-level fallback behavior.
 
 Restaurant:
 - Two-pass strategy:
 	1) `site:google.com/maps`
 	2) `site:tripadvisor.com`
-- Also stores `maps_url` fallback for rendering.
+- Stores `maps_url` fallback metadata; renderer may publish it as secondary
+	fallback only when canonical URL is unavailable.
 
 En-route stop:
 - AllTrails explicitly disallowed at discovery time (`allow_alltrails=False`).
-- Missing URLs fall back to maps query.
+- Keeps explicit `maps_url` fallback metadata so renderer can avoid dead,
+	unlinked stop rows when canonical URL is unavailable.
 
 Scenic drive/day-trip:
 - AllTrails explicitly disallowed at discovery time (`allow_alltrails=False`).
@@ -103,9 +106,16 @@ AllTrails relevance:
 	: `low` is most permissive and keeps legacy blocked-fetch tolerance.
 
 Non-AllTrails relevance:
-- Requires successful page text fetch.
-- Requires item-token match in content.
-- Requires some destination-token presence in content.
+- On fetch failure, distinguishes blocked/transient (403/401/timeout/5xx/SSL)
+  from definitively dead (404/410/DNS failure via `_is_definitively_dead_status`)
+  -- mirrors the AllTrails branch's already-established handling. A blocked
+  fetch falls back to a secondary liveness probe, then to candidate-metadata
+  token matching, rather than being treated as proof of a dead link.
+  (Fixed: the generic branch previously rejected on *any* fetch failure,
+  including a 403 from a bot-blocking site like TripAdvisor, wrongly
+  rejecting live pages.)
+- On a successful fetch: requires item-token match in content, and requires
+  some destination-token presence in content.
 
 ## Audit Behavior
 `audit_discovered_urls` re-validates all discovered links and may remove them.
@@ -119,6 +129,24 @@ Retention path:
 - Apply domain hard-rejection (`url_domain_denylist`) before relevance scoring.
 - Reconcile cross-destination scenic-drive duplication against attraction
 	ownership in other destinations.
+
+Prewarm scoping (`_prewarm_url_validation_cache`): the audit pass proactively
+bulk-fetches discovered URLs before per-item checks run, so those checks hit
+a warm cache instead of fetching live. This prewarm now skips URLs whose
+provenance already establishes high confidence -- `.gov` domains and harvest
+rows already marked direct-batch-authoritative during discovery
+(`_is_high_confidence_provenance_url`). Skipping the prewarm does not skip
+verification entirely: if a later per-item check still needs that URL's
+content, it fetches on demand at that point. This only avoids paying for a
+bulk fetch that's rarely actually needed downstream for a source this
+trustworthy.
+
+Per-domain block cooldown: a generic equivalent of the AllTrails-specific
+fetch cooldown (below) now applies to *any* domain via `_fetch_page_text`'s
+shared entry point. When a domain returns 401/403, further fetches to any
+other URL on that same domain short-circuit with a synthetic blocked result
+for `url_discovery.domain_block_cooldown_seconds` instead of each paying a
+full network timeout for a call very unlikely to succeed.
 
 Logging:
 - Policy-driven AllTrails rejections for scenic/en-route/restaurant/event are info-level.
@@ -180,13 +208,24 @@ target** — one that refers to that single entity and not a list, search query,
 reference.
 
 Consequences:
-- `google.com/maps/search/<name>+near+<destination>` is an area-reference query; it must
-  not be published as the link for a named restaurant, attraction, or stop.
-- When no entity-specific URL survives audit, the item is rendered **without a link**.
-  This is the correct fail-closed behavior, not a degraded fallback.
-- The synthesized `maps_url` search query is only acceptable as a last-resort context link
-  for category-level items where no single entity is implied (for example a destination
-  overview card), never for individually named subjects.
+- Canonical publication for named entities remains fail-closed and requires a
+	deterministic entity-specific URL.
+- `google.com/maps/search/<name>+near+<destination>` remains non-canonical and
+	never qualifies as canonical entity evidence.
+- Rendering middle-ground in v2.1:
+	- canonical URL is used when available,
+	- explicit `maps_url` fallback may be rendered as secondary fallback,
+	- items with neither canonical nor fallback link are hidden.
+
+## Provenance-Controlled Publication
+
+Discovery and audit must produce decisioned outcomes that control final publication.
+Renderer behavior must follow those outcomes rather than synthesizing links from names.
+
+Operational rules:
+- Candidate existence is not equivalent to publishability.
+- Only validated, decisioned URLs are publishable for named entities.
+- Query/recovery fallbacks remain diagnostics metadata, not primary link targets.
 
 ## URL Policy Rollout Mechanism
 - New installs default to `monitor` mode; `enforce` is the production target.
@@ -246,6 +285,20 @@ From `config.yaml`:
 - `url_discovery.alltrails_min_confidence_for_publish`
 - `url_discovery.alltrails_request_delay_seconds`
 - `url_discovery.alltrails_block_cooldown_seconds`
+- `url_discovery.domain_block_cooldown_seconds` (generic per-domain equivalent
+  of the AllTrails cooldown above, applied via `_fetch_page_text`)
+- `url_discovery.direct_batch_html_failure_cooldown_seconds` (in-memory
+  negative-result cooldown for a failed direct-batch harvest call, plus
+  in-flight coalescing so concurrent callers for the same
+  destination/kind/dates share one failure instead of each re-triggering
+  the network call)
+- `url_discovery.persistent_harvest_cache_ttl_hours` (on-disk cache TTL for
+  successful direct-batch harvest rows, so a same-day repeat run of an
+  unchanged manifest skips re-harvesting entirely)
+- `url_discovery.route_distance_live_fetch_enabled` (default `true`; set
+  `false` to always use the Haversine distance/time estimate instead of
+  live-scraping Google Maps directions HTML -- the scrape is a pure accuracy
+  enhancement on top of an estimate that's already always available)
 
 These gates run before URL discovery for attractions.
 
@@ -270,6 +323,122 @@ Issue: Apostrophe/plural token mismatch (`Angel's` vs `Angels`, `Queens` vs `que
 Issue: `-via-` route variants are selected over canonical trail pages.
 - Mitigation: canonical post-resolution refinement prefers verified non-`-via-`
 	slugs that closely match the requested trail name.
+
+Issue: a live, correct link on a bot-blocking site (TripAdvisor, etc.) gets
+wrongly rejected as dead because the generic (non-AllTrails) relevance branch
+treated any fetch failure as proof of death.
+- Mitigation: blocked-vs-dead distinction (see "Non-AllTrails relevance"
+	above), matching the AllTrails branch's already-correct handling.
+
+Issue: under a sustained provider-side Grok outage, every item at a
+destination needing the same direct-batch harvest key independently
+re-triggered a full multi-attempt timeout cycle for a call that had just
+failed seconds earlier, turning one slow endpoint into a pile-up.
+- Mitigation: per-key negative-result cooldown + in-flight coalescing in
+	`_get_direct_batch_html_rows_for_destination`
+	(`direct_batch_html_failure_cooldown_seconds`).
+- Related mitigation: the harvest's "insufficient rows" retry-prompt is now
+	skipped while `GrokSearch`'s circuit breaker is open, since firing a
+	second expensive call during a known-bad period would compound it rather
+	than help.
+
+Issue: repeated distinct URLs on the same bot-blocking domain (e.g. multiple
+TripAdvisor restaurant pages) each independently paid a full fetch timeout
+even after the domain had already 401/403'd once.
+- Mitigation: generic per-domain block cooldown in `_fetch_page_text`
+	(`domain_block_cooldown_seconds`), generalizing the AllTrails-specific
+	mechanism to any domain.
+
+Issue (Dipstick48): the direct-batch-authoritative AllTrails resolution
+branch never invoked the publish-confidence gate at all -- only
+`_passes_alltrails_post_search_filters`, which is a no-op for AllTrails URLs
+whenever `enable_filtered_alltrails_selection` is off (the default), since
+AllTrails's 403 bot-blocking makes its one remaining dead-status check
+untriggerable in practice.
+- Mitigation: the authoritative branch now also requires
+	`_meets_alltrails_publish_confidence` to pass, unless the URL was already
+	remembered as direct-batch authoritative from this run.
+
+Issue (Dipstick48): `_prefer_canonical_alltrails_url` promoted a purely
+templated slug guess (`{name-tokens}-trail`) as canonical whenever the fetch
+was blocked (403) but not provably dead -- since AllTrails almost never
+returns a "provably dead" status to a blocked fetch, this made the guess
+promote in effect unconditionally. This fabricated
+`alltrails.com/trail/us/utah/the-narrows-trail` for "The Narrows" in the
+observed run.
+- Mitigation: a candidate slug is now only promoted when it was positively
+	verified (page fetched successfully and content matches the item). A
+	blocked/inconclusive fetch keeps the original URL instead of guessing.
+
+Issue (Dipstick48): `_build_primary_items_from_direct_batch` synthesized
+brand-new attraction/restaurant items directly from harvested rows using
+`row["title"]` as the item name, with none of the generic-URL/listing-page
+filters used elsewhere in this module applied. When Grok's harvest surfaced a
+TripAdvisor/Yelp listing page (e.g. "THE 10 BEST Restaurants in St. George -
+Tripadvisor") as a row, the rendered card's *name* -- not just its link --
+became the listicle headline.
+- Mitigation: rows whose title matches a listing-page title pattern (`N
+	BEST ...`, `Best Restaurants in/near ...`, `Things to Do in ...`, `Top N
+	...`, or a `- Tripadvisor`/`- Yelp` suffix) or whose URL is otherwise
+	obviously generic are now skipped entirely in this builder
+	(`_is_generic_listing_title`).
+- Related mitigation: `_is_generic_restaurant_landing_url` also missed
+	TripAdvisor's `RestaurantsNear-g...` listing-page URL shape (no hyphen
+	before "Near", unlike the `Restaurants-g...-near` pattern it already
+	caught); both shapes are now covered.
+
+Issue (Dipstick48): en-route stops never got the rating->badge extraction
+attractions/restaurants receive, so a rating baked into AI-generated prose
+(e.g. "Rated 4.5 stars (230 reviews)") stayed as raw text in the stop
+description instead of becoming a ★ badge.
+- Mitigation: `_build_getting_here` now extracts a rating from the stop's
+	structured `rating`/`raw_rating` fields first, falling back to a text-based
+	extraction from `description`/`practical_note`, and renders it as the same
+	`badge-rating` badge attractions/restaurants use.
+
+Issue (Dipstick48): per-item single-URL resolution (the non-batch-padding
+paths for attractions, trail-like AllTrails, and restaurants) discarded
+rating/vote data that was already present on the matched harvested row --
+only `_build_primary_items_from_direct_batch` (the batch-shortfall padding
+path) carried it over. Most items go through the per-item path, so most
+attractions/restaurants never got rating data attached at all.
+- Mitigation: `_direct_batch_row_quality_metadata_for_url` looks the accepted
+	url back up against the already-fetched rows (zero extra network cost) and
+	carries `rating`/`raw_rating`/`votes`/`source_type` onto the item. Wired
+	into all three per-item acceptance sites. Attractions also gained a
+	`badge-rating` badge in the renderer (previously restaurant/en-route-stop
+	only).
+
+## Must-See Badge Policy
+The "Must-See" badge is a deterministic, render-time decision -- not the
+LLM's opinion. The model still emits a `must_see` boolean per attraction
+(`prompts/destination_content.txt`, capped at 2 per destination in
+`_normalize_attractions`), but that field is now used only as an inclusion
+priority signal for attraction-list pruning
+(`_prune_attractions_to_target`'s sort key); it does not by itself earn the
+badge.
+
+Rationale: `must_see` is unverified LLM judgment, and "must-see" is
+simultaneously one of the exact phrases `prompts/system_prompt.txt`'s banned
+marketing-cliche list forbids in prose. Trusting the model's own flag to
+print that literal phrase as a UI label was inconsistent with that policy.
+
+Badge eligibility (`HTMLAssembler._build_attractions`):
+- Requires verified `rating >= 4.5` AND `votes >= 20` on the item (populated
+	during URL discovery -- see above).
+- Capped at the top 2 qualifying items per destination, ranked by rating then
+	votes, matching the original "if everything is must-see, nothing is"
+	intent.
+- An item with the LLM's `must_see: true` but no corroborating rating data
+	does not get the badge. An item the model never flagged, but which clears
+	the threshold, does.
+
+Known consequence: attractions resolved via a discovery path with no
+harvested-row data behind it (pure AI-candidate/generic-search resolution,
+no direct-batch row match) carry no rating and are therefore never eligible
+for the badge, regardless of actual quality. This is intentional -- the
+policy is to never fabricate the signal -- but means badge coverage tracks
+data availability, not just destination quality.
 
 ## Key Files
 - `generator/url_discovery.py`

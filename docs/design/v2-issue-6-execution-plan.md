@@ -12,6 +12,7 @@ Status:
 - Batch expensive acquisition stages, not validation semantics.
 - Preserve the existing destination-shaped rendering contract.
 - Keep fail-closed URL behavior mandatory.
+- Make provenance/decision state the controlling mechanism for link publication.
 - Prefer destination quarantine and selective regeneration over full reruns.
 - Do not designate the work as Version 2 in requirements/versioning until implementation validates against current behavior.
 
@@ -144,6 +145,11 @@ Required outputs:
 
 Exit criteria:
 - Failures can be isolated to one destination or stage quickly.
+
+Validation cadence (quality-first):
+1. targeted unit/contract tests for changed behavior
+2. compact golden-manifest assertions for reopened defect classes
+3. one end-to-end smoke run only after 1 and 2 pass
 
 ## Phase 7: Version 2 Cutover
 

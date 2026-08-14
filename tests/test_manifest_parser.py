@@ -137,3 +137,56 @@ destinations:
     trip = parser.load(str(f))
     assert trip["trip"]["llm_provider"] == "grok"
     assert trip["trip"]["llm_features"]["code_execution"] is True
+
+
+def test_trip_datetime_anchors_schema_valid(tmp_path):
+    manifest_content = """
+trip:
+  title: "Timing Test"
+  subtitle: "Schema"
+  theme_color: "#123456"
+  departure: "Las Vegas"
+  departure_datetime: "2026-10-07 08:30"
+  return: "Salt Lake City"
+  return_datetime: "2026-10-18 17:15"
+destinations:
+  - id: test
+    name: "Test Destination"
+    dates: "Oct 7-9, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+"""
+    f = tmp_path / "timing_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    trip = parser.load(str(f))
+    assert trip["trip"]["departure_datetime"] == "2026-10-07 08:30"
+    assert trip["trip"]["return_datetime"] == "2026-10-18 17:15"
+
+
+def test_destination_lodging_anchor_schema_valid(tmp_path):
+    manifest_content = """
+trip:
+  title: "Lodging Anchor Test"
+  subtitle: "Schema"
+  theme_color: "#123456"
+destinations:
+  - id: zion
+    name: "Zion National Park"
+    dates: "Oct 7-9, 2026"
+    lodging:
+      name: "Zion Lodge"
+      location: "Zion Lodge, Springdale, UT"
+      checkin_time: "4:00 PM"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+"""
+    f = tmp_path / "lodging_anchor_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    trip = parser.load(str(f))
+    lodging = trip["destinations"][0]["lodging"]
+    assert lodging["location"] == "Zion Lodge, Springdale, UT"
+    assert lodging["checkin_time"] == "4:00 PM"

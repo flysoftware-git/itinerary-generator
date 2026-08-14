@@ -4,15 +4,17 @@
 
 import os
 import requests
+import logging
 from typing import Any
 
 _BASE_URL = "https://api.x.ai/v1/chat/completions"
+logger = logging.getLogger(__name__)
 
 
 class GrokProvider:
     def __init__(self, model: str | None = None) -> None:
         self.api_key = os.environ["XAI_API_KEY"]
-        self.model = model or os.environ.get("XAI_MODEL", "grok-2-latest")
+        self.model = model or os.environ.get("XAI_MODEL", "grok-latest")
         self.base_url = _BASE_URL
 
     def create_json_completion(
@@ -32,6 +34,7 @@ class GrokProvider:
             ],
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
         }
 
         headers = {
@@ -40,7 +43,29 @@ class GrokProvider:
         }
 
         resp = requests.post(self.base_url, json=payload, headers=headers, timeout=60)
-        resp.raise_for_status()
+        if not resp.ok:
+            body = ""
+            try:
+                body = resp.text or ""
+            except Exception:
+                body = ""
+            body_snippet = body[:2000]
+            logger.error(
+                "xAI chat completion failed: status=%s model=%s prompt_lens=(system:%d,user:%d) body=%s",
+                resp.status_code,
+                self.model,
+                len(system_prompt or ""),
+                len(user_prompt or ""),
+                body_snippet,
+            )
+            error = requests.HTTPError(
+                (
+                    f"xAI chat completion failed: status={resp.status_code} model={self.model}; "
+                    f"body={body_snippet}"
+                ),
+                response=resp,
+            )
+            raise error
         data = resp.json()
 
         text = data["choices"][0]["message"]["content"]

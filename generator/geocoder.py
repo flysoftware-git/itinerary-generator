@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Any
 from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderServiceError, GeocoderTimedOut
+from geopy.exc import GeocoderRateLimited, GeocoderServiceError, GeocoderTimedOut
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,8 @@ GEOCODE_COUNTRY_HINTS: dict[str, str] = {
 
 
 class Geocoder:
+    _cache: dict[str, tuple[float, float]] = {}
+
     def __init__(self, user_agent: str = "RoadTripItineraryGenerator/1.0", timeout: int = 5) -> None:
         self.geolocator = Nominatim(user_agent=user_agent, timeout=timeout)
 
@@ -30,19 +32,28 @@ class Geocoder:
             logger.info("Geocoded '%s' → %.4f, %.4f", dest["name"], lat, lng)
             time.sleep(1.1)  # Nominatim rate limit: 1 req/sec
 
-    def _geocode(self, name: str, retries: int = 2) -> tuple[float, float]:
-        # Check for disambiguation hints
+    def _geocode(self, name: str, retries: int = 3) -> tuple[float, float]:
         hint = GEOCODE_COUNTRY_HINTS.get(name.lower())
         query = f"{name}, {hint}" if hint else name
         if hint:
             logger.debug("Geocoder disambiguation: '%s' → '%s'", name, query)
 
+        if query in Geocoder._cache:
+            return Geocoder._cache[query]
+
         for attempt in range(retries + 1):
             try:
                 location = self.geolocator.geocode(query)
                 if location:
-                    return location.latitude, location.longitude
+                    Geocoder._cache[query] = (location.latitude, location.longitude)
+                    return Geocoder._cache[query]
                 raise ValueError(f"Nominatim returned no results for: '{query}'")
+            except GeocoderRateLimited as exc:
+                if attempt == retries:
+                    raise
+                backoff = 15 * (attempt + 1)
+                logger.warning("Geocoder rate-limited (429) for '%s', backing off %ds (attempt %d)", name, backoff, attempt + 1)
+                time.sleep(backoff)
             except (GeocoderTimedOut, GeocoderServiceError) as exc:
                 if attempt == retries:
                     raise

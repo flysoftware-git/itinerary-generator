@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 import re
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 logger = logging.getLogger(__name__)
 TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "v2.5_template.html"
@@ -121,12 +121,15 @@ class HTMLAssembler:
 
         html = template_text
         meta = trip.get("_meta", {})
+        dev_build = meta.get("development_build", {}) if isinstance(meta.get("development_build", {}), dict) else {}
+        dev_fingerprint = str(dev_build.get("fingerprint", "") or "")
         stamp = (
             f"<!-- generator_version={meta.get('generator_version', '')}; "
             f"template_version={meta.get('template_version', '')}; "
             f"provider={meta.get('llm', {}).get('provider', '')}; "
             f"model={meta.get('llm', {}).get('model', '')}; "
-            f"generated_at={meta.get('generated_at_utc', '')} -->\n"
+            f"generated_at={meta.get('generated_at_utc', '')}; "
+            f"development_build={dev_fingerprint} -->\n"
         )
         html = stamp + html
 
@@ -152,10 +155,17 @@ class HTMLAssembler:
         departure_name = meta.get("departure", "")
         for index, dest in enumerate(destinations):
             previous_name = destinations[index - 1]["name"] if index > 0 else departure_name
+            if index > 0:
+                previous_route_target = self._destination_route_target(destinations[index - 1])
+            else:
+                previous_route_target = str(departure_name or "").strip()
+            current_route_target = self._destination_route_target(dest)
             sections_html += self._build_single_section(
                 dest,
                 meta,
                 previous_name,
+                previous_route_target,
+                current_route_target,
                 is_last=(index == len(destinations) - 1),
             )
         sections_html += self._build_packing_summary(destinations)
@@ -184,12 +194,17 @@ class HTMLAssembler:
         departure = str(trip_meta.get("departure", "") or "").strip()
         ret = str(trip_meta.get("return", "") or "").strip()
 
-        origin = departure or destinations[0].get("name", "")
-        destination = ret or destinations[-1].get("name", "")
+        route_stops = [self._destination_route_target(d) for d in destinations]
+        route_stops = [s for s in route_stops if s]
+        if not route_stops:
+            return ""
+
+        origin = departure or route_stops[0]
+        destination = ret or route_stops[-1]
         if not origin or not destination:
             return ""
 
-        stops = [d.get("name", "") for d in destinations if d.get("name")]
+        stops = route_stops
         if departure:
             waypoints = stops
         else:
@@ -214,11 +229,14 @@ class HTMLAssembler:
         result = []
 
         if trip_meta.get("departure") and trip_meta.get("departure_lat") and trip_meta.get("departure_lng"):
+            dep_date, dep_time = self._format_trip_datetime_label(str(trip_meta.get("departure_datetime", "") or ""))
             result.append({
                 "c": [trip_meta.get("departure_lat"), trip_meta.get("departure_lng")],
                 "mo": "DEP",
                 "dy": "",
                 "name": str(trip_meta.get("departure"))[:24],
+                "date_label": dep_date,
+                "time_label": dep_time,
             })
 
         for i, d in enumerate(destinations):
@@ -239,15 +257,64 @@ class HTMLAssembler:
                 }
             )
 
-        if trip_meta.get("return") and trip_meta.get("return_lat") and trip_meta.get("return_lng"):
-            result.append({
-                "c": [trip_meta.get("return_lat"), trip_meta.get("return_lng")],
-                "mo": "RET",
-                "dy": "",
-                "name": str(trip_meta.get("return"))[:24],
-            })
+        if trip_meta.get("return"):
+            return_lat = trip_meta.get("return_lat")
+            return_lng = trip_meta.get("return_lng")
+            if (return_lat is None or return_lng is None) and destinations:
+                # Keep return annotation visible even when explicit return geocoding is missing.
+                last_dest = destinations[-1] if isinstance(destinations[-1], dict) else {}
+                return_lat = last_dest.get("lat")
+                return_lng = last_dest.get("lng")
+            if return_lat is not None and return_lng is not None:
+                ret_date, ret_time = self._format_trip_datetime_label(str(trip_meta.get("return_datetime", "") or ""))
+                result.append({
+                    "c": [return_lat, return_lng],
+                    "mo": "RET",
+                    "dy": "",
+                    "name": str(trip_meta.get("return"))[:24],
+                    "date_label": ret_date,
+                    "time_label": ret_time,
+                })
 
         return result
+
+    @staticmethod
+    def _format_trip_datetime_label(raw: str) -> tuple[str, str]:
+        text = str(raw or "").strip()
+        if not text:
+            return "", ""
+
+        normalized = text.replace("T", " ")
+        dt_match = re.match(r"^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{1,2}):(\d{2})(?:\s*([APap][Mm]))?)?", normalized)
+        if dt_match:
+            year, month, day, hour, minute, ampm = dt_match.groups()
+            try:
+                month_i = int(month)
+                day_i = int(day)
+                date_label = datetime(int(year), month_i, day_i).strftime("%b %d").replace(" 0", " ")
+            except ValueError:
+                date_label = f"{month}/{day}/{year}"
+
+            if hour is None:
+                return date_label, ""
+
+            hour_i = int(hour)
+            minute_i = int(minute or 0)
+            if ampm:
+                time_label = f"{hour_i}:{minute_i:02d} {ampm.upper()}"
+            else:
+                suffix = "AM" if hour_i < 12 else "PM"
+                hour12 = hour_i % 12
+                if hour12 == 0:
+                    hour12 = 12
+                time_label = f"{hour12}:{minute_i:02d} {suffix}"
+            return date_label, time_label
+
+        compact_match = re.match(r"^([A-Za-z]{3,9}\.?\s+\d{1,2}(?:,\s*\d{4})?)(?:\s+(.+))?$", text)
+        if compact_match:
+            return compact_match.group(1).strip(), str(compact_match.group(2) or "").strip()
+
+        return text, ""
 
     def _build_nav_tabs(self, destinations: list[dict[str, Any]], trip_meta: dict[str, Any] | None = None) -> str:
         """Build tab-btn buttons (data-tab=section-{id}) + Google Maps link."""
@@ -270,6 +337,8 @@ class HTMLAssembler:
         dest: dict[str, Any],
         trip_meta: dict[str, Any],
         previous_name: str = "",
+        previous_route_target: str = "",
+        current_route_target: str = "",
         *,
         is_last: bool = False,
     ) -> str:
@@ -303,11 +372,13 @@ class HTMLAssembler:
         section += self._build_environment_card(ai, dest)
 
         # Getting here + en-route stops
-        section += self._build_getting_here(ai, dest, previous_name)
-
-        # Final leg departure guidance for the last destination (PR-029)
-        if is_last:
-            section += self._build_getting_there(ai, dest, trip_meta)
+        section += self._build_getting_here(
+            ai,
+            dest,
+            previous_name,
+            previous_route_target=previous_route_target,
+            current_route_target=current_route_target,
+        )
 
         # Attractions + scenic drives/viewpoints
         section += self._build_attractions(ai, drives, dest.get("name", ""))
@@ -320,6 +391,11 @@ class HTMLAssembler:
 
         # Dinner recommendations
         section += self._build_restaurants(ai, dest["name"])
+
+        # Final leg departure guidance for the last destination is rendered as a
+        # separate trailing card so it does not displace inbound route context.
+        if is_last:
+            section += self._build_getting_there(ai, dest, trip_meta)
 
         # Collapsible debug block (opt-in only)
         if self._config.get("render", {}).get("show_debug_block", False):
@@ -364,7 +440,7 @@ class HTMLAssembler:
         weather_url = self._build_weather_url(dest)
         if weather_url:
             pills.append(
-                f'<a href="{weather_url}" target="_blank" rel="noopener" class="notion-header-btn">Current Weather</a>'
+                f'<a href="{weather_url}" class="notion-header-btn">Current Weather</a>'
             )
         attractions_map_url = self._build_destination_attractions_map_url(
             str(dest.get("name", "") or ""),
@@ -372,11 +448,11 @@ class HTMLAssembler:
         )
         if attractions_map_url:
             pills.append(
-                f'<a href="{self._safe_href(attractions_map_url)}" target="_blank" rel="noopener" class="notion-header-btn">Attractions Map</a>'
+                f'<a href="{self._safe_href(attractions_map_url)}" class="notion-header-btn">Attractions Map</a>'
             )
         if nps_code and self._is_us_destination(dest):
             pills.append(
-                f'<a href="https://www.nps.gov/{nps_code}/" target="_blank" rel="noopener" class="notion-header-btn">NPS</a>'
+                f'<a href="https://www.nps.gov/{nps_code}/" class="notion-header-btn">NPS</a>'
             )
         for link in links:
             url = self._normalize_external_url(link.get("url", ""))
@@ -384,7 +460,7 @@ class HTMLAssembler:
                 continue
             label = html_escape.escape(link.get("label", "Plans"))
             pills.append(
-                f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener" class="notion-header-btn">{label}</a>'
+                f'<a href="{self._safe_href(url)}" class="notion-header-btn">{label}</a>'
             )
         return "".join(pills)
 
@@ -415,20 +491,17 @@ class HTMLAssembler:
         dest_label = str(dest_name or "").strip()
         qualified = [self._maps_fallback_query_text(name, dest_label) for name in names]
 
-        # Single item: open a focused search query directly.
+        # Single item: open a focused destination-scoped search query directly.
         if len(qualified) == 1:
             return f"https://www.google.com/maps/search/?api=1&query={quote(qualified[0])}"
 
-        # Multiple items: build a route-style map with destination-scoped waypoints.
-        origin = dest_label or names[0]
-        params = [
-            "api=1",
-            f"origin={quote(origin)}",
-            f"destination={quote(origin)}",
-            "travelmode=driving",
-            "waypoints=" + quote("|".join(qualified), safe="|"),
-        ]
-        return "https://www.google.com/maps/dir/?" + "&".join(params)
+        # Multiple items: emit a simple destination-scoped query that passes
+        # single-result URL policy checks (no multi-name compound query).
+        if dest_label:
+            return f"https://www.google.com/maps/search/?api=1&query={quote(dest_label)}"
+
+        # Fallback without destination context.
+        return f"https://www.google.com/maps/search/?api=1&query={quote(', '.join(qualified))}"
 
     def _build_intro_note(self, dest: dict[str, Any], events: dict[str, Any]) -> str:
         title = html_escape.escape(dest.get("name", ""))
@@ -478,6 +551,9 @@ class HTMLAssembler:
         distance = str(getting_there.get("distance_miles", "") or "").strip()
         drive_time = str(getting_there.get("drive_time", "") or "").strip()
         route_options = getting_there.get("route_options", []) or []
+        return_date_label, return_time_label = self._format_trip_datetime_label(
+            str((trip_meta or {}).get("return_datetime", "") or "")
+        )
         if not return_name and not route_summary and not route_options:
             return ""
 
@@ -488,11 +564,11 @@ class HTMLAssembler:
         gmaps_url = ""
         if return_name:
             pseudo_dest = {"name": return_name}
-            gmaps_url = self._build_route_gmaps_url(dest.get("name", ""), pseudo_dest, route_options)
+            gmaps_url = self._build_route_gmaps_url("", pseudo_dest, route_options)
 
-        html = '<div class="card getting-here-card getting-here-subcard">\n'
+        html = '<div class="card getting-here-card getting-here-subcard departure-route-card">\n'
         html += '  <div class="getting-here-header">\n'
-        html += '    <h3>↩️ Getting There</h3>\n'
+        html += '    <h3>↩️ Departure Route Options</h3>\n'
         if gmaps_url:
             html += f'    <a href="{gmaps_url}" target="_blank" rel="noopener" class="gmaps-link">Open in Google Maps →</a>\n'
         html += '  </div>\n'
@@ -512,17 +588,31 @@ class HTMLAssembler:
         if route_summary:
             html += f'  <p class="route-summary">{html_escape.escape(route_summary)}</p>\n'
 
-        if route_options:
+        if return_date_label or return_time_label:
+            return_anchor = " ".join(part for part in [return_date_label, return_time_label] if part).strip()
+            html += f'  <p class="route-summary"><strong>Return anchor:</strong> {html_escape.escape(return_anchor)}</p>\n'
+
+        renderable_route_options: list[dict[str, Any]] = []
+        for opt in route_options:
+            title = str(opt.get("title", "") or "").strip()
+            if not title:
+                continue
+            url, _is_map_fallback = self._select_preferred_external_link(opt, section="en_route_stop")
+            if not url:
+                continue
+            renderable_route_options.append({"title": title, "url": url, "opt": opt})
+
+        if renderable_route_options:
             html += '  <div class="can-miss-header">🧭 DEPARTURE ROUTE OPTIONS</div>\n'
             html += '  <div class="en-route-stops">\n'
-            for opt in route_options:
-                title = str(opt.get("title", "") or "").strip()
-                if not title:
-                    continue
-                url = self._normalize_external_url(opt.get("url", ""))
+            for item in renderable_route_options:
+                title = item["title"]
+                url = item["url"]
+                opt = item["opt"]
+                source_icon = self._link_source_icon(url)
                 name_html = (
-                    f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{html_escape.escape(title)}</a>'
-                    if url else html_escape.escape(title)
+                    f'<a href="{self._safe_href(url)}">{html_escape.escape(title)}</a>'
+                    f' <span class="attr-external-link" title="link source">{source_icon}</span>'
                 )
                 dist = str(opt.get("distance_or_duration", "") or "").strip()
                 detour_html = f' <span class="stop-detour">({html_escape.escape(dist)})</span>' if dist else ""
@@ -587,7 +677,7 @@ class HTMLAssembler:
             html += f'  <p class="env-summary">{summary}</p>\n'
             weather_url = self._build_weather_url(dest)
             if weather_url:
-                html += f'  <a href="{weather_url}" target="_blank" rel="noopener" class="weather-link">Current Weather</a>\n'
+                html += f'  <a href="{weather_url}" class="weather-link">Current Weather</a>\n'
             html += '</div>\n'
             html += '</div>\n'
             return html
@@ -664,8 +754,28 @@ class HTMLAssembler:
             text = text[:157].rstrip() + "..."
         return text
 
-    def _build_route_gmaps_url(self, previous_name: str, dest: dict, stops: list) -> str:
-        """Build Google Maps URL with names and named waypoints."""
+    @staticmethod
+    def _route_waypoint_sort_key(stop: Any) -> tuple[int, float]:
+        if not isinstance(stop, dict):
+            return (1, 0.0)
+        value = stop.get("route_progress_ratio")
+        try:
+            ratio = float(value)
+        except (TypeError, ValueError):
+            ratio = 0.0
+        if stop.get("route_waypoint_eligible") is False:
+            return (1, 0.0)
+        return (0, ratio)
+
+    def _build_route_gmaps_url(
+        self,
+        previous_name: str,
+        dest: dict,
+        stops: list,
+        *,
+        waypoint_scope_name: str = "",
+    ) -> str:
+        """Build a Google Maps directions URL with destination and waypoints."""
         destination = dest.get("name", "")
         if not destination:
             return ""
@@ -674,13 +784,63 @@ class HTMLAssembler:
         if previous_name:
             params.append(f"origin={quote(previous_name)}")
 
-        waypoint_names = [stop.get("name", "") for stop in stops[:8] if stop.get("name")]
+        waypoint_names: list[str] = []
+        destination_name = str(destination or "").strip()
+        waypoint_scope = str(waypoint_scope_name or destination_name).strip()
+        ordered_stops = sorted(
+            [stop for stop in stops if isinstance(stop, dict) and stop.get("route_waypoint_eligible") is not False],
+            key=self._route_waypoint_sort_key,
+        )
+        for stop in ordered_stops[:8]:
+            stop_name = str(stop.get("name", "") or "").strip()
+            if not stop_name:
+                continue
+            if waypoint_scope and self._looks_location_qualified(waypoint_scope):
+                waypoint_names.append(self._maps_fallback_query_text(stop_name, waypoint_scope))
+            else:
+                waypoint_names.append(stop_name)
         if waypoint_names:
             params.append("waypoints=" + quote("|".join(waypoint_names), safe="|"))
-
         return "https://www.google.com/maps/dir/?" + "&".join(params)
 
-    def _build_getting_here(self, ai: dict, dest: dict, previous_name: str) -> str:
+    def _build_destination_scope_maps_url(self, destination_name: str = "", source_url: str = "") -> str:
+        candidate = str(destination_name or "").strip()
+        if not candidate and source_url:
+            normalized = self._normalize_external_url(source_url)
+            if self._is_maps_directions_url(normalized):
+                try:
+                    parsed = urlparse(normalized)
+                    query_values = parse_qs(parsed.query)
+                    for key in ("destination", "q", "query"):
+                        values = query_values.get(key, [])
+                        if values:
+                            candidate = str(values[0] or "").strip()
+                            break
+                except Exception:
+                    candidate = ""
+        if not candidate:
+            return ""
+        return f"https://www.google.com/maps/search/?api=1&query={quote(candidate)}"
+
+    @staticmethod
+    def _destination_route_target(dest: dict[str, Any] | None) -> str:
+        if not isinstance(dest, dict):
+            return ""
+        lodging = dest.get("lodging", {}) if isinstance(dest.get("lodging", {}), dict) else {}
+        lodging_location = str(lodging.get("location", "") or "").strip()
+        if lodging_location:
+            return lodging_location
+        return str(dest.get("name", "") or "").strip()
+
+    def _build_getting_here(
+        self,
+        ai: dict,
+        dest: dict,
+        previous_name: str,
+        *,
+        previous_route_target: str = "",
+        current_route_target: str = "",
+    ) -> str:
         gh = ai.get("getting_here", {})
         if not gh:
             return ""
@@ -692,8 +852,13 @@ class HTMLAssembler:
         if previous_name:
             route_label = f'{self._short_place_name(previous_name)} → {self._short_place_name(dest.get("name", ""))}'
 
-        # Build Google Maps URL with named waypoints
-        gmaps_url = self._build_route_gmaps_url(previous_name, dest, stops)
+        route_destination = {"name": current_route_target or dest.get("name", "")}
+        gmaps_url = self._build_route_gmaps_url(
+            previous_route_target or previous_name,
+            route_destination,
+            stops,
+            waypoint_scope_name=str(dest.get("name", "") or ""),
+        )
         
         # Icon map for stop types
         stop_icons = {
@@ -734,19 +899,33 @@ class HTMLAssembler:
             html += f'  <p class="route-summary">{route_summary}</p>\n'
         
         if stops:
+            visible_stops: list[tuple[dict[str, Any], str, bool]] = []
+            ordered_stops = sorted(
+                [stop for stop in stops if not (isinstance(stop, dict) and stop.get("route_waypoint_eligible") is False)],
+                key=self._route_waypoint_sort_key,
+            )
+            for stop in ordered_stops:
+                preferred_url, is_map_fallback = self._select_preferred_external_link(stop, section="en_route_stop")
+                if preferred_url:
+                    visible_stops.append((stop, preferred_url, is_map_fallback))
+                elif self._should_render_without_url(stop, section="en_route_stop"):
+                    visible_stops.append((stop, "", is_map_fallback))
+
+        if stops and visible_stops:
             html += '  <div class="can-miss-header">🧭 CAN\'T-MISS ENROUTE</div>\n'
             html += '  <div class="en-route-stops">\n'
-            for stop in stops:
-                url = self._normalize_external_url(stop.get("url", ""))
-                if not url:
-                    query = quote(f"{stop.get('name', '')} {dest.get('name', '')}")
-                    url = f"https://www.google.com/maps/search/?api=1&query={query}"
+            for stop, url, is_map_fallback in visible_stops:
                 stop_type = self._infer_stop_type(stop).lower()
                 icon = stop_icons.get(stop_type, "📍")
-                name_html = (
-                    f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{html_escape.escape(stop.get("name", ""))}</a>'
-                    if url else stop["name"]
-                )
+                stop_name = html_escape.escape(str(stop.get("name", "") or ""))
+                if url:
+                    source_icon = self._link_source_icon(url)
+                    name_html = (
+                        f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{stop_name}</a>'
+                        f' <span class="attr-external-link" title="link source">{source_icon}</span>'
+                    )
+                else:
+                    name_html = stop_name
                 detour_parts: list[str] = []
                 detour_miles = stop.get("detour_distance_miles")
                 detour_minutes = stop.get("detour_time_minutes")
@@ -757,12 +936,34 @@ class HTMLAssembler:
                 detour_html = ""
                 if detour_parts:
                     detour_html = f' <span class="stop-detour">({html_escape.escape(" | ".join(detour_parts))})</span>'
-                description = html_escape.escape(str(stop.get("description", "") or "").strip())
+                description_raw = str(stop.get("description", "") or "").strip()
+                practical_note_raw = str(stop.get("practical_note", "") or "").strip()
+                if practical_note_raw and practical_note_raw.casefold() == description_raw.casefold():
+                    practical_note_raw = ""
+
+                rating_value = stop.get("rating")
+                rating_text = str(stop.get("raw_rating") or "").strip()
+                if not rating_text and rating_value is not None:
+                    try:
+                        rating_text = f"{float(rating_value):.1f}"
+                    except (TypeError, ValueError):
+                        rating_text = str(rating_value).strip()
+                if not rating_text:
+                    rating_text, description_raw = self._extract_rating_badge_and_clean_text(description_raw)
+                if not rating_text:
+                    rating_text, practical_note_raw = self._extract_rating_badge_and_clean_text(practical_note_raw)
+                rating_badge_html = (
+                    f' <span class="badge badge-rating">★ {html_escape.escape(rating_text)}</span>' if rating_text else ""
+                )
+
+                description = html_escape.escape(description_raw)
+                practical_note = html_escape.escape(practical_note_raw)
+                note_html = f'<div class="stop-note">{practical_note}</div>' if practical_note else ""
                 html += (
                     f'    <div class="stop-card">'
                     f'<span class="stop-icon">{icon}</span>'
-                    f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}'
-                    f'<div class="stop-desc">{description}</div></div>'
+                    f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}{rating_badge_html}'
+                    f'<div class="stop-desc">{description}</div>{note_html}</div>'
                     f'</div>\n'
                 )
             html += '  </div>\n'
@@ -772,6 +973,10 @@ class HTMLAssembler:
     def _short_place_name(self, name: str) -> str:
         short = name.replace("National Park", "NP").replace("State Park", "SP")
         return " ".join(short.split())
+
+    @staticmethod
+    def _normalize_attraction_name_for_dedup(name: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
 
     def _build_attractions(self, ai: dict, drives: list[dict[str, Any]], dest_name: str = "") -> str:
         attrs = ai.get("top_attractions", [])
@@ -803,40 +1008,112 @@ class HTMLAssembler:
             "historic": "Historic Route",
         }
 
-        html = '<div class="card attractions-card">\n<h3>🏔️ Top Attractions</h3>\n<div class="attraction-list">\n'
+        # "Must-See" is a deterministic badge, not the LLM's opinion: the model's
+        # own must_see flag is unverified and identical to a word the system
+        # prompt otherwise bans from prose ("must-see"). It qualifies here only
+        # when backed by verified rating/review data attached during URL
+        # discovery, same as the general >=4.0/10-reviews inclusion bar but
+        # stricter -- capped to the top MUST_SEE_MAX_BADGES per destination so
+        # the badge stays meaningful (see docs/design/url-discovery-and-audit.md).
+        def _qualifies_for_must_see_badge(candidate: dict[str, Any]) -> bool:
+            rating = candidate.get("rating")
+            votes = candidate.get("votes")
+            try:
+                rating_f = float(rating) if rating not in (None, "") else None
+            except (TypeError, ValueError):
+                rating_f = None
+            try:
+                votes_i = int(votes) if votes not in (None, "") else None
+            except (TypeError, ValueError):
+                votes_i = None
+            return (
+                rating_f is not None
+                and rating_f >= self._MUST_SEE_MIN_RATING
+                and votes_i is not None
+                and votes_i >= self._MUST_SEE_MIN_VOTES
+            )
+
+        qualifying = [a for a in attrs if isinstance(a, dict) and _qualifies_for_must_see_badge(a)]
+        qualifying.sort(key=lambda a: (-(float(a.get("rating") or 0)), -(int(a.get("votes") or 0))))
+        must_see_ids = {id(a) for a in qualifying[: self._MUST_SEE_MAX_BADGES]}
+
+        attraction_rows: list[str] = []
+        rendered_attraction_names: set[str] = set()
         for attr in attrs:
-            url = self._normalize_external_url(attr.get("url", ""))
-            if not url:
-                query = quote(self._maps_fallback_query_text(str(attr.get('name', '') or ""), dest_name))
-                url = f"https://www.google.com/maps/search/?api=1&query={query}"
+            url, _is_map_fallback = self._select_preferred_external_link(attr, section="attraction")
+            if not url and not self._should_render_without_url(attr, section="attraction"):
+                continue
+            rendered_attraction_names.add(self._normalize_attraction_name_for_dedup(str(attr.get("name", "") or "")))
             attr_type = attr.get("type", "attraction").lower()
             icon = type_icons.get(attr_type, "📍")
-            
-            name_html = (
-                f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener" class="attr-link">{html_escape.escape(attr.get("name", ""))}</a>'
-                if url else html_escape.escape(attr.get("name", ""))
-            )
+            attr_name = html_escape.escape(str(attr.get("name", "") or ""))
+            if url:
+                source_icon = self._link_source_icon(url)
+                name_html = (
+                    f'<a href="{self._safe_href(url)}" class="attr-link" target="_blank" rel="noopener">{attr_name}</a>'
+                    f'<span class="attr-external-link" title="link source">{source_icon}</span>'
+                )
+            else:
+                name_html = attr_name
             
             diff = attr.get("difficulty", "")
-            dur = attr.get("duration", "")
-            must = attr.get("must_see", False)
+            dur_raw = str(attr.get("duration", "") or "").strip()
+            dur = dur_raw if dur_raw and dur_raw.lower() != "n/a" and dur_raw.lower() != "na" else ""
+            distance_raw = attr.get("distance_miles")
+            distance_value = str(distance_raw).strip() if distance_raw not in (None, "") else ""
+            if distance_value and distance_value.lower() not in {"n/a", "na"}:
+                try:
+                    distance_display = f"{float(float(distance_value)):.1f} mi" if float(distance_value) % 1 else f"{float(distance_value):.0f} mi"
+                except (TypeError, ValueError):
+                    distance_display = f"{distance_value} mi"
+            else:
+                distance_display = ""
+            elevation_raw = attr.get("elevation_gain_feet")
+            elevation_value = str(elevation_raw).strip() if elevation_raw not in (None, "") else ""
+            if elevation_value and elevation_value.lower() not in {"n/a", "na"}:
+                try:
+                    elevation_display = f"{int(float(elevation_value))} ft"
+                except (TypeError, ValueError):
+                    elevation_display = f"{elevation_value} ft"
+            else:
+                elevation_display = ""
+            must = id(attr) in must_see_ids
             note = attr.get("practical_note", "")
-            
+
+            attr_rating_value = attr.get("rating")
+            attr_rating_text = str(attr.get("raw_rating") or "").strip()
+            if not attr_rating_text and attr_rating_value is not None:
+                try:
+                    attr_rating_text = f"{float(attr_rating_value):.1f}"
+                except (TypeError, ValueError):
+                    attr_rating_text = str(attr_rating_value).strip()
+
             diff_class = difficulty_colors.get(diff, "")
             diff_html = f'<span class="badge {diff_class}">{diff}</span>' if diff and diff_class else ""
             dur_html = f'<span class="badge badge-duration">{dur}</span>' if dur else ""
+            distance_html = f'<span class="badge badge-distance">{html_escape.escape(distance_display)}</span>' if distance_display else ""
+            elevation_html = f'<span class="badge badge-elevation">{html_escape.escape(elevation_display)}</span>' if elevation_display else ""
+            rating_html = f'<span class="badge badge-rating">★ {html_escape.escape(attr_rating_text)}</span>' if attr_rating_text else ""
             must_html = '<span class="badge badge-mustsee">Must-See</span>' if must else ""
+            # Seed attractions are the traveler's own explicit requests
+            # (docs/requirements.md §3.4), distinct from Must-See's verified-
+            # quality signal -- surfaced first since it's the more personal claim.
+            seed_html = '<span class="badge badge-seed">Your Pick</span>' if attr.get("is_seed") else ""
             note_html = f'<span class="practical-note">📌 {note}</span>' if note else ""
-            
-            html += (
+
+            attraction_rows.append(
                 f'  <div class="attr-item">'
                 f'<div class="attr-header attr-header-inline">'
                 f'<span class="attr-icon">{icon}</span>'
                 f'<span class="attr-name">{name_html}</span>'
                 f'<div class="attr-badges attr-badges-inline">'
+                f'{seed_html}'
                 f'{must_html}'
+                f'{rating_html}'
                 f'{diff_html}'
                 f'{dur_html}'
+                f'{distance_html}'
+                f'{elevation_html}'
                 f'</div>'
                 f'</div>'
                 f'<span class="attr-desc">{html_escape.escape(str(attr.get("description", "") or ""))}</span>'
@@ -844,16 +1121,29 @@ class HTMLAssembler:
                 f'</div>\n'
             )
 
+        if not attraction_rows and not drives:
+            return ""
+
+        html = '<div class="card attractions-card">\n<h3>🏔️ Top Attractions</h3>\n<div class="attraction-list">\n'
+        html += "".join(attraction_rows)
+
         for drive in drives:
             title = drive.get("title", "")
             if not title:
+                continue
+            # A scenic drive that shares its name with an already-rendered
+            # attraction (e.g. "Inspiration Point" appearing as both a
+            # top_attraction and a scenic-drive item for the same destination)
+            # must not render twice -- the attraction card, which carries a
+            # real link/description, wins; the redundant drive card is dropped.
+            if self._normalize_attraction_name_for_dedup(title) in rendered_attraction_names:
                 continue
             safe = title.replace('"', '&quot;').replace("'", "&#39;")
             category = scenic_badges.get(drive.get("category", "drive"), "Scenic Drive")
             duration = drive.get("distance_or_duration", "")
             description = drive.get("description", "")
             # PR-003: card shows first-sentence teaser; popup shows full description via DRIVE_DESCRIPTIONS
-            first_sentence = description.split(".")[0].strip()
+            first_sentence = self._first_sentence(description)
             card_desc = (first_sentence + ".") if first_sentence and not first_sentence.endswith((".", "!", "?")) else first_sentence
             duration_html = (
                 f'<span class="badge badge-duration">{html_escape.escape(duration)}</span>'
@@ -882,25 +1172,11 @@ class HTMLAssembler:
 
     def _build_schedule(self, ai: dict, drives: list, dest_name: str) -> str:
         schedule = ai.get("possible_daily_schedule", [])
-        
-        # Only synthesize when schedule content is actually absent; preserve
-        # valid one-day arrival-aware schedules produced upstream.
+        # Renderer is fail-closed for schedule content. If upstream generation
+        # produced no normalized schedule, omit this card rather than inventing
+        # day plans that can conflict with travel-window rationalization.
         if not schedule:
-            attrs = ai.get("top_attractions", [])
-            restaurants = ai.get("dinner_recommendations", [])
-            
-            if attrs and len(attrs) > 0:
-                dinner_name = restaurants[0].get("name", "a listed restaurant") if restaurants else "a listed restaurant"
-                schedule = [{
-                    "day_label": "Day 1",
-                    "periods": [
-                        {"period": "Morning", "summary": f"Start with {attrs[0]['name']}; plan for 2–3 hours."},
-                        {"period": "Afternoon", "summary": f"Continue with {attrs[1]['name'] if len(attrs) > 1 else 'exploration'} and nearby viewpoints."},
-                        {"period": "Evening", "summary": f"Dinner at {dinner_name}, then sunset viewing if conditions are clear."},
-                    ],
-                }]
-            else:
-                return ""
+            return ""
         
         html = '<div class="card schedule-card">\n<h3>⏰ Possible Daily Schedule</h3>\n'
         period_icons = {"morning": "🌅", "afternoon": "☀️", "evening": "🌙", "plan": "🗺️"}
@@ -939,15 +1215,7 @@ class HTMLAssembler:
                 html += f'  </div>\n'
             html += '</div>\n'
         else:
-            html += '<div class="schedule-day">\n'
-            html += '  <div class="schedule-day-title">Day 1</div>\n'
-            html += '<ol class="schedule-list">\n'
-            for i, item in enumerate(schedule):
-                period = ["Morning", "Afternoon", "Evening"][i % 3]
-                icon = period_icons.get(period.lower(), "🗺️")
-                html += f'  <li class="schedule-item"><span class="schedule-time-inline"><span class="schedule-icon">{icon}</span> {period}</span> {html_escape.escape(str(item))}</li>\n'
-            html += '</ol>\n'
-            html += '</div>\n'
+            return ""
 
         html += '</div>\n'
         return html
@@ -984,18 +1252,11 @@ class HTMLAssembler:
             for ev in events.get("events", []):
                 url = self._normalize_external_url(ev.get("url", ""))
                 if not url:
-                    query_text = " ".join(
-                        p for p in [
-                            str(ev.get("name", "") or "").strip(),
-                            str(ev.get("venue", "") or "").strip(),
-                            dest_name,
-                        ]
-                        if p
-                    )
-                    if query_text:
-                        url = f"https://www.google.com/search?q={quote(query_text)}"
+                    # Omit fallback link when no canonical event URL is available;
+                    # generic search queries fail strict single-result validation.
+                    pass
                 name_html = (
-                    f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener" class="event-link">{html_escape.escape(str(ev.get("name", "") or ""))}</a>'
+                    f'<a href="{self._safe_href(url)}" class="event-link" target="_blank" rel="noopener">{html_escape.escape(str(ev.get("name", "") or ""))}</a>'
                     if url else ev.get("name", "")
                 )
                 date_str = ev.get("dates_in_range", "") or ev.get("date", "")
@@ -1023,69 +1284,371 @@ class HTMLAssembler:
             html += f'<p>{honest}</p>\n'
             tip = events.get("local_tip", "")
             if tip:
-                tip_query = quote(f"{tip} {dest_name}")
-                tip_url = f"https://www.google.com/search?q={tip_query}"
                 html += (
-                    f'<p class="local-tip"><strong>Local tip:</strong> {html_escape.escape(str(tip))} '
-                    f'<a href="{self._safe_href(tip_url)}" target="_blank" rel="noopener" class="event-link">More info</a></p>\n'
+                    f'<p class="local-tip"><strong>Local tip:</strong> {html_escape.escape(str(tip))}</p>\n'
                 )
         html += '</div>\n'
         return html
+
+    _MUST_SEE_MIN_RATING = 4.5
+    _MUST_SEE_MIN_VOTES = 20
+    _MUST_SEE_MAX_BADGES = 2
+
+    _RATING_TEXT_PATTERN = re.compile(
+        r"(?:rated\s+|with\s+an?\s+(?:average\s+)?rating\s+of\s+)?"
+        r"(\d+(?:\.\d+)?)\s*(?:/\s*5\b|out\s+of\s+5\b|stars?\b)"
+        r"(?:\s*\((\d[\d,]*)\s*reviews?\))?",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _extract_rating_badge_and_clean_text(text: str) -> tuple[str, str]:
+        """Pull a "4.5 stars (230 reviews)"-style rating mention out of free text
+        into a badge value, and return the text with that mention removed.
+
+        En-route stops never went through the same rating->badge extraction
+        attractions/restaurants get, so a rating baked into AI-generated prose
+        stayed there verbatim instead of becoming a ★ badge like everywhere else.
+        """
+        raw = str(text or "").strip()
+        if not raw:
+            return "", raw
+        match = HTMLAssembler._RATING_TEXT_PATTERN.search(raw)
+        if not match:
+            return "", raw
+        rating_value = match.group(1)
+        votes = match.group(2)
+        badge_text = f"{rating_value} ({votes} reviews)" if votes else rating_value
+        cleaned = raw[: match.start()] + raw[match.end():]
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        cleaned = re.sub(r"\(\s*\)", "", cleaned)
+        cleaned = re.sub(r"\s+([.,;:])", r"\1", cleaned)
+        cleaned = cleaned.strip(" -:|,;.")
+        return badge_text, cleaned
+
+    @staticmethod
+    def _sanitize_restaurant_display_name(name: str) -> str:
+        cleaned = str(name or "").strip()
+        if not cleaned:
+            return ""
+        cleaned = re.sub(
+            r"\s*(?:[-–—]\s*)?(?:\d+(?:\.\d+)?\s*(?:/\s*5|stars?)\s*(?:[\$#]{1,4})?|[\$#]{1,4}|(?:[\$#]{1,4})\s*\d+(?:\.\d+)?\s*(?:/\s*5|stars?)|[-–—]\s*\d+(?:\.\d+)?\s*(?:/\s*5|stars?))\s*$",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:|,;")
+        return cleaned
+
+    @staticmethod
+    def _should_render_without_url(item: dict[str, Any], *, section: str) -> bool:
+        if not isinstance(item, dict):
+            return False
+        name = str(item.get("name", "") or "").strip()
+        description = str(item.get("description", "") or "").strip()
+        practical_note = str(item.get("practical_note", "") or "").strip()
+        text_blob = " ".join(part for part in (description, practical_note) if part).strip()
+        if not text_blob and not name:
+            return False
+
+        if section == "restaurant":
+            if not name:
+                return False
+            if item.get("maps_url") and HTMLAssembler._is_maps_search_url(str(item.get("maps_url", ""))):
+                return False
+            if description.lower() in {"source", "source maps", "maps", "locally surfaced dinner option", "locally surfaced dinner option."}:
+                return True
+            if any(marker in description.lower() for marker in ("missing links", "fallback map", "source maps", "google.com/maps/search", "no link")):
+                return False
+            return True
+
+        if section == "attraction":
+            # Seed attractions are user-requested anchors (requirements.md §3.4) and
+            # must never silently vanish just because they lack a rich enough
+            # description or metadata to clear the generic no-url render bar.
+            if item.get("is_seed") and name:
+                return True
+            metadata_fields = [
+                item.get("difficulty", ""),
+                item.get("distance_miles", ""),
+                item.get("elevation_gain_feet", ""),
+                item.get("duration", ""),
+                item.get("must_see", ""),
+                item.get("practical_note", ""),
+            ]
+            if any(str(value).strip() for value in metadata_fields if value not in (None, "", "N/A", "n/a", "NA", "na")):
+                return True
+            if not text_blob:
+                return False
+            lower = text_blob.lower()
+            if any(marker in lower for marker in ("source maps", "fallback map", "missing links", "google.com/maps/search", "maps search", "no link")):
+                return False
+            return len(re.findall(r"[A-Za-z0-9]+", text_blob)) >= 8
+
+        if section == "en_route_stop":
+            if not text_blob:
+                return bool(name)
+            token_count = len(re.findall(r"[A-Za-z0-9]+", text_blob))
+            return token_count >= 6
+
+        return bool(text_blob and len(re.findall(r"[A-Za-z0-9]+", text_blob)) >= 6)
 
     def _build_restaurants(self, ai: dict, dest_name: str) -> str:
         rests = ai.get("dinner_recommendations", [])
         if not rests:
             return ""
-        html = '<div class="card restaurants-card">\n<h3>🍽️ Dinner Recommendations</h3>\n<div class="restaurant-list">\n'
+        rows: list[str] = []
         for rest in rests:
-            # Prefer the discovered URL (maps place, official site, or directory listing)
-            # and fall back to maps search only when we have no usable URL.
-            url = self._normalize_external_url(rest.get("url", ""))
-            if self._is_maps_directions_url(url):
-                url = ""
+            # Only render canonical discovered URLs as primary restaurant links.
+            # Ambiguous maps/search fallbacks remain metadata for optional manual use.
+            url, _is_map_fallback = self._select_preferred_external_link(rest, section="restaurant")
             if not url:
-                url = self._normalize_external_url(rest.get("maps_url", ""))
-            if self._is_maps_directions_url(url):
-                url = ""
-            if not url:
-                query = quote(self._maps_fallback_query_text(str(rest.get('name', '') or ""), dest_name))
-                url = f"https://www.google.com/maps/search/?api=1&query={query}"
-            name_html = (
-                f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{rest["name"]}</a>'
-                if url else rest["name"]
-            )
+                maps_only = bool(rest.get("maps_url") and self._is_maps_search_url(str(rest.get("maps_url", ""))))
+                if maps_only:
+                    continue
+                if not self._should_render_without_url(rest, section="restaurant"):
+                    continue
+            rest_name_raw = str(rest.get("name", "") or "")
+            display_name = self._sanitize_restaurant_display_name(rest_name_raw)
+            rest_name = html_escape.escape(display_name or rest_name_raw)
+            if url:
+                source_icon = self._link_source_icon(url)
+                name_html = (
+                    f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{rest_name}</a>'
+                    f' <span class="attr-external-link" title="link source">{source_icon}</span>'
+                )
+            else:
+                name_html = rest_name
             cuisine = rest.get("cuisine", "")
             price = str(rest.get("price_range", "") or rest.get("price", "") or "").strip()
-            desc = rest.get("description", "")
+            rating_value = rest.get("rating")
+            raw_rating = str(rest.get("raw_rating") or "").strip()
+            rating_text = raw_rating
+            if not rating_text and rating_value is not None:
+                try:
+                    rating_text = f"{float(rating_value):.1f}"
+                except (TypeError, ValueError):
+                    rating_text = str(rating_value).strip()
+            desc = self._restaurant_description(rest, dest_name, bool(url), _is_map_fallback)
             reserve = rest.get("reserve_recommended", False)
-            
+
             # Cuisine badge
             cuisine_badge = f'<span class="badge cuisine-badge">{cuisine}</span>' if cuisine else ""
-            
+
             # Reserve recommendation badge
             reserve_badge = '<span class="badge badge-reserve">Reservations Recommended</span>' if reserve else ""
             price_badge = f'<span class="badge badge-price">{html_escape.escape(price)}</span>' if price else ""
-            
-            html += (
+            rating_badge = f'<span class="badge badge-rating">★ {html_escape.escape(rating_text)}</span>' if rating_text else ""
+
+            desc_html = f'    <span class="rest-desc">{html_escape.escape(desc)}</span>\n' if desc else ""
+            rows.append(
                 f'  <div class="rest-item">\n'
                 f'    <div class="rest-header rest-header-inline">\n'
                 f'      <span class="rest-name"><span class="rest-icon">🍽️</span> {name_html}</span>\n'
                 f'      <div class="rest-badges">\n'
                 f'        {cuisine_badge}\n'
+                f'        {rating_badge}\n'
                 f'        {price_badge}\n'
                 f'        {reserve_badge}\n'
                 f'      </div>\n'
                 f'    </div>\n'
-                f'    <span class="rest-desc">{desc}</span>\n'
+                f'{desc_html}'
                 f'  </div>\n'
             )
+
+        html = '<div class="card restaurants-card">\n<h3>🍽️ Dinner Recommendations</h3>\n<div class="restaurant-list">\n'
+        html += "".join(rows)
         html += '</div>\n</div>\n'
         return html
+
+    @staticmethod
+    def _restaurant_description(rest: dict[str, Any], dest_name: str, has_url: bool, is_map_fallback: bool) -> str:
+        desc = str(rest.get("description", "") or "").strip()
+        name = str(rest.get("name", "") or "").strip()
+        name = HTMLAssembler._sanitize_restaurant_display_name(name) or name
+        cuisine = str(rest.get("cuisine", "") or "").strip()
+        desc_lower = desc.lower()
+
+        if desc:
+            desc = re.sub(r"\bLinks?\s*[:\-].*$", "", desc, flags=re.IGNORECASE).strip(" -:|,;")
+            desc = re.sub(r"\b(?:Source|Maps?)\b\s*$", "", desc, flags=re.IGNORECASE).strip(" -:|,;")
+            desc = re.sub(r"(?i)\b(?:rating|review|stars?)\b\s*[:\-]?\s*\d+(?:\.\d+)?\s*(?:/\s*5|stars?)", "", desc)
+            desc = re.sub(r"(?i)\b(?:price|prices?)\b\s*[:\-]?\s*[\$#]{1,4}", "", desc)
+            desc = re.sub(r"\b\d+(?:\.\d+)?\s*(?:/\s*5|stars?)\b", "", desc, flags=re.IGNORECASE)
+            desc = re.sub(r"(?:^|[\s,;:])(?:[\$#]{1,4})+(?:[\s,;:]|$)", " ", desc)
+            desc = re.sub(r"\s+", " ", desc).strip(" -:|,;")
+
+        synthetic = False
+        if not desc:
+            synthetic = True
+        elif name and desc.lower() == name.lower():
+            synthetic = True
+        elif desc_lower in {str(cuisine).lower() for cuisine in (cuisine,)} and cuisine:
+            synthetic = True
+        elif desc.lower() in {"cafe", "american", "pizza", "mexican", "italian", "bbq", "barbecue", "seafood", "sushi", "ramen", "burger", "bistro", "grill", "brewpub", "bakery", "coffee", "steakhouse", "taqueria", "brasserie", "food", "diner"}:
+            synthetic = True
+        elif re.search(r"\b(source|maps?|links?)\b", desc, re.IGNORECASE) and len(desc.split()) <= 8:
+            synthetic = True
+        elif re.fullmatch(r"(?:\d+(?:\.\d+)?\s*(?:/\s*5|stars?)\s*(?:,\s*[\$#]{1,4})?(?:,\s*[A-Za-z][A-Za-z\- ]+)?|[\$#]{1,4}\s*(?:,\s*[A-Za-z][A-Za-z\- ]+)?)", desc, flags=re.IGNORECASE):
+            synthetic = True
+        elif desc_lower in {
+            "locally surfaced dinner option.",
+            "locally surfaced dinner option",
+            "local dinner option.",
+            "local dinner option",
+        }:
+            synthetic = True
+
+        if synthetic:
+            # Fail-closed: the renderer should not invent a generic teaser by repeating the
+            # restaurant name, destination name, or a fabricated "verify current hours" warning.
+            # When the underlying source text is weak or missing, render the header metadata
+            # without a teaser instead of manufacturing content.
+            return ""
+
+        if desc and desc.lower() not in {"source", "maps", "source maps", "links"}:
+            return desc
+        return ""
+
+    @staticmethod
+    def _restaurant_name_tickler(name: str) -> str:
+        lowered = str(name or "").strip().lower()
+        if not lowered:
+            return ""
+
+        cue_map: list[tuple[tuple[str, ...], str]] = [
+            (("wood fired pizza", "wood-fired pizza"), "Wood-fired pizza spot"),
+            (("pizza", "pizzeria"), "Pizza stop"),
+            (("sushi", "izakaya", "omakase"), "Sushi-focused dinner spot"),
+            (("ramen",), "Ramen-focused dinner spot"),
+            (("bbq", "barbecue", "smokehouse"), "Barbecue dinner spot"),
+            (("american", "american-style", "steakhouse", "steak"), "American-style dinner spot"),
+            (("taqueria", "taco", "mexican"), "Mexican-leaning dinner spot"),
+            (("burger", "burgers"), "Burger-focused dinner spot"),
+            (("seafood", "oyster"), "Seafood-forward dinner spot"),
+            (("cafe", "café", "coffee", "bakery"), "Cafe-style dinner spot"),
+            (("bistro", "brasserie"), "Bistro-style dinner spot"),
+            (("grill",), "Grill-style dinner spot"),
+        ]
+
+        for needles, label in cue_map:
+            if any(needle in lowered for needle in needles):
+                return label
+        return "Local dinner spot"
+
+    @staticmethod
+    def _first_sentence(text: str) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return ""
+
+        abbreviations = {
+            "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "ft", "vs",
+            "etc", "e.g", "i.e", "am", "pm", "us", "uk", "no", "fig",
+        }
+
+        sentence_chars = ".!?"
+        for index, ch in enumerate(raw):
+            if ch not in sentence_chars:
+                continue
+            prefix = raw[:index].rstrip()
+            last_token = prefix.rsplit(" ", 1)[-1].lower().strip(" ").strip(".,;:!?()[]{}\"'") if prefix else ""
+            if last_token in abbreviations:
+                continue
+            sentence = raw[: index + 1].strip()
+            return sentence
+        return raw
+
+    def _select_preferred_external_link(self, item: dict[str, Any], *, section: str = "generic") -> tuple[str, bool]:
+        canonical = self._normalize_external_url(item.get("url", ""))
+        if canonical and not self._is_maps_directions_url(canonical):
+            if self._is_maps_search_url(canonical):
+                if section == "restaurant":
+                    return canonical, False
+                if section == "en_route_stop":
+                    return canonical, True
+                return canonical, False
+            return canonical, False
+
+        if section == "restaurant":
+            maps_fallback = self._normalize_external_url(item.get("maps_url", ""))
+            if maps_fallback and not self._is_maps_directions_url(maps_fallback) and not self._is_maps_search_url(maps_fallback):
+                return maps_fallback, True
+            if canonical and self._is_maps_directions_url(canonical):
+                name = str(item.get("name", "") or "").strip()
+                if name:
+                    return self._build_destination_scope_maps_url(name), True
+            return "", False
+
+        if section == "attraction":
+            maps_fallback = self._normalize_external_url(item.get("maps_url", ""))
+            if maps_fallback and not self._is_maps_directions_url(maps_fallback) and not self._is_maps_search_url(maps_fallback):
+                return maps_fallback, True
+            if canonical and self._is_maps_directions_url(canonical):
+                name = str(item.get("name", "") or "").strip()
+                if name:
+                    return self._build_destination_scope_maps_url(name), True
+            return "", False
+
+        if section == "en_route_stop":
+            maps_fallback = self._normalize_external_url(item.get("maps_url", ""))
+            if maps_fallback:
+                if self._is_maps_directions_url(maps_fallback):
+                    name = str(item.get("name", "") or "").strip()
+                    if name:
+                        return self._build_destination_scope_maps_url(name), True
+                    return "", False
+                if self._is_maps_search_url(maps_fallback):
+                    if self._is_route_context_maps_search_url(maps_fallback):
+                        name = str(item.get("name", "") or "").strip()
+                        if name:
+                            return self._build_destination_scope_maps_url(name), True
+                        return "", False
+                    return maps_fallback, True
+                return maps_fallback, True
+            if canonical and self._is_maps_directions_url(canonical):
+                name = str(item.get("name", "") or "").strip()
+                if name:
+                    return self._build_destination_scope_maps_url(name), True
+            return "", False
+
+        return "", False
+
+    @staticmethod
+    def _link_source_icon(url: str) -> str:
+        lower = str(url or "").lower()
+        if "alltrails.com/trail/" in lower:
+            return "🥾"
+        if "google.com/maps" in lower or "maps.google.com" in lower or "maps.app.goo.gl" in lower:
+            return "🗺️"
+        return "🔗"
 
     @staticmethod
     def _is_maps_directions_url(url: str) -> bool:
         lower = str(url or "").lower()
         return "google.com/maps/dir/" in lower or "maps.google.com/maps/dir/" in lower
+
+    @staticmethod
+    def _is_maps_search_url(url: str) -> bool:
+        lower = str(url or "").lower()
+        if "google.com/maps/search" in lower:
+            return True
+        return "maps.google.com" in lower and "?q=" in lower
+
+    @staticmethod
+    def _is_route_context_maps_search_url(url: str) -> bool:
+        try:
+            parsed = urlparse(str(url or ""))
+            query = parse_qs(parsed.query)
+        except Exception:
+            return False
+        for key in ("query", "q"):
+            values = query.get(key, [])
+            for value in values:
+                lowered = str(value or "").lower()
+                if "route from" in lowered:
+                    return True
+        return False
 
     def _build_packing_summary(self, destinations: list[dict[str, Any]]) -> str:
         by_item: dict[str, set[str]] = {}
@@ -1145,14 +1708,14 @@ class HTMLAssembler:
             'font-size:0.8rem;color:#8B6347;line-height:1.5;text-align:center;">'
             'Generated by '
             '<a href="https://github.com/flysoftware-git/road-trip-generator" '
-            'target="_blank" rel="noopener">Road Trip Itinerary Generator</a>'
+            '>Road Trip Itinerary Generator</a>'
             f' v{html_escape.escape(str(version))} · Itinerary output: {html_escape.escape(shown_time)}'
             '<div style="margin-top:0.35rem;">'
             'Issue reporting: '
-            f'<a href="{broken_link_issue_link}" target="_blank" rel="noopener">'
+            f'<a href="{broken_link_issue_link}">'
             'Report broken links</a>'
             ' · '
-            f'<a href="{feedback_issue_link}" target="_blank" rel="noopener">'
+            f'<a href="{feedback_issue_link}">'
             'Share itinerary feedback</a>'
             '</div>'
             '</div>'
@@ -1173,6 +1736,7 @@ class HTMLAssembler:
         """Build DRIVE_DESCRIPTIONS keyed by raw title string (matches template JS lookup)."""
         result: dict[str, Any] = {}
         for dest in destinations:
+            dest_name = str(dest.get("name", "") or "").strip()
             for drive in dest.get("scenic_drives", []):
                 key = drive.get("title", "")
                 entry = {
@@ -1186,8 +1750,32 @@ class HTMLAssembler:
                 info_url = self._normalize_external_url(drive.get("url", ""))
                 if info_url:
                     entry["url"] = info_url
+                route_map_url = self._build_scenic_drive_route_map_url(drive, dest_name)
+                if route_map_url:
+                    entry["route_map_url"] = route_map_url
                 result[key] = entry
         return result
+
+    def _build_scenic_drive_route_map_url(self, drive: dict[str, Any], dest_name: str) -> str:
+        explicit_route = self._normalize_external_url(drive.get("route_map_url", ""))
+        if self._is_maps_directions_url(explicit_route):
+            return explicit_route
+
+        drive_url = self._normalize_external_url(drive.get("url", ""))
+        if self._is_maps_directions_url(drive_url):
+            return drive_url
+
+        drive_title = str(drive.get("title", "") or "").strip()
+        destination = " ".join(part for part in (drive_title, dest_name) if part).strip()
+        if not destination:
+            return ""
+
+        params = [
+            "api=1",
+            f"destination={quote(destination)}",
+            "travelmode=driving",
+        ]
+        return "https://www.google.com/maps/dir/?" + "&".join(params)
 
     def _clean_drive_description(self, description: Any) -> str:
         text = str(description or "").strip()
@@ -1240,9 +1828,6 @@ class HTMLAssembler:
             for term in (
                 "national park",
                 "state park",
-                "downtown",
-                "historic district",
-                "visitor center",
                 "utah",
                 "colorado",
                 "arizona",

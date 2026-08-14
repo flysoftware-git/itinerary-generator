@@ -13,11 +13,13 @@ template:
 ai:
   # Supported providers: openai | anthropic | deepseek | gemini | grok
   # Legacy compatibility: azure_openai
-  provider: "openai"
-  model: "gpt-4o-mini"
+  provider: "grok"
+  model: "grok-latest"
   temperature: 0.7
   max_tokens: 4096
-  enable_url_candidate_experiment: true
+  max_concurrent_destinations: 4
+  grok_max_concurrent_destinations: 1
+  enable_url_candidate_experiment: false
 
 # ── Azure OpenAI (legacy compatibility) ──────────────────────────────────────
 azure_openai:
@@ -35,7 +37,7 @@ azure_openai:
 # Key read from env: XAI_API_KEY
 grok_search:
   endpoint: "https://api.x.ai/v1/chat/completions"
-  model: "grok-2-latest"
+  model: "grok-latest"
   timeout_seconds: 15
   request_delay_seconds: 0.05
 
@@ -154,6 +156,16 @@ cultural_events:
 
 # ── URL discovery ─────────────────────────────────────────────────────────────
 url_discovery:
+  alltrails_source: direct_link_batch
+  attraction_source: direct_link_batch
+  restaurant_source: direct_link_batch
+  en_route_source: direct_link_batch
+  direct_batch_authoritative: true
+  direct_link_batch_count: 20
+  restaurant_direct_batch_item_count: 8
+  en_route_direct_batch_item_count: 8
+  restaurant_direct_batch_min_results: 4
+  en_route_direct_batch_min_results: 3
   max_attempts_per_item: 4
   verify_timeout_seconds: 10
   restaurant_passes: 2
@@ -166,15 +178,30 @@ url_discovery:
   alltrails_filter_max_miles: 4
   alltrails_filter_max_gain_feet: 1000
   alltrails_filter_min_reviews: 5
-  alltrails_filter_allowed_difficulties: ["easy", "moderate", "moderately challenging"]
-  max_alltrails_query_attempts: 5
-  max_restaurant_query_attempts: 3
+  alltrails_filter_allowed_difficulties: ["easy", "moderate"]
+  alltrails_apify_within_miles: 15
+  alltrails_apify_within_miles_by_destination:
+    "zion national park": 12
+    "zion": 12
+  alltrails_apify_destination_token_overlap_min: 1
+  alltrails_explore_filters:
+    within_miles: 10
+    activities: ["hiking"]
+    difficulties: ["easy", "moderate"]
+    max_length_miles: 3.0
+    max_gain_feet: 800
+    min_rating: 3
+  max_alltrails_query_attempts: 2
+  max_restaurant_query_attempts: 1
   alltrails_rating_min: 4.5
   alltrails_rating_min_votes: 200
   alltrails_rating_boost: 8
   restaurant_rating_min: 4.4
   restaurant_rating_min_votes: 100
   restaurant_rating_boost: 6
+  place_interest_min_rating: 4.0
+  place_interest_min_votes: 50
+  place_interest_require_metadata: false
   url_policy_mode: "enforce"
   url_policy_blocked_classes:
     - "google_search"
@@ -185,22 +212,26 @@ url_discovery:
   url_policy_auto_allow_from_output: false
   url_policy_output_path: "output/index.html"
   url_domain_denylist:
-    - "visitpagosasprings.com"
-    - "pagosabrewing.com"
+
   alltrails_slug_denylist:
     - "ajax-peak-trail"
-    - "jud-wiebe-trail"
-    - "jud-wiebe-memorial-trail"
-    - "bear-creek-trail"
-  restaurant_name_denylist:
-    - "Nello's Bistro"
-    - "La Casa Sena"
-    - "Pagosa Brewing & Grill"
-    - "Pagosa Brewing"
+    - "dixie-sugarloaf-trail"
+  restaurant_name_denylist: []
   max_scenic_drive_miles: 150
   uninterested_attraction_keywords:
     - "golf course"
+    - "golf club"
+    - " golf "
     - "country club"
+    - "bike trail"
+    - "bicycle trail"
+    - "cycling trail"
+    - "hospital"
+    - "medical center"
+    - "urgent care"
+    - "clinic"
+    - "emergency room"
+    - "not a tourist attraction"
   seasonal_uninterested:
     ski:
       keywords:

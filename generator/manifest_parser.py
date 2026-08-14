@@ -41,9 +41,29 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                     "type": "string",
                     "description": "Optional trip starting point used for full-route directions and first destination getting-here context.",
                 },
+                "departure_datetime": {
+                    "type": "string",
+                    "description": "Optional departure date/time anchor used for route overview labels and schedule feasibility guidance.",
+                },
                 "return": {
                     "type": "string",
                     "description": "Optional trip endpoint after the final destination for full-route directions.",
+                },
+                "return_datetime": {
+                    "type": "string",
+                    "description": "Optional return date/time anchor used for route overview labels and schedule feasibility guidance.",
+                },
+                "default_day_start_time": {
+                    "type": "string",
+                    "description": "Optional default local day start time (e.g., '10:00 AM') used by schedule realism when allocating transit and activities.",
+                },
+                "default_daily_activity_hours": {
+                    "type": "number",
+                    "description": "Optional default maximum activity hours per day used for schedule packing (default: 5).",
+                },
+                "attractions_per_day": {
+                    "type": "number",
+                    "description": "Optional default target number of attractions to keep per destination-day when ranking candidates.",
                 },
                 "llm_provider": {
                     "type": "string",
@@ -97,6 +117,29 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                     "id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
                     "name": {"type": "string", "minLength": 2},
                     "dates": {"type": "string"},
+                    "schedule_start_time": {
+                        "type": "string",
+                        "description": "Optional destination-specific day start time override (e.g., '9:30 AM').",
+                    },
+                    "daily_activity_hours": {
+                        "type": "number",
+                        "description": "Optional destination-specific override for daily activity-hour budget.",
+                    },
+                    "attractions_per_day": {
+                        "type": "number",
+                        "description": "Optional destination-specific target number of attractions to keep per destination-day when ranking candidates.",
+                    },
+                    "lodging": {
+                        "type": "object",
+                        "description": "Optional per-destination lodging anchor used for routing and schedule realism.",
+                        "required": ["location"],
+                        "properties": {
+                            "name": {"type": "string"},
+                            "location": {"type": "string", "minLength": 2},
+                            "checkin_time": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
                     "planning_links": {
                         "type": "array",
                         "minItems": 1,

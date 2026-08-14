@@ -112,6 +112,8 @@ QUANTITY AND DIVERSITY RULES — read carefully
 top_attractions:
   - Include ALL seeds listed above without exception
   - Add further items to reach 6–8 total
+  - Additional non-seed attractions must be genuinely touristic points of interest (exclude hospitals, clinics, urgent-care facilities, government service offices, and similar non-visitor facilities)
+  - Prefer attractions with public ratings >= 4.0 and at least 10 ratings/reviews when that signal is known
   - Include at least one viewpoint (type: viewpoint) where geographically apt
   - must_see: true for no more than 2 items per destination — be selective;
     if everything is must_see, nothing is
@@ -128,6 +130,7 @@ en_route_stops:
 
 dinner_recommendations:
   - Include 4–6 restaurants total
+  - Prefer restaurants with public ratings >= 4.0 and at least 10 ratings/reviews when that signal is known
   - Span at least 3 distinct cuisine types
   - Span at least 2 price tiers: at least one at $ or $$ AND at least one at $$$ or $$$$
   - Exclude chain restaurants and fast-food entries; prioritize local, independent, or regionally distinctive dinner spots

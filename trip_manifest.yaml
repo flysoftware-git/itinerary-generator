@@ -28,10 +28,14 @@ destinations:
   - id: zion
     name: "Zion National Park"
     dates: "October 7–9, 2026"
+    lodging:
+      name: "Zion Lodge"
+      location: "Zion Lodge, Springdale, UT"
+      checkin_time: "4:00 PM"
 
     planning_links:
       - label: "Zion Trip Notes"
-        url: "https://notion.so/REPLACE_WITH_YOUR_LINK"
+        url: "https://www.notion.so/"
       - label: "Zion Lodge Reservation"
         url: "https://www.zionlodge.com/"
 
@@ -47,10 +51,14 @@ destinations:
   - id: bryce
     name: "Bryce Canyon National Park"
     dates: "October 9–11, 2026"
+    lodging:
+      name: "Bryce Canyon Lodge"
+      location: "Bryce Canyon Lodge, Bryce, UT"
+      checkin_time: "4:00 PM"
 
     planning_links:
       - label: "Bryce Trip Notes"
-        url: "https://notion.so/REPLACE_WITH_YOUR_LINK"
+        url: "https://www.notion.so/"
       - label: "Bryce Canyon Lodge"
         url: "https://www.brycecanyonforever.com/lodging/bryce-canyon-lodge/"
 
@@ -66,10 +74,14 @@ destinations:
   - id: capitolreef
     name: "Capitol Reef National Park"
     dates: "October 11–13, 2026"
+    lodging:
+      name: "Capitol Reef Resort"
+      location: "Capitol Reef Resort, Torrey, UT"
+      checkin_time: "4:00 PM"
 
     planning_links:
       - label: "Capitol Reef Trip Notes"
-        url: "https://notion.so/REPLACE_WITH_YOUR_LINK"
+        url: "https://www.notion.so/"
 
     seeds:
       - "Hickman Bridge"
@@ -83,10 +95,14 @@ destinations:
   - id: moab
     name: "Moab"
     dates: "October 13–15, 2026"
+    lodging:
+      name: "Moab Valley Inn"
+      location: "Moab Valley Inn, Moab, UT"
+      checkin_time: "4:00 PM"
 
     planning_links:
       - label: "Moab Trip Notes"
-        url: "https://notion.so/REPLACE_WITH_YOUR_LINK"
+        url: "https://www.notion.so/"
       - label: "Arches Timed Entry"
         url: "https://www.recreation.gov/timed-entry/10086910"
 
@@ -102,10 +118,14 @@ destinations:
   - id: telluride
     name: "Telluride"
     dates: "October 15–17, 2026"
+    lodging:
+      name: "Telluride Lodging"
+      location: "Madeline Hotel, Telluride, CO"
+      checkin_time: "4:00 PM"
 
     planning_links:
       - label: "Telluride Trip Notes"
-        url: "https://notion.so/REPLACE_WITH_YOUR_LINK"
+        url: "https://www.notion.so/"
       - label: "Lodging"
         url: "https://www.telluride.com/lodging/"
 
@@ -120,10 +140,14 @@ destinations:
   - id: pagosa
     name: "Pagosa Springs"
     dates: "October 17–18, 2026"
+    lodging:
+      name: "The Springs Resort"
+      location: "The Springs Resort & Spa, Pagosa Springs, CO"
+      checkin_time: "4:00 PM"
 
     planning_links:
       - label: "Pagosa Trip Notes"
-        url: "https://notion.so/REPLACE_WITH_YOUR_LINK"
+        url: "https://www.notion.so/"
       - label: "The Springs Resort"
         url: "https://www.pagosahotsprings.com/"
 
@@ -138,12 +162,16 @@ destinations:
   - id: santafe
     name: "Santa Fe"
     dates: "October 18–20, 2026"
+    lodging:
+      name: "Inn on the Alameda"
+      location: "Inn on the Alameda, Santa Fe, NM"
+      checkin_time: "4:00 PM"
 
     planning_links:
       - label: "Santa Fe Trip Notes"
-        url: "https://notion.so/REPLACE_WITH_YOUR_LINK"
+        url: "https://www.notion.so/"
       - label: "Inn on the Alameda"
-        url: "https://www.innonthealameda.com/"
+        url: "https://www.google.com/maps/search/Inn+on+the+Alameda+Santa+Fe"
 
     seeds:
       - "Georgia O'Keeffe Museum"

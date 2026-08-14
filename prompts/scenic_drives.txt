@@ -96,4 +96,7 @@ STRICT PROHIBITIONS
 - title field becomes a JS key — it must exactly match what will appear
   on the popup button in the HTML output; keep it stable and precise
 - Do not use: stunning, breathtaking, iconic, spectacular, majestic,
-  charming, nestled, world-class
+  charming, nestled, world-class, hidden gem, off the beaten path, boasts
+  (same list as the system prompt's "Avoid without exception" -- kept in
+  sync with generator/ai_content.py's BANNED_MARKETING_PHRASES, which is
+  the actual enforcement)

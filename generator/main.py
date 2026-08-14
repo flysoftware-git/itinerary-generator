@@ -12,9 +12,15 @@ Flags:
     --llm-model       Override LLM model for this run
     --log-level       Console logging threshold (DEBUG, INFO, WARNING, ERROR, CRITICAL)
   --dry-run         Parse + validate manifest only; no AI calls, no output
+    --noseed          Ignore destination seeds from the manifest for this run
   --skip-images     Skip image fetching (useful for fast content iteration)
   --skip-events     Skip cultural events discovery
   --skip-url-discovery  Skip URL discovery (AI content only)
+    --notrails        Disable trail link discovery and omit trail links
+    --alltrails-source  Choose trail-link source: direct-link-batch, search, or apify-single-call
+    --attraction-source Choose non-trail attraction source: search or direct-link-batch
+    --restaurant-source Choose restaurant source: search or direct-link-batch
+    --en-route-source   Choose en-route stop source: search or direct-link-batch
   --destination     Process only this destination id (repeatable)
   --verbose         Enable debug logging
 """
@@ -23,13 +29,14 @@ from __future__ import annotations
 import atexit
 import json
 import logging, os, sys
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 import click
 from generator import __version__, __template_version__
-from generator.entity_registry import build_entity_registry, reconcile_trip_from_registry
+from generator.entity_registry import build_entity_registry, reconcile_schedule_from_registry, reconcile_trip_from_registry
 
 logger = logging.getLogger(__name__)
 LOG_LEVEL_CHOICES = ["debug", "info", "warning", "error", "critical"]
@@ -194,9 +201,286 @@ def _build_retry_efficiency_metrics(
     }
 
 
+def _counter_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+    keys = set(before.keys()) | set(after.keys())
+    delta: dict[str, int] = {}
+    for key in keys:
+        before_value = int(before.get(key, 0) or 0)
+        after_value = int(after.get(key, 0) or 0)
+        delta[key] = max(0, after_value - before_value)
+    return delta
+
+
+def _per_minute(count: int, seconds: float) -> float:
+    if seconds <= 0:
+        return 0.0
+    return round((int(count or 0) * 60.0) / float(seconds), 3)
+
+
+def _count_url_candidate_entities(trip: dict[str, Any]) -> int:
+    total = 0
+    for dest in trip.get("destinations", []) or []:
+        if not isinstance(dest, dict):
+            continue
+        ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content", {}), dict) else {}
+
+        top_attractions = ai.get("top_attractions", []) if isinstance(ai.get("top_attractions", []), list) else []
+        restaurants = ai.get("dinner_recommendations", []) if isinstance(ai.get("dinner_recommendations", []), list) else []
+        getting_here = ai.get("getting_here", {}) if isinstance(ai.get("getting_here", {}), dict) else {}
+        en_route_stops = getting_here.get("en_route_stops", []) if isinstance(getting_here.get("en_route_stops", []), list) else []
+        route_options = (
+            ai.get("getting_there", {}).get("route_options", [])
+            if isinstance(ai.get("getting_there", {}), dict)
+            and isinstance(ai.get("getting_there", {}).get("route_options", []), list)
+            else []
+        )
+        scenic_drives = dest.get("scenic_drives", []) if isinstance(dest.get("scenic_drives", []), list) else []
+
+        total += len(top_attractions)
+        total += len(restaurants)
+        total += len(en_route_stops)
+        total += len(route_options)
+        total += len(scenic_drives)
+    return total
+
+
+def _strip_destination_seeds(trip: dict[str, Any]) -> int:
+    stripped_count = 0
+    for dest in trip.get("destinations", []) or []:
+        if not isinstance(dest, dict):
+            continue
+        seeds = dest.get("seeds", [])
+        if isinstance(seeds, list) and seeds:
+            stripped_count += len(seeds)
+        dest["seeds"] = []
+    return stripped_count
+
+
+def _run_quality_gate(trip: dict[str, Any], html_path: "Path | None" = None) -> None:
+    """Emit warnings for known quality regressions so they're visible on every run."""
+    import re as _re
+    from pathlib import Path as _Path
+    warnings: list[str] = []
+
+    synthetic_phrases = ("locally surfaced dinner option", "local dinner option")
+    synthetic_count = 0
+    no_url_attractions = 0
+    no_url_stops = 0
+    no_url_restaurants = 0
+
+    for dest in trip.get("destinations", []) or []:
+        ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content"), dict) else {}
+        dest_name = str(dest.get("name", "") or "")
+
+        for rest in ai.get("dinner_recommendations", []) or []:
+            desc = str(rest.get("description", "") or "").strip().lower()
+            if not desc or any(p in desc for p in synthetic_phrases):
+                synthetic_count += 1
+            if not str(rest.get("url", "") or "").strip():
+                no_url_restaurants += 1
+
+        for attr in ai.get("top_attractions", []) or []:
+            if not str(attr.get("url", "") or attr.get("maps_url", "") or "").strip():
+                no_url_attractions += 1
+
+        getting_here = ai.get("getting_here", {}) if isinstance(ai.get("getting_here"), dict) else {}
+        for stop in getting_here.get("en_route_stops", []) or []:
+            if not str(stop.get("url", "") or "").strip():
+                no_url_stops += 1
+
+    if synthetic_count:
+        warnings.append(f"restaurants with synthetic description: {synthetic_count}")
+    if no_url_restaurants:
+        warnings.append(f"restaurants with no URL: {no_url_restaurants}")
+    if no_url_attractions > 3:
+        warnings.append(f"attractions with no URL or maps fallback: {no_url_attractions}")
+    if no_url_stops > 2:
+        warnings.append(f"en-route stops with no URL: {no_url_stops}")
+
+    if html_path:
+        try:
+            html = _Path(html_path).read_text(encoding="utf-8", errors="ignore")
+            origin_hits = len(_re.findall(r'class="gmaps-link"[^>]*href="[^"]*[?&]origin=', html))
+            if origin_hits:
+                warnings.append(f"Getting Here route links with hardcoded origin=: {origin_hits}")
+            synthetic_in_html = sum(html.lower().count(p) for p in synthetic_phrases)
+            if synthetic_in_html:
+                warnings.append(f"synthetic dinner phrases in rendered HTML: {synthetic_in_html}")
+        except Exception:
+            pass
+
+    import click as _click
+    if warnings:
+        _click.echo("  ⚠ Quality gate — issues detected:")
+        for w in warnings:
+            _click.echo(f"      · {w}")
+    else:
+        _click.echo("  ✓ Quality gate passed")
+
+
+def _build_gate_a_metrics(
+    *,
+    trip: dict[str, Any],
+    usage_summary: dict[str, Any],
+    stage_timings: dict[str, float],
+    skip_events: bool,
+    skip_images: bool,
+    skip_url_discovery: bool,
+    image_counter_delta: dict[str, int],
+    url_validator_counter_delta: dict[str, int],
+) -> dict[str, Any]:
+    records = usage_summary.get("records", []) if isinstance(usage_summary.get("records", []), list) else []
+
+    ai_calls = 0
+    ai_cost = 0.0
+    cultural_search_calls = 0
+    cultural_search_cost = 0.0
+    cultural_synthesis_calls = 0
+    cultural_synthesis_cost = 0.0
+    url_search_calls = 0
+    url_search_cost = 0.0
+
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        operation = str(row.get("operation", "") or "")
+        cost = float(row.get("estimated_cost_usd", 0.0) or 0.0)
+        if operation.startswith((
+            "destination_content:",  # pre-merge name, kept for backward compatibility
+            "destination_bundle:",   # current name -- dest_content + what_to_know merged
+            "what_to_know:",
+            "scenic_drives:",
+            "url_candidates:",
+        )):
+            ai_calls += 1
+            ai_cost = round(ai_cost + cost, 6)
+        elif operation.startswith("cultural_events:search"):
+            cultural_search_calls += 1
+            cultural_search_cost = round(cultural_search_cost + cost, 6)
+        elif operation.startswith("cultural_events:"):
+            cultural_synthesis_calls += 1
+            cultural_synthesis_cost = round(cultural_synthesis_cost + cost, 6)
+        elif operation.startswith("url_discovery:search"):
+            url_search_calls += 1
+            url_search_cost = round(url_search_cost + cost, 6)
+        elif operation.startswith("url_discovery:chat_completion"):
+            # Direct-batch HTML harvest calls (attraction/restaurant/en-route/trail
+            # candidate lists) -- previously matched no branch at all, so this
+            # (often the single largest cost in stage 4/5) was silently excluded
+            # from stage_cost_usd and the url_discovery batch-ratio metrics.
+            url_search_calls += 1
+            url_search_cost = round(url_search_cost + cost, 6)
+
+    destination_count = len(trip.get("destinations", []) or [])
+    nps_destination_count = sum(
+        1
+        for dest in (trip.get("destinations", []) or [])
+        if isinstance(dest, dict) and str(dest.get("nps_park_code", "") or "").strip()
+    )
+    url_target_count = _count_url_candidate_entities(trip)
+
+    stage_3_seconds = float(stage_timings.get("stage_3_ai_generation", 0.0) or 0.0)
+    stage_4_5_seconds = float(stage_timings.get("stage_4_5_parallel", 0.0) or 0.0)
+
+    ai_naive_calls = destination_count * 3
+    events_naive_search_calls = 0 if skip_events else destination_count * 3
+    url_naive_search_calls = 0 if skip_url_discovery else url_target_count
+    image_naive_provider_calls = 0 if skip_images else (destination_count * 2 + nps_destination_count)
+
+    image_actual_provider_calls = (
+        int(image_counter_delta.get("nps_api_calls", 0) or 0)
+        + int(image_counter_delta.get("unsplash_api_calls", 0) or 0)
+        + int(image_counter_delta.get("wikimedia_api_calls", 0) or 0)
+    )
+
+    stage_4_5_cost = round(cultural_search_cost + cultural_synthesis_cost + url_search_cost, 6)
+    total_estimated_cost = float(usage_summary.get("total_estimated_cost_usd", 0.0) or 0.0)
+
+    return {
+        "version": "v2.1-gate-a",
+        "measurement_coverage": {
+            "llm_usage_records": bool(records),
+            "stage_cost_attribution": True,
+            "stage_call_counters": True,
+            "stage_throughput": True,
+            "batch_ratio_metrics": True,
+        },
+        "provider_calls_by_stage": {
+            "stage_3_ai_generation": {
+                "llm_generate_json_calls": ai_calls,
+            },
+            "stage_4_5_parallel": {
+                "cultural_events_search_calls": cultural_search_calls,
+                "cultural_events_synthesis_calls": cultural_synthesis_calls,
+                "url_discovery_search_calls": url_search_calls,
+                "image_provider_calls": {
+                    "nps_api_calls": int(image_counter_delta.get("nps_api_calls", 0) or 0),
+                    "unsplash_api_calls": int(image_counter_delta.get("unsplash_api_calls", 0) or 0),
+                    "wikimedia_api_calls": int(image_counter_delta.get("wikimedia_api_calls", 0) or 0),
+                    "image_download_requests": int(image_counter_delta.get("image_download_requests", 0) or 0),
+                    "cache_hits": int(image_counter_delta.get("cache_hits", 0) or 0),
+                },
+                "url_validation_http_calls": {
+                    "head_requests": int(url_validator_counter_delta.get("head_requests", 0) or 0),
+                    "get_requests": int(url_validator_counter_delta.get("get_requests", 0) or 0),
+                    "get_text_requests": int(url_validator_counter_delta.get("get_text_requests", 0) or 0),
+                },
+            },
+        },
+        "stage_cost_usd": {
+            "stage_3_ai_generation": round(ai_cost, 6),
+            "stage_4_5_parallel": stage_4_5_cost,
+            "stage_6_assemble_validate": 0.0,
+            "total_estimated_cost_usd": round(total_estimated_cost, 6),
+        },
+        "throughput_entities_per_minute": {
+            "stage_3_destinations_per_minute": _per_minute(destination_count, stage_3_seconds),
+            "stage_4_5_url_targets_per_minute": _per_minute(url_target_count, stage_4_5_seconds),
+            "stage_4_5_event_destinations_per_minute": 0.0 if skip_events else _per_minute(destination_count, stage_4_5_seconds),
+            "stage_4_5_image_destinations_per_minute": 0.0 if skip_images else _per_minute(destination_count, stage_4_5_seconds),
+        },
+        "batch_work_ratio": {
+            "ai_generation": {
+                "naive_calls": ai_naive_calls,
+                "actual_calls": ai_calls,
+                "requests_avoided_vs_naive": max(0, ai_naive_calls - ai_calls),
+                "destinations_per_provider_request": round((destination_count / ai_calls), 4) if ai_calls > 0 else 0.0,
+            },
+            "cultural_events_search": {
+                "naive_calls": events_naive_search_calls,
+                "actual_calls": cultural_search_calls,
+                "requests_avoided_vs_naive": max(0, events_naive_search_calls - cultural_search_calls),
+                "destinations_per_provider_request": round((destination_count / cultural_search_calls), 4) if cultural_search_calls > 0 else 0.0,
+            },
+            "url_discovery_search": {
+                "naive_calls": url_naive_search_calls,
+                "actual_calls": url_search_calls,
+                "requests_avoided_vs_naive": max(0, url_naive_search_calls - url_search_calls),
+                "url_targets_per_provider_request": round((url_target_count / url_search_calls), 4) if url_search_calls > 0 else 0.0,
+            },
+            "image_acquisition": {
+                "naive_calls": image_naive_provider_calls,
+                "actual_calls": image_actual_provider_calls,
+                "requests_avoided_vs_naive": max(0, image_naive_provider_calls - image_actual_provider_calls),
+                "destinations_per_provider_request": round((destination_count / image_actual_provider_calls), 4) if image_actual_provider_calls > 0 else 0.0,
+            },
+        },
+        "assumptions": {
+            "naive_ai_calls_per_destination": 3,
+            "naive_cultural_search_calls_per_destination": 3,
+            "naive_url_search_calls_per_target": 1,
+            "naive_image_provider_calls_per_destination": "unsplash + wikimedia (+nps when park code exists)",
+        },
+    }
+
+
 def _reconcile_trip_via_registry(trip: dict, *, return_registry: bool = False) -> dict | tuple[dict, dict[str, Any]]:
     registry = build_entity_registry(trip)
     reconciled = reconcile_trip_from_registry(trip, registry)
+    # Runs against the final entity state (every section, not just
+    # top_attractions) rather than the earlier, narrower audit-time pass --
+    # see generator/entity_registry.py:reconcile_schedule_from_registry.
+    reconcile_schedule_from_registry(reconciled, registry)
     if return_registry:
         return reconciled, registry
     return reconciled
@@ -232,6 +516,70 @@ def _build_destination_status_report(
     skip_url_discovery: bool,
     retry_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    def _compute_en_route_reliability(url_discovery_meta: dict[str, Any]) -> dict[str, Any]:
+        threads = (
+            url_discovery_meta.get("disposition_threads", {})
+            if isinstance(url_discovery_meta.get("disposition_threads", {}), dict)
+            else {}
+        )
+
+        terminal_events: list[dict[str, Any]] = []
+        for _trace_id, events in threads.items():
+            if not isinstance(events, list):
+                continue
+            en_route_events = [
+                event
+                for event in events
+                if isinstance(event, dict) and str(event.get("kind", "") or "") == "en_route_stop"
+            ]
+            if not en_route_events:
+                continue
+            en_route_events.sort(key=lambda row: int(row.get("seq", 0) or 0))
+            terminal_events.append(en_route_events[-1])
+
+        total = len(terminal_events)
+        if total <= 0:
+            return {
+                "total_en_route_stops": 0,
+                "resolved_with_url": 0,
+                "exhaustion_or_no_match": 0,
+                "resolution_rate": 1.0,
+            }
+
+        resolved = 0
+        exhausted = 0
+        source_locked = 0
+        no_canonical = 0
+        for event in terminal_events:
+            reason = str(event.get("reason", "") or "")
+            url = str(event.get("url", "") or "").strip()
+
+            if reason == "discovery_completed" and url:
+                resolved += 1
+                continue
+
+            if reason == "direct_batch_source_locked_no_match":
+                source_locked += 1
+                exhausted += 1
+                continue
+
+            if reason == "no_canonical_url":
+                no_canonical += 1
+                exhausted += 1
+                continue
+
+            if reason == "discovery_completed" and not url:
+                exhausted += 1
+
+        return {
+            "total_en_route_stops": total,
+            "resolved_with_url": resolved,
+            "exhaustion_or_no_match": exhausted,
+            "source_locked_no_match": source_locked,
+            "no_canonical_url": no_canonical,
+            "resolution_rate": round((resolved / total), 4),
+        }
+
     entities = registry.get("entities", []) if isinstance(registry.get("entities", []), list) else []
     reports = registry.get("reports", []) if isinstance(registry.get("reports", []), list) else []
     destination_view = registry.get("destination_view", {}) if isinstance(registry.get("destination_view", {}), dict) else {}
@@ -285,6 +633,7 @@ def _build_destination_status_report(
             "accepted": 0,
             "pending": 0,
             "rejected": 0,
+            "excluded": 0,
             "needs_retry": 0,
             "quarantined": 0,
         }
@@ -314,6 +663,37 @@ def _build_destination_status_report(
         image_count = len(dest.get("images", []) or []) if isinstance(dest.get("images", []), list) else 0
         cultural_events = dest.get("cultural_events", {}) if isinstance(dest.get("cultural_events", {}), dict) else {}
         event_count = len(cultural_events.get("events", []) or []) if isinstance(cultural_events.get("events", []), list) else 0
+        url_discovery_meta = dest.get("_url_discovery", {}) if isinstance(dest.get("_url_discovery", {}), dict) else {}
+        url_reason_counts = (
+            url_discovery_meta.get("reason_counts", {})
+            if isinstance(url_discovery_meta.get("reason_counts", {}), dict)
+            else {}
+        )
+        url_source_counts = (
+            url_discovery_meta.get("source_counts", {})
+            if isinstance(url_discovery_meta.get("source_counts", {}), dict)
+            else {}
+        )
+        url_thread_count = int(url_discovery_meta.get("thread_count", 0) or 0)
+        url_event_count = int(url_discovery_meta.get("event_count", 0) or 0)
+        en_route_reliability = _compute_en_route_reliability(url_discovery_meta)
+        ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content", {}), dict) else {}
+        rendered_no_url_attractions = sum(
+            1
+            for item in (ai.get("top_attractions", []) or [])
+            if isinstance(item, dict) and not str(item.get("url", "") or item.get("maps_url", "") or "").strip()
+        )
+        rendered_no_url_restaurants = sum(
+            1
+            for item in (ai.get("dinner_recommendations", []) or [])
+            if isinstance(item, dict) and not str(item.get("url", "") or "").strip()
+        )
+        getting_here = ai.get("getting_here", {}) if isinstance(ai.get("getting_here", {}), dict) else {}
+        rendered_no_url_stops = sum(
+            1
+            for item in (getting_here.get("en_route_stops", []) or [])
+            if isinstance(item, dict) and not str(item.get("url", "") or "").strip()
+        )
 
         retry_triggers: list[str] = []
         if quarantined_entity_ids or validation_counts["quarantined"] > 0:
@@ -324,11 +704,14 @@ def _build_destination_status_report(
             retry_triggers.append("image_shortfall")
         if not skip_url_discovery and validation_counts["total"] > 0 and validation_counts["accepted"] == 0:
             retry_triggers.append("url_collapse")
+        if not skip_url_discovery and (rendered_no_url_attractions or rendered_no_url_restaurants or rendered_no_url_stops):
+            retry_triggers.append("rendered_items_missing_links")
 
         accepted_for_ratio = validation_counts["accepted"]
         evaluated_for_ratio = (
             validation_counts["accepted"]
             + validation_counts["rejected"]
+            + validation_counts["excluded"]
             + validation_counts["needs_retry"]
             + validation_counts["quarantined"]
         )
@@ -375,6 +758,55 @@ def _build_destination_status_report(
             if current.get("accepted", 0) < min_required:
                 retry_triggers.append(f"section_minimum_not_met:{section_name}")
 
+        # Scope which stages a retry actually needs to touch, instead of the
+        # selective-retry pass blanket-rerunning events+images+urls for every
+        # flagged destination regardless of which section actually failed.
+        # cultural_events is the only registry section events discovery owns;
+        # every other _SECTION_TARGETS section is url-discovery-owned.
+        needs_retry_entities = [
+            entity
+            for entity in destination_entities
+            if str(entity.get("validation_status", "") or "").strip().lower() in {"needs_retry", "quarantined"}
+        ]
+        section_minimum_triggers = {
+            trigger.split(":", 1)[1]
+            for trigger in retry_triggers
+            if trigger.startswith("section_minimum_not_met:")
+        }
+        events_section_counts = section_counts.get("cultural_events", {"total": 0, "accepted": 0})
+        # url_collapse/url_acceptance_ratio_below_threshold are computed across
+        # *all* entities regardless of section, so they can fire purely from a
+        # cultural_events shortfall -- section_counts gives the per-section
+        # breakdown needed to attribute the shortfall to the right stage
+        # instead of trusting those trigger names directly.
+        non_events_section_incomplete = any(
+            section_name != "cultural_events" and counts.get("total", 0) > counts.get("accepted", 0)
+            for section_name, counts in section_counts.items()
+        )
+        needs_events_retry = (
+            any(str(entity.get("section_target", "") or "") == "cultural_events" for entity in needs_retry_entities)
+            or events_section_counts.get("total", 0) > events_section_counts.get("accepted", 0)
+            or "cultural_events" in section_minimum_triggers
+        )
+        needs_urls_retry = (
+            any(str(entity.get("section_target", "") or "") != "cultural_events" for entity in needs_retry_entities)
+            or non_events_section_incomplete
+            or bool(rendered_no_url_attractions or rendered_no_url_restaurants or rendered_no_url_stops)
+            or bool(section_minimum_triggers - {"cultural_events"})
+        )
+        needs_images_retry = "image_shortfall" in retry_triggers
+        if retry_triggers and not (needs_events_retry or needs_images_retry or needs_urls_retry):
+            # A trigger fired that isn't mapped to a specific stage above (e.g.
+            # a registry-level quarantine not traceable to a per-entity
+            # section_target) -- fail safe by retrying every stage rather than
+            # silently skipping one.
+            needs_events_retry = needs_images_retry = needs_urls_retry = True
+        retry_stage_scope = {
+            "events": needs_events_retry,
+            "images": needs_images_retry,
+            "urls": needs_urls_retry,
+        }
+
         destination_status = "healthy"
         if quarantined_entity_ids or validation_counts["quarantined"] > 0:
             destination_status = "quarantined"
@@ -392,6 +824,7 @@ def _build_destination_status_report(
                 "status": destination_status,
                 "retry_recommended": destination_status in {"needs_retry", "quarantined"},
                 "retry_triggers": retry_triggers,
+                "retry_stage_scope": retry_stage_scope,
                 "validation_counts": validation_counts,
                 "rejected_reasons": rejected_reasons,
                 "stage_status": {
@@ -408,10 +841,19 @@ def _build_destination_status_report(
                         "status": "skipped" if skip_url_discovery else "completed",
                         "accepted_count": validation_counts["accepted"],
                         "rejected_count": validation_counts["rejected"],
+                        "excluded_count": validation_counts["excluded"],
                         "needs_retry_count": validation_counts["needs_retry"],
                         "quarantined_count": validation_counts["quarantined"],
                         "acceptance_ratio": round(url_acceptance_ratio, 4),
                         "acceptance_ratio_threshold": min_url_acceptance_ratio,
+                        "rendered_no_url_attractions": rendered_no_url_attractions,
+                        "rendered_no_url_restaurants": rendered_no_url_restaurants,
+                        "rendered_no_url_stops": rendered_no_url_stops,
+                        "source_counts": url_source_counts,
+                        "reason_counts": url_reason_counts,
+                        "disposition_thread_count": url_thread_count,
+                        "disposition_event_count": url_event_count,
+                        "en_route_reliability": en_route_reliability,
                     },
                     "reconciliation": {
                         "status": "completed",
@@ -426,6 +868,11 @@ def _build_destination_status_report(
                     },
                 },
                 "section_counts": section_counts,
+                "url_discovery_disposition_threads": (
+                    url_discovery_meta.get("disposition_threads", {})
+                    if isinstance(url_discovery_meta.get("disposition_threads", {}), dict)
+                    else {}
+                ),
             }
         )
 
@@ -502,11 +949,85 @@ def _write_destination_status_markdown_report(output_dir: Path, status_report: d
             status = str(row.get("status", "") or "")
             outcome = row.get("retry_outcome", {}) if isinstance(row.get("retry_outcome", {}), dict) else {}
             terminal_state = str(outcome.get("terminal_state", "pending_retry_pass") or "pending_retry_pass")
-            lines.append(f"- {destination_name} ({destination_id}) — status={status}, terminal={terminal_state}")
+            url_stage = row.get("stage_status", {}).get("url_discovery", {}) if isinstance(row.get("stage_status", {}), dict) else {}
+            en_route_reliability = (
+                url_stage.get("en_route_reliability", {})
+                if isinstance(url_stage.get("en_route_reliability", {}), dict)
+                else {}
+            )
+            if en_route_reliability and int(en_route_reliability.get("total_en_route_stops", 0) or 0) > 0:
+                lines.append(
+                    f"- {destination_name} ({destination_id}) — status={status}, terminal={terminal_state}, "
+                    f"en_route_resolved={en_route_reliability.get('resolved_with_url', 0)}/{en_route_reliability.get('total_en_route_stops', 0)}, "
+                    f"en_route_exhaustion_or_no_match={en_route_reliability.get('exhaustion_or_no_match', 0)}"
+                )
+            else:
+                lines.append(f"- {destination_name} ({destination_id}) — status={status}, terminal={terminal_state}")
 
     path = output_dir / "destination_status_report.md"
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     return path
+
+
+def _retry_stage_scope_by_destination(status_report: dict[str, Any]) -> dict[str, dict[str, bool]]:
+    destinations = status_report.get("destinations", []) if isinstance(status_report.get("destinations", []), list) else []
+    scope_by_id: dict[str, dict[str, bool]] = {}
+    for row in destinations:
+        if not isinstance(row, dict):
+            continue
+        destination_id = str(row.get("destination_id", "") or "").strip()
+        if not destination_id:
+            continue
+        scope = row.get("retry_stage_scope", {}) if isinstance(row.get("retry_stage_scope", {}), dict) else {}
+        # Default True (retry every stage) when scope is absent -- e.g. a
+        # status_report built before this field existed -- so missing scope
+        # data never silently narrows a retry.
+        scope_by_id[destination_id] = {
+            "events": bool(scope.get("events", True)),
+            "images": bool(scope.get("images", True)),
+            "urls": bool(scope.get("urls", True)),
+        }
+    return scope_by_id
+
+
+def _resolve_llm_overrides(
+    trip: dict[str, Any],
+    *,
+    cli_provider: str | None,
+    cli_model: str | None,
+) -> dict[str, Any]:
+    """Resolve the effective LLM provider/model/features overrides passed to
+    MultiLLMClient, in precedence order (lowest to highest):
+      1. nested trip.trip.llm.{provider,model,features,...} (base dict)
+      2. flat trip.trip.llm_provider / trip.trip.llm_features / trip.trip.llm_model
+      3. --llm-provider / --llm-model CLI flags
+
+    trip.llm_model (flat) previously had no handling at all -- only the nested
+    trip.llm.model form or the CLI flag worked, so a manifest using the flat
+    form (this project's own sw_manifest.yaml does) had its model override
+    silently dropped in favor of config.yaml's default, with no warning.
+    Added here symmetric with the pre-existing trip.llm_provider handling.
+    """
+    trip_meta = trip.get("trip", {}) if isinstance(trip.get("trip", {}), dict) else {}
+    overrides = dict(trip_meta.get("llm", {}) or {})
+
+    if trip_meta.get("llm_provider"):
+        overrides["provider"] = trip_meta.get("llm_provider")
+    if trip_meta.get("llm_features"):
+        overrides["features"] = trip_meta.get("llm_features")
+    if trip_meta.get("llm_model"):
+        overrides["model"] = trip_meta.get("llm_model")
+
+    provider_selected = cli_provider or trip_meta.get("llm_provider")
+    if cli_provider:
+        overrides["provider"] = cli_provider.lower()
+    elif provider_selected:
+        overrides["provider"] = str(provider_selected).lower()
+
+    if cli_model:
+        overrides["model"] = cli_model
+
+    return overrides
 
 
 def _destination_ids_for_selective_retry(status_report: dict[str, Any]) -> list[str]:
@@ -535,6 +1056,12 @@ def _selective_retry_destinations(
     skip_events: bool,
     skip_images: bool,
     skip_url_discovery: bool,
+    no_trails: bool,
+    alltrails_source: str | None,
+    alltrails_apify_actor_id: str | None,
+    attraction_source: str | None,
+    restaurant_source: str | None,
+    en_route_source: str | None,
     run_events: Any | None = None,
     run_images: Any | None = None,
     run_urls: Any | None = None,
@@ -552,19 +1079,31 @@ def _selective_retry_destinations(
     if not retry_destinations:
         return []
 
-    retry_trip = {
-        "trip": trip.get("trip", {}),
-        "destinations": retry_destinations,
-    }
+    stage_scope = _retry_stage_scope_by_destination(status_report)
+    default_scope = {"events": True, "images": True, "urls": True}
 
-    if not skip_events:
+    def _subset_trip_for_stage(stage: str) -> dict[str, Any] | None:
+        stage_destinations = [
+            dest
+            for dest in retry_destinations
+            if stage_scope.get(str(dest.get("id", "") or ""), default_scope).get(stage, True)
+        ]
+        if not stage_destinations:
+            return None
+        return {"trip": trip.get("trip", {}), "destinations": stage_destinations}
+
+    events_trip = _subset_trip_for_stage("events")
+    images_trip = _subset_trip_for_stage("images")
+    urls_trip = _subset_trip_for_stage("urls")
+
+    if not skip_events and events_trip is not None:
         if run_events is None:
             from generator.cultural_events import CulturalEventsDiscoverer
 
             run_events = lambda subset_trip: CulturalEventsDiscoverer(config_path, llm_client=llm_client).discover(subset_trip)
-        run_events(retry_trip)
+        run_events(events_trip)
 
-    if not skip_images:
+    if not skip_images and images_trip is not None:
         if run_images is None:
             from generator.image_fetcher import ImageFetcher
 
@@ -573,19 +1112,29 @@ def _selective_retry_destinations(
                 output_dir=output_dir / "images",
                 force_refresh=refresh_image_cache,
             ).fetch_all(subset_trip)
-        run_images(retry_trip)
+        run_images(images_trip)
 
-    if not skip_url_discovery:
+    if not skip_url_discovery and urls_trip is not None:
         if run_urls is None:
             from generator.url_discovery import URLDiscoverer
 
             def _default_run_urls(subset_trip: dict[str, Any]) -> None:
-                url_discoverer = URLDiscoverer(config_path, llm_client=llm_client)
+                url_discoverer = URLDiscoverer(
+                    config_path,
+                    llm_client=llm_client,
+                    disable_trails=bool(no_trails),
+                    alltrails_source=alltrails_source,
+                    alltrails_apify_actor_id=alltrails_apify_actor_id,
+                    attraction_source=attraction_source,
+                    restaurant_source=restaurant_source,
+                    en_route_source=en_route_source,
+                    output_dir=output_dir,
+                )
                 url_discoverer.discover_all(subset_trip)
                 url_discoverer.audit_discovered_urls(subset_trip)
 
             run_urls = _default_run_urls
-        run_urls(retry_trip)
+        run_urls(urls_trip)
 
     return retry_ids
 
@@ -608,6 +1157,58 @@ def _read_output_urls(path: Path) -> set[str]:
         return _extract_http_urls_from_html_text(path.read_text(encoding="utf-8", errors="ignore"))
     except Exception:
         return set()
+
+
+def _latest_direct_batch_parity_summary(*, output_dir: Path) -> dict[str, Any]:
+    capture_dir = output_dir / "dev" / "url_discovery_direct_batch_html"
+    html_files = sorted(capture_dir.glob("*.html")) if capture_dir.exists() else []
+
+    captured_urls: set[str] = set()
+    destination_urls: dict[str, set[str]] = {}
+    for html_path in html_files:
+        urls = _extract_http_urls_from_html_text(html_path.read_text(encoding="utf-8", errors="ignore"))
+        captured_urls |= urls
+
+        meta_path = html_path.with_name(f"{html_path.stem}.meta.json")
+        destination_name = "unknown"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8", errors="ignore"))
+                destination_name = str(meta.get("destination") or "unknown").strip() or "unknown"
+            except Exception:
+                destination_name = "unknown"
+        destination_urls.setdefault(destination_name, set()).update(urls)
+
+    final_output_path = output_dir / "index.html"
+    final_urls = _read_output_urls(final_output_path)
+
+    destinations_missing_names = sorted(
+        name for name, urls in destination_urls.items() if urls and not urls.issubset(final_urls)
+    )
+
+    return {
+        "captured_html_input_count": len(html_files),
+        "unique_captured_urls": len(captured_urls),
+        "unique_final_html_urls": len(final_urls),
+        "destinations_missing_at_least_one_captured_url": len(destinations_missing_names),
+        "destinations_missing_captured_url_names": destinations_missing_names,
+    }
+
+
+def _write_direct_batch_parity_report(
+    *,
+    output_dir: Path,
+    parity_summary: dict[str, Any],
+    run_id: str,
+) -> Path:
+    report = {
+        "run_id": run_id,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        **parity_summary,
+    }
+    path = output_dir / "direct_batch_parity_report.json"
+    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return path
 
 
 def _domain_counts(urls: set[str]) -> dict[str, int]:
@@ -853,6 +1454,65 @@ def _setup_logging(verbose: bool, log_level: str) -> str:
     return selected.upper()
 
 
+def _run_git_command(repo_root: Path, args: list[str]) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=str(repo_root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return (completed.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def _build_development_build_info(*, repo_root: Path, run_id: str, build_tag: str | None = None) -> dict[str, Any]:
+    commit = _run_git_command(repo_root, ["rev-parse", "HEAD"])
+    short_commit = _run_git_command(repo_root, ["rev-parse", "--short", "HEAD"])
+    branch = _run_git_command(repo_root, ["rev-parse", "--abbrev-ref", "HEAD"])
+    status = _run_git_command(repo_root, ["status", "--porcelain"])
+    dirty = bool(status)
+
+    fingerprint_parts = [
+        f"v{__version__}",
+        short_commit or "nogit",
+        "dirty" if dirty else "clean",
+        run_id,
+    ]
+    if build_tag:
+        fingerprint_parts.append(str(build_tag).strip())
+
+    return {
+        "fingerprint": "+".join(part for part in fingerprint_parts if part),
+        "run_id": run_id,
+        "generator_version": __version__,
+        "template_version": __template_version__,
+        "build_tag": str(build_tag or "").strip(),
+        "git": {
+            "branch": branch,
+            "commit": commit,
+            "short_commit": short_commit,
+            "dirty": dirty,
+        },
+    }
+
+
+def _write_development_build_info(output_dir: Path, build_info: dict[str, Any]) -> tuple[Path, Path]:
+    dev_dir = output_dir / "dev"
+    dev_dir.mkdir(parents=True, exist_ok=True)
+    run_id = str(build_info.get("run_id", "") or "")
+
+    per_run_path = dev_dir / f"build_info.{run_id or 'unknown'}.json"
+    latest_path = dev_dir / "build_info.latest.json"
+
+    payload = json.dumps(build_info, indent=2, ensure_ascii=False)
+    per_run_path.write_text(payload, encoding="utf-8")
+    latest_path.write_text(payload, encoding="utf-8")
+    return per_run_path, latest_path
+
+
 @click.command()
 @click.option("--manifest", required=True, type=click.Path(exists=True), help="Trip manifest YAML")
 @click.option("--output", default="output", show_default=True, help="Output directory")
@@ -878,9 +1538,42 @@ def _setup_logging(verbose: bool, log_level: str) -> str:
 @click.option("--refresh-image-cache", is_flag=True, help="Force refresh image-provider queries, bypassing local image cache")
 @click.option("--skip-events", is_flag=True, help="Skip cultural events discovery")
 @click.option("--skip-url-discovery", is_flag=True, help="Skip URL discovery")
+@click.option("--notrails", "no_trails", is_flag=True, help="Disable trail link discovery and omit trail links")
+@click.option(
+    "--alltrails-source",
+    type=click.Choice(["direct-link-batch", "search", "apify-single-call"], case_sensitive=False),
+    default=None,
+    help="AllTrails source for trail-like attractions",
+)
+@click.option(
+    "--attraction-source",
+    type=click.Choice(["search", "direct-link-batch"], case_sensitive=False),
+    default=None,
+    help="Source for non-trail attractions",
+)
+@click.option(
+    "--restaurant-source",
+    type=click.Choice(["search", "direct-link-batch"], case_sensitive=False),
+    default=None,
+    help="Source for restaurant links",
+)
+@click.option(
+    "--en-route-source",
+    type=click.Choice(["search", "direct-link-batch"], case_sensitive=False),
+    default=None,
+    help="Source for en-route stop links",
+)
+@click.option(
+    "--alltrails-apify-actor-id",
+    type=str,
+    default="",
+    help="Optional Apify actor id override for --alltrails-source apify-single-call",
+)
 @click.option("--noschedule", is_flag=True, help="Suppress schedule card rendering in output HTML")
+@click.option("--noseed", is_flag=True, help="Ignore destination seeds from the manifest for this run")
 @click.option("--destination", "destinations", multiple=True, help="Limit to specific destination ids")
 @click.option("--first-destination", "first_destination_only", is_flag=True, help="Process only the first destination after any destination filtering")
+@click.option("--build-tag", type=str, help="Optional development build tag recorded in output metadata and dev build-info artifacts")
 @click.option(
     "--log-level",
     type=click.Choice(LOG_LEVEL_CHOICES, case_sensitive=False),
@@ -902,9 +1595,17 @@ def main(
     refresh_image_cache: bool,
     skip_events: bool,
     skip_url_discovery: bool,
+    no_trails: bool,
+    alltrails_source: str | None,
+    attraction_source: str | None,
+    restaurant_source: str | None,
+    en_route_source: str | None,
+    alltrails_apify_actor_id: str,
     noschedule: bool,
+    noseed: bool,
     destinations: tuple[str, ...],
     first_destination_only: bool,
+    build_tag: str | None,
     log_level: str,
     verbose: bool,
 ) -> None:
@@ -915,6 +1616,14 @@ def main(
     finalized = False
     stage_timings: dict[str, float] = {}
     runtime_metrics: dict[str, Any] = {}
+    image_counter_delta: dict[str, int] = {}
+    url_validator_counter_delta: dict[str, int] = {}
+    repo_root = Path(__file__).resolve().parent.parent
+    development_build = _build_development_build_info(
+        repo_root=repo_root,
+        run_id=run_id,
+        build_tag=build_tag,
+    )
 
     def _finalize_run(status: str, exit_code: int, error: str | None = None) -> None:
         nonlocal finalized
@@ -937,12 +1646,20 @@ def main(
             "env_file": env_file,
             "llm_provider": llm_provider,
             "llm_model": llm_model,
+            "build_tag": build_tag,
             "dry_run": bool(dry_run),
             "skip_images": bool(skip_images),
             "skip_events": bool(skip_events),
             "skip_url_discovery": bool(skip_url_discovery),
+            "no_trails": bool(no_trails),
+            "alltrails_source": str(alltrails_source or ""),
+            "attraction_source": str(attraction_source or ""),
+            "restaurant_source": str(restaurant_source or ""),
+            "en_route_source": str(en_route_source or ""),
+            "noseed": bool(noseed),
             "first_destination_only": bool(first_destination_only),
             "destinations": list(destinations),
+            "development_build": development_build,
             "stage_timings_seconds": stage_timings,
             "runtime_metrics": runtime_metrics,
         }
@@ -967,6 +1684,7 @@ def main(
     click.echo(f"   Output   : {output_dir.resolve()}")
     click.echo(f"   Config   : {config_path}")
     click.echo(f"   Logging  : {effective_log_level}")
+    click.echo(f"   Build    : {development_build.get('fingerprint', '')}")
 
     if llm_provider:
         click.echo(f"   LLM      : provider override = {llm_provider.lower()}")
@@ -991,6 +1709,10 @@ def main(
     from generator.parser import ManifestParser
     parser = ManifestParser()
     trip = parser.load(manifest)
+    stripped_seed_count = _strip_destination_seeds(trip) if noseed else 0
+    if noseed:
+        click.echo(f"   Seeds    : disabled for this run ({stripped_seed_count} seed(s) ignored)")
+    runtime_metrics["manifest_seed_count_ignored"] = stripped_seed_count
 
     # ── Hybrid environment selection ─────────────────────────────────────────
     env_from_manifest = trip.get("trip", {}).get("environment")
@@ -1017,6 +1739,9 @@ def main(
     else:
         output_dir = Path(output)
     output_dir.mkdir(parents=True, exist_ok=True)
+    per_run_build_info_path, latest_build_info_path = _write_development_build_info(output_dir, development_build)
+    click.echo(f"  ✓ Build info: {per_run_build_info_path}")
+    click.echo(f"  ✓ Build info (latest): {latest_build_info_path}")
     output_file = output_dir / "index.html"
     baseline_output_urls = _read_output_urls(output_file)
 
@@ -1056,6 +1781,21 @@ def main(
         lat, lng = geo._geocode(dest["name"])
         dest["lat"] = lat
         dest["lng"] = lng
+        lodging = dest.get("lodging", {}) if isinstance(dest.get("lodging", {}), dict) else {}
+        lodging_location = str(lodging.get("location", "") or "").strip()
+        if lodging_location:
+            try:
+                llat, llng = geo._geocode(lodging_location)
+                lodging["lat"] = llat
+                lodging["lng"] = llng
+                dest["lodging"] = lodging
+            except Exception as exc:
+                logger.warning(
+                    "Lodging geocode skipped for %s (%s): %s",
+                    dest.get("name", "unknown destination"),
+                    lodging_location,
+                    exc,
+                )
 
     # Optional departure/return geocoding for full-route maps and first-card routing context.
     departure_name = trip.get("trip", {}).get("departure")
@@ -1088,30 +1828,30 @@ def main(
     from generator.llm_client import MultiLLMClient
     from generator.ai_content import AIContentGenerator
     from generator.costs import print_cost_summary, summarize_from_usage
-    llm_overrides = dict(trip.get("trip", {}).get("llm", {}))
+    normalized_alltrails_source: str | None = None
+    if alltrails_source:
+        normalized_alltrails_source = str(alltrails_source).strip().lower().replace("-", "_")
+        if normalized_alltrails_source not in {"direct_link_batch", "search", "apify_single_call"}:
+            normalized_alltrails_source = None
+    normalized_attraction_source: str | None = None
+    if attraction_source:
+        normalized_attraction_source = str(attraction_source).strip().lower().replace("-", "_")
+        if normalized_attraction_source not in {"search", "direct_link_batch"}:
+            normalized_attraction_source = None
+    normalized_restaurant_source: str | None = None
+    if restaurant_source:
+        normalized_restaurant_source = str(restaurant_source).strip().lower().replace("-", "_")
+        if normalized_restaurant_source not in {"search", "direct_link_batch"}:
+            normalized_restaurant_source = None
+    normalized_en_route_source: str | None = None
+    if en_route_source:
+        normalized_en_route_source = str(en_route_source).strip().lower().replace("-", "_")
+        if normalized_en_route_source not in {"search", "direct_link_batch"}:
+            normalized_en_route_source = None
+    resolved_apify_actor_id = str(alltrails_apify_actor_id or "").strip() or None
 
-    # ── Hybrid provider selection ───────────────────────────────────────────
-    provider_from_manifest = trip.get("trip", {}).get("llm_provider")
-    provider_from_cli = llm_provider
-    provider_from_env = os.environ.get("LLM_PROVIDER")
-    provider_selected = (provider_from_cli or provider_from_manifest or provider_from_env)
-
-    if trip.get("trip", {}).get("llm_provider"):
-        llm_overrides["provider"] = trip["trip"].get("llm_provider")
-    if trip.get("trip", {}).get("llm_features"):
-        llm_overrides["features"] = trip["trip"].get("llm_features")
-    if llm_provider:
-        llm_overrides["provider"] = llm_provider.lower()
-    elif provider_selected:
-        llm_overrides["provider"] = provider_selected.lower()
-
-    click.echo(
-        click.style("   LLM      : provider = ", fg="cyan") +
-        click.style(llm_overrides.get("provider"), fg="green")
-    )
-
-    if llm_model:
-        llm_overrides["model"] = llm_model
+    # ── Hybrid provider/model selection ─────────────────────────────────────
+    llm_overrides = _resolve_llm_overrides(trip, cli_provider=llm_provider, cli_model=llm_model)
 
     # ── Optional environment-aware config merging ───────────────────────────
     try:
@@ -1129,6 +1869,15 @@ def main(
         config_path=config_path,
         llm_overrides=llm_overrides,
     )
+    # Printed after construction (not from the raw pre-construction request)
+    # so this reflects the actually-effective provider/model -- e.g. after
+    # _normalize_model_for_provider has resolved any mismatch/fallback.
+    click.echo(
+        click.style("   LLM      : provider = ", fg="cyan") +
+        click.style(llm_client.provider, fg="green") +
+        click.style(", model = ", fg="cyan") +
+        click.style(llm_client.model, fg="green")
+    )
 
     ai_gen = AIContentGenerator(config_path, llm_client=llm_client)
     ai_gen.generate_all(trip)
@@ -1144,6 +1893,11 @@ def main(
     # ── Stages 4 + 5a + 5b: run concurrently (all independent of each other) ─
     stage_4_5_started = perf_counter()
     from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+    from generator.image_fetcher import ImageFetcher
+    from generator.url_validator import URLValidator
+
+    image_counters_before = ImageFetcher.snapshot_counters()
+    url_validator_counters_before = URLValidator.snapshot_counters()
 
     def _run_events() -> None:
         if not skip_events:
@@ -1170,16 +1924,43 @@ def main(
             for dest in trip["destinations"]:
                 dest.setdefault("images", [])
 
+    # Hoisted so the selective-retry pass below can reuse this same instance
+    # instead of constructing a fresh one -- a fresh instance would discard
+    # this pass's in-memory session state (request caches, corroboration
+    # source counts, direct-batch harvest rows) that isn't flushed to the
+    # persistent on-disk cache mid-run, forcing needless re-fetches for
+    # destinations that are only being retried for an unrelated reason.
+    url_discoverer: Any | None = None
+
     def _run_urls() -> None:
+        nonlocal url_discoverer
         if not skip_url_discovery:
             click.echo("Stage 5b — URL discovery…")
             from generator.url_discovery import URLDiscoverer
-            url_discoverer = URLDiscoverer(config_path, llm_client=llm_client)
+            url_discoverer = URLDiscoverer(
+                config_path,
+                llm_client=llm_client,
+                disable_trails=bool(no_trails),
+                alltrails_source=normalized_alltrails_source,
+                alltrails_apify_actor_id=resolved_apify_actor_id,
+                attraction_source=normalized_attraction_source,
+                restaurant_source=normalized_restaurant_source,
+                en_route_source=normalized_en_route_source,
+                output_dir=output_dir,
+            )
             url_discoverer.discover_all(trip)
             url_discoverer.audit_discovered_urls(trip)
             click.echo("  ✓ URLs discovered and verified")
         else:
             click.echo("Stage 5b — URL discovery SKIPPED")
+
+    def _run_urls_for_retry(subset_trip: dict[str, Any]) -> None:
+        # skip_url_discovery is the same flag passed to both the initial pass
+        # and the retry pass below, and this only runs when it's False -- so
+        # _run_urls() above has always already populated url_discoverer by
+        # the time this fires.
+        url_discoverer.discover_all(subset_trip)
+        url_discoverer.audit_discovered_urls(subset_trip)
 
     click.echo("Stages 4–5b — Cultural events, images, and URL discovery (parallel)…")
     with ThreadPoolExecutor(max_workers=3) as _stage_pool:
@@ -1191,6 +1972,7 @@ def main(
     # Post-parallel content normalization: cross-section and cross-destination dedup.
     stage_reconcile_started = perf_counter()
     ai_gen.normalize_trip_content(trip)
+    runtime_metrics["banned_phrase_violations"] = dict(ai_gen.last_banned_phrase_violations)
     click.echo("  ✓ Content normalized")
     trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
     click.echo("  ✓ Entity registry reconciled")
@@ -1218,19 +2000,43 @@ def main(
     stage_timings["status_build_initial"] = _elapsed_seconds(stage_reconcile_started)
 
     retried_destination_ids: list[str] = []
+    retry_skipped_due_to_circuit_open = False
     retry_started = perf_counter()
-    if max_retries_per_destination > 0:
-        retried_destination_ids = _selective_retry_destinations(
-            trip=trip,
-            status_report=destination_status_report,
-            config_path=config_path,
-            llm_client=llm_client,
-            output_dir=output_dir,
-            refresh_image_cache=refresh_image_cache,
-            skip_events=skip_events,
-            skip_images=skip_images,
-            skip_url_discovery=skip_url_discovery,
-        )
+    if max_retries_per_destination > 0 and retry_candidate_ids:
+        if url_discoverer is not None and url_discoverer.is_search_circuit_open():
+            # The circuit breaker just tripped during the pass that produced
+            # these retry candidates -- firing a full second pass (events +
+            # images + URL discovery, across every flagged destination) into a
+            # known-ongoing outage would just repeat the same failures at full
+            # timeout+retry cost per destination instead of failing fast.
+            # Skip the whole pass and keep the initial results as-is; the
+            # circuit breaker's own cooldown handles recovery on the next run.
+            retry_skipped_due_to_circuit_open = True
+            click.echo(
+                "  ⚠ Selective retry SKIPPED — Grok circuit breaker is currently open "
+                "after a recent burst of transient errors; retrying now would repeat "
+                "the same failures. Keeping initial-pass results."
+            )
+        else:
+            retried_destination_ids = _selective_retry_destinations(
+                trip=trip,
+                status_report=destination_status_report,
+                config_path=config_path,
+                llm_client=llm_client,
+                output_dir=output_dir,
+                refresh_image_cache=refresh_image_cache,
+                skip_events=skip_events,
+                skip_images=skip_images,
+                skip_url_discovery=skip_url_discovery,
+                no_trails=bool(no_trails),
+                alltrails_source=normalized_alltrails_source,
+                alltrails_apify_actor_id=resolved_apify_actor_id,
+                attraction_source=normalized_attraction_source,
+                restaurant_source=normalized_restaurant_source,
+                en_route_source=normalized_en_route_source,
+                run_urls=_run_urls_for_retry,
+            )
+    runtime_metrics["retry_skipped_due_to_circuit_open"] = retry_skipped_due_to_circuit_open
     if retried_destination_ids:
         click.echo(
             "  ↻ Selective retry completed for: "
@@ -1277,6 +2083,8 @@ def main(
     else:
         click.echo("  ✓ No unresolved destinations after retry pass")
     stage_timings["stage_4_5_postprocessing"] = _elapsed_seconds(stage_reconcile_started)
+    image_counter_delta = _counter_delta(image_counters_before, ImageFetcher.snapshot_counters())
+    url_validator_counter_delta = _counter_delta(url_validator_counters_before, URLValidator.snapshot_counters())
 
     if verbose:
         registry_report_path = _write_entity_registry_debug_report(output_dir, registry)
@@ -1291,6 +2099,7 @@ def main(
         "template_version": __template_version__,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "environment": environment_selected,
+        "development_build": development_build,
         "llm": {
             "provider": llm_client.provider,
             "model": llm_client.model,
@@ -1304,6 +2113,25 @@ def main(
     click.echo(f"  ✓ index.html written ({output_file.stat().st_size:,} bytes)")
 
     current_output_urls = _read_output_urls(output_file)
+    parity_summary = _latest_direct_batch_parity_summary(output_dir=output_dir)
+    click.echo(
+        "  ✓ Parity check: "
+        f"{parity_summary['captured_html_input_count']} captured HTML inputs | "
+        f"{parity_summary['unique_captured_urls']} unique captured URLs | "
+        f"{parity_summary['unique_final_html_urls']} unique URLs in the assembled final HTML | "
+        f"{parity_summary['destinations_missing_at_least_one_captured_url']} destinations missing at least one captured URL"
+    )
+    if parity_summary["destinations_missing_captured_url_names"]:
+        click.echo(
+            "  ! Destinations missing at least one captured URL: "
+            + ", ".join(parity_summary["destinations_missing_captured_url_names"])
+        )
+    parity_report_path = _write_direct_batch_parity_report(
+        output_dir=output_dir,
+        parity_summary=parity_summary,
+        run_id=run_id,
+    )
+    click.echo(f"  ✓ Direct-batch parity report: {parity_report_path}")
     url_diff_report_path = _write_url_diff_report(
         output_dir=output_dir,
         baseline_urls=baseline_output_urls,
@@ -1330,6 +2158,8 @@ def main(
     report_path = ReportWriter(output_dir).write(report)
     click.echo(f"  ✓ Validation report: {report_path}")
 
+    _run_quality_gate(trip, output_file)
+
     predicted_cost, actual_cost = summarize_from_usage(trip.get("_meta", {}).get("llm", {}).get("usage", {}))
     print_cost_summary(
         model=trip.get("_meta", {}).get("llm", {}).get("model", llm_client.model),
@@ -1347,6 +2177,21 @@ def main(
                 f"calls={row.get('calls', 0)} tokens={row.get('total_tokens', 0)} "
                 f"est=${row.get('estimated_cost_usd', 0.0):.4f}"
             )
+    runtime_metrics["gate_a"] = _build_gate_a_metrics(
+        trip=trip,
+        usage_summary=trip.get("_meta", {}).get("llm", {}).get("usage", {}),
+        stage_timings=stage_timings,
+        skip_events=skip_events,
+        skip_images=skip_images,
+        skip_url_discovery=skip_url_discovery,
+        image_counter_delta=image_counter_delta,
+        url_validator_counter_delta=url_validator_counter_delta,
+    )
+    click.echo(
+        "  ✓ Gate A metrics captured: "
+        f"ai_calls={runtime_metrics['gate_a']['provider_calls_by_stage']['stage_3_ai_generation']['llm_generate_json_calls']} "
+        f"url_search_calls={runtime_metrics['gate_a']['provider_calls_by_stage']['stage_4_5_parallel']['url_discovery_search_calls']}"
+    )
     stage_timings["stage_6_assemble_validate"] = _elapsed_seconds(stage_6_started)
     stage_timings["total_pipeline"] = _elapsed_seconds(run_started_at_perf)
 

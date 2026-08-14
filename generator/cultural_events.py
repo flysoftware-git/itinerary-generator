@@ -21,12 +21,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.grok_search import GrokSearch
 from generator.llm_client import MultiLLMClient
 
 logger = logging.getLogger(__name__)
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+
+# See generator/ai_content.py for rationale: retrying a KeyError/TypeError/
+# AttributeError/IndexError just burns exponential backoff on a bug that
+# won't fix itself -- narrow retries to genuinely transient conditions.
+_NON_RETRYABLE_LLM_EXCEPTIONS = (KeyError, TypeError, AttributeError, IndexError)
+_retry_transient_llm_errors = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=30),
+    retry=retry_if_not_exception_type(_NON_RETRYABLE_LLM_EXCEPTIONS),
+)
 
 
 class CulturalEventsDiscoverer:
@@ -225,7 +235,7 @@ class CulturalEventsDiscoverer:
 
         return None
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=30))
+    @_retry_transient_llm_errors
     def _synthesize(
         self, name: str, dates: str, dest_type: str, search_results: list[dict[str, Any]]
     ) -> dict[str, Any]:

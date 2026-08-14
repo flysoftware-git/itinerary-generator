@@ -24,7 +24,7 @@ def _make_fetcher(tmp_path):
     return fetcher
 
 
-def test_fetch_all_raises_if_not_enough_images(tmp_path):
+def test_fetch_all_keeps_destination_with_empty_images_if_not_enough_images(tmp_path):
     fetcher = _make_fetcher(tmp_path)
 
     trip = {
@@ -36,8 +36,10 @@ def test_fetch_all_raises_if_not_enough_images(tmp_path):
     with patch.object(fetcher, "_fetch_from_nps", return_value=[]):
         with patch.object(fetcher, "_fetch_from_wikimedia", return_value=[]):
             with patch.object(fetcher, "_download_image", return_value=None):
-                with pytest.raises(RuntimeError, match="Image fetch failed"):
-                    fetcher.fetch_all(trip)
+                fetcher.fetch_all(trip)
+
+    assert "images" in trip["destinations"][0]
+    assert trip["destinations"][0]["images"] == []
 
 
 def test_fetch_all_attaches_images_to_dest(tmp_path):
