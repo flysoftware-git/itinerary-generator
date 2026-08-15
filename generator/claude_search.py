@@ -264,11 +264,20 @@ class ClaudeSearch:
         response_format, and every current caller (url_discovery.py's
         direct-batch HTML harvest) already passes response_format=None,
         relying on the system prompt's own format instructions instead.
+
+        temperature is likewise accepted for interface parity but never
+        sent: confirmed live (2026-08-14) that at least one current Claude
+        model rejects it outright ("`temperature` is deprecated for this
+        model", 400). The probe script this class's payload shape was
+        modeled on (scripts/probe_multi_provider_search_2026.py's
+        call_claude) never sent temperature either -- this brings the
+        production class back in line with the shape that was actually
+        validated, rather than a parameter added by analogy to GrokSearch
+        that was never itself tested.
         """
         payload: dict[str, Any] = {
             "model": self._model,
             "max_tokens": int(max_tokens) if max_tokens is not None else self._max_tokens,
-            "temperature": float(temperature),
             "system": str(system_prompt or ""),
             "messages": [{"role": "user", "content": str(user_prompt or "")}],
         }
@@ -316,7 +325,8 @@ class ClaudeSearch:
             payload = {
                 "model": self._model,
                 "max_tokens": self._max_tokens,
-                "temperature": 0.1,
+                # No temperature -- see chat_completion's docstring: at
+                # least one current Claude model rejects it outright.
                 "system": system_prompt,
                 "messages": [{"role": "user", "content": query}],
                 "tools": [CLAUDE_SEARCH_TOOL],

@@ -206,20 +206,30 @@ working for the non-batch stuff, then Claude for both")
    constraints, stricter prompting, or is a genuine current capability gap
    is unresolved — tracked as follow-up investigation, not scheduled yet.
 
-### 4.1 Live validation blocked (account issue, not a code issue)
+### 4.1 Live validation: an account block, then a real bug it caught
 
 A real (non-mocked) end-to-end call against the production `ClaudeSearch`
-class — the same validation method used to confirm the Grok fix — returned
-`400 invalid_request_error: "Your credit balance is too low to access the
-Anthropic API."` This is an account billing state, not a defect: the
-request reached Anthropic's API server and was rejected for a reason
-unrelated to payload shape. Confidence in the implementation instead rests
-on (a) the payload being a direct match to the shape the §3 probe already
-exercised successfully against the same API earlier the same day (14/15
-citation-matched results), and (b) full unit-test coverage of
-`ClaudeSearch`'s request construction, response parsing, retry, and
-circuit-breaker behavior with mocked HTTP responses. Re-run the live
-validation once account credit is available.
+class — the same validation method used to confirm the Grok fix — first
+returned `400 invalid_request_error: "Your credit balance is too low to
+access the Anthropic API."` This was an account billing state, not a code
+defect (resolved once credit was added).
+
+With billing resolved, the same live call then surfaced a real bug:
+`400 "temperature is deprecated for this model"`. `ClaudeSearch` had added
+a `temperature` field to every request (modeled on `GrokSearch.chat_completion`'s
+signature), but the §3 probe's `call_claude` — the function whose exact
+payload shape `ClaudeSearch` was supposed to match — never sent `temperature`
+at all. This was a real divergence between the implementation and the
+shape that had actually been validated, caught only because live
+validation was retried rather than accepted as "blocked, unit tests pass."
+Fixed by dropping `temperature` from both request payloads entirely
+(`chat_completion` and `_claude_search`); the parameter stays in
+`chat_completion`'s signature for interface parity with `GrokSearch` but is
+now documented as accepted-and-ignored, same treatment as `response_format`.
+
+Re-validated live after the fix: both `search()` and
+`chat_completion(live_search=True)` returned real, correctly-formed
+AllTrails URLs (Angels Landing Trail, Zion Narrows) with no further errors.
 
 ## 5. Repeatable monitoring
 
