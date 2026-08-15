@@ -274,7 +274,6 @@ DEFAULT_ROUTE_DISTANCE_LIVE_FETCH_ENABLED = True
 # re-probing) but still allows a fresh attempt once it expires.
 DEFAULT_SEARCH_FAILURE_COOLDOWN_SECONDS = 180.0
 DEFAULT_ENABLE_FILTERED_ALLTRAILS_SELECTION = False
-DEFAULT_STRICT_FILTERED_ALLTRAILS_NAMES: tuple[str, ...] = ()
 DEFAULT_ALLTRAILS_FILTER_MAX_MILES = 3.0
 DEFAULT_ALLTRAILS_FILTER_MAX_GAIN_FEET = 300
 DEFAULT_ALLTRAILS_FILTER_MIN_REVIEWS = 5
@@ -553,7 +552,6 @@ class URLDiscoverer:
         self._alltrails_request_delay_seconds: float = DEFAULT_ALLTRAILS_REQUEST_DELAY_SECONDS
         self._alltrails_block_cooldown_seconds: float = DEFAULT_ALLTRAILS_BLOCK_COOLDOWN_SECONDS
         self._enable_filtered_alltrails_selection: bool = DEFAULT_ENABLE_FILTERED_ALLTRAILS_SELECTION
-        self._strict_filtered_alltrails_names: tuple[str, ...] = DEFAULT_STRICT_FILTERED_ALLTRAILS_NAMES
         self._alltrails_filter_max_miles: float = DEFAULT_ALLTRAILS_FILTER_MAX_MILES
         self._alltrails_filter_max_gain_feet: int = DEFAULT_ALLTRAILS_FILTER_MAX_GAIN_FEET
         self._alltrails_filter_min_reviews: int = DEFAULT_ALLTRAILS_FILTER_MIN_REVIEWS
@@ -758,13 +756,6 @@ class URLDiscoverer:
                 DEFAULT_ENABLE_FILTERED_ALLTRAILS_SELECTION,
             )
             self._enable_filtered_alltrails_selection = bool(enable_filtered_alltrails)
-
-            raw_strict_names = url_cfg.get("strict_filtered_alltrails_names", [])
-            if isinstance(raw_strict_names, list):
-                normalized_strict_names = tuple(
-                    str(v or "").strip().lower() for v in raw_strict_names if str(v or "").strip()
-                )
-                self._strict_filtered_alltrails_names = normalized_strict_names
 
             filter_max_miles = url_cfg.get("alltrails_filter_max_miles", DEFAULT_ALLTRAILS_FILTER_MAX_MILES)
             try:
@@ -2681,42 +2672,6 @@ class URLDiscoverer:
         if "alltrails.com" in lower:
             return "alltrails"
         return "general"
-
-    def _is_token_strong_maps_query_url(self, url: str, item_name: str, dest_name: str) -> bool:
-        if self._classify_url_policy_class(url) != "google_maps_search":
-            return False
-
-        parsed = urlparse(str(url or "").strip())
-        query = parse_qs(parsed.query)
-        query_values: list[str] = []
-        for key in ("query", "q"):
-            query_values.extend(query.get(key, []))
-
-        haystack = " ".join(
-            [
-                unquote(str(url or "")).replace("+", " ").lower(),
-                " ".join(unquote(v).replace("+", " ") for v in query_values).lower(),
-                unquote(parsed.path or "").replace("-", " ").replace("_", " ").lower(),
-            ]
-        )
-
-        item_tokens = self._significant_tokens(item_name)
-        if not item_tokens:
-            return False
-        item_overlap = sum(1 for token in item_tokens if token in haystack)
-        if item_overlap < self._required_general_token_matches(len(item_tokens)):
-            return False
-
-        # For clearly location-qualified attraction names (e.g., state/national
-        # parks, districts), strong item-token overlap alone is enough even when
-        # destination tokens are not repeated in the maps query.
-        if self._looks_location_qualified(item_name):
-            return True
-
-        dest_tokens = self._significant_tokens(dest_name)
-        if not dest_tokens:
-            return True
-        return any(token in haystack for token in dest_tokens[:3])
 
     @classmethod
     def _is_incomplete_google_maps_place_url(cls, url: str | None) -> bool:
@@ -6455,13 +6410,6 @@ class URLDiscoverer:
             "a[]=hiking"
         )
 
-    def _requires_strict_filtered_alltrails(self, item_name: str) -> bool:
-        name_l = str(item_name or "").strip().lower()
-        if not name_l:
-            return False
-        strict_names = getattr(self, "_strict_filtered_alltrails_names", DEFAULT_STRICT_FILTERED_ALLTRAILS_NAMES)
-        return name_l in set(strict_names)
-
     def _get_filtered_alltrails_selection(
         self,
         *,
@@ -8002,59 +7950,6 @@ class URLDiscoverer:
         if max_miles > 0 and miles is not None and miles > max_miles:
             return False, "detour_miles_exceeded"
         return True, "ok"
-
-    def _prioritize_direct_batch_nontrail_attractions(
-        self,
-        attractions: list[dict[str, Any]],
-        dest_name: str,
-        dest_dates: str | None,
-    ) -> list[dict[str, Any]]:
-        rows = self._get_attraction_direct_batch_rows_for_destination(dest_name, str(dest_dates or ""))
-        if not rows:
-            return attractions
-
-        normalized = [dict(item) for item in attractions if isinstance(item, dict)]
-        trail_flags: list[bool] = []
-        nontrail_items: list[dict[str, Any]] = []
-        for item in normalized:
-            attr_name = str(item.get("name", "") or "")
-            attr_type = str(item.get("type", "attraction") or "attraction").lower()
-            attr_context = self._attraction_trail_context(item)
-            trail_like = self._is_trail_like_attraction(attr_name, attr_type, attr_context)
-            trail_flags.append(trail_like)
-            if not trail_like:
-                nontrail_items.append(item)
-
-        target_count = len(nontrail_items)
-        if target_count <= 0:
-            return normalized
-
-        merged_nontrail = self._build_primary_items_from_direct_batch(
-            rows=rows,
-            existing_items=nontrail_items,
-            target_count=target_count,
-            fallback_description="Locally surfaced point of interest.",
-            default_type="attraction",
-            dest_name=dest_name,
-        )
-
-        rebuilt: list[dict[str, Any]] = []
-        nontrail_index = 0
-        for item, trail_like in zip(normalized, trail_flags):
-            if trail_like:
-                rebuilt.append(item)
-                continue
-            if nontrail_index < len(merged_nontrail):
-                rebuilt.append(merged_nontrail[nontrail_index])
-                nontrail_index += 1
-            else:
-                rebuilt.append(item)
-
-        while nontrail_index < len(merged_nontrail):
-            rebuilt.append(merged_nontrail[nontrail_index])
-            nontrail_index += 1
-
-        return rebuilt
 
     # ── En-Route Stops ───────────────────────────────────────────────────────
 
@@ -10029,26 +9924,6 @@ class URLDiscoverer:
             if mention_tokens and mention_tokens.isdisjoint(dest_tokens):
                 return True
         return False
-
-    @classmethod
-    def _direct_batch_row_matches_destination(
-        cls,
-        row: dict[str, Any] | None,
-        dest_name: str,
-    ) -> bool:
-        if not row:
-            return False
-        if cls._candidate_text_matches_destination_tokens(row, dest_name):
-            return True
-
-        dest_tokens = cls._significant_tokens(dest_name)
-        if not dest_tokens:
-            return True
-
-        raw_url = str(row.get("url", "") or "").strip().lower()
-        if not raw_url:
-            return False
-        return any(token in raw_url for token in dest_tokens[:2])
 
     @classmethod
     def _candidate_has_alltrails_listing_signal(cls, candidate: dict[str, Any] | None) -> bool:
