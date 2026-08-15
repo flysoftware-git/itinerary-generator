@@ -282,7 +282,35 @@ guessed at.
 
 ## Not yet triaged from the earlier automated pass
 
-- Zero cultural events for at least 2 destinations (Bryce Canyon, Santa Fe) --
-  unclear if genuine (no events in date range) or an artifact of tonight's
-  cultural_events 3-query-to-1 collapse being too narrow. Needs investigation
-  before treating as a bug.
+- [x] Zero cultural events for at least 2 destinations (Bryce Canyon, Santa
+  Fe) -- unclear if genuine (no events in date range) or an artifact of
+  tonight's cultural_events 3-query-to-1 collapse being too narrow. Needs
+  investigation before treating as a bug.
+
+  **Investigated live against the real xAI API (grok-4-fast); genuine, not a
+  bug.** Ran the actual production single-query search
+  (`"{destination} festivals events concerts {month} 2026"`) plus the full
+  `_synthesize` LLM step for both destinations with their real trip dates:
+  both correctly returned `has_events: false` with a specific, grounded
+  `honest_assessment` (Bryce Canyon: remote location, only routine ranger
+  programs; Santa Fe: active gallery/performance circuit but nothing festival-
+  dated to Oct 27-29 specifically). To directly test whether the 3-query-to-
+  1 collapse (commit `e6bd759`) caused this by losing recall, also
+  reconstructed and ran the original pre-collapse 3-query search for Santa
+  Fe live -- it did surface a couple of extra specific-looking leads (a
+  harvest festival page, a "Route 66 Centennial Festival" page) that the
+  single collapsed query missed -- but re-ran `_synthesize` against the full
+  merged 20-result set from all 3 original queries and got the same
+  `has_events: false` conclusion, because neither extra lead actually dated
+  to the Oct 27-29 window. So the collapse does cost some raw recall, but it
+  did not change the final answer for either reported destination; the
+  synthesis step's "never invent events" honesty behaved correctly with
+  either query strategy. No code change made.
+
+  One unrelated observation from reading `cultural_events.py` during this
+  investigation: `config.yaml`'s `cultural_events.primary_query_template`,
+  `secondary_query_template`, `max_results`, `target_events_per_destination`,
+  and `verify_event_urls` keys are no longer read anywhere in
+  `generator/cultural_events.py` -- dead config left over from before the
+  3-query collapse. Harmless (no behavior depends on them) but worth a
+  cleanup pass separately.
