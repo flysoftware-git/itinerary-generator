@@ -19,6 +19,8 @@ This directory captures behavior-oriented design notes for major pipeline compon
 - `v2-issue-6-registry-schema.md`: Phase 1 registry/reconciliation schema draft for v2 orchestration.
 - `live-fetch-and-execution-time-reduction.md`: risk-tiered assessment of reducing live HTTP fetching during URL discovery/audit, plus broader architecture levers (AI-generation concurrency, per-domain block-cooldown, retry gating) to cut manifest execution time.
 - `banned-marketing-language-enforcement.md`: deterministic code-level enforcement of the system prompt's banned-cliché list, closing the gap where that instruction alone was routinely violated with zero downstream checking.
+- `search-provider-capability-probe.md`: root cause and fix for Grok search never actually being invoked, the cross-provider (Grok/Claude/OpenAI/Gemini) citation-fidelity probe that followed, Claude's addition as a second working search/harvest provider, and the resulting Grok-batch/Claude-non-batch production split.
+- `provider-model-matrix.md`: canonical provider × role (content-gen/batch-search/non-batch-search) matrix — current model ids, which roles each provider is actually approved for, and the evidence behind each assignment.
 
 ## Conventions
 - Focus on runtime behavior, not just intent.
