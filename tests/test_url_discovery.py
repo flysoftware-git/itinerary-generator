@@ -9375,6 +9375,53 @@ def test_discover_en_route_stops_prunes_waypoints_beyond_destination_leg() -> No
     assert names == ["Mesquite"]
 
 
+def test_discover_en_route_stops_uses_geocoded_coordinates_for_maps_url() -> None:
+    """Regression for dipstick55 Theme E: 'Swasey's Beach' is a real,
+    correctly in-region BLM beach that a free-text Google Maps search doesn't
+    reliably resolve to a single point ('the address isn't specific enough
+    for a usable link'). When _prune_en_route_stops_by_geometry already
+    verified precise coordinates for a stop (a real, free Nominatim lookup,
+    confirmed live to resolve "Swasey's Beach, USA" to Grand County, UT),
+    the final maps_url must use those coordinates -- which always resolve to
+    exactly one point -- instead of an ambiguous free-text query."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {
+                    "name": "Swasey's Beach",
+                    "maps_url": "https://www.google.com/maps/search/?api=1&query=Swasey%27s+Beach+Campground+Green+River+UT",
+                },
+            ],
+        }
+    }
+
+    swasey_coords = (39.1154401, -110.1096439)
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        with patch.object(discoverer, "_geocode_en_route_stop_for_route", return_value=swasey_coords):
+            discoverer._discover_en_route_stops(
+                ai,
+                "Moab",
+                origin_name="Capitol Reef National Park",
+                origin_lat=38.2872,
+                origin_lng=-111.2615,
+                dest_lat=38.5733,
+                dest_lng=-109.5498,
+            )
+
+    stop = ai["getting_here"]["en_route_stops"][0]
+    expected = f"https://www.google.com/maps/search/?api=1&query={swasey_coords[0]},{swasey_coords[1]}"
+    assert stop.get("maps_url") == expected
+    # The clickable card link ("url", not just the maps icon) must also use
+    # the precise coordinate query, not the ambiguous free-text one -- the
+    # real dipstick55 output rendered the exact same free-text query as both
+    # fields' href.
+    assert stop.get("url") == expected
+
+
 def test_discover_en_route_stops_marks_waypoint_ineligible_when_geocode_missing() -> None:
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._en_route_source = "search"

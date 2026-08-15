@@ -145,12 +145,36 @@ new issue.
   the general batch search, or backfilling missing metadata from Google Maps
   data when the primary source comes up empty. (user)
 
-## Theme E — Imprecise geocoding rendered instead of pruned
+## Theme E — Imprecise geocoding rendered instead of pruned [x]
 
-- [ ] Swasey's Beach doesn't resolve to a single point on Google Maps -- the
+- [x] Swasey's Beach doesn't resolve to a single point on Google Maps -- the
   address isn't specific enough for a usable link, but it renders anyway.
   User's recommendation: if an address can't be resolved precisely, prune
   the item entirely rather than ship an unusable link. (user)
+
+**Root cause found; fixed by upgrading precision instead of pruning.**
+Checked live (free, no-cost Nominatim query): "Swasey's Beach" is real and
+correctly in-region -- it resolves precisely to Grand County, UT. The actual
+problem is that the generator always builds en-route-stop Maps links from a
+free-text query (`"Swasey's Beach Campground Green River UT"`), and a
+loosely-defined BLM beach/campsite like this often isn't indexed as an exact
+match in Google's own POI database, so the free-text search can fail to
+resolve to one place even though the location itself is perfectly real and
+findable via geocoding. `_prune_en_route_stops_by_geometry` (used for Theme A
+above) already runs a real Nominatim geocode for every en-route stop as part
+of route-proximity pruning -- but the resulting precise coordinates were
+computed and then thrown away, never reused for the stop's actual `url` /
+`maps_url`. Fixed by persisting the verified `(lat, lng)` onto the stop and
+using a coordinate-based Maps query (`query=<lat>,<lng>`, which always
+resolves to exactly one point) as the fallback everywhere a free-text query
+was previously used, instead of pruning: pruning would have been the right
+call if we truly couldn't confirm a location at all (and that path is
+unchanged -- an unconfirmable stop still falls back to the existing
+detour-metadata heuristic, or gets dropped outright if Theme A's out-of-
+region check fires), but here we already had a free, verified, precise
+answer sitting unused. Verified with a unit test reproducing the exact case
+(coordinates come from a live Nominatim lookup for "Swasey's Beach, USA")
+confirming both `url` and `maps_url` end up coordinate-precise.
 
 ## Theme F — Duplicate/overlapping entities
 

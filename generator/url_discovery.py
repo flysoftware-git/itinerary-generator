@@ -8197,10 +8197,28 @@ class URLDiscoverer:
         resolved_stops: list[dict[str, Any]] = []
         for stop in stops:
             stop_name = stop.get("name", "")
-            q = self._en_route_maps_fallback_query_text(stop_name, origin_name, dest_name)
-            fallback_url = f"https://www.google.com/maps/search/?api=1&query={quote(q)}" if str(q or "").strip() else ""
+            geocoded_lat = stop.get("geocode_lat")
+            geocoded_lng = stop.get("geocode_lng")
+            has_precise_geocode = isinstance(geocoded_lat, (int, float)) and isinstance(geocoded_lng, (int, float))
+            if has_precise_geocode:
+                # A coordinate query always resolves to exactly one point, unlike
+                # a free-text name/address search, which can fail to resolve
+                # precisely even for a real, correctly in-region place
+                # (dipstick55 Theme E: "Swasey's Beach doesn't resolve to a
+                # single point on Google Maps"). The geocode was already
+                # verified as plausibly on-route by
+                # _prune_en_route_stops_by_geometry just above, at no extra
+                # cost -- prefer it as the fallback everywhere a free-text
+                # query would otherwise be used below (maps_url, url, and the
+                # final safety pass all route through `fallback_url`).
+                fallback_url = f"https://www.google.com/maps/search/?api=1&query={geocoded_lat},{geocoded_lng}"
+            else:
+                q = self._en_route_maps_fallback_query_text(stop_name, origin_name, dest_name)
+                fallback_url = f"https://www.google.com/maps/search/?api=1&query={quote(q)}" if str(q or "").strip() else ""
             existing_maps_url = str(stop.get("maps_url", "") or "").strip()
-            if existing_maps_url:
+            if has_precise_geocode:
+                stop["maps_url"] = fallback_url
+            elif existing_maps_url:
                 stop["maps_url"] = existing_maps_url
             elif fallback_url:
                 stop["maps_url"] = fallback_url
@@ -8330,9 +8348,14 @@ class URLDiscoverer:
             if not str(stop.get("url", "") or "").strip():
                 sn = str(stop.get("name", "") or "").strip()
                 if sn:
-                    q = self._en_route_maps_fallback_query_text(sn, origin_name, dest_name)
-                    if q:
-                        stop["url"] = f"https://www.google.com/maps/search/?api=1&query={quote(q)}"
+                    geocoded_lat = stop.get("geocode_lat")
+                    geocoded_lng = stop.get("geocode_lng")
+                    if isinstance(geocoded_lat, (int, float)) and isinstance(geocoded_lng, (int, float)):
+                        stop["url"] = f"https://www.google.com/maps/search/?api=1&query={geocoded_lat},{geocoded_lng}"
+                    else:
+                        q = self._en_route_maps_fallback_query_text(sn, origin_name, dest_name)
+                        if q:
+                            stop["url"] = f"https://www.google.com/maps/search/?api=1&query={quote(q)}"
                         logger.warning("  En-route safety fallback assigned url for '%s'", sn)
 
         # Derive distance/time from the actual route rather than AI-generated estimates.
@@ -8692,6 +8715,18 @@ class URLDiscoverer:
             if isinstance(stop, dict):
                 stop["route_waypoint_eligible"] = True
                 stop["route_progress_ratio"] = progress
+                # Persist the verified coordinates so the maps_url built later in
+                # _discover_en_route_stops can point at this exact point instead
+                # of a free-text search -- see dipstick55 Theme E ("Swasey's
+                # Beach doesn't resolve to a single point on Google Maps"): a
+                # loosely-defined BLM beach/campsite is real and correctly
+                # in-region, but a free-text query for it doesn't reliably
+                # resolve to one place in Google's own index. A coordinate
+                # query (from the same Nominatim lookup already done for route
+                # pruning, at no extra cost) always resolves to exactly one
+                # point.
+                stop["geocode_lat"] = stop_coords[0]
+                stop["geocode_lng"] = stop_coords[1]
             kept.append(stop)
 
         return kept
