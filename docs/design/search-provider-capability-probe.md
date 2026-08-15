@@ -14,7 +14,9 @@ breaker being blind to HTTP-level failures (§9), found immediately after
 via the same live-run-then-fix-then-verify loop -- a persistent
 account-level failure (exhausted Anthropic credit) registered as 100%
 healthy in circuit_breaker_stats while genuinely failing 100% of calls.
-Half-open circuit-breaker recovery implemented
+Confirmed real Sonnet 5 pricing, fixed a silent $0.00 cost-estimator bug,
+capped search rounds per call, and added a `--search-provider` CLI flag
+for clean single-provider comparison runs (§10). Half-open circuit-breaker recovery implemented
 and test-covered (§7). OpenAI/Gemini capability follow-up remains open
 (tracked via the same probe, not yet separately scoped).
 
@@ -574,3 +576,74 @@ Tests: `test_post_with_retries_counts_non_retryable_http_error_toward_breaker`,
 in both `tests/test_grok_search.py` and `tests/test_claude_search.py`;
 `test_build_gate_a_metrics_attributes_fallback_client_operation_prefix` in
 `tests/test_main_requirements.py`.
+
+## 10. Real console data, corrected pricing, and a single-provider comparison mode (2026-08-15)
+
+Direct continuation of §9: the user checked the actual Anthropic usage
+console (ground truth I have no access to) and found **9,155,523 input
+tokens, 327,009 output tokens, 361 web searches, all in one day**. That
+settled two open questions decisively.
+
+**Confirmed real, official Sonnet 5 pricing** (fetched live from
+`platform.claude.com/docs/en/about-claude/pricing`, not assumed): **$2/MTok
+input, $10/MTok output** — the introductory rate is now permanent; the
+previously scheduled Sept 1 2026 increase to $3/$15 was cancelled. Web
+search itself is billed *separately*: **$10 per 1,000 searches**, on top
+of token costs — a cost component this codebase's `UsageTracker` doesn't
+track at all (no field for `server_tool_use` search counts). Reconstructed
+total: 9.15M × $2 + 0.327M × $10 + 361 × $0.01 ≈ **$25**, comfortably
+consistent with a $20 balance running dry mid-run — not a display glitch,
+not (primarily) the call-count doubling from §8's fix, but a materially
+under-priced/under-capped tool doing exactly what it was configured to do.
+
+**A second, more severe internal bug found while confirming this**:
+`DEFAULT_PRICING_USD_PER_1M` (`llm_client.py`) had no entry for
+`"claude-sonnet-5"` at all — only stale `claude-3-5-sonnet-latest`/
+`claude-3-7-sonnet-latest` rows that don't prefix-match it.
+`UsageTracker._estimate_cost`'s no-match fallback is `return 0.0` — every
+real Sonnet 5 call this entire session had been silently costed at
+**exactly $0.00**. This is *why* "runs are pennies" looked true internally:
+not because usage was low, but because the estimator was broken for the
+model actually in use. Fixed by adding the confirmed real pricing entry.
+
+**Root mechanism for the token volume**: `CLAUDE_SEARCH_TOOL`'s
+`max_uses: 5` permitted up to 5 agentic search rounds per call, and each
+round resends the growing context (including retrieved page content) as
+new input tokens on the next step. `9,155,523 ÷ 361 ≈ 25,364 tokens per
+search` is consistent with multi-round compounding, not a single query.
+Lowered to `max_uses: 1` — caps every call to one search round while this
+is characterized further with real (now-accurate) cost data. Raise
+deliberately later if there's evidence 1 round is insufficient coverage,
+not by drifting back up.
+
+**New: `--search-provider {grok,claude}` CLI flag**, for exactly the
+question this incident couldn't answer cleanly — "what does a run
+actually cost/behave like on one provider alone?" When set, it forces a
+single provider for both `url_discovery`'s batch client and
+`cultural_events`, and **does not construct a fallback client at all**
+(`self._search_fallback = None`) — every call site that reads it already
+treats `None` as "no fallback available" (§6/§8's design), so this needed
+no new gating logic, just not building the second client. This gives a
+clean, uncontaminated per-provider run for comparing real console numbers
+between Grok and Claude, without either §6's batch-fallback split or
+§8's cross-provider retry mixing both providers into one run's data.
+`build_search_client` gained a `provider_override` parameter that bypasses
+the `config.yaml` lookup entirely (same unknown-value-falls-back-to-grok
+validation as the config-driven path); threaded through
+`URLDiscoverer.__init__`, `CulturalEventsDiscoverer.__init__`, and every
+one of `main.py`'s four discoverer-construction call sites (including the
+selective-retry pass, which reuses the initial pass's already-constructed
+client so only needed the override threaded to its *own* default-lambda
+construction path). Recorded in the run ledger
+(`search_provider_override`) and echoed to the console at startup for
+visibility, matching the existing `--llm-provider` pattern.
+
+Tests: `test_build_search_client_provider_override_bypasses_config_entirely`,
+`test_build_search_client_provider_override_falls_back_to_grok_on_unknown_value`
+in `tests/test_search_provider.py`;
+`test_url_discoverer_search_provider_override_forces_single_provider_no_fallback`
+in `tests/test_url_discovery.py`;
+`test_search_provider_override_forces_single_provider` in
+`tests/test_cultural_events.py`;
+`test_estimate_cost_has_a_real_entry_for_claude_sonnet_5` in
+`tests/test_llm_client.py`.

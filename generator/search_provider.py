@@ -53,6 +53,7 @@ def build_search_client(
     *,
     config_section: str,
     provider_key: str = "search_provider",
+    provider_override: str | None = None,
     grok_model: str | None = None,
     claude_model: str | None = None,
     usage_tracker: Any | None = None,
@@ -69,8 +70,22 @@ def build_search_client(
     be pinned to different providers (see url_discovery.py's __init__).
     Defaults to grok when unset, invalid, or unreadable -- unchanged
     behavior from before this provider selection existed.
+
+    provider_override (2026-08-15, --search-provider CLI flag): when given,
+    skips the config.yaml lookup entirely and forces this provider --
+    for a clean, single-provider run with no cross-provider fallback, so a
+    run's cost/behavior can be attributed to exactly one provider instead
+    of whatever mix the normal batch/fallback split produces. Same
+    validation (unknown value falls back to grok, logged) as the
+    config-driven path.
     """
-    provider = _read_search_provider(config_path, config_section, provider_key)
+    if provider_override:
+        provider = str(provider_override).strip().lower()
+        if provider not in _VALID_SEARCH_PROVIDERS:
+            logger.warning("Unknown --search-provider override '%s', falling back to grok", provider)
+            provider = "grok"
+    else:
+        provider = _read_search_provider(config_path, config_section, provider_key)
     if provider == "claude":
         return ClaudeSearch(
             model=claude_model,

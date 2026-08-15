@@ -30,7 +30,16 @@ CLAUDE_ENDPOINT_DEFAULT = "https://api.anthropic.com/v1/messages"
 # max_uses caps how many searches Claude may issue per call -- without a cap
 # a single harvest prompt could fan out into many searches, ballooning both
 # latency and cost for no benefit to a batch-of-N-items harvest prompt.
-CLAUDE_SEARCH_TOOL = {"type": "web_search_20260318", "name": "web_search", "max_uses": 5}
+# Lowered from 5 to 1 (2026-08-15) after reconstructing real spend from the
+# Anthropic console -- 9.15M input tokens / 361 web searches in one day
+# (~25K tokens/search) is consistent with agentic multi-round search
+# compounding context on every internal step, not a single query, and web
+# search itself is billed separately ($10/1000 searches, platform.claude.com
+# pricing docs) on top of token costs. 1 keeps each call to a single search
+# round while this is characterized further; raise deliberately, not by
+# drifting back up, once there's real evidence 1 round is insufficient
+# coverage rather than just cheaper.
+CLAUDE_SEARCH_TOOL = {"type": "web_search_20260318", "name": "web_search", "max_uses": 1}
 _DEFAULT_DELAY = 0.05
 # Claude web-search calls run materially longer than Grok's: 3/4 initial
 # probe calls timed out at 90s under real search load, all 4 succeeded once

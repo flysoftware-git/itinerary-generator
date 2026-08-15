@@ -1,9 +1,26 @@
+from unittest.mock import patch
+
 from generator.cultural_events import CulturalEventsDiscoverer
 
 
 def _discoverer() -> CulturalEventsDiscoverer:
     # Use helper methods without initializing network clients.
     return CulturalEventsDiscoverer.__new__(CulturalEventsDiscoverer)
+
+
+def test_search_provider_override_forces_single_provider():
+    """--search-provider (2026-08-15): forces cultural_events' search
+    client to a specific provider regardless of config.yaml, for a clean
+    single-provider comparison run."""
+    from generator.grok_search import GrokSearch
+
+    mock_llm = type("MockLLM", (), {"usage_tracker": None})()
+    with patch.dict("os.environ", {"XAI_API_KEY": "test-key"}):
+        discoverer = CulturalEventsDiscoverer(
+            config_path="config.yaml", llm_client=mock_llm, search_provider_override="grok"
+        )
+
+    assert isinstance(discoverer._search, GrokSearch)
 
 
 def test_local_tip_removed_when_weekday_outside_itinerary() -> None:

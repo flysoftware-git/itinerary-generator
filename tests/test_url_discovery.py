@@ -2875,6 +2875,23 @@ def test_url_discoverer_builds_grok_batch_client_and_claude_fallback_client_from
     assert discoverer._search is not discoverer._search_fallback
 
 
+def test_url_discoverer_search_provider_override_forces_single_provider_no_fallback():
+    """--search-provider (2026-08-15): forces one provider for both the
+    batch client and (by not building one at all) the fallback, for a
+    clean single-provider comparison run with zero cross-provider
+    fallback contamination."""
+    from generator.claude_search import ClaudeSearch
+
+    mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+        discoverer = URLDiscoverer(
+            config_path="config.yaml", llm_client=mock_llm, search_provider_override="claude"
+        )
+
+    assert isinstance(discoverer._search, ClaudeSearch)
+    assert discoverer._search_fallback is None
+
+
 def test_search_cached_prefers_fallback_client_over_batch_client_when_both_set():
     """_search_cached (used by _search_first/_search_first_strict) must route
     through self._search_fallback when it's present, not self._search --

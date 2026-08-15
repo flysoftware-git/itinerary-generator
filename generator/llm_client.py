@@ -65,6 +65,19 @@ DEFAULT_PRICING_USD_PER_1M: dict[str, dict[str, float]] = {
     "grok:grok-4.5": {"input": 3.00, "output": 15.00},
     "anthropic:claude-3-5-sonnet-latest": {"input": 3.00, "output": 15.00},
     "anthropic:claude-3-7-sonnet-latest": {"input": 3.00, "output": 15.00},
+    # Confirmed 2026-08-15 against platform.claude.com/docs/en/about-claude/pricing
+    # (the introductory $2/$10 rate is now the permanent standard price -- the
+    # previously scheduled Sept 1 2026 increase to $3/$15 was cancelled). Added
+    # after discovering this entry's absence meant every claude-sonnet-5 call
+    # this session had been silently costed at $0.00 (_estimate_cost's
+    # no-match fallback), which is why real spend (verified against the
+    # Anthropic console: ~9.15M input / ~327K output tokens in one day) looked
+    # like "pennies" internally right up until the account ran out of credit.
+    # Not yet included here: web search's separate $10-per-1000-searches
+    # charge (on top of token costs) -- UsageTracker has no field for
+    # server_tool_use search counts yet, a real but smaller (~14% of
+    # reconstructed spend) remaining gap.
+    "anthropic:claude-sonnet-5": {"input": 2.00, "output": 10.00},
     "gemini:gemini-1.5-pro": {"input": 3.50, "output": 10.50},
     "gemini:gemini-1.5-flash": {"input": 0.35, "output": 1.05},
 }

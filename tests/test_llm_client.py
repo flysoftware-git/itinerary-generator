@@ -45,6 +45,21 @@ def test_estimate_cost_prefers_longest_matching_model_prefix() -> None:
     assert cost == 0.75
 
 
+def test_estimate_cost_has_a_real_entry_for_claude_sonnet_5() -> None:
+    """Regression for a real, costly incident (2026-08-15): this pricing
+    table had no entry for "claude-sonnet-5" (only stale
+    claude-3-5-sonnet-latest/claude-3-7-sonnet-latest rows that don't
+    prefix-match it), so _estimate_cost's no-match fallback silently
+    returned $0.00 for every real Claude Sonnet 5 call all session --
+    right up until the Anthropic account actually ran out of credit.
+    Confirmed against platform.claude.com/docs/en/about-claude/pricing:
+    $2/MTok input, $10/MTok output."""
+    tracker = UsageTracker()
+    cost = tracker._estimate_cost("anthropic", "claude-sonnet-5", 1_000_000, 1_000_000)
+    assert cost == 12.00
+    assert cost != 0.0
+
+
 def test_generate_json_uses_exact_cache_for_repeated_identical_requests() -> None:
     client = _make_client()
     calls = {"count": 0}

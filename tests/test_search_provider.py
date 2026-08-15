@@ -81,3 +81,29 @@ def test_build_search_client_passes_usage_tracker_and_operation_prefix(tmp_path)
     mock_grok_cls.assert_called_once_with(
         model="grok-x", usage_tracker=tracker, usage_operation_prefix="url_discovery"
     )
+
+
+def test_build_search_client_provider_override_bypasses_config_entirely(tmp_path, monkeypatch) -> None:
+    """--search-provider (2026-08-15): forces a provider regardless of what
+    config.yaml says, for a clean single-provider comparison run."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("url_discovery:\n  search_provider: grok\n", encoding="utf-8")
+
+    client = build_search_client(
+        str(config_path), config_section="url_discovery", provider_override="claude"
+    )
+
+    assert isinstance(client, ClaudeSearch)
+
+
+def test_build_search_client_provider_override_falls_back_to_grok_on_unknown_value(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("XAI_API_KEY", "test-key")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("url_discovery:\n  search_provider: claude\n", encoding="utf-8")
+
+    client = build_search_client(
+        str(config_path), config_section="url_discovery", provider_override="bing"
+    )
+
+    assert isinstance(client, GrokSearch)

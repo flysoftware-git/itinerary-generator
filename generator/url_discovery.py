@@ -482,6 +482,7 @@ class URLDiscoverer:
         restaurant_source: str | None = None,
         en_route_source: str | None = None,
         output_dir: str | Path | None = None,
+        search_provider_override: str | None = None,
     ) -> None:
         self._llm = llm_client or MultiLLMClient(config_path)
         # When the canonical content-generation provider matches the search
@@ -499,25 +500,37 @@ class URLDiscoverer:
             config_path,
             config_section="url_discovery",
             provider_key="search_provider",
+            provider_override=search_provider_override,
             grok_model=grok_model,
             claude_model=claude_model,
             usage_tracker=self._llm.usage_tracker,
             usage_operation_prefix="url_discovery",
         )
-        # Separate client for the per-item search fallback (_search_cached,
-        # used by _search_first/_search_first_strict) -- a lower-volume,
-        # different-shaped call than the direct-batch HTML harvest above, and
-        # independently pinned via nonbatch_search_provider (config.yaml).
-        # See that key's comment for the rationale.
-        self._search_fallback = build_search_client(
-            config_path,
-            config_section="url_discovery",
-            provider_key="nonbatch_search_provider",
-            grok_model=grok_model,
-            claude_model=claude_model,
-            usage_tracker=self._llm.usage_tracker,
-            usage_operation_prefix="url_discovery_fallback",
-        )
+        # search_provider_override (2026-08-15, --search-provider CLI flag)
+        # forces a single provider with no fallback at all -- for a clean
+        # per-provider cost/behavior comparison, uncontaminated by the
+        # cross-provider batch retry or the non-batch fallback both
+        # independently attempting a second provider. Every call site that
+        # reads self._search_fallback already treats None as "no fallback
+        # available" (see _fetch_direct_batch_html_rows, _search_cached),
+        # so this doesn't need special-casing beyond just not building one.
+        if search_provider_override:
+            self._search_fallback = None
+        else:
+            # Separate client for the per-item search fallback (_search_cached,
+            # used by _search_first/_search_first_strict) -- a lower-volume,
+            # different-shaped call than the direct-batch HTML harvest above, and
+            # independently pinned via nonbatch_search_provider (config.yaml).
+            # See that key's comment for the rationale.
+            self._search_fallback = build_search_client(
+                config_path,
+                config_section="url_discovery",
+                provider_key="nonbatch_search_provider",
+                grok_model=grok_model,
+                claude_model=claude_model,
+                usage_tracker=self._llm.usage_tracker,
+                usage_operation_prefix="url_discovery_fallback",
+            )
         self._url_validator = URLValidator()
 
         self._uninterested_keywords: tuple[str, ...] = DEFAULT_UNINTERESTED_ATTRACTION_KEYWORDS

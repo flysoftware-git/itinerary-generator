@@ -334,7 +334,7 @@ def test_chat_completion_live_search_adds_web_search_tool() -> None:
 
     assert "Real Trail" in out
     sent = session.post.call_args.kwargs["json"]
-    assert sent["tools"] == [{"type": "web_search_20260318", "name": "web_search", "max_uses": 5}]
+    assert sent["tools"] == [{"type": "web_search_20260318", "name": "web_search", "max_uses": 1}]
 
 
 def test_chat_completion_skips_tool_result_blocks_from_returned_text() -> None:
@@ -402,7 +402,7 @@ def test_claude_search_uses_web_search_tool_and_returns_normalized_results() -> 
 
     assert results == [{"name": "Real Place", "snippet": "s", "url": "https://example.com/real"}]
     sent = session.post.call_args.kwargs["json"]
-    assert sent["tools"] == [{"type": "web_search_20260318", "name": "web_search", "max_uses": 5}]
+    assert sent["tools"] == [{"type": "web_search_20260318", "name": "web_search", "max_uses": 1}]
 
 
 def test_claude_search_retries_with_stricter_prompt_on_malformed_json() -> None:

@@ -44,6 +44,8 @@ class CulturalEventsDiscoverer:
         self,
         config_path: Path | str = "config.yaml",
         llm_client: MultiLLMClient | None = None,
+        *,
+        search_provider_override: str | None = None,
     ) -> None:
         import yaml
         with Path(config_path).open() as f:
@@ -53,9 +55,13 @@ class CulturalEventsDiscoverer:
         # claude independently of ai.provider/url_discovery.search_provider,
         # defaulting to grok -- unchanged behavior from before this
         # selection existed. See search_provider.py and claude_search.py.
+        # search_provider_override (--search-provider CLI flag) forces a
+        # single provider for a clean per-provider cost/behavior comparison
+        # run -- see URLDiscoverer.__init__ for the fuller rationale.
         self._search = build_search_client(
             config_path,
             config_section="cultural_events",
+            provider_override=search_provider_override,
             usage_tracker=self._llm.usage_tracker,
             usage_operation_prefix="cultural_events",
         )

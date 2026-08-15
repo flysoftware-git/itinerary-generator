@@ -1072,6 +1072,7 @@ def _selective_retry_destinations(
     attraction_source: str | None,
     restaurant_source: str | None,
     en_route_source: str | None,
+    search_provider_override: str | None = None,
     run_events: Any | None = None,
     run_images: Any | None = None,
     run_urls: Any | None = None,
@@ -1110,7 +1111,9 @@ def _selective_retry_destinations(
         if run_events is None:
             from generator.cultural_events import CulturalEventsDiscoverer
 
-            run_events = lambda subset_trip: CulturalEventsDiscoverer(config_path, llm_client=llm_client).discover(subset_trip)
+            run_events = lambda subset_trip: CulturalEventsDiscoverer(
+                config_path, llm_client=llm_client, search_provider_override=search_provider_override
+            ).discover(subset_trip)
         run_events(events_trip)
 
     if not skip_images and images_trip is not None:
@@ -1139,6 +1142,7 @@ def _selective_retry_destinations(
                     restaurant_source=restaurant_source,
                     en_route_source=en_route_source,
                     output_dir=output_dir,
+                    search_provider_override=search_provider_override,
                 )
                 url_discoverer.discover_all(subset_trip)
                 url_discoverer.audit_discovered_urls(subset_trip)
@@ -1579,6 +1583,12 @@ def _write_development_build_info(output_dir: Path, build_info: dict[str, Any]) 
     default="",
     help="Optional Apify actor id override for --alltrails-source apify-single-call",
 )
+@click.option(
+    "--search-provider",
+    type=click.Choice(["grok", "claude"], case_sensitive=False),
+    default=None,
+    help="Force a single search/harvest provider for this run (url_discovery batch + non-batch, cultural_events), disabling cross-provider fallback entirely -- for a clean, uncontaminated per-provider cost/behavior comparison run.",
+)
 @click.option("--noschedule", is_flag=True, help="Suppress schedule card rendering in output HTML")
 @click.option("--noseed", is_flag=True, help="Ignore destination seeds from the manifest for this run")
 @click.option("--destination", "destinations", multiple=True, help="Limit to specific destination ids")
@@ -1611,6 +1621,7 @@ def main(
     restaurant_source: str | None,
     en_route_source: str | None,
     alltrails_apify_actor_id: str,
+    search_provider: str | None,
     noschedule: bool,
     noseed: bool,
     destinations: tuple[str, ...],
@@ -1656,6 +1667,7 @@ def main(
             "env_file": env_file,
             "llm_provider": llm_provider,
             "llm_model": llm_model,
+            "search_provider_override": search_provider,
             "build_tag": build_tag,
             "dry_run": bool(dry_run),
             "skip_images": bool(skip_images),
@@ -1700,6 +1712,11 @@ def main(
         click.echo(f"   LLM      : provider override = {llm_provider.lower()}")
     if llm_model:
         click.echo(f"   LLM      : model override = {llm_model}")
+    if search_provider:
+        click.echo(
+            f"   Search   : provider override = {search_provider.lower()} "
+            "(single provider, no cross-provider fallback)"
+        )
     if dry_run:
         click.echo("   Mode     : DRY RUN (no AI calls)")
     click.echo()
@@ -1913,7 +1930,9 @@ def main(
         if not skip_events:
             click.echo("Stage 4/6 — Cultural events discovery…")
             from generator.cultural_events import CulturalEventsDiscoverer
-            CulturalEventsDiscoverer(config_path, llm_client=llm_client).discover(trip)
+            CulturalEventsDiscoverer(
+                config_path, llm_client=llm_client, search_provider_override=search_provider
+            ).discover(trip)
             click.echo("  ✓ Cultural events resolved")
         else:
             click.echo("Stage 4/6 — Cultural events discovery SKIPPED")
@@ -1957,6 +1976,7 @@ def main(
                 restaurant_source=normalized_restaurant_source,
                 en_route_source=normalized_en_route_source,
                 output_dir=output_dir,
+                search_provider_override=search_provider,
             )
             url_discoverer.discover_all(trip)
             url_discoverer.audit_discovered_urls(trip)
@@ -2044,6 +2064,7 @@ def main(
                 attraction_source=normalized_attraction_source,
                 restaurant_source=normalized_restaurant_source,
                 en_route_source=normalized_en_route_source,
+                search_provider_override=search_provider,
                 run_urls=_run_urls_for_retry,
             )
     runtime_metrics["retry_skipped_due_to_circuit_open"] = retry_skipped_due_to_circuit_open
