@@ -1,44 +1,52 @@
-"""Cheap, multi-destination probe: does each provider's search/grounding
-capability produce real, live-verifiable URLs when given the *same* real
-production HTML-mode direct-batch prompt -- and does explicitly enabling
-Grok's live_search tool (never done in production -- confirmed via code
-read, every call site passes live_search=False) change anything?
+"""Repeatable, schedulable multi-provider search/harvest capability probe.
 
-Background (2026-08-14 investigation): xAI's own docs confirm real-time
-search is opt-in per request; without the live_search tool, Grok answers
-from its training-data knowledge cutoff, not live search. Neither the
-JSON-mode nor HTML-mode harvest path in this codebase has ever set
-live_search=True. This probe tests that gap directly, alongside whether
-OpenAI/Claude/Gemini's native search tools can produce comparable results
-to what this app currently trusts from Grok.
+Cheap, multi-destination check: does each provider's search/grounding
+capability produce real, live-verifiable URLs when given the *same* real
+production HTML-mode direct-batch prompt? The sharpest signal is citation
+fidelity -- whether a provider's embedded <a href> URLs actually match its
+own returned search citations, independent of bot-blocking noise that
+pollutes simple alive/dead HTTP checks.
 
 Design: the *same* real, current `_direct_batch_html_prompt` (imported
-directly from generator.url_discovery, not duplicated -- the previous
-experiment script's local copy had drifted significantly stale) is sent to
-every provider/mode configuration below, parsed with the same real
-`_direct_batch_rows_from_html`. This directly tests the "a simple universal
-HTML-list prompt is the lowest common denominator across providers"
-hypothesis. Every resulting candidate URL is then live-verified (HTTP HEAD)
--- not just scored on whether it looks lexically plausible, since a
-plausible-looking URL can still be hallucinated (demonstrated separately:
-raw/ungrounded Gemini output followed the exact real nps.gov URL
-convention while never having actually searched).
+directly from generator.url_discovery, never duplicated locally -- a
+previous experiment script's local copy had drifted stale) is sent to every
+configured provider, parsed with the same real `_direct_batch_rows_from_html`.
+Every resulting candidate URL is live-verified (HTTP HEAD, GET fallback).
 
-Kept deliberately cheap: 2 destinations (chosen for known-problematic
-history: Zion/"The Narrows" AllTrails fabrication, St. George restaurant
-address-resolution per real GH #67 log evidence), 2 kinds each, 7
-provider/mode configs -- 28 calls total, each a single completion, not a
-full pipeline run.
+History (2026-08-14, docs/design/search-provider-capability-probe.md):
+  Initial pass found grok_live_search (410, deprecated live_search tool) and
+  openai_search (400, rejects "temperature") both broken, and 3/4 initial
+  Claude calls timed out at 90s. All three fixed and re-verified in a
+  follow-up rerun (formerly a separate script, scripts/probe_rerun_fixed.py,
+  now folded in here as the default config for each provider -- there is no
+  more "v1 broken" / "v2 fixed" distinction to track). Results at that
+  point: Grok 21/21 (100%) citation-matched, Claude 14/15 (93%), Gemini 4/21
+  (19%), OpenAI 0/21 (0%).
+
+Usage:
+  python scripts/probe_multi_provider_search_2026.py
+  python scripts/probe_multi_provider_search_2026.py --providers openai,gemini
+  python scripts/probe_multi_provider_search_2026.py --include-baselines
+
+Each run writes a full report (output/dev/multi_provider_search_probe/<ts>/
+report.json + raw/) AND appends one compact, schema-stable summary line to
+output/dev/multi_provider_search_probe/history.jsonl -- the history file is
+what makes "run this again periodically to track drift" actually usable:
+comparing two report.json files by hand doesn't scale, comparing two lines
+of the same JSONL does. Scheduling itself (Windows Task Scheduler, cron, or
+an agent wakeup) is left to the operator -- this script only needs to be a
+clean, idempotent CLI entry point for whichever mechanism is chosen.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 from dotenv import load_dotenv
@@ -50,9 +58,29 @@ if str(REPO_ROOT) not in sys.path:
 from generator.url_discovery import URLDiscoverer  # noqa: E402
 
 XAI_ENDPOINT = "https://api.x.ai/v1/chat/completions"
+XAI_RESPONSES_ENDPOINT = "https://api.x.ai/v1/responses"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
 GEMINI_BASE = "https://generativelanguage.googleapis.com"
+
+# Model pins, overridable via env so a future rename/deprecation doesn't
+# require editing this file -- just the environment the scheduled run uses.
+GROK_MODEL = os.environ.get("PROBE_GROK_MODEL", "grok-4.5")
+OPENAI_SEARCH_MODEL = os.environ.get("PROBE_OPENAI_SEARCH_MODEL", "gpt-5-search-api")
+OPENAI_PLAIN_MODEL = os.environ.get("PROBE_OPENAI_PLAIN_MODEL", "gpt-4o-mini")
+CLAUDE_MODEL = os.environ.get("PROBE_CLAUDE_MODEL", "claude-opus-5")
+GEMINI_MODEL = os.environ.get("PROBE_GEMINI_MODEL", "gemini-flash-latest")
+
+# Provider -> the env var that must be set for that provider's configs to run.
+# A monitoring run shouldn't hard-crash because one provider's key is absent
+# from whatever environment it happens to run in -- skip with a clear reason
+# instead.
+PROVIDER_API_KEY_ENV = {
+    "grok": "XAI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "claude": "ANTHROPIC_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
 
 # (destination, dates, kind) -- kinds chosen for known-problematic history.
 TEST_CASES: list[tuple[str, str, str]] = [
@@ -75,8 +103,7 @@ def _real_prompt(discoverer: URLDiscoverer, kind: str, dest_name: str, dates: st
 def _verify_url(url: str, timeout: int = 6) -> tuple[bool, str]:
     """Cheap live-liveness check: HEAD request, fall back to a short-timeout
     GET if the host rejects HEAD (common for bot-defensive sites). Returns
-    (alive, status_description). This is the empirical test the old
-    experiment script never did -- it only scored lexical plausibility."""
+    (alive, status_description)."""
     headers = {"User-Agent": "Mozilla/5.0 (probe; road-trip-generator research)"}
     try:
         resp = requests.head(url, timeout=timeout, allow_redirects=True, headers=headers)
@@ -89,9 +116,6 @@ def _verify_url(url: str, timeout: int = 6) -> tuple[bool, str]:
 
 
 # ── Provider call functions ─────────────────────────────────────────────────
-
-XAI_RESPONSES_ENDPOINT = "https://api.x.ai/v1/responses"
-
 
 def call_grok(system_prompt: str, user_prompt: str, *, live_search: bool, model: str, timeout: int) -> tuple[str, dict[str, Any]]:
     api_key = os.environ["XAI_API_KEY"]
@@ -253,6 +277,36 @@ def call_gemini(system_prompt: str, user_prompt: str, *, model: str, use_search:
     return "\n".join(text_parts), {"raw_citations": citations}
 
 
+# ── Config registry ─────────────────────────────────────────────────────────
+# Each entry: provider key -> list of (label, is_baseline, call_fn). The
+# default probe run (no --include-baselines) only runs is_baseline=False
+# configs -- one canonical "real search, current best-known call shape" per
+# provider, which is what actually answers "did this provider's search
+# capability get better or worse since last time." Baseline/no-search
+# configs are kept for comparison but are opt-in, to keep the default
+# scheduled run cheap (per the original "cheap probes" framing).
+CallFn = Callable[[str, str], tuple[str, dict[str, Any]]]
+ProviderConfig = tuple[str, bool, CallFn]
+
+CONFIG_REGISTRY: dict[str, list[ProviderConfig]] = {
+    "grok": [
+        ("grok_live_search", False, lambda s, u: call_grok(s, u, live_search=True, model=GROK_MODEL, timeout=90)),
+        ("grok_no_search", True, lambda s, u: call_grok(s, u, live_search=False, model=GROK_MODEL, timeout=60)),
+    ],
+    "openai": [
+        ("openai_search", False, lambda s, u: call_openai(s, u, model=OPENAI_SEARCH_MODEL, json_mode=False, timeout=90)),
+        ("openai_plain_html", True, lambda s, u: call_openai(s, u, model=OPENAI_PLAIN_MODEL, json_mode=False, timeout=60)),
+        ("openai_plain_json", True, lambda s, u: call_openai(s, u, model=OPENAI_PLAIN_MODEL, json_mode=True, timeout=60)),
+    ],
+    "claude": [
+        ("claude_web_search", False, lambda s, u: call_claude(s, u, model=CLAUDE_MODEL, use_search=True, timeout=150)),
+    ],
+    "gemini": [
+        ("gemini_google_search", False, lambda s, u: call_gemini(s, u, model=GEMINI_MODEL, use_search=True, timeout=90)),
+    ],
+}
+
+
 # ── Analysis ─────────────────────────────────────────────────────────────
 
 def _extract_row_name(row: dict[str, Any]) -> str:
@@ -289,21 +343,92 @@ def analyze_response(text: str, meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def summarize_provider_runs(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Roll up one config's per-case analyze_response() results into a single
+    comparable-across-runs summary. This -- not the raw per-case detail -- is
+    what gets written to history.jsonl."""
+    ok_entries = [e for e in entries if "error" not in e]
+    errors = [e for e in entries if "error" in e]
+
+    rows_with_url = sum(e.get("rows_with_url", 0) for e in ok_entries)
+    verified_alive = sum(e.get("rows_verified_alive", 0) for e in ok_entries)
+    verified_dead = sum(e.get("rows_verified_dead", 0) for e in ok_entries)
+
+    fidelity_cases = [e for e in ok_entries if e.get("html_urls_not_in_citations") is not None]
+    not_in_citations = sum(e.get("html_urls_not_in_citations", 0) for e in fidelity_cases)
+    fidelity_denominator = sum(e.get("rows_with_url", 0) for e in fidelity_cases)
+    citation_fidelity_pct = (
+        round(100.0 * (fidelity_denominator - not_in_citations) / fidelity_denominator, 1)
+        if fidelity_denominator
+        else None
+    )
+
+    return {
+        "cases_run": len(entries),
+        "cases_errored": len(errors),
+        "rows_with_url": rows_with_url,
+        "rows_verified_alive": verified_alive,
+        "rows_verified_dead": verified_dead,
+        "citation_fidelity_pct": citation_fidelity_pct,
+        "errors": [e["error"] for e in errors] if errors else [],
+    }
+
+
+def _parse_providers_arg(raw: str) -> list[str]:
+    requested = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    unknown = [p for p in requested if p not in CONFIG_REGISTRY]
+    if unknown:
+        raise SystemExit(f"Unknown provider(s): {unknown}. Valid: {sorted(CONFIG_REGISTRY)}")
+    return requested
+
+
+def build_configs(providers: list[str], *, include_baselines: bool) -> list[tuple[str, CallFn]]:
+    configs: list[tuple[str, CallFn]] = []
+    for provider in providers:
+        key_env = PROVIDER_API_KEY_ENV[provider]
+        if not os.environ.get(key_env):
+            print(f"[skip] {provider}: {key_env} not set")
+            continue
+        for label, is_baseline, fn in CONFIG_REGISTRY[provider]:
+            if is_baseline and not include_baselines:
+                continue
+            configs.append((label, fn))
+    return configs
+
+
 def main() -> None:
-    load_dotenv("C:/Dev/Sandbox/.env")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--providers",
+        default="grok,openai,claude,gemini",
+        help="Comma-separated providers to probe (grok,openai,claude,gemini). Default: all four.",
+    )
+    parser.add_argument(
+        "--include-baselines",
+        action="store_true",
+        help="Also run no-search/comparison baseline configs (more calls, more cost).",
+    )
+    parser.add_argument(
+        "--history-file",
+        default=None,
+        help="Append-only JSONL summary path (default: output/dev/multi_provider_search_probe/history.jsonl)",
+    )
+    parser.add_argument(
+        "--env-file",
+        default="C:/Dev/Sandbox/.env",
+        help="Extra .env file to load before the repo's own .env (default: C:/Dev/Sandbox/.env)",
+    )
+    args = parser.parse_args()
+
+    load_dotenv(args.env_file)
     load_dotenv()
 
-    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    providers = _parse_providers_arg(args.providers)
+    configs = build_configs(providers, include_baselines=args.include_baselines)
+    if not configs:
+        raise SystemExit("No configs to run -- no requested provider has its API key set.")
 
-    configs: list[tuple[str, Any]] = [
-        ("grok_no_search (current production)", lambda s, u: call_grok(s, u, live_search=False, model="grok-4.5", timeout=60)),
-        ("grok_live_search (never used in production)", lambda s, u: call_grok(s, u, live_search=True, model="grok-4.5", timeout=90)),
-        ("openai_search (gpt-5-search-api)", lambda s, u: call_openai(s, u, model="gpt-5-search-api", json_mode=False, timeout=90)),
-        ("openai_plain_html (gpt-4o-mini, no search)", lambda s, u: call_openai(s, u, model="gpt-4o-mini", json_mode=False, timeout=60)),
-        ("openai_plain_json (gpt-4o-mini, no search)", lambda s, u: call_openai(s, u, model="gpt-4o-mini", json_mode=True, timeout=60)),
-        ("claude_web_search (claude-opus-5)", lambda s, u: call_claude(s, u, model="claude-opus-5", use_search=True, timeout=90)),
-        ("gemini_google_search (gemini-flash-latest)", lambda s, u: call_gemini(s, u, model="gemini-flash-latest", use_search=True, timeout=90)),
-    ]
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
 
     run_stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     run_dir = REPO_ROOT / "output" / "dev" / "multi_provider_search_probe" / run_stamp
@@ -311,6 +436,7 @@ def main() -> None:
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     report: dict[str, Any] = {"run_stamp_utc": run_stamp, "cases": []}
+    per_provider_entries: dict[str, list[dict[str, Any]]] = {label: [] for label, _ in configs}
 
     for dest_name, dates, kind in TEST_CASES:
         system_prompt, user_prompt = _real_prompt(discoverer, kind, dest_name, dates)
@@ -323,21 +449,41 @@ def main() -> None:
                 text, meta = fn(system_prompt, user_prompt)
                 analysis = analyze_response(text, meta)
                 case_result["providers"][label] = analysis
+                per_provider_entries[label].append(analysis)
                 slug = re.sub(r"[^a-z0-9]+", "-", f"{dest_name}-{kind}-{label}".lower()).strip("-")
                 (raw_dir / f"{slug}.txt").write_text(text, encoding="utf-8")
                 print(
                     f"rows={analysis['row_count']} alive={analysis['rows_verified_alive']} "
-                    f"dead={analysis['rows_verified_dead']} citations={analysis['citation_count']}"
+                    f"dead={analysis['rows_verified_dead']} citations={analysis['citation_count']} "
+                    f"not_in_citations={analysis['html_urls_not_in_citations']}"
                 )
             except Exception as exc:  # noqa: BLE001 -- probe must survive any single provider failing
-                case_result["providers"][label] = {"error": f"{type(exc).__name__}: {exc}"}
+                err = {"error": f"{type(exc).__name__}: {exc}"}
+                case_result["providers"][label] = err
+                per_provider_entries[label].append(err)
                 print(f"FAILED: {type(exc).__name__}: {exc}")
 
         report["cases"].append(case_result)
 
+    summary = {label: summarize_provider_runs(entries) for label, entries in per_provider_entries.items()}
+    report["summary"] = summary
+
     (run_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"\nWrote {run_dir / 'report.json'}")
     print(f"Wrote raw responses under {raw_dir}")
+
+    print("\n=== Summary (citation fidelity %) ===")
+    for label, s in summary.items():
+        fidelity = f"{s['citation_fidelity_pct']}%" if s["citation_fidelity_pct"] is not None else "n/a"
+        print(f"  {label}: {fidelity} (rows_with_url={s['rows_with_url']}, errors={s['cases_errored']})")
+
+    history_path = Path(args.history_file) if args.history_file else (
+        REPO_ROOT / "output" / "dev" / "multi_provider_search_probe" / "history.jsonl"
+    )
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    with history_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"run_stamp_utc": run_stamp, "providers": summary}) + "\n")
+    print(f"Appended summary to {history_path}")
 
 
 if __name__ == "__main__":

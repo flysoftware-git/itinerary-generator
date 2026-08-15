@@ -4,8 +4,10 @@ Status: Grok fix (§1-2) implemented and test-covered. Cross-provider probe
 (§3) run twice against real APIs (initial pass + a fixes-applied rerun).
 Claude added as a second working search/harvest provider (§4), implemented
 and test-covered; live end-to-end validation blocked by an Anthropic
-account credit-balance issue (not a code problem -- see §4.1). OpenAI/Gemini
-follow-up work and a scheduled monitoring harness (§5) not yet started.
+account credit-balance issue (not a code problem -- see §4.1). Probe script
+hardened into a repeatable, parameterized, history-tracking CLI (§5).
+OpenAI/Gemini capability follow-up remains open (tracked via the same
+probe, not yet separately scoped).
 
 ## 0. Why this investigation started
 
@@ -165,10 +167,10 @@ for those two is *provenance*, not "no search happened." This matches (and
 gives concrete evidence for) the original reason Grok was chosen over
 OpenAI for this role — it was not merely an interface artifact.
 
-Supplementary rerun script: `scripts/probe_rerun_fixed.py` (re-runs just
-the fixed Grok/OpenAI/Claude configs; kept separate from the main probe
-script rather than merged, since it was a fast patch-and-recheck pass, not
-a redesign).
+(Historical note: the fixed-config rerun originally lived in a separate
+`scripts/probe_rerun_fixed.py`, written as a fast patch-and-recheck pass
+rather than a redesign. §5 folded it into the main probe script as its
+default per-provider config — that split no longer exists.)
 
 Raw output: `output/dev/multi_provider_search_probe/20260814T233928Z/`
 (first pass) and `output/dev/multi_provider_search_probe/20260814T235502Z-rerun/`
@@ -219,14 +221,49 @@ citation-matched results), and (b) full unit-test coverage of
 circuit-breaker behavior with mocked HTTP responses. Re-run the live
 validation once account credit is available.
 
-## 5. Repeatable monitoring (not yet built)
+## 5. Repeatable monitoring
 
 Per explicit direction, this comparison should not be a one-off: "a
 repeatable test that can be run again to track blocking issue relief over
 time, and can be scheduled to run periodically on all to monitor shifts in
-an evolving landscape." `scripts/probe_multi_provider_search_2026.py` is
-the right starting point but needs hardening before it's schedulable:
-parameterized config selection (skip already-solid providers by default),
-a stable comparable report format across runs (not just a timestamped
-one-off JSON dump), and a decision on where scheduled runs should be
-triggered from. Not started.
+an evolving landscape." `scripts/probe_multi_provider_search_2026.py` was
+hardened into a standalone, idempotent CLI:
+
+- **Parameterized config selection**: `--providers grok,openai,claude,gemini`
+  (default: all four). A provider whose API key isn't set in the running
+  environment is skipped with a clear `[skip] <provider>: <ENV_VAR> not set`
+  line rather than crashing the whole run — a scheduled/unattended run
+  shouldn't hard-fail because one provider's key is absent from that
+  environment.
+- **One canonical config per provider by default**: the earlier "v1
+  broken / v2 fixed" split (`grok_live_search` vs the old separate
+  `probe_rerun_fixed.py` script) is gone — each provider now has one
+  current-best call shape as its default (`grok_live_search`,
+  `openai_search`, `claude_web_search`, `gemini_google_search`).
+  `--include-baselines` opts back into the older no-search/comparison
+  configs (`grok_no_search`, `openai_plain_html`, `openai_plain_json`) for
+  before/after-style investigation, keeping the default scheduled run cheap
+  (4 configs × 4 cases = 16 calls, not the original 7 × 4 = 28).
+- **Stable, comparable report format across runs**: every run now also
+  computes a `summary` block (`summarize_provider_runs`) per config —
+  `citation_fidelity_pct`, `rows_with_url`, `rows_verified_alive/dead`,
+  `cases_errored` — rolled up across all test cases, in addition to the
+  full per-case detail. That summary line (plus the run timestamp) is
+  appended to `output/dev/multi_provider_search_probe/history.jsonl`
+  (append-only, one compact JSON object per run) — the mechanism that
+  actually makes "track blocking issue relief over time" usable, since
+  diffing two `report.json` files by hand doesn't scale but comparing two
+  `history.jsonl` lines does.
+- **Model pins are env-overridable** (`PROBE_GROK_MODEL`,
+  `PROBE_OPENAI_SEARCH_MODEL`, `PROBE_CLAUDE_MODEL`, `PROBE_GEMINI_MODEL`,
+  etc.) rather than hardcoded, anticipating that every provider will keep
+  renaming/retiring search-capable models over time (already observed
+  twice in this investigation alone: OpenAI's `gpt-4o-*-search-preview` →
+  `gpt-5-search-api`, xAI's chat-completions `live_search` → `/v1/responses`).
+
+**Scheduling mechanism deliberately left to the operator, not decided
+here.** The script is now a clean CLI entry point
+(`python scripts/probe_multi_provider_search_2026.py [--providers ...]`);
+running it periodically is an infrastructure choice (Windows Task
+Scheduler, cron, CI, or an agent-side scheduled wakeup) with different
+cost/notification tradeoffs each way, so it wasn't picked unilaterally.
