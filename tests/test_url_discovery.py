@@ -134,9 +134,9 @@ def test_discover_restaurants_skips_entirely_when_category_deferred_to_base():
         discoverer._discover_restaurants(ai, dest_name="Arches National Park", dest=grouped_dest)
 
     fake_search.assert_not_called()
-    # Left untouched -- no url assigned, no destructive mutation -- so
-    # rendering can distinguish "deferred" from "discovered nothing".
-    assert "url" not in ai["dinner_recommendations"][0]
+    # Cleared (not left as dead-link placeholders) so html_assembler.py can
+    # render a clean "see base" pointer instead of urlless restaurant rows.
+    assert ai["dinner_recommendations"] == []
 
 
 def test_discover_restaurants_runs_normally_for_ungrouped_entry_even_with_config_default():

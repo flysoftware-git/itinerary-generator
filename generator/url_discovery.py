@@ -6704,7 +6704,10 @@ class URLDiscoverer:
         # base_owned category (config.yaml multi_site_grouping) -- a
         # grouped entry's dining is deferred to its group base entirely
         # rather than independently discovered. Additive skip-gate only;
-        # nothing below this changes.
+        # nothing below this changes. Clearing dinner_recommendations (like
+        # the scenic_drive and en_route_stop gates do) rather than leaving
+        # AI-generated names with no urls lets html_assembler.py render a
+        # clean "see base" pointer instead of a card full of dead links.
         if category_deferred_to_base(
             dest,
             "restaurant",
@@ -6717,6 +6720,7 @@ class URLDiscoverer:
                 reason="base_owned_category_skipped",
                 message="restaurant discovery skipped for entire destination — category deferred to group base",
             )
+            ai["dinner_recommendations"] = []
             return
         restaurant_source_mode = str(
             getattr(self, "_restaurant_source", DEFAULT_RESTAURANT_SOURCE) or DEFAULT_RESTAURANT_SOURCE
