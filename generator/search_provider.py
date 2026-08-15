@@ -19,9 +19,10 @@ from typing import Any
 
 from generator.claude_search import ClaudeSearch
 from generator.grok_search import GrokSearch
+from generator.openai_search import OpenAiSearch
 
 logger = logging.getLogger(__name__)
-_VALID_SEARCH_PROVIDERS = {"grok", "claude"}
+_VALID_SEARCH_PROVIDERS = {"grok", "claude", "openai"}
 
 
 def _read_search_provider(config_path: str | Any, config_section: str, provider_key: str) -> str:
@@ -56,9 +57,10 @@ def build_search_client(
     provider_override: str | None = None,
     grok_model: str | None = None,
     claude_model: str | None = None,
+    openai_model: str | None = None,
     usage_tracker: Any | None = None,
     usage_operation_prefix: str = "search",
-) -> GrokSearch | ClaudeSearch:
+) -> GrokSearch | ClaudeSearch | OpenAiSearch:
     """Construct the configured search/harvest provider client.
 
     config_section is the top-level config.yaml block to read from (e.g.
@@ -89,6 +91,12 @@ def build_search_client(
     if provider == "claude":
         return ClaudeSearch(
             model=claude_model,
+            usage_tracker=usage_tracker,
+            usage_operation_prefix=usage_operation_prefix,
+        )
+    if provider == "openai":
+        return OpenAiSearch(
+            model=openai_model,
             usage_tracker=usage_tracker,
             usage_operation_prefix=usage_operation_prefix,
         )
