@@ -2190,6 +2190,39 @@ def test_build_getting_here_no_day_trip_badge_for_ungrouped_entry() -> None:
     assert "Day Trip" not in html
 
 
+def test_build_getting_there_uses_group_base_name_when_final_destination_is_grouped() -> None:
+    """GH #68 §4 open question #3: the departure leg after a group must be
+    labeled from the shared base (where the traveler actually overnights),
+    not from the grouped entry itself, even when it's the trip's last stop."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    canyonlands = dest_by_id["canyonlands"]  # final destination, group_with: moab
+    ai = {
+        "getting_there": {
+            "route_summary": "Head toward Grand Junction for departure.",
+            "route_options": [],
+        }
+    }
+    trip_meta = {"return": "Grand Junction, CO airport"}
+
+    html = assembler._build_getting_there(ai, canyonlands, trip_meta, dest_by_id=dest_by_id)
+
+    assert "Moab" in html
+    assert "Canyonlands National Park →" not in html
+
+
+def test_build_getting_there_uses_own_name_when_ungrouped() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest = {"id": "santafe", "name": "Santa Fe"}
+    ai = {"getting_there": {"route_summary": "Head to Albuquerque.", "route_options": []}}
+    trip_meta = {"return": "Albuquerque, NM airport"}
+
+    html = assembler._build_getting_there(ai, dest, trip_meta)
+
+    assert "Santa Fe" in html
+
+
 def test_build_getting_here_renders_en_route_pointer_when_deferred_and_empty() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     assembler._multi_site_base_owned_categories = frozenset()

@@ -62,6 +62,92 @@ def test_discover_all_adds_urls_to_attractions():
     assert attr["url"] == "https://www.nps.gov/zion/angels"
 
 
+def _empty_dest(dest_id: str, name: str, lat: float, lng: float, group_with: str | None = None) -> dict:
+    dest: dict = {
+        "id": dest_id,
+        "name": name,
+        "lat": lat,
+        "lng": lng,
+        "nps_park_code": None,
+        "ai_content": {
+            "top_attractions": [],
+            "dinner_recommendations": [],
+            "getting_here": {"en_route_stops": []},
+        },
+        "scenic_drives": [],
+    }
+    if group_with:
+        dest["group_with"] = group_with
+    return dest
+
+
+def test_discover_all_group_origin_resolution_uses_shared_base_not_previous_sibling():
+    """GH #68 multi-site grouping §4: a grouped entry's origin must be its
+    group base (a day-trip/detour), and the next ungrouped destination
+    after a group must also measure from that shared base -- never from
+    whichever grouped sibling happened to render last."""
+    trip = {
+        "destinations": [
+            _empty_dest("moab", "Moab", 38.5733, -109.5498),
+            _empty_dest("arches", "Arches National Park", 38.7331, -109.5925, group_with="moab"),
+            _empty_dest("canyonlands", "Canyonlands National Park", 38.2, -109.93, group_with="moab"),
+            _empty_dest("springdale", "Springdale", 37.19, -112.98),
+        ]
+    }
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._key = "fake_key"
+    discoverer._session = MagicMock()
+    discoverer._route_distance_live_fetch_enabled = False
+
+    captured_origins: dict[str, str] = {}
+    real_en_route = URLDiscoverer._discover_en_route_stops
+
+    def spying_en_route_stops(self, ai, dest_name, dest_dates=None, origin_name="", origin_lat=None,
+                               origin_lng=None, dest_lat=None, dest_lng=None, dest=None):
+        captured_origins[dest_name] = origin_name
+        return real_en_route(
+            self, ai, dest_name, dest_dates, origin_name, origin_lat, origin_lng, dest_lat, dest_lng, dest,
+        )
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        with patch.object(URLDiscoverer, "_discover_en_route_stops", spying_en_route_stops):
+            discoverer.discover_all(trip)
+
+    assert captured_origins["Moab"] == ""  # trip's first destination -- unchanged legacy behavior
+    assert captured_origins["Arches National Park"] == "Moab"
+    assert captured_origins["Canyonlands National Park"] == "Moab"
+    # Springdale is the next *ungrouped* destination after the group -- its
+    # leg must be measured from Moab (the shared base), not Canyonlands
+    # (whichever grouped sibling happens to be last in list order).
+    assert captured_origins["Springdale"] == "Moab"
+
+
+def test_discover_all_group_origin_resolves_by_id_regardless_of_list_order():
+    """A grouped entry can legally appear before its base in the manifest;
+    origin resolution must not depend on iteration order."""
+    trip = {
+        "destinations": [
+            _empty_dest("arches", "Arches National Park", 38.7331, -109.5925, group_with="moab"),
+            _empty_dest("moab", "Moab", 38.5733, -109.5498),
+        ]
+    }
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._key = "fake_key"
+    discoverer._session = MagicMock()
+    discoverer._route_distance_live_fetch_enabled = False
+
+    captured_origins: dict[str, str] = {}
+
+    def spying_en_route_stops(self, ai, dest_name, dest_dates=None, origin_name="", *args, **kwargs):
+        captured_origins[dest_name] = origin_name
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        with patch.object(URLDiscoverer, "_discover_en_route_stops", spying_en_route_stops):
+            discoverer.discover_all(trip)
+
+    assert captured_origins["Arches National Park"] == "Moab"
+
+
 def test_discover_all_uses_google_fallback_for_missing_url():
     trip = {
         "destinations": [

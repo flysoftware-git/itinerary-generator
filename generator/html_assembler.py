@@ -472,7 +472,7 @@ class HTMLAssembler:
         # Final leg departure guidance for the last destination is rendered as a
         # separate trailing card so it does not displace inbound route context.
         if is_last:
-            section += self._build_getting_there(ai, dest, trip_meta)
+            section += self._build_getting_there(ai, dest, trip_meta, dest_by_id=dest_by_id)
 
         # Collapsible debug block (opt-in only)
         if self._config.get("render", {}).get("show_debug_block", False):
@@ -618,7 +618,14 @@ class HTMLAssembler:
         html += '</div>\n'
         return html
 
-    def _build_getting_there(self, ai: dict, dest: dict, trip_meta: dict[str, Any]) -> str:
+    def _build_getting_there(
+        self,
+        ai: dict,
+        dest: dict,
+        trip_meta: dict[str, Any],
+        *,
+        dest_by_id: dict[str, dict[str, Any]] | None = None,
+    ) -> str:
         getting_there = ai.get("getting_there", {}) if isinstance(ai, dict) else {}
         if not isinstance(getting_there, dict):
             getting_there = {}
@@ -634,9 +641,25 @@ class HTMLAssembler:
         if not return_name and not route_summary and not route_options:
             return ""
 
+        # GH #68 multi-site grouping §4 (open question #3, applied
+        # symmetrically to the arrival-side fix): when the trip's final
+        # destination is itself a grouped entry, the traveler's actual
+        # physical base for the departure leg is the group's base, not the
+        # grouped entry's own location -- they overnight at the base, not
+        # inside the day-trip park. Label-only fix; the Google Maps link
+        # below has never encoded an explicit origin (left to the device's
+        # current location), so no behavior change there.
+        departure_origin_name = str(dest.get("name", "") or "").strip()
+        base_id = group_base_id(dest)
+        if base_id:
+            base = (dest_by_id or {}).get(base_id) or {}
+            base_name = str(base.get("name", "") or "").strip()
+            if base_name:
+                departure_origin_name = base_name
+
         route_label = ""
         if return_name:
-            route_label = f'{self._short_place_name(dest.get("name", ""))} → {self._short_place_name(return_name)}'
+            route_label = f'{self._short_place_name(departure_origin_name)} → {self._short_place_name(return_name)}'
 
         gmaps_url = ""
         if return_name:
