@@ -1327,10 +1327,69 @@ class HTMLAssembler:
         return badge_text, cleaned
 
     @staticmethod
-    def _sanitize_restaurant_display_name(name: str) -> str:
+    def _sanitize_restaurant_display_name(
+        name: str, *, rating_text: str = "", price: str = "", cuisine: str = ""
+    ) -> str:
+        """Strip rating/price/cuisine decoration from a harvested restaurant
+        name before it's shown as the card title, since that same information
+        is already rendered separately as badges (dipstick55 Theme D: ratings
+        were appearing in both the title text AND the rating badge). The
+        harvest source glues these on *after* the real name, in the middle of
+        the string rather than strictly at the very end (e.g. "Cliffside
+        Restaurant 4.4/5 $$$ American" or "Painted Pony Restaurant 4.5/5 $$$
+        Contemporary American" -- rating, then price, then a whole trailing
+        cuisine phrase that may not match the parsed `cuisine` field
+        word-for-word). A restaurant name essentially never organically
+        contains something matching a "4.4/5"-style rating pattern, so once
+        that pattern is found, everything from there to the end of the string
+        is decoration -- truncate there rather than trying to strip each
+        piece (rating/price/cuisine-phrase) individually, which would leave
+        stray fragments like "Contemporary" behind.
+        """
         cleaned = str(name or "").strip()
         if not cleaned:
             return ""
+
+        truncated = False
+
+        rating_text = str(rating_text or "").strip()
+        if rating_text:
+            rating_num_match = re.match(r"(\d+(?:\.\d+)?)", rating_text)
+            rating_num = rating_num_match.group(1) if rating_num_match else None
+            if rating_num:
+                # Match the rating value in whatever textual form it takes in
+                # the name (bare number, "X/5", "X out of 5", "X stars"), not
+                # just the exact raw_rating string, so this still catches it
+                # even if the two representations differ slightly.
+                match = re.search(
+                    rf"\b{re.escape(rating_num)}\s*(?:/\s*5\b|out\s+of\s+5\b|stars?\b)?",
+                    cleaned,
+                    flags=re.IGNORECASE,
+                )
+                if match and match.start() > 0:
+                    cleaned = cleaned[: match.start()]
+                    truncated = True
+
+        price = str(price or "").strip()
+        if not truncated and price and re.fullmatch(r"[\$#]{1,4}", price) and price in cleaned:
+            idx = cleaned.find(price)
+            if idx > 0:
+                cleaned = cleaned[:idx]
+                truncated = True
+
+        cuisine = str(cuisine or "").strip()
+        if not truncated and cuisine:
+            # Only reached when neither rating nor price truncation already
+            # found a decoration boundary -- at that point there's no
+            # definitive split point, so this is a heuristic guess, applied
+            # only as a last resort. Once rating/price truncation has already
+            # produced a clean name, leave it alone: e.g. "Wild Rabbit Cafe"
+            # with cuisine="Cafe" must not have "Cafe" stripped just because
+            # it happens to match the (already-past) cuisine badge value.
+            cleaned = re.sub(
+                rf"\s*{re.escape(cuisine)}\s*$", "", cleaned, flags=re.IGNORECASE
+            )
+
         cleaned = re.sub(
             r"\s*(?:[-–—]\s*)?(?:\d+(?:\.\d+)?\s*(?:/\s*5|stars?)\s*(?:[\$#]{1,4})?|[\$#]{1,4}|(?:[\$#]{1,4})\s*\d+(?:\.\d+)?\s*(?:/\s*5|stars?)|[-–—]\s*\d+(?:\.\d+)?\s*(?:/\s*5|stars?))\s*$",
             "",
@@ -1409,16 +1468,6 @@ class HTMLAssembler:
                 if not self._should_render_without_url(rest, section="restaurant"):
                     continue
             rest_name_raw = str(rest.get("name", "") or "")
-            display_name = self._sanitize_restaurant_display_name(rest_name_raw)
-            rest_name = html_escape.escape(display_name or rest_name_raw)
-            if url:
-                source_icon = self._link_source_icon(url)
-                name_html = (
-                    f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{rest_name}</a>'
-                    f' <span class="attr-external-link" title="link source">{source_icon}</span>'
-                )
-            else:
-                name_html = rest_name
             cuisine = rest.get("cuisine", "")
             price = str(rest.get("price_range", "") or rest.get("price", "") or "").strip()
             rating_value = rest.get("rating")
@@ -1429,6 +1478,18 @@ class HTMLAssembler:
                     rating_text = f"{float(rating_value):.1f}"
                 except (TypeError, ValueError):
                     rating_text = str(rating_value).strip()
+            display_name = self._sanitize_restaurant_display_name(
+                rest_name_raw, rating_text=rating_text, price=price, cuisine=str(cuisine or "")
+            )
+            rest_name = html_escape.escape(display_name or rest_name_raw)
+            if url:
+                source_icon = self._link_source_icon(url)
+                name_html = (
+                    f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{rest_name}</a>'
+                    f' <span class="attr-external-link" title="link source">{source_icon}</span>'
+                )
+            else:
+                name_html = rest_name
             desc = self._restaurant_description(rest, dest_name, bool(url), _is_map_fallback)
             reserve = rest.get("reserve_recommended", False)
 

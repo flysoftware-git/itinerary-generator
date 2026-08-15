@@ -891,6 +891,59 @@ def test_build_restaurants_sanitizes_title_and_uses_tickler_when_description_is_
     assert "4.7/5, $, Cafe" not in html
 
 
+def test_build_restaurants_strips_rating_price_and_multiword_cuisine_from_title() -> None:
+    """Regression for dipstick55 Theme D: the real captured St. George
+    restaurant batch harvested titles with rating/price/cuisine glued on
+    *after* the real name rather than the simpler "Name - rating $" shape the
+    original sanitizer assumed (e.g. "Cliffside Restaurant 4.4/5 $$$
+    American", "Painted Pony Restaurant 4.5/5 $$$ Contemporary American",
+    "Wood Ash Rye 4.5/5 $$$ New American" -- note the cuisine phrase itself
+    can be multiple words that don't match the parsed `cuisine` badge value
+    verbatim). All three duplicated their rating/price/cuisine as both title
+    text and separate badges."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_restaurants(
+        {
+            "dinner_recommendations": [
+                {
+                    "name": "Cliffside Restaurant 4.4/5 $$$ American",
+                    "url": "https://www.cliffsiderestaurant.com/",
+                    "raw_rating": "4.4/5",
+                    "cuisine": "American",
+                    "price_range": "$$$",
+                },
+                {
+                    "name": "Painted Pony Restaurant 4.5/5 $$$ Contemporary American",
+                    "url": "https://painted-pony.com/",
+                    "raw_rating": "4.5/5",
+                    "cuisine": "American",
+                    "price_range": "$$$",
+                },
+                {
+                    "name": "Wood Ash Rye 4.5/5 $$$ New American",
+                    "url": "https://woodashrye.com/",
+                    "raw_rating": "4.5/5",
+                    "cuisine": "American",
+                    "price_range": "$$$",
+                },
+            ]
+        },
+        "St. George",
+    )
+
+    assert "Cliffside Restaurant 4.4/5" not in html
+    assert ">Cliffside Restaurant<" in html
+    assert "Painted Pony Restaurant 4.5/5" not in html
+    assert "Contemporary American</a>" not in html
+    assert ">Painted Pony Restaurant<" in html
+    assert "Wood Ash Rye 4.5/5" not in html
+    assert "New American</a>" not in html
+    assert ">Wood Ash Rye<" in html
+    # The rating/price/cuisine still show up exactly once each, as badges.
+    assert html.count("★ 4.4/5") == 1
+    assert html.count("★ 4.5/5") == 2
+
+
 def test_build_restaurants_omits_synthetic_default_description_when_description_is_missing() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     html = assembler._build_restaurants(
