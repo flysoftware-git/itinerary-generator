@@ -33,6 +33,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from typing import Any
 from generator.llm_client import MultiLLMClient
+from generator.multi_site_grouping import DEFAULT_BASE_OWNED_CATEGORIES, category_deferred_to_base
 from generator.search_provider import build_search_client
 from generator.url_validator import URLValidator
 
@@ -589,6 +590,9 @@ class URLDiscoverer:
         self._attraction_source: str = DEFAULT_ATTRACTION_SOURCE
         self._restaurant_source: str = DEFAULT_RESTAURANT_SOURCE
         self._en_route_source: str = DEFAULT_EN_ROUTE_SOURCE
+        # GH #68 multi-site grouping (config.yaml multi_site_grouping.base_owned_categories) --
+        # see generator/multi_site_grouping.py for the resolution rule this feeds.
+        self._multi_site_base_owned_categories: frozenset[str] = frozenset(DEFAULT_BASE_OWNED_CATEGORIES)
         self._direct_link_batch_count: int = DEFAULT_DIRECT_LINK_BATCH_COUNT
         self._direct_batch_authoritative: bool = DEFAULT_DIRECT_BATCH_AUTHORITATIVE
         self._restaurant_direct_batch_item_count: int = DEFAULT_RESTAURANT_DIRECT_BATCH_ITEM_COUNT
@@ -680,6 +684,13 @@ class URLDiscoverer:
             with Path(config_path).open(encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
             url_cfg = cfg.get("url_discovery", {}) or {}
+
+            multi_site_cfg = cfg.get("multi_site_grouping", {}) or {}
+            raw_base_owned = multi_site_cfg.get("base_owned_categories", DEFAULT_BASE_OWNED_CATEGORIES)
+            if isinstance(raw_base_owned, list):
+                self._multi_site_base_owned_categories = frozenset(
+                    str(c or "").strip().lower() for c in raw_base_owned if str(c or "").strip()
+                )
 
             raw_keywords = url_cfg.get("uninterested_attraction_keywords", []) or []
             normalized_keywords = tuple(
@@ -1892,6 +1903,7 @@ class URLDiscoverer:
                         dest.get("_en_route_origin_lng"),
                         dest.get("lat"),
                         dest.get("lng"),
+                        dest,
                     ),
                     inner.submit(self._discover_scenic_drives, dest, name, nps_code),
                 ]
@@ -3234,6 +3246,29 @@ class URLDiscoverer:
                 continue
 
             trail_like = self._is_trail_like_attraction(attr_name, attr_type, attr_context)
+
+            # GH #68 multi-site grouping: a grouped entry can defer the
+            # "trail" or "attraction" category to its group base (rare --
+            # the default only defers restaurants -- but configurable per
+            # docs/design/multi-site-destination-grouping.md §5). Purely a
+            # skip-gate; discovery logic below is otherwise untouched.
+            item_category = "trail" if trail_like else "attraction"
+            if category_deferred_to_base(
+                dest,
+                item_category,
+                getattr(self, "_multi_site_base_owned_categories", DEFAULT_BASE_OWNED_CATEGORIES),
+            ):
+                attr["url"] = ""
+                attr.pop("maps_url", None)
+                self._log_decision(
+                    kind="attraction",
+                    dest_name=dest_name,
+                    item_name=attr_name,
+                    reason="base_owned_category_skipped",
+                    message=f"{item_category} link discovery skipped — category deferred to group base",
+                )
+                continue
+
             trail_direct_batch_authoritative = (
                 trail_like
                 and str(getattr(self, "_alltrails_source", DEFAULT_ALLTRAILS_SOURCE) or DEFAULT_ALLTRAILS_SOURCE)
@@ -6665,6 +6700,24 @@ class URLDiscoverer:
     # ── Restaurants — two-pass ───────────────────────────────────────────────
 
     def _discover_restaurants(self, ai: dict[str, Any], dest_name: str, dest_dates: str | None = None, dest: dict[str, Any] | None = None) -> None:
+        # GH #68 multi-site grouping: restaurants are the default
+        # base_owned category (config.yaml multi_site_grouping) -- a
+        # grouped entry's dining is deferred to its group base entirely
+        # rather than independently discovered. Additive skip-gate only;
+        # nothing below this changes.
+        if category_deferred_to_base(
+            dest,
+            "restaurant",
+            getattr(self, "_multi_site_base_owned_categories", DEFAULT_BASE_OWNED_CATEGORIES),
+        ):
+            self._log_decision(
+                kind="restaurant",
+                dest_name=dest_name,
+                item_name="",
+                reason="base_owned_category_skipped",
+                message="restaurant discovery skipped for entire destination — category deferred to group base",
+            )
+            return
         restaurant_source_mode = str(
             getattr(self, "_restaurant_source", DEFAULT_RESTAURANT_SOURCE) or DEFAULT_RESTAURANT_SOURCE
         )
@@ -8068,12 +8121,39 @@ class URLDiscoverer:
         origin_lng: Any = None,
         dest_lat: Any = None,
         dest_lng: Any = None,
+        dest: dict[str, Any] | None = None,
     ) -> None:
-        source_mode = str(getattr(self, "_en_route_source", DEFAULT_EN_ROUTE_SOURCE) or DEFAULT_EN_ROUTE_SOURCE)
         getting_here = ai.get("getting_here", {}) if isinstance(ai.get("getting_here", {}), dict) else {}
-        stops = getting_here.get("en_route_stops", []) if isinstance(getting_here.get("en_route_stops", []), list) else []
 
-        if source_mode == "direct_link_batch":
+        # GH #68 multi-site grouping: a grouped entry can defer en-route-stop
+        # discovery to its group base (configurable; not part of the default
+        # base_owned_categories). Additive skip-gate only -- distance/time
+        # computation and getting_there route-option discovery below are a
+        # different category and are never gated by this check.
+        en_route_stop_deferred = category_deferred_to_base(
+            dest,
+            "en_route_stop",
+            getattr(self, "_multi_site_base_owned_categories", DEFAULT_BASE_OWNED_CATEGORIES),
+        )
+        if en_route_stop_deferred:
+            self._log_decision(
+                kind="en_route_stop",
+                dest_name=dest_name,
+                item_name="",
+                reason="base_owned_category_skipped",
+                message="en-route stop discovery skipped for entire destination — category deferred to group base",
+            )
+            getting_here["en_route_stops"] = []
+            ai["getting_here"] = getting_here
+
+        source_mode = str(getattr(self, "_en_route_source", DEFAULT_EN_ROUTE_SOURCE) or DEFAULT_EN_ROUTE_SOURCE)
+        stops = (
+            []
+            if en_route_stop_deferred
+            else (getting_here.get("en_route_stops", []) if isinstance(getting_here.get("en_route_stops", []), list) else [])
+        )
+
+        if source_mode == "direct_link_batch" and not en_route_stop_deferred:
             stops = self._prioritize_direct_batch_en_route_stops(stops, dest_name, dest_dates, origin_name)
             getting_here["en_route_stops"] = stops
             ai["getting_here"] = getting_here
@@ -8653,6 +8733,31 @@ class URLDiscoverer:
         return cleaned or str(drive_name or "").strip()
 
     def _discover_scenic_drives(self, dest: dict[str, Any], dest_name: str, nps_code: str | None = None) -> None:
+        # GH #68 multi-site grouping: a grouped entry can defer scenic-drive
+        # discovery to its group base. Per the design doc's open question
+        # #4 ("gate both" lean), this also clears any AI-generated
+        # scenic_drives content already attached to `dest` by
+        # ai_content.py.generate_destination_content (which always runs
+        # before discover_all in main.py's pipeline) -- a scenic-drive text
+        # block with no linked URL reads worse than no block at all. No
+        # separate ai_content.py change needed: this is the one place both
+        # layers converge, since dest["scenic_drives"] is the same list
+        # object either way.
+        if category_deferred_to_base(
+            dest,
+            "scenic_drive",
+            getattr(self, "_multi_site_base_owned_categories", DEFAULT_BASE_OWNED_CATEGORIES),
+        ):
+            if dest.get("scenic_drives"):
+                self._log_decision(
+                    kind="scenic_drive",
+                    dest_name=dest_name,
+                    item_name="",
+                    reason="base_owned_category_skipped",
+                    message="scenic drive discovery skipped for entire destination — category deferred to group base",
+                )
+            dest["scenic_drives"] = []
+            return
         for drive in dest.get("scenic_drives", []):
             drive_name = drive.get("title", "")
 
