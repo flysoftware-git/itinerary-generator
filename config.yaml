@@ -164,9 +164,17 @@ cultural_events:
   max_results: 8
   target_events_per_destination: 3
   verify_event_urls: true
+  # Which search/harvest provider backs this module's real web search:
+  # grok (default) or claude. Independent of ai.provider (content
+  # generation) and of url_discovery.search_provider below -- each search
+  # call site picks its own. See generator/search_provider.py,
+  # generator/claude_search.py, docs/design/search-provider-capability-probe.md.
+  search_provider: "grok"
 
 # ── URL discovery ─────────────────────────────────────────────────────────────
 url_discovery:
+  # See cultural_events.search_provider above for what this controls.
+  search_provider: "grok"
   alltrails_source: direct_link_batch
   attraction_source: direct_link_batch
   restaurant_source: direct_link_batch

@@ -2733,14 +2733,14 @@ def test_url_discoverer_shares_llm_model_with_grok_search_when_provider_is_grok(
     its own independent XAI_MODEL env var, disconnected from whatever model
     MultiLLMClient actually resolved -- the two could silently diverge."""
     mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
-    with patch("generator.url_discovery.GrokSearch") as mock_grok_search_cls:
+    with patch("generator.search_provider.GrokSearch") as mock_grok_search_cls:
         URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
     assert mock_grok_search_cls.call_args.kwargs["model"] == "grok-4.5"
 
 
 def test_url_discoverer_leaves_grok_search_model_alone_when_provider_is_not_grok():
     mock_llm = type("MockLLM", (), {"provider": "openai", "model": "gpt-4o-mini", "usage_tracker": None})()
-    with patch("generator.url_discovery.GrokSearch") as mock_grok_search_cls:
+    with patch("generator.search_provider.GrokSearch") as mock_grok_search_cls:
         URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
     assert mock_grok_search_cls.call_args.kwargs["model"] is None
 

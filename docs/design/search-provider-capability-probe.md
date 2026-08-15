@@ -2,7 +2,9 @@
 
 Status: Grok fix (§1-2) implemented and test-covered. Cross-provider probe
 (§3) run twice against real APIs (initial pass + a fixes-applied rerun).
-Claude integration for search/harvest (§4) not yet started. OpenAI/Gemini
+Claude added as a second working search/harvest provider (§4), implemented
+and test-covered; live end-to-end validation blocked by an Anthropic
+account credit-balance issue (not a code problem -- see §4.1). OpenAI/Gemini
 follow-up work and a scheduled monitoring harness (§5) not yet started.
 
 ## 0. Why this investigation started
@@ -177,18 +179,45 @@ working for the non-batch stuff, then Claude for both")
 
 1. **Done.** Grok fixed for both the direct-batch HTML harvest path and the
    non-batch `.search()` path (§1-2).
-2. **Next.** Add Claude as a second working search/harvest provider for
-   both paths — likely a thin adapter matching `GrokSearch`'s
-   `chat_completion()`/`search()`/`is_circuit_open()` surface, since
-   `url_discovery.py` and `cultural_events.py` already depend on that
-   surface via `self._search` and expect a drop-in swap rather than a
-   parallel code path.
+2. **Done.** Added Claude as a second working search/harvest provider for
+   both paths. `generator/claude_search.py`'s `ClaudeSearch` matches
+   `GrokSearch`'s `chat_completion()`/`search()`/`is_circuit_open()` surface
+   exactly (own thread-local sessions, own circuit breaker in its own
+   `ANTHROPIC_SEARCH_*` env-var namespace, same malformed-JSON retry
+   contract), built on the exact request/response shape the §3 probe
+   already validated against the real API (`web_search_20260318` tool,
+   Messages API). `generator/search_provider.py` is a small shared factory
+   (`build_search_client`) that both `url_discovery.py` and
+   `cultural_events.py` now call instead of constructing `GrokSearch`
+   directly; each picks its provider independently via
+   `url_discovery.search_provider` / `cultural_events.search_provider` in
+   `config.yaml` (`"grok"` default — unchanged behavior unless explicitly
+   switched to `"claude"`). Tests: `tests/test_claude_search.py`,
+   `tests/test_search_provider.py`, plus updated patch targets in
+   `tests/test_url_discovery.py` (construction now happens inside
+   `search_provider.py`, not `url_discovery.py`, so the two model-inheritance
+   regression tests patch `generator.search_provider.GrokSearch`).
 3. **Needs work, not blocking.** OpenAI and Gemini both have a real
    `web_search`/`google_search` tool wired up in the probe, but both show
    citation-fidelity failures serious enough (0% and 19%) to disqualify
    them for this role today. Whether that's fixable with response-format
    constraints, stricter prompting, or is a genuine current capability gap
    is unresolved — tracked as follow-up investigation, not scheduled yet.
+
+### 4.1 Live validation blocked (account issue, not a code issue)
+
+A real (non-mocked) end-to-end call against the production `ClaudeSearch`
+class — the same validation method used to confirm the Grok fix — returned
+`400 invalid_request_error: "Your credit balance is too low to access the
+Anthropic API."` This is an account billing state, not a defect: the
+request reached Anthropic's API server and was rejected for a reason
+unrelated to payload shape. Confidence in the implementation instead rests
+on (a) the payload being a direct match to the shape the §3 probe already
+exercised successfully against the same API earlier the same day (14/15
+citation-matched results), and (b) full unit-test coverage of
+`ClaudeSearch`'s request construction, response parsing, retry, and
+circuit-breaker behavior with mocked HTTP responses. Re-run the live
+validation once account credit is available.
 
 ## 5. Repeatable monitoring (not yet built)
 

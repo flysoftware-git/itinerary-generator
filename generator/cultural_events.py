@@ -22,8 +22,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
-from generator.grok_search import GrokSearch
 from generator.llm_client import MultiLLMClient
+from generator.search_provider import build_search_client
 
 logger = logging.getLogger(__name__)
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -49,7 +49,13 @@ class CulturalEventsDiscoverer:
         with Path(config_path).open() as f:
             self._config = yaml.safe_load(f)
         self._llm = llm_client or MultiLLMClient(config_path)
-        self._search = GrokSearch(
+        # cultural_events.search_provider (config.yaml) selects grok or
+        # claude independently of ai.provider/url_discovery.search_provider,
+        # defaulting to grok -- unchanged behavior from before this
+        # selection existed. See search_provider.py and claude_search.py.
+        self._search = build_search_client(
+            config_path,
+            config_section="cultural_events",
             usage_tracker=self._llm.usage_tracker,
             usage_operation_prefix="cultural_events",
         )

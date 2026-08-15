@@ -32,8 +32,8 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from typing import Any
-from generator.grok_search import GrokSearch
 from generator.llm_client import MultiLLMClient
+from generator.search_provider import build_search_client
 from generator.url_validator import URLValidator
 
 logger = logging.getLogger(__name__)
@@ -484,15 +484,22 @@ class URLDiscoverer:
         output_dir: str | Path | None = None,
     ) -> None:
         self._llm = llm_client or MultiLLMClient(config_path)
-        # When Grok is the canonical provider, search shares its exact model
-        # instead of independently falling back to its own XAI_MODEL env var
-        # -- otherwise the two could silently diverge (config.yaml says one
-        # model, search quietly uses another). When the canonical provider
-        # isn't grok, there's no canonical grok model to inherit from, so
-        # GrokSearch falls back to its own XAI_MODEL/default as before.
-        search_model = self._llm.model if self._llm.provider == "grok" else None
-        self._search = GrokSearch(
-            model=search_model,
+        # When the canonical content-generation provider matches the search
+        # provider, search shares its exact model instead of independently
+        # falling back to its own env var default -- otherwise the two could
+        # silently diverge (config.yaml says one model, search quietly uses
+        # another). This only applies when they match; url_discovery.
+        # search_provider (config.yaml) selects grok or claude independently
+        # of ai.provider, defaulting to grok -- unchanged behavior from
+        # before this selection existed. See search_provider.py and
+        # claude_search.py (docs/design/search-provider-capability-probe.md).
+        grok_model = self._llm.model if self._llm.provider == "grok" else None
+        claude_model = self._llm.model if self._llm.provider == "anthropic" else None
+        self._search = build_search_client(
+            config_path,
+            config_section="url_discovery",
+            grok_model=grok_model,
+            claude_model=claude_model,
             usage_tracker=self._llm.usage_tracker,
             usage_operation_prefix="url_discovery",
         )
