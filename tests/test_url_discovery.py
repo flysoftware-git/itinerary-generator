@@ -774,6 +774,49 @@ def test_discover_restaurants_direct_batch_preserves_existing_maps_url_without_r
     fallback_search.assert_not_called()
 
 
+def test_discover_restaurants_preserved_existing_url_still_gets_rating_and_cuisine_metadata() -> None:
+    """Regression for dipstick55 Theme D: the 'existing URL already
+    attached, just validate it' shortcut for restaurants had the same gap as
+    the attraction-side one -- it skipped the row-metadata merge, so a
+    restaurant seeded with its url pre-attached lost rating/cuisine/price
+    even though the matched batch row had them."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "direct_link_batch"
+
+    ai = {
+        "dinner_recommendations": [
+            {
+                "name": "Cliffside Restaurant",
+                "url": "https://www.cliffsiderestaurant.com/",
+            }
+        ],
+        "top_attractions": [],
+        "getting_here": {"en_route_stops": []},
+    }
+
+    rows = [
+        {
+            "name": "Cliffside Restaurant",
+            "title": "Cliffside Restaurant",
+            "url": "https://www.cliffsiderestaurant.com/",
+            "rating": 4.4,
+            "raw_rating": "4.4/5",
+            "cuisine": "American",
+            "price_range": "$$$",
+        }
+    ]
+
+    with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_a, **_k: url):
+        with patch.object(discoverer, "_get_restaurant_direct_batch_rows_for_destination", return_value=rows):
+            discoverer._discover_restaurants(ai, dest_name="St. George, Utah")
+
+    rest = ai["dinner_recommendations"][0]
+    assert rest["url"] == "https://www.cliffsiderestaurant.com/"
+    assert rest.get("raw_rating") == "4.4/5"
+    assert rest.get("cuisine") == "American"
+    assert rest.get("price_range") == "$$$"
+
+
 def test_enrich_restaurant_metadata_from_url_populates_missing_fields() -> None:
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
 
@@ -2674,6 +2717,47 @@ def test_discover_attractions_direct_batch_preserves_existing_url_without_rematc
     fallback_search.assert_not_called()
 
 
+def test_discover_attractions_preserved_existing_url_still_gets_rating_metadata() -> None:
+    """Regression for dipstick55 Theme D: 'Red Hills Desert Garden' rendered
+    with no rating badge at all even though its harvested direct-batch row
+    carried a 4.8 rating. Root cause: the 'existing URL already attached,
+    just validate it' shortcut (direct_batch_existing_url_preserved) skipped
+    the row-metadata merge that the fresh-lookup branch performs, so an
+    attraction seeded with its url pre-attached by
+    _prioritize_direct_batch_attractions silently lost its rating/votes."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Red Hills Desert Garden",
+                "type": "attraction",
+                "url": "https://redhillsdesertgarden.com/",
+            }
+        ]
+    }
+
+    rows = [
+        {
+            "name": "Red Hills Desert Garden",
+            "title": "Red Hills Desert Garden",
+            "url": "https://redhillsdesertgarden.com/",
+            "rating": 4.8,
+            "raw_rating": "4.8/5",
+        }
+    ]
+
+    with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_a, **_k: url):
+        with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+            discoverer._discover_attractions(ai, "St. George, Utah", None)
+
+    attr = ai["top_attractions"][0]
+    assert attr["url"] == "https://redhillsdesertgarden.com/"
+    assert attr.get("raw_rating") == "4.8/5"
+    assert attr.get("rating") == 4.8
+
+
 def test_discover_attractions_removes_closed_nonseed_attraction_page() -> None:
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
 
@@ -4071,6 +4155,128 @@ def test_direct_batch_rows_from_html_extracts_en_route_detour_metadata_and_note(
     assert rows[0]["detour_distance_miles"] == 3.0
     assert rows[0]["detour_time_minutes"] == 8
     assert rows[0]["practical_note"] == "quick roadside arch stop"
+
+
+def test_direct_batch_rows_from_html_extracts_attraction_note_without_corrupting_name():
+    """Regression for dipstick55 Theme D: 'Sunset Point' and 'Natural Bridge'
+    (real Bryce Canyon attraction rows) rendered with no teaser at all,
+    because the direct-batch attraction/trail prompts never asked for one
+    (unlike the en-route-stop prompt, which does and works correctly). Once
+    the attraction/trail prompts are extended to request a short note after
+    the rating, the anchor links land *between* the name and the rating
+    (matching the real captured HTML: "Name <a>Source</a> <a>Maps</a>
+    4.8/5"), unlike en-route stops where links trail at the very end -- a
+    naive trailing-only strip of the Source/Maps anchor-label words left
+    them glued onto the extracted name once real content (rating, then a
+    dash-separated note) followed them. This must extract a clean name and
+    the note as a separate field, matching the real reported item names."""
+    html = (
+        "<h2>Bryce Canyon National Park</h2>"
+        "<ul>"
+        '<li>Sunset Point <a href="https://www.nps.gov/brca/planyourvisit/sunset.htm">Source</a> '
+        '<a href="https://www.google.com/maps/search/?api=1&query=Sunset+Point+Bryce+Canyon+UT">Maps</a> '
+        "4.8/5 - Iconic canyon overlook with sweeping hoodoo views at sunset.</li>"
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    row = rows[0]
+    assert row["name"] == "Sunset Point"
+    assert row["title"] == "Sunset Point"
+    assert row["url"] == "https://www.nps.gov/brca/planyourvisit/sunset.htm"
+    assert row["raw_rating"] == "4.8/5"
+    assert row["rating"] == 4.8
+    assert row["practical_note"] == "Iconic canyon overlook with sweeping hoodoo views at sunset."
+    assert "Source" not in row["name"]
+    assert "Maps" not in row["name"]
+
+
+def test_direct_batch_rows_from_html_extracts_trail_note_without_corrupting_name():
+    """Same regression as the attraction case above, for the trail (AllTrails)
+    harvest prompt -- e.g. the real reported 'Chuckwalla Trail' with no
+    teaser."""
+    html = (
+        "<h2>Moab</h2>"
+        "<ul>"
+        '<li>Chuckwalla Trail <a href="https://www.alltrails.com/trail/us/utah/chuckwalla-trail">AllTrails</a> '
+        "4.6/5 1.7 mi - Rolling desert singletrack through cactus and slickrock.</li>"
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    row = rows[0]
+    assert row["name"] == "Chuckwalla Trail"
+    assert row["url"] == "https://www.alltrails.com/trail/us/utah/chuckwalla-trail"
+    assert row["raw_rating"] == "4.6/5"
+    assert row["practical_note"] == "Rolling desert singletrack through cactus and slickrock."
+
+
+def test_direct_batch_rows_from_html_extracts_note_with_no_dash_separator():
+    """Confirmed live against the real xAI Grok API (grok-4-fast) after the
+    attraction/trail prompts were extended to ask for a note: the model does
+    not reliably use a dash before the note (observed real output: 'Bryce
+    Canyon Visitor Center <a>Source</a> <a>Maps</a> 4.4/5 Interactive
+    exhibits and award-winning film introduce park geology and history.' --
+    a space, not a dash, separates the rating from the note). The dash-split
+    alone would leave detail_text as the whole name+rating+note blob in this
+    shape; the name/rating/distance-boundary cursor must still isolate a
+    clean note."""
+    html = (
+        "<h2>Bryce Canyon National Park</h2>"
+        "<ul>"
+        '<li>Bryce Canyon Visitor Center <a href="https://www.nps.gov/brca/planyourvisit/tourvisitor.htm">Source</a> '
+        '<a href="https://www.google.com/maps/search/?api=1&amp;query=x">Maps</a> 4.4/5 '
+        "Interactive exhibits and award-winning film introduce park geology and history.</li>"
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    row = rows[0]
+    assert row["name"] == "Bryce Canyon Visitor Center"
+    assert row["raw_rating"] == "4.4/5"
+    assert row["practical_note"] == "Interactive exhibits and award-winning film introduce park geology and history."
+
+
+def test_direct_batch_rows_from_html_extracts_trail_note_with_distance_and_no_dash():
+    """Same no-dash regression, for a trail row with a distance-in-miles
+    token between the rating and the note (confirmed live: 'Corona and
+    Bowtie Arch via Corona Arch Trail <a>AllTrails</a> 4.9/5 2.4 mi Iconic
+    arches reached via scenic slickrock route.')."""
+    html = (
+        "<h2>Moab</h2>"
+        "<ul>"
+        '<li>Corona and Bowtie Arch via Corona Arch Trail '
+        '<a href="https://www.alltrails.com/trail/us/utah/corona-and-bowtie-arch-trail">AllTrails</a> '
+        "4.9/5 2.4 mi Iconic arches reached via scenic slickrock route.</li>"
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    row = rows[0]
+    assert row["name"] == "Corona and Bowtie Arch via Corona Arch Trail"
+    assert row["raw_rating"] == "4.9/5"
+    assert row["practical_note"] == "Iconic arches reached via scenic slickrock route."
+
+
+def test_direct_batch_rows_from_html_attraction_without_note_still_parses_cleanly():
+    """The un-modified real-world format (no trailing note, as harvested
+    before this fix) must keep working exactly as before."""
+    html = (
+        "<h2>Bryce Canyon National Park</h2>"
+        "<ul>"
+        '<li>Sunset Point <a href="https://www.nps.gov/brca/planyourvisit/sunset.htm">Source</a> '
+        '<a href="https://www.google.com/maps/search/?api=1&query=Sunset+Point+Bryce+Canyon+UT">Maps</a> 4.8/5</li>'
+        "</ul>"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    assert rows[0]["name"] == "Sunset Point"
+    assert rows[0]["raw_rating"] == "4.8/5"
 
 
 def test_direct_batch_rows_from_html_strips_google_maps_name_prefix():

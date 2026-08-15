@@ -3432,6 +3432,24 @@ class URLDiscoverer:
                             attr["url"] = cleaned_existing
                             if self._is_google_maps_candidate_url(cleaned_existing):
                                 attr["maps_url"] = maps_fallback_url
+                            else:
+                                # This shortcut (URL already attached before this
+                                # loop ran, e.g. by _prioritize_direct_batch_
+                                # attractions) skipped the same row-metadata
+                                # merge the fresh-lookup branch below does,
+                                # silently leaving rating/votes/description
+                                # empty even when the matched row had them
+                                # (dipstick55 Theme D: "Red Hills Desert Garden"
+                                # rendered with no rating badge and no teaser
+                                # despite its harvested row having both).
+                                attr.update(
+                                    self._direct_batch_row_quality_metadata_for_url(
+                                        self._get_attraction_direct_batch_rows_for_destination(
+                                            dest_name, str(dest_dates or "")
+                                        ),
+                                        cleaned_existing,
+                                    )
+                                )
                             self._log_decision(
                                 kind="attraction",
                                 dest_name=dest_name,
@@ -4166,13 +4184,14 @@ class URLDiscoverer:
                 "Each <li> must begin with the trail name and include at least one AllTrails <a href=...> link; "
                 "an additional official/source link is optional when available. "
                 "After the links, include the trail's rating as a clear numeric value like '4.6/5' and its "
-                "round-trip distance in miles like '3.2 mi', when available. "
+                "round-trip distance in miles like '3.2 mi', then a short descriptive note (8-15 words) about "
+                "the trail's terrain or highlights, when available. "
                 f"Keep only likely-open hikes of {max_miles:g} miles or less rated {min_rating:g}+ with at least {min_votes} reviews. "
                 "Exclude generic listings and drop any item without a reliable trail-specific AllTrails link."
             )
             user_prompt = (
                 f"Generate clickable hikes from AllTrails for {dest_name}{date_clause}. "
-                "Include a rating and distance in miles for each item when available."
+                "Include a rating, distance in miles, and a short descriptive note for each item when available."
             )
             return system_prompt, user_prompt
 
@@ -4190,7 +4209,8 @@ class URLDiscoverer:
                 "<a href=...>Source</a> for the attraction's official or authoritative page, "
                 "and <a href=\"https://www.google.com/maps/search/?api=1&query=Attraction+Name+Address+City+State\">Maps</a> as a precise Google Maps place or search link. "
                 "Use the Maps link to target a specific place, not a generic destination overview. "
-                "Include the attraction's rating as a clear numeric value like '4.7/5' or '4.7 stars' after the links, when available. "
+                "Include the attraction's rating as a clear numeric value like '4.7/5' or '4.7 stars' after the links, "
+                "then a short descriptive note (8-15 words) about what makes the attraction worth visiting, when available. "
                 "Keep only highly rated items (>4.3), include a mixture of experiences, "
                 "and keep only places likely open on the indicated dates. "
                 "Avoid generic destination listing pages, general travel guides, and broad area pages."
@@ -4200,7 +4220,7 @@ class URLDiscoverer:
                 f"for {dest_name}{date_clause}, excluding hikes, "
                 "with clickable links to source material and corresponding Google Maps content. "
                 "Prefer specific place pages and precise Google Maps links over generic listing pages. "
-                "Include a rating for each item when available, using a clear numeric format. "
+                "Include a rating and a short descriptive note for each item when available, using a clear numeric format for the rating. "
                 "Keep only highly rated items (>4.3), include a mixture of experiences, "
                 "and keep only places likely open on the indicated dates. "
                 "Include only suggestions with reliable clickable links."
@@ -4316,14 +4336,15 @@ class URLDiscoverer:
                 "Each <li> must begin with the trail name and include at least one AllTrails <a href=...> link; "
                 "an additional official/source link is optional when available. "
                 "After the links, include the trail's rating as a clear numeric value like '4.6/5' and its "
-                "round-trip distance in miles like '3.2 mi', when available. "
+                "round-trip distance in miles like '3.2 mi', then a short descriptive note (8-15 words) about "
+                "the trail's terrain or highlights, when available. "
                 f"Keep only likely-open hikes of {max_miles:g} miles or less rated {min_rating:g}+ with at least {min_votes} reviews. "
                 "Exclude generic listings and drop any item without a reliable trail-specific AllTrails link."
             )
             user_prompt = (
                 "Generate clickable hikes from AllTrails for these destinations:\n"
                 + "\n".join(dest_lines)
-                + "\nInclude a rating and distance in miles for each item when available."
+                + "\nInclude a rating, distance in miles, and a short descriptive note for each item when available."
             )
             return system_prompt, user_prompt
 
@@ -4346,7 +4367,8 @@ class URLDiscoverer:
                 "<a href=...>Source</a> for the attraction's official or authoritative page, "
                 "and <a href=\"https://www.google.com/maps/search/?api=1&query=Attraction+Name+Address+City+State\">Maps</a> as a precise Google Maps place or search link. "
                 "Use the Maps link to target a specific place, not a generic destination overview. "
-                "Include the attraction's rating as a clear numeric value like '4.7/5' or '4.7 stars' after the links, when available. "
+                "Include the attraction's rating as a clear numeric value like '4.7/5' or '4.7 stars' after the links, "
+                "then a short descriptive note (8-15 words) about what makes the attraction worth visiting, when available. "
                 "Keep only highly rated items (>4.3), include a mixture of experiences, "
                 "and keep only places likely open on the indicated dates. "
                 "Avoid generic destination listing pages, general travel guides, and broad area pages."
@@ -4356,7 +4378,8 @@ class URLDiscoverer:
                 "for these destinations, excluding hikes:\n"
                 + "\n".join(dest_lines)
                 + "\nInclude clickable links to source material and corresponding Google Maps content, "
-                "and a rating for each item when available, using a clear numeric format. "
+                "a rating for each item when available using a clear numeric format, "
+                "and a short descriptive note for each item when available. "
                 "Keep only highly rated items (>4.3), include a mixture of experiences, "
                 "and keep only places likely open on the indicated dates. "
                 "Include only suggestions with reliable clickable links."
@@ -5021,7 +5044,17 @@ class URLDiscoverer:
         rows: list[dict[str, Any]] = []
         for record in parser.records:
             raw_text = str(record.get("raw_text", "") or "").strip()
-            semantic_text = re.sub(r"(?:\s+(?:Source|Maps?|AllTrails))+\s*$", "", raw_text, flags=re.IGNORECASE).strip()
+            # Strip anchor-label artifacts (Source/Maps/AllTrails) from anywhere
+            # in the text, not just the tail end. A trailing-only strip was
+            # sufficient while no prompt put real content after these labels,
+            # but once a kind's format sandwiches the links between the name
+            # and a rating/dash-separated note (e.g. "Name <a>Source</a>
+            # <a>Maps</a> 4.8/5 - short note", used by the attraction/trail
+            # prompts once they started asking for a descriptive note), a
+            # trailing-only strip left "Source"/"Maps" glued into the name
+            # extracted below.
+            semantic_text = re.sub(r"\b(?:Source|Maps?|AllTrails)\b", "", raw_text, flags=re.IGNORECASE)
+            semantic_text = re.sub(r"\s{2,}", " ", semantic_text).strip(" -:|,;")
             name = str(record.get("name", "") or semantic_text).strip()
             # Strip cuisine or type annotations Grok appends in parentheses, e.g. "Cafe X (Mexican)"
             name = re.sub(r"\s*\([^)]{1,40}\)\s*$", "", name).strip()
@@ -5044,6 +5077,43 @@ class URLDiscoverer:
             if len(parts) > 1:
                 display_name = parts[0]
                 detail_text = " - ".join(parts[1:])
+            # A rating glued directly onto the name with no dash separator
+            # (e.g. "Sunset Point 4.8/5 - Iconic canyon overlook...", where the
+            # dash only separates the rating from the trailing note) is never
+            # part of the real name -- truncate there rather than trust the
+            # dash-split alone to have found the true boundary.
+            rating_leak = re.search(
+                r"\d+(?:\.\d+)?\s*(?:/\s*5\b|out\s+of\s+5\b|stars?\b)", display_name, flags=re.IGNORECASE
+            )
+            if rating_leak and rating_leak.start() > 0:
+                display_name = display_name[: rating_leak.start()].strip(" -:|,;")
+            # Real Grok output for a "rating, then a short note" instruction
+            # doesn't reliably use a dash separator (observed: "Name 4.4/5
+            # Interactive exhibits and award-winning film..." with just a
+            # space) -- the dash-split above then finds nothing and
+            # detail_text is left as the whole name+rating+note blob. Locate
+            # the actual boundary directly: name, then an optional rating,
+            # then an optional trailing distance-in-miles (trail rows), and
+            # treat everything remaining after whichever of those was found
+            # last as the real detail/note text. This also correctly handles
+            # the dash-separated shape (the separator is just leading
+            # punctuation stripped off the front) and the has-no-rating
+            # "Name - detail" shape (cursor stays right after the name).
+            cursor = 0
+            name_match = re.search(re.escape(display_name), semantic_text, flags=re.IGNORECASE) if display_name else None
+            if name_match:
+                cursor = name_match.end()
+            trailing_rating_match = re.search(
+                r"\d+(?:\.\d+)?\s*(?:/\s*5\b|out\s+of\s+5\b|stars?\b)", semantic_text[cursor:], flags=re.IGNORECASE
+            )
+            if trailing_rating_match:
+                cursor += trailing_rating_match.end()
+                distance_match = re.match(r"\s*\d+(?:\.\d+)?\s*mi\b\.?", semantic_text[cursor:], flags=re.IGNORECASE)
+                if distance_match:
+                    cursor += distance_match.end()
+            cursor_detail_text = semantic_text[cursor:].strip(" -:|,;")
+            if cursor_detail_text and len(cursor_detail_text) < len(detail_text):
+                detail_text = cursor_detail_text
             snippet_parts = [raw_text or display_name] if (raw_text or display_name) else []
             if urls:
                 snippet_parts.append("Links: " + " ".join(urls))
@@ -6740,6 +6810,21 @@ class URLDiscoverer:
                     if preserved_existing:
                         rest["url"] = preserved_existing
                         rest.pop("maps_url", None)
+                        # This shortcut (URL already attached before this loop
+                        # ran) otherwise skips the row-metadata merge the
+                        # fresh-lookup branch below does, silently leaving
+                        # rating/votes/cuisine/price empty even when the
+                        # matched row had them (dipstick55 Theme D: badges
+                        # and title decoration going missing inconsistently
+                        # depending on which branch handled a given item).
+                        rest.update(
+                            self._direct_batch_row_quality_metadata_for_url(
+                                self._get_restaurant_direct_batch_rows_for_destination(
+                                    dest_name, str(dest_dates or ""), lodging_location=lodging_location
+                                ),
+                                preserved_existing,
+                            )
+                        )
                         self._log_decision(
                             kind="restaurant",
                             dest_name=dest_name,
@@ -10309,12 +10394,17 @@ class URLDiscoverer:
     def _direct_batch_row_quality_metadata_for_url(
         cls, rows: list[dict[str, Any]], url: str | None
     ) -> dict[str, Any]:
-        """Carry rating/vote metadata from an already-harvested direct-batch row
-        onto the item whose url we just accepted -- at zero extra network cost,
-        since these rows were already fetched to resolve that url in the first
-        place. Without this, only items built via the batch-shortfall padding
-        path (_build_primary_items_from_direct_batch) ever got rating data;
-        every other per-item resolution site silently discarded it."""
+        """Carry rating/vote/cuisine/price metadata from an already-harvested
+        direct-batch row onto the item whose url we just accepted -- at zero
+        extra network cost, since these rows were already fetched to resolve
+        that url in the first place. Without this, only items built via the
+        batch-shortfall padding path (_build_primary_items_from_direct_batch)
+        ever got this data; every other per-item resolution site silently
+        discarded it -- including the "existing URL already attached, just
+        validate it" shortcuts (direct_batch_existing_url_preserved), which
+        is how e.g. "Red Hills Desert Garden" ended up with no rating badge
+        at all despite its harvested row carrying a 4.8 rating (dipstick55
+        Theme D)."""
         normalized_url = cls._normalize_direct_batch_authoritative_url(url or "")
         if not normalized_url:
             return {}
@@ -10324,7 +10414,7 @@ class URLDiscoverer:
             if normalized_url in cls._direct_batch_row_url_candidates(row):
                 return {
                     key: row.get(key)
-                    for key in ("rating", "raw_rating", "votes", "source_type")
+                    for key in ("rating", "raw_rating", "votes", "source_type", "cuisine", "price_range")
                     if row.get(key) not in (None, "")
                 }
         return {}

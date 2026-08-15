@@ -129,21 +129,72 @@ attraction/scenic-drive-name-collision orphan-description bug already fixed
 by commit `3988c8f` (the commit immediately preceding this session), not a
 new issue.
 
-## Theme D — Metadata/teaser inconsistency
+## Theme D — Metadata/teaser inconsistency [x]
 
-- [ ] Restaurant ratings appear in both the card title text AND the rating
+- [x] Restaurant ratings appear in both the card title text AND the rating
   badge -- redundant, only want the badge. (user) -- likely a simple
   template/rendering fix, not a data problem.
-- [ ] Restaurant teasers are inconsistently present; several links (e.g.
+- [x] Restaurant teasers are inconsistently present; several links (e.g.
   `redhillsdesertgarden.com`, `alltrails.com/trail/us/utah/chuckwalla-trail`)
   have no teaser at all. User suspects different sourcing paths produce
   different completeness. (user)
-- [ ] NPS.gov pages (`nps.gov/brca/planyourvisit/sunset.htm`,
+- [x] NPS.gov pages (`nps.gov/brca/planyourvisit/sunset.htm`,
   `.../naturalbridge.htm`) don't extract metadata/teaser text, unlike other
   sources. User's hypothesis: NPS page structure may not suit whatever
   extraction approach is used; suggests trying NPS-specific lookups before
   the general batch search, or backfilling missing metadata from Google Maps
   data when the primary source comes up empty. (user)
+
+**All three root-caused and fixed; the NPS hypothesis turned out to be
+wrong in an informative way.**
+
+1. **Title/badge rating duplication.** The real captured St. George
+   restaurant batch harvests titles like `"Cliffside Restaurant 4.4/5 $$$
+   American"` -- rating, price, and cuisine glued on *after* the real name.
+   `HTMLAssembler._sanitize_restaurant_display_name` only stripped decoration
+   anchored at the very end of the string, so this shape (decoration in the
+   middle, cuisine phrase trailing after) passed through untouched. Fixed by
+   truncating at the first occurrence of the row's own known rating value
+   (not a generic pattern guess) rather than trying to strip each piece --
+   this also correctly handles multi-word cuisine phrases that don't match
+   the parsed `cuisine` field verbatim (e.g. "Contemporary American", "New
+   American").
+
+2. **Teasers missing was never NPS-specific -- it affected every source
+   equally, including non-NPS ones** (`redhillsdesertgarden.com`,
+   `chuckwalla-trail`, both non-NPS). Two compounding causes, both fixed:
+   - The direct-batch attraction/trail harvest prompts never asked the model
+     for a description at all (only name + rating + distance/links) --
+     unlike the en-route-stop prompt, which already does and works. Extended
+     both prompts (single- and multi-destination variants) to also request a
+     short note, matching the en-route pattern.
+   - Doing so exposed a real parser bug: for attraction/trail rows the
+     `<a>Source</a> <a>Maps</a>` links sit *between* the name and the
+     rating/note (unlike en-route/restaurant rows, where links trail at the
+     very end), and the row parser's anchor-label cleanup was trailing-only,
+     so "Source"/"Maps" leaked into the extracted name once real content
+     followed them. Also, live-verified against the real xAI API (grok-4-
+     fast) that the model doesn't reliably use a dash before the note (a
+     bare space just as often). Fixed the parser to strip anchor-label
+     tokens from anywhere in the text and to locate the note boundary via
+     name -> rating -> optional distance position tracking rather than
+     requiring a literal dash.
+   - Separately, and independent of the above: `_discover_attractions` /
+     `_discover_restaurants` have a shortcut path
+     (`direct_batch_existing_url_preserved`, for items whose url was already
+     attached before the per-item loop ran) that skipped the row-metadata
+     merge (`_direct_batch_row_quality_metadata_for_url`) the other path
+     performs -- confirmed via the real run that this is exactly why "Red
+     Hills Desert Garden", "Sunset Point", and "Natural Bridge" rendered with
+     *no rating badge at all* despite their harvested rows having one (4.8,
+     4.8, 4.7 respectively). Fixed by merging row metadata in that path too,
+     and extended the shared merge helper to also carry cuisine/price for
+     restaurants.
+
+   Verified with new unit tests covering all of the above, plus two live
+   grok-4-fast calls (Bryce Canyon attractions, Moab trails) confirming the
+   model follows the new instruction and the updated parser produces clean
+   names and real teasers end-to-end against actual API output.
 
 ## Theme E — Imprecise geocoding rendered instead of pruned [x]
 
