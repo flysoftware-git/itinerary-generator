@@ -608,12 +608,36 @@ class GrokSearch:
                         json=payload,
                         timeout=self._timeout,
                     )
+                # raise_for_status() here (not left to the caller) is what
+                # lets the circuit breaker actually see HTTP-level failures.
+                # Before this fix, a non-2xx response (e.g. Anthropic's own
+                # 400 "credit balance is too low") got a response object
+                # back with no requests-level exception, so this method
+                # recorded it as a *success* -- the breaker showed 0 trips
+                # while every single call was silently failing (2026-08-15
+                # finding: a live run's fallback client looked perfectly
+                # healthy in circuit_breaker_stats while 100% of its calls
+                # were actually being rejected).
+                resp.raise_for_status()
                 self._record_circuit_breaker_outcome(transient_failure=False, is_probe=is_probe)
                 return resp
             except requests.RequestException as exc:
                 last_exc = exc
                 is_transient = self._is_transient_request_error(exc)
-                if is_transient:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code is not None and self._is_retryable_http_status(status_code):
+                    # 429/5xx: worth retrying within this same call, same as
+                    # a network-level timeout.
+                    is_transient = True
+                # Any HTTP error status counts toward the breaker even when
+                # it isn't worth retrying immediately (e.g. 400/401/403 --
+                # retrying the identical payload against a broken account or
+                # key won't fix it), so repeated failures of this kind
+                # across the run still trip the breaker and protect later
+                # calls instead of each one independently rediscovering the
+                # same dead end.
+                counts_toward_breaker = is_transient or status_code is not None
+                if counts_toward_breaker:
                     self._record_circuit_breaker_outcome(transient_failure=True, is_probe=is_probe)
                 if attempt >= max_attempts or not is_transient:
                     raise
@@ -630,6 +654,10 @@ class GrokSearch:
         if last_exc:
             raise last_exc
         raise requests.RequestException("Unknown Grok POST failure")
+
+    @staticmethod
+    def _is_retryable_http_status(status_code: int) -> bool:
+        return status_code in (429, 500, 502, 503, 504)
 
     # ── URL-resolution helper ────────────────────────────────────────────────
 

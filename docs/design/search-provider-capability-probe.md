@@ -9,7 +9,12 @@ hardened into a repeatable, parameterized, history-tracking CLI (§5).
 Grok/Claude batch-vs-fallback provider split, live-validated during a
 genuine xAI outage (§6). Cross-provider batch retry added after a real
 production run showed the narrower single-query fallback couldn't match
-item-specific coverage even while fully healthy (§8). Half-open circuit-breaker recovery implemented
+item-specific coverage even while fully healthy (§8). Fixed the circuit
+breaker being blind to HTTP-level failures (§9), found immediately after
+via the same live-run-then-fix-then-verify loop -- a persistent
+account-level failure (exhausted Anthropic credit) registered as 100%
+healthy in circuit_breaker_stats while genuinely failing 100% of calls.
+Half-open circuit-breaker recovery implemented
 and test-covered (§7). OpenAI/Gemini capability follow-up remains open
 (tracked via the same probe, not yet separately scoped).
 
@@ -498,3 +503,74 @@ Tests: `test_direct_batch_html_falls_back_to_cross_provider_when_primary_empty`,
 `test_direct_batch_html_keeps_primary_result_when_fallback_does_not_improve`,
 `test_direct_batch_html_capture_records_which_provider_supplied_the_result`
 in `tests/test_url_discovery.py`.
+
+## 9. Circuit breaker was blind to HTTP-level failures (2026-08-15)
+
+Immediate follow-up to §8: rerunning after that fix (`SW2026-dipstick52`)
+hit a wall the same day, live-reproduced and traced to its actual cause.
+`circuit_breaker_stats.url_discovery_fallback` showed `trip_count: 0,
+total_open_seconds: 0.0` — apparently perfectly healthy — while every
+single captured batch-harvest attempt still showed `row_count: 0,
+provider: ""` (the new §8 provenance field showed neither client ever won).
+Reproducing the fallback's exact batch call live surfaced the real cause:
+Anthropic's account had run out of credit again, returning `400
+"Your credit balance is too low..."` on every call.
+
+**The breaker literally could not see this failure class.** `_post_with_retries`
+only ever recorded a circuit-breaker failure inside its `except
+requests.RequestException` branch — but getting a response back with a
+non-2xx status doesn't raise anything at the `session.post()` level; only
+a *separate* `resp.raise_for_status()` call (which callers like
+`chat_completion` made *after* `_post_with_retries` had already returned
+and already recorded a **success**) would raise. So a persistent
+account-level failure — wrong/expired key, exhausted credit, a real 429
+rate limit, a provider-side 5xx — registered as 100% healthy in
+`circuit_breaker_stats` while genuinely failing 100% of the time. This is
+a materially worse failure mode than a plain outage: an outage at least
+degrades visibly (`trip_count` climbs, `is_circuit_open()` returns true);
+this looked identical to full health right up until someone manually
+reproduced a single call and read the response body.
+
+**Fix**: moved `resp.raise_for_status()` inside `_post_with_retries`
+itself, immediately after the request returns, so the same
+circuit-breaker bookkeeping that already existed for network-level
+exceptions now also sees HTTP-level ones. Two sub-cases, both now
+correctly handled:
+- **Retryable status** (429, 500, 502, 503, 504): treated like a network
+  timeout — worth an immediate retry within the same call, same backoff
+  as before.
+- **Non-retryable status** (400, 401, 403, 404, ...): not worth retrying
+  the identical payload against the identical broken account/key within
+  this call, but **still recorded as a circuit-breaker failure** — so
+  repeated calls of this kind across a run correctly accumulate toward
+  `threshold` and trip the breaker, instead of each one independently
+  discovering the same dead end. Live-verified against the real,
+  still-exhausted Anthropic account: 4 real calls (matching the default
+  `threshold=4`), each correctly counted, breaker opens on the 4th, and a
+  5th call correctly short-circuits without touching the network at all
+  — `get_circuit_breaker_stats()` showing `trip_count: 1,
+  currently_open: True` throughout, where it previously would have shown
+  `trip_count: 0` indefinitely.
+
+Applied identically to `GrokSearch` and `ClaudeSearch`.
+
+**Separately, a real cost-attribution gap found investigating the same
+incident**: `main.py`'s `_build_gate_a_metrics` only recognized the
+primary batch client's `"url_discovery:*"` operation prefix, not the
+fallback client's `"url_discovery_fallback:*"` (a distinct prefix since
+§6's client split) — so every fallback call, batch or non-batch, was
+silently excluded from `stage_cost_usd` and `url_discovery_search_calls`.
+A run that leaned heavily on the fallback (exactly the case during a
+primary-provider outage, when the fallback fires the most) looked far
+cheaper and less active than it actually was. Note this only affected the
+*stage-level breakdown* — `UsageTracker.summary()`'s overall
+`total_estimated_cost_usd` was already a true sum over every record
+regardless of operation name, so it wasn't itself wrong, just not broken
+down by stage correctly. Fixed by recognizing both prefixes.
+
+Tests: `test_post_with_retries_counts_non_retryable_http_error_toward_breaker`,
+`test_post_with_retries_retries_retryable_http_status_within_same_call`,
+`test_post_with_retries_does_not_retry_non_retryable_http_status_within_same_call`
+in both `tests/test_grok_search.py` and `tests/test_claude_search.py`;
+`test_build_gate_a_metrics_attributes_fallback_client_operation_prefix` in
+`tests/test_main_requirements.py`.

@@ -1459,6 +1459,42 @@ def test_build_gate_a_metrics_attributes_current_operation_names() -> None:
     assert metrics["stage_cost_usd"]["stage_4_5_parallel"] == 0.4
 
 
+def test_build_gate_a_metrics_attributes_fallback_client_operation_prefix() -> None:
+    """Regression for the 2026-08-15 finding: url_discovery.py's fallback
+    client (self._search_fallback) uses its own "url_discovery_fallback:*"
+    operation prefix, distinct from the primary batch client's
+    "url_discovery:*" -- but the stage-attribution filter only recognized
+    the primary's prefix, so every fallback call (both the non-batch
+    .search() path and the cross-provider batch retry) was silently
+    excluded from stage_cost_usd and url_discovery_search_calls, making a
+    run that leaned heavily on the fallback (e.g. during a primary-provider
+    outage) look far cheaper and less active than it actually was."""
+    trip = {"destinations": [{"id": "zion", "name": "Zion National Park"}]}
+    usage_summary = {
+        "total_estimated_cost_usd": 0.3,
+        "records": [
+            {"operation": "url_discovery:chat_completion", "estimated_cost_usd": 0.1},
+            {"operation": "url_discovery_fallback:search", "estimated_cost_usd": 0.08},
+            {"operation": "url_discovery_fallback:chat_completion_search", "estimated_cost_usd": 0.12},
+        ],
+    }
+    stage_timings = {"stage_3_ai_generation": 30.0, "stage_4_5_parallel": 60.0}
+
+    metrics = main_mod._build_gate_a_metrics(
+        trip=trip,
+        usage_summary=usage_summary,
+        stage_timings=stage_timings,
+        skip_events=True,
+        skip_images=True,
+        skip_url_discovery=False,
+        image_counter_delta={},
+        url_validator_counter_delta={},
+    )
+
+    assert metrics["provider_calls_by_stage"]["stage_4_5_parallel"]["url_discovery_search_calls"] == 3
+    assert metrics["stage_cost_usd"]["stage_4_5_parallel"] == 0.3
+
+
 def test_direct_batch_parity_summary_identifies_missing_destination_by_name(tmp_path) -> None:
     """Full-pipeline proof of the output-parity contract: given captured direct-batch
     HTML inputs and a final assembled HTML, the parity summary must report which

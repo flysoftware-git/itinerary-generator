@@ -360,14 +360,24 @@ def _build_gate_a_metrics(
         elif operation.startswith("cultural_events:"):
             cultural_synthesis_calls += 1
             cultural_synthesis_cost = round(cultural_synthesis_cost + cost, 6)
-        elif operation.startswith("url_discovery:search"):
-            url_search_calls += 1
-            url_search_cost = round(url_search_cost + cost, 6)
-        elif operation.startswith("url_discovery:chat_completion"):
+        elif operation.startswith(("url_discovery:search", "url_discovery:chat_completion")):
             # Direct-batch HTML harvest calls (attraction/restaurant/en-route/trail
             # candidate lists) -- previously matched no branch at all, so this
             # (often the single largest cost in stage 4/5) was silently excluded
             # from stage_cost_usd and the url_discovery batch-ratio metrics.
+            url_search_calls += 1
+            url_search_cost = round(url_search_cost + cost, 6)
+        elif operation.startswith(("url_discovery_fallback:search", "url_discovery_fallback:chat_completion")):
+            # The fallback client (self._search_fallback, usage_operation_prefix
+            # "url_discovery_fallback" -- see generator/search_provider.py)
+            # gets its own operation prefix, distinct from the primary
+            # batch client's "url_discovery:*". Found 2026-08-15 while
+            # investigating unexplained cost during a Grok outage: every
+            # fallback call (both the non-batch .search() path and the
+            # cross-provider batch chat_completion() retry) was silently
+            # excluded from this stage's cost/call attribution, making a
+            # run that leaned heavily on the fallback look far cheaper and
+            # less active than it actually was.
             url_search_calls += 1
             url_search_cost = round(url_search_cost + cost, 6)
 

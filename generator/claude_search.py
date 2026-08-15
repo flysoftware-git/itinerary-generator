@@ -569,12 +569,25 @@ class ClaudeSearch:
                         json=payload,
                         timeout=self._timeout,
                     )
+                # raise_for_status() here (not left to the caller) is what
+                # lets the circuit breaker actually see HTTP-level failures
+                # -- see GrokSearch._post_with_retries for the full
+                # rationale (2026-08-15): a non-2xx response used to be
+                # recorded as a success (no requests-level exception), so a
+                # persistent account-level failure like "credit balance too
+                # low" made this breaker look perfectly healthy while every
+                # call was actually being rejected.
+                resp.raise_for_status()
                 self._record_circuit_breaker_outcome(transient_failure=False, is_probe=is_probe)
                 return resp
             except requests.RequestException as exc:
                 last_exc = exc
                 is_transient = self._is_transient_request_error(exc)
-                if is_transient:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code is not None and self._is_retryable_http_status(status_code):
+                    is_transient = True
+                counts_toward_breaker = is_transient or status_code is not None
+                if counts_toward_breaker:
                     self._record_circuit_breaker_outcome(transient_failure=True, is_probe=is_probe)
                 if attempt >= max_attempts or not is_transient:
                     raise
@@ -591,3 +604,7 @@ class ClaudeSearch:
         if last_exc:
             raise last_exc
         raise requests.RequestException("Unknown Claude POST failure")
+
+    @staticmethod
+    def _is_retryable_http_status(status_code: int) -> bool:
+        return status_code in (429, 500, 502, 503, 504)

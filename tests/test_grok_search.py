@@ -125,6 +125,79 @@ def test_post_with_retries_resets_failure_count_after_success() -> None:
     assert gs._circuit_breaker_open_until == 0.0
 
 
+def _http_error_response(status_code: int) -> MagicMock:
+    """Matches real `requests` behavior: raise_for_status() raises
+    HTTPError with .response pointing back at the response object."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    error = requests.HTTPError(f"{status_code} error", response=resp)
+    resp.raise_for_status.side_effect = error
+    return resp
+
+
+def test_post_with_retries_counts_non_retryable_http_error_toward_breaker() -> None:
+    """Regression for the 2026-08-15 finding: a non-2xx response (e.g.
+    Anthropic's 400 "credit balance is too low") used to come back as a
+    successful requests.Session.post() call with no exception at all --
+    _post_with_retries recorded it as a breaker SUCCESS, so a persistent
+    account-level failure looked perfectly healthy in circuit_breaker_stats
+    while every single call was actually being rejected. raise_for_status()
+    must now happen inside _post_with_retries so this is visible."""
+    gs = GrokSearch(api_key="test", model="test", network_retries=0)
+    gs._circuit_breaker_threshold = 2
+    gs._circuit_breaker_cooldown_seconds = 60.0
+
+    session = MagicMock()
+    session.post.return_value = _http_error_response(400)
+    gs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    with pytest.raises(requests.HTTPError):
+        gs._post_with_retries({"model": "test"}, "query")
+    # Not worth retrying THIS call again (identical payload, same broken
+    # account) -- exactly one network attempt for a non-retryable status.
+    assert session.post.call_count == 1
+
+    with pytest.raises(requests.HTTPError):
+        gs._post_with_retries({"model": "test"}, "query")
+    assert session.post.call_count == 2
+
+    # Second qualifying failure reaches threshold=2 -- breaker opens,
+    # protecting a third caller without touching the network again.
+    with pytest.raises(GrokCircuitOpenError):
+        gs._post_with_retries({"model": "test"}, "query")
+    assert session.post.call_count == 2
+
+
+def test_post_with_retries_retries_retryable_http_status_within_same_call() -> None:
+    """429/5xx are worth an immediate retry, same as a network timeout --
+    unlike a 400/401/403, retrying might actually succeed."""
+    gs = GrokSearch(api_key="test", model="test", network_retries=1)
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.raise_for_status = MagicMock()
+
+    session = MagicMock()
+    session.post.side_effect = [_http_error_response(429), fake_response]
+    gs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    out = gs._post_with_retries({"model": "test"}, "query")
+
+    assert out is fake_response
+    assert session.post.call_count == 2
+
+
+def test_post_with_retries_does_not_retry_non_retryable_http_status_within_same_call() -> None:
+    gs = GrokSearch(api_key="test", model="test", network_retries=2)
+    session = MagicMock()
+    session.post.return_value = _http_error_response(401)
+    gs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    with pytest.raises(requests.HTTPError):
+        gs._post_with_retries({"model": "test"}, "query")
+
+    assert session.post.call_count == 1
+
+
 def test_circuit_breaker_check_returns_probe_flag_after_cooldown_elapses() -> None:
     """Once cooldown elapses, the check grants exactly one caller "probe"
     status (True) instead of fully closing the breaker for everyone at once."""

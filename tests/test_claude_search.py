@@ -88,6 +88,68 @@ def test_post_with_retries_resets_failure_count_after_success() -> None:
     assert cs._circuit_breaker_open_until == 0.0
 
 
+def _http_error_response(status_code: int) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status_code
+    error = requests.HTTPError(f"{status_code} error", response=resp)
+    resp.raise_for_status.side_effect = error
+    return resp
+
+
+def test_post_with_retries_counts_non_retryable_http_error_toward_breaker() -> None:
+    """Regression for the real "credit balance is too low" incident
+    (2026-08-15): a 400 used to come back as a successful post() call with
+    no exception, so this breaker looked healthy while every call was
+    actually being rejected."""
+    cs = ClaudeSearch(api_key="test", model="test", network_retries=0)
+    cs._circuit_breaker_threshold = 2
+    cs._circuit_breaker_cooldown_seconds = 60.0
+
+    session = MagicMock()
+    session.post.return_value = _http_error_response(400)
+    cs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    with pytest.raises(requests.HTTPError):
+        cs._post_with_retries({"model": "test"}, "query")
+    assert session.post.call_count == 1
+
+    with pytest.raises(requests.HTTPError):
+        cs._post_with_retries({"model": "test"}, "query")
+    assert session.post.call_count == 2
+
+    with pytest.raises(ClaudeCircuitOpenError):
+        cs._post_with_retries({"model": "test"}, "query")
+    assert session.post.call_count == 2
+
+
+def test_post_with_retries_retries_retryable_http_status_within_same_call() -> None:
+    cs = ClaudeSearch(api_key="test", model="test", network_retries=1)
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.raise_for_status = MagicMock()
+
+    session = MagicMock()
+    session.post.side_effect = [_http_error_response(429), fake_response]
+    cs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    out = cs._post_with_retries({"model": "test"}, "query")
+
+    assert out is fake_response
+    assert session.post.call_count == 2
+
+
+def test_post_with_retries_does_not_retry_non_retryable_http_status_within_same_call() -> None:
+    cs = ClaudeSearch(api_key="test", model="test", network_retries=2)
+    session = MagicMock()
+    session.post.return_value = _http_error_response(401)
+    cs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    with pytest.raises(requests.HTTPError):
+        cs._post_with_retries({"model": "test"}, "query")
+
+    assert session.post.call_count == 1
+
+
 def test_circuit_breaker_check_returns_probe_flag_after_cooldown_elapses() -> None:
     cs = ClaudeSearch(api_key="test", model="test")
     cs._circuit_breaker_open_until = time.monotonic() - 0.01
