@@ -7,7 +7,9 @@ and test-covered; live end-to-end validation blocked by an Anthropic
 account credit-balance issue (not a code problem -- see §4.1). Probe script
 hardened into a repeatable, parameterized, history-tracking CLI (§5).
 Grok/Claude batch-vs-fallback provider split, live-validated during a
-genuine xAI outage (§6). Half-open circuit-breaker recovery implemented
+genuine xAI outage (§6). Cross-provider batch retry added after a real
+production run showed the narrower single-query fallback couldn't match
+item-specific coverage even while fully healthy (§8). Half-open circuit-breaker recovery implemented
 and test-covered (§7). OpenAI/Gemini capability follow-up remains open
 (tracked via the same probe, not yet separately scoped).
 
@@ -439,3 +441,60 @@ Tests: `test_circuit_breaker_check_returns_probe_flag_after_cooldown_elapses`,
 `test_circuit_breaker_stats_track_trip_count_and_total_open_seconds`,
 `test_repeated_probe_failures_within_same_episode_do_not_inflate_trip_count`
 in both `tests/test_grok_search.py` and `tests/test_claude_search.py`.
+
+## 8. Cross-provider batch retry, before dropping to the narrower fallback shape (2026-08-15)
+
+Found by reading a real, completed production run (`SW2026-dipstick51`,
+run during a live ~12-minute Grok batch outage — `circuit_breaker_stats`
+showed `url_discovery_batch: {trip_count: 1, total_open_seconds: 705.7,
+currently_open: true}` against an 820.9s total run, `url_discovery_fallback:
+{trip_count: 0, total_open_seconds: 0.0}`). Despite the fallback client
+(Claude) staying perfectly healthy the entire run — zero errors, zero
+breaker trips — every one of 8 destinations still finished with **100% of
+`top_attractions` rendering with no URL**, and restaurants and en-route
+stops showed the identical pattern. Only scenic drives were spared (they
+have a deterministic NPS-page-pattern shortcut independent of live
+search).
+
+**Root cause, traced through the actual disposition log** (`Canyon
+Overlook Trail`, Zion, representative of every affected item): Grok's
+batch harvest came back empty twice (initial call + the existing
+insufficient-rows retry-prompt) → fell through to the non-batch fallback
+(`_search_cached` → `self._search_fallback.search(...)`) → that call
+*succeeded* (no error, consistent with 0 breaker trips) but returned
+`direct_batch_no_match` — its single generic query for the category
+didn't happen to surface a result matching this specific named item →
+`direct_batch_authoritative: true` blocks any further per-item search →
+item renders with no URL.
+
+The narrower fallback (`_get_direct_batch_rows_for_destination` →
+`_search_cached`, one generic `.search()` query per category per
+destination) predates the Claude/Grok split entirely — it was originally
+built as Grok's *own* same-provider fallback, a lighter-weight query to
+try in case the batch prompt's specific format was the problem, not the
+whole provider. It was never redesigned around the fact that
+`self._search_fallback` is now a fully independent second provider with
+its own working batch-harvest capability (`chat_completion(live_search=True)`,
+the same purpose-built per-item list prompt the primary uses) — so the
+fallback chain never reached for the stronger option that was already
+sitting there, proven, and wired up.
+
+**Fix**: `_fetch_direct_batch_html_rows` now tries the fallback client's
+*own* `chat_completion(live_search=True)` with the identical
+system/user prompt the primary got, before ever dropping to the narrower
+single-query mode — gated on `self._search_fallback.is_circuit_open()`,
+mirroring the primary's own retry-prompt gate. One attempt only (no
+retry-prompt escalation on the fallback's attempt — this is already a
+second full harvest call; a third would be excessive under conditions
+that are already degraded). `_persist_direct_batch_html_capture` now
+records a `provider` field (the winning client's class name) in its
+debug captures, so a future incident like this one is diagnosable
+directly from the capture files instead of requiring a manual trace
+through the disposition log the way this one did.
+
+Tests: `test_direct_batch_html_falls_back_to_cross_provider_when_primary_empty`,
+`test_direct_batch_html_skips_cross_provider_fallback_while_its_circuit_open`,
+`test_direct_batch_html_does_not_call_fallback_when_primary_already_sufficient`,
+`test_direct_batch_html_keeps_primary_result_when_fallback_does_not_improve`,
+`test_direct_batch_html_capture_records_which_provider_supplied_the_result`
+in `tests/test_url_discovery.py`.

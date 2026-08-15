@@ -2728,6 +2728,108 @@ def test_direct_batch_html_retries_empty_attraction_result():
     assert discoverer._search.chat_completion.call_count == 2
 
 
+def _batch_html_discoverer_with_fallback(*, primary_html: str = "", fallback_html: str = "") -> URLDiscoverer:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._attraction_direct_batch_cache = {}
+    discoverer._direct_link_batch_limit = lambda: 3
+    discoverer._persist_direct_batch_html_capture = lambda **kwargs: None
+    discoverer._search = MagicMock()
+    discoverer._search.is_circuit_open.return_value = False
+    discoverer._search.chat_completion.return_value = primary_html
+    discoverer._search_fallback = MagicMock()
+    discoverer._search_fallback.is_circuit_open.return_value = False
+    discoverer._search_fallback.chat_completion.return_value = fallback_html
+    discoverer._direct_batch_rows_from_html = lambda html: (
+        [{"title": "Angels Landing", "url": "https://alltrails.com/x", "maps_url": "https://maps/x"}]
+        if "<h2>" in html
+        else []
+    )
+    return discoverer
+
+
+def test_direct_batch_html_falls_back_to_cross_provider_when_primary_empty():
+    """2026-08-15 fix: when the primary's batch harvest (and its own
+    retry-prompt) comes back empty, retry the SAME purpose-built batch
+    prompt through the fallback client before ever dropping to the
+    narrower single-query mode -- a live run found the narrower mode
+    structurally couldn't match every specific named item."""
+    discoverer = _batch_html_discoverer_with_fallback(
+        primary_html="",
+        fallback_html="<h2>Zion</h2><ul><li>Angels Landing <a href='https://alltrails.com/x'>Source</a></li></ul>",
+    )
+
+    rows = discoverer._get_direct_batch_html_rows_for_destination(
+        cache={}, destination="Zion National Park", dates="October 18, 2026", kind="attraction",
+    )
+
+    assert rows
+    discoverer._search_fallback.chat_completion.assert_called_once()
+    fallback_kwargs = discoverer._search_fallback.chat_completion.call_args.kwargs
+    assert fallback_kwargs["live_search"] is True
+    # Same purpose-built prompt as the primary got, not a different/narrower query.
+    primary_kwargs = discoverer._search.chat_completion.call_args_list[0].kwargs
+    assert fallback_kwargs["system_prompt"] == primary_kwargs["system_prompt"]
+    assert fallback_kwargs["user_prompt"] == primary_kwargs["user_prompt"]
+
+
+def test_direct_batch_html_skips_cross_provider_fallback_while_its_circuit_open():
+    discoverer = _batch_html_discoverer_with_fallback(primary_html="", fallback_html="<h2>x</h2><ul></ul>")
+    discoverer._search_fallback.is_circuit_open.return_value = True
+
+    rows = discoverer._get_direct_batch_html_rows_for_destination(
+        cache={}, destination="Zion National Park", dates="October 18, 2026", kind="attraction",
+    )
+
+    assert rows == []
+    discoverer._search_fallback.chat_completion.assert_not_called()
+
+
+def test_direct_batch_html_does_not_call_fallback_when_primary_already_sufficient():
+    discoverer = _batch_html_discoverer_with_fallback(
+        primary_html="<h2>Zion</h2><ul><li>Angels Landing <a href='https://alltrails.com/x'>Source</a></li></ul>",
+        fallback_html="<h2>x</h2><ul></ul>",
+    )
+
+    rows = discoverer._get_direct_batch_html_rows_for_destination(
+        cache={}, destination="Zion National Park", dates="October 18, 2026", kind="attraction",
+    )
+
+    assert rows
+    discoverer._search_fallback.chat_completion.assert_not_called()
+
+
+def test_direct_batch_html_keeps_primary_result_when_fallback_does_not_improve():
+    discoverer = _batch_html_discoverer_with_fallback(primary_html="", fallback_html="")
+
+    rows = discoverer._get_direct_batch_html_rows_for_destination(
+        cache={}, destination="Zion National Park", dates="October 18, 2026", kind="attraction",
+    )
+
+    assert rows == []
+    discoverer._search_fallback.chat_completion.assert_called_once()
+
+
+def test_direct_batch_html_capture_records_which_provider_supplied_the_result():
+    from generator.claude_search import ClaudeSearch
+    from generator.grok_search import GrokSearch
+
+    discoverer = _batch_html_discoverer_with_fallback(
+        primary_html="",
+        fallback_html="<h2>Zion</h2><ul><li>Angels Landing <a href='https://alltrails.com/x'>Source</a></li></ul>",
+    )
+    discoverer._search.__class__ = GrokSearch
+    discoverer._search_fallback.__class__ = ClaudeSearch
+    captured: dict = {}
+    discoverer._persist_direct_batch_html_capture = lambda **kwargs: captured.update(kwargs)
+
+    discoverer._get_direct_batch_html_rows_for_destination(
+        cache={}, destination="Zion National Park", dates="October 18, 2026", kind="attraction",
+    )
+
+    assert captured["provider"] == "ClaudeSearch"
+
+
 def test_url_discoverer_shares_llm_model_with_grok_search_when_provider_is_grok():
     """Regression for issue #65/#64: GrokSearch used to always fall back to
     its own independent XAI_MODEL env var, disconnected from whatever model

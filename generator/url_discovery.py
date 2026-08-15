@@ -3774,6 +3774,7 @@ class URLDiscoverer:
         query: str,
         html: str,
         rows: list[dict[str, Any]],
+        provider: str = "",
     ) -> None:
         capture_dir = self._direct_batch_html_capture_dir()
         if capture_dir is None:
@@ -3810,6 +3811,11 @@ class URLDiscoverer:
             "row_count": len(rows or []),
             "rows": [dict(row) for row in rows if isinstance(row, dict)],
             "html_file": html_path.name,
+            # Which client actually supplied the winning html/rows -- empty
+            # when neither the primary nor the fallback produced anything
+            # (a class name, e.g. "GrokSearch"/"ClaudeSearch", otherwise).
+            # See _fetch_direct_batch_html_rows's cross-provider retry.
+            "provider": str(provider or ""),
         }
 
         try:
@@ -4298,9 +4304,11 @@ class URLDiscoverer:
         system_prompt, user_prompt = prompt_pair
 
         html = ""
-        if hasattr(self, "_search") and self._search is not None:
+        provider_used = ""
+        primary = getattr(self, "_search", None)
+        if primary is not None:
             html = str(
-                self._search.chat_completion(
+                primary.chat_completion(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     temperature=0.1,
@@ -4318,18 +4326,18 @@ class URLDiscoverer:
                 )
                 or ""
             )
+            if html:
+                provider_used = primary.__class__.__name__
 
         rows = self._direct_batch_rows_from_html(html)
         min_required = self._direct_batch_min_required(kind)
         circuit_open = bool(
-            hasattr(self, "_search")
-            and self._search is not None
-            and hasattr(self._search, "is_circuit_open")
-            and self._search.is_circuit_open()
+            primary is not None
+            and hasattr(primary, "is_circuit_open")
+            and primary.is_circuit_open()
         )
         if (
-            hasattr(self, "_search")
-            and self._search is not None
+            primary is not None
             and min_required > 0
             and len(rows) < min_required
             and not circuit_open
@@ -4345,7 +4353,7 @@ class URLDiscoverer:
                 "Do not use generic listing pages, placeholders, or duplicate entity names."
             )
             retry_html = str(
-                self._search.chat_completion(
+                primary.chat_completion(
                     system_prompt=system_prompt,
                     user_prompt=retry_prompt,
                     temperature=0.1,
@@ -4367,6 +4375,48 @@ class URLDiscoverer:
             if len(retry_rows) > len(rows):
                 html = retry_html
                 rows = retry_rows
+                provider_used = primary.__class__.__name__
+
+        # Cross-provider batch retry (2026-08-15 finding): when the primary's
+        # batch harvest still hasn't produced enough rows -- including
+        # entirely empty, e.g. during a primary-provider outage -- retry the
+        # SAME purpose-built batch list prompt through the fallback client
+        # before ever dropping to the narrower single-query mode
+        # (_get_direct_batch_rows_for_destination). A live run found the
+        # fallback's single generic .search() query structurally can't match
+        # every specific named item a batch prompt covers (it wasn't built
+        # to -- it predates this class having its own working batch
+        # capability at all), so items were rendering with no URL despite
+        # the fallback client itself being perfectly healthy. Retrying with
+        # the fallback's own chat_completion(live_search=True) gives it a
+        # fair shot at the same item-specific coverage the primary gets,
+        # since both providers share that same batch-capable interface.
+        # One attempt only (no retry-prompt escalation on the fallback) --
+        # this is already a second full harvest call; a third would be
+        # excessive under conditions that are already degraded.
+        fallback = getattr(self, "_search_fallback", None)
+        if (
+            fallback is not None
+            and fallback is not primary
+            and min_required > 0
+            and len(rows) < min_required
+            and not (hasattr(fallback, "is_circuit_open") and fallback.is_circuit_open())
+        ):
+            fallback_html = str(
+                fallback.chat_completion(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.1,
+                    response_format=None,
+                    live_search=True,
+                )
+                or ""
+            )
+            fallback_rows = self._direct_batch_rows_from_html(fallback_html)
+            if len(fallback_rows) > len(rows):
+                html = fallback_html
+                rows = fallback_rows
+                provider_used = fallback.__class__.__name__
 
         query_text = self._direct_batch_html_prompt(
             kind=kind,
@@ -4392,6 +4442,7 @@ class URLDiscoverer:
             query=effective_query,
             html=html,
             rows=filtered_rows,
+            provider=provider_used,
         )
         return filtered_rows
 
