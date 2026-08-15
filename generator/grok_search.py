@@ -34,22 +34,35 @@ GROK_ENDPOINT = "https://api.x.ai/v1/chat/completions"
 # and the call sites in chat_completion(live_search=True) / _grok_search.
 GROK_RESPONSES_ENDPOINT = "https://api.x.ai/v1/responses"
 _DEFAULT_DELAY = 0.05
-_DEFAULT_TIMEOUT_SECONDS = 25
-_DEFAULT_NETWORK_RETRIES = 2
+# Raised from 25s and retries cut from 2->1 (2026-08-15): the 2026-08-14
+# /v1/responses migration replaced fast training-data-only "search" with real
+# agentic web search, which is inherently slower -- the old 25s/2-retries
+# tuning was inherited unchanged from the fast fake-search era. A live probe
+# after this change still timed out at 120s with 0 retries, confirming the
+# provider is currently in a genuine slow/degraded state (not just under-
+# timed) -- 2 retries on top of that was silently tripling both wall-clock
+# hang time and, if the provider bills completed-but-abandoned generations,
+# real cost. 1 retry keeps a little resilience for a single transient blip
+# without compounding a hang into 3x spend.
+_DEFAULT_TIMEOUT_SECONDS = 45
+_DEFAULT_NETWORK_RETRIES = 1
 
-# threshold=4/window=30s (not the original 5/20) is sized to the real failure
-# cadence under a sustained provider outage: with _GROK_SEMAPHORE capping
-# concurrency at 4 and a 25s per-attempt timeout, the largest failure burst
-# physically possible is one failure per occupied slot roughly every ~25-26s
-# (attempt timeout + backoff) -- a full round of all 4 concurrent slots
-# timing out. The original 5-within-20s combination could never be reached by
-# that cadence (max burst size 4 < threshold 5, and 25s > the 20s window even
-# for a single call's own retries), so the breaker never engaged during an
-# observed 3.5-hour outage (Dipstick48). threshold=4 trips on exactly one full
-# concurrent-timeout round; window=30s comfortably contains that round even
-# with slot-start jitter.
+# threshold=4/window=50s (window widened from 30s alongside the 25s->45s
+# per-attempt timeout change above -- 2026-08-15) is sized to the real
+# failure cadence under a sustained provider outage: with _GROK_SEMAPHORE
+# capping concurrency at 4, the largest failure burst physically possible is
+# one failure per occupied slot roughly every ~45-46s (attempt timeout +
+# backoff) -- a full round of all 4 concurrent slots timing out. Leaving
+# window at 30s after raising the per-attempt timeout to 45s would silently
+# reintroduce the exact bug this sizing was built to fix (a burst that can no
+# longer land inside its own window, so the breaker never trips -- the
+# original 5-within-20s combination's failure mode, observed over a 3.5-hour
+# outage in Dipstick48). threshold=4 trips on exactly one full
+# concurrent-timeout round; window=50s (not exactly 45s) leaves a few
+# seconds of margin for slot-start jitter rather than cutting it exactly to
+# the round's own expected duration.
 _DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 4
-_DEFAULT_CIRCUIT_BREAKER_WINDOW_SECONDS = 30.0
+_DEFAULT_CIRCUIT_BREAKER_WINDOW_SECONDS = 50.0
 _DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 15.0
 _DEFAULT_CHAT_MAX_TOKENS = 6000
 

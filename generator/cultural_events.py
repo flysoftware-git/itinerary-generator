@@ -120,15 +120,14 @@ class CulturalEventsDiscoverer:
 
     def _grok_search(self, destination: str, dates: str) -> list[dict[str, Any]]:
         month = dates.split()[0] if dates else "October"
-        queries = [
-            f"{destination} festivals events {month} 2026",
-            f"{destination} cultural events concerts {month} 2026",
-            f"events near {destination} fall 2026",
-        ]
-        all_results: list[dict[str, Any]] = []
-        for query in queries:
-            all_results.extend(self._search.search(query, count=8))
-        return all_results[:20]
+        # Collapsed from 3 separate live-search queries (festivals / cultural
+        # events+concerts / general "events near") to 1 combined query.
+        # Each query is now a full real search call (post the /v1/responses
+        # live-search migration, not the old training-data-only path), so the
+        # 3x call count was a 3x cost multiplier for marginal recall gain --
+        # a single broad query covers the same intent in practice.
+        query = f"{destination} festivals events concerts {month} 2026"
+        return self._search.search(query, count=20)[:20]
 
     def _classify_destination(self, name: str) -> str:
         lower = name.lower()

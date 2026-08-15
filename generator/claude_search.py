@@ -54,15 +54,30 @@ _DEFAULT_DELAY = 0.05
 # yet backed by real single-round timing data at the new call shape --
 # revisit with real numbers once a few runs have gone through it.
 _DEFAULT_TIMEOUT_SECONDS = 60
-_DEFAULT_NETWORK_RETRIES = 2
+# Cut from 2 (2026-08-15, alongside the matching GrokSearch fix): with
+# _CLAUDE_SEMAPHORE capping concurrency at 4, 2 retries meant a single
+# genuinely-slow-but-working call could occupy a slot for up to 3x the
+# per-attempt timeout (180s) before giving up -- and if Anthropic bills a
+# completed agentic search turn regardless of whether the client stayed
+# connected to receive it, each abandoned retry is a second (or third) real
+# charge for the same logical query, not free insurance. 1 retry keeps
+# resilience for a single transient blip without that multiplier.
+_DEFAULT_NETWORK_RETRIES = 1
 # Same derivation as GrokSearch's XAI_CIRCUIT_BREAKER_* defaults (see
 # grok_search.py) -- sized to a burst of concurrent-slot timeouts, not
 # individual failures. Kept in its own ANTHROPIC_SEARCH_* namespace, separate
 # from llm_client.py's generic LLM_CIRCUIT_BREAKER_* (content generation) and
 # grok_search.py's XAI_CIRCUIT_BREAKER_* -- these are three independently
 # tripped breakers for three different call paths.
+#
+# window widened 30s->70s (2026-08-15): this was already undersized relative
+# to the 60s per-attempt timeout above (set earlier the same day, 150s->60s,
+# without revisiting window) -- a burst of concurrent-slot timeouts lands
+# roughly every ~60-62s (attempt timeout + backoff), which a 30s window
+# could miss entirely, silently disabling the breaker exactly like the
+# already-fixed Grok case. 70s leaves margin above the ~62s expected round.
 _DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 4
-_DEFAULT_CIRCUIT_BREAKER_WINDOW_SECONDS = 30.0
+_DEFAULT_CIRCUIT_BREAKER_WINDOW_SECONDS = 70.0
 _DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 15.0
 _DEFAULT_MAX_TOKENS = 4096
 
