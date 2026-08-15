@@ -277,3 +277,76 @@ here.** The script is now a clean CLI entry point
 running it periodically is an infrastructure choice (Windows Task
 Scheduler, cron, CI, or an agent-side scheduled wakeup) with different
 cost/notification tradeoffs each way, so it wasn't picked unilaterally.
+
+## 6. Production split: Grok for batch, Claude for non-batch/cultural-events
+
+Per-activity vs. wholesale provider selection was an explicit design
+question (not just theory — Grok's own outage below made the answer
+concrete): should one config knob govern every search call, or should
+different call shapes be pinned independently? Decoupled, because the two
+task shapes have different capability profiles and different failure
+domains (§0, §3.3) and there's no cost to letting each pick its own
+provider when they're already both wired up.
+
+**The two `url_discovery.py` call shapes weren't actually one client.**
+`_get_direct_batch_html_rows_for_destination` (the HTML-mode harvest,
+`chat_completion(live_search=True)`) is the primary, highest-volume path.
+But every one of the four discovery categories (trail/attraction/
+restaurant/en-route) *also* falls back to `_get_direct_batch_rows_for_destination`
+(JSON-mode, via `_search_cached` → `.search()`) whenever the HTML harvest
+comes back empty — this fallback existed before this change, just always
+using the same client as the batch call. `url_discovery.py`'s `__init__`
+now builds two independent clients:
+
+- `self._search` — batch/harvest, `url_discovery.search_provider`
+  (`config.yaml`), stays **grok** (strongest evidence: 100% citation
+  fidelity, and it's the primary path).
+- `self._search_fallback` — the per-item `_search_cached` fallback
+  (`_search_first`/`_search_first_strict` also route through it),
+  `url_discovery.nonbatch_search_provider`, switched to **claude** (93%
+  citation fidelity on the same non-batch shape).
+
+`_search_cached` prefers `self._search_fallback` when present, falling
+back to `self._search` when it isn't (partially-constructed test doubles)
+— production always sets both, so the fallback-to-`self._search` branch
+never fires there. `cultural_events.search_provider` (already independent,
+100% non-batch module) switched from grok to claude on the same evidence.
+
+`generator/search_provider.py`'s `build_search_client` gained a
+`provider_key` parameter (default `"search_provider"`) so the same factory
+serves both `url_discovery.search_provider` and
+`url_discovery.nonbatch_search_provider` from one config section.
+
+**Manifest-level override**: not added. Search-provider selection remains
+`config.yaml`-only (no `trip.search_provider` in `manifest_parser.py`'s
+schema) — neither `trip_manifest.yaml` nor the Sandbox validation
+manifest (`sw_manifest.yaml`) set anything that conflicts with it (the
+latter does set `trip.llm_provider: openai` for *content generation*,
+which is the independent axis this section doesn't touch). Adding a
+manifest override is a reasonable next step if a specific trip ever needs
+to diverge from the config.yaml default, but wasn't required to make this
+change effective.
+
+**Live validation, 2026-08-15 — proved the design's actual point, not
+just its wiring.** While smoke-testing this change, xAI's API was
+observed genuinely down (`ReadTimeoutError`, consistent across content
+generation *and* search calls — a real outage, not a test artifact).
+Client-construction wiring was confirmed correct
+(`type(self._search).__name__ == "GrokSearch"`,
+`type(self._search_fallback).__name__ == "ClaudeSearch"`), and calling the
+production wrapper `_get_alltrails_direct_batch_rows_for_destination`
+against real Zion National Park data returned 2 valid AllTrails trail URLs
+(Canyon Overlook Trail, Kayenta Trail to the Emerald Pools) *despite*
+Grok's batch harvest timing out completely — the automatic HTML-empty →
+JSON/Claude-fallback chain absorbed the outage transparently. A direct
+`self._search_fallback.search(...)` call and a `CulturalEventsDiscoverer`
+call both independently confirmed real, correctly-provenanced Claude
+results (AllTrails URLs; Zion Canyon Music Festival / Greater Zion Events
+Calendar). This is the resilience benefit argued for in the "why not
+harmonize to one provider" discussion, demonstrated live rather than
+theoretically.
+
+Tests: `test_url_discoverer_builds_grok_batch_client_and_claude_fallback_client_from_real_config`,
+`test_search_cached_prefers_fallback_client_over_batch_client_when_both_set`,
+`test_search_cached_falls_back_to_batch_client_when_fallback_client_unset`
+in `tests/test_url_discovery.py`.

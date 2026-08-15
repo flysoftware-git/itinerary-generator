@@ -149,6 +149,10 @@ def _no_network(monkeypatch: pytest.MonkeyPatch):
     gracefully -- proven by the existing 600+ unit tests -- so this should
     never make the pipeline crash, only skip live verification."""
     monkeypatch.setenv("XAI_API_KEY", "test-key-not-real")
+    # URLDiscoverer now also builds a Claude fallback client (config.yaml's
+    # url_discovery.nonbatch_search_provider) -- needs a key present at
+    # construct time even though the network is fully disabled below.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     with patch.object(
         requests.sessions.Session,
         "request",

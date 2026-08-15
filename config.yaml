@@ -165,16 +165,36 @@ cultural_events:
   target_events_per_destination: 3
   verify_event_urls: true
   # Which search/harvest provider backs this module's real web search:
-  # grok (default) or claude. Independent of ai.provider (content
-  # generation) and of url_discovery.search_provider below -- each search
-  # call site picks its own. See generator/search_provider.py,
+  # grok or claude. This module is entirely non-batch (one per-destination
+  # query, see generator/cultural_events.py's discover()) -- 2026-08-14
+  # probe evidence put Claude close behind Grok on citation fidelity
+  # (93% vs 100%) for this shape of call, so it's set to claude here.
+  # Independent of ai.provider (content generation) and of
+  # url_discovery.search_provider/nonbatch_search_provider below -- each
+  # search call site picks its own. See generator/search_provider.py,
   # generator/claude_search.py, docs/design/search-provider-capability-probe.md.
-  search_provider: "grok"
+  search_provider: "claude"
 
 # ── URL discovery ─────────────────────────────────────────────────────────────
 url_discovery:
-  # See cultural_events.search_provider above for what this controls.
+  # Two independent search-provider knobs for two different clients this
+  # module builds (see generator/url_discovery.py's __init__):
+  #   search_provider           -- the direct-batch HTML harvest path
+  #                                (_get_direct_batch_html_rows_for_destination,
+  #                                self._search). This is the primary,
+  #                                highest-volume path (all *_source keys
+  #                                below default to direct_link_batch) and
+  #                                the one with the strongest probe evidence
+  #                                (100% citation fidelity) -- kept on grok.
+  #   nonbatch_search_provider  -- the per-item search fallback used by
+  #                                _search_cached/self._search_fallback
+  #                                (e.g. _search_first_strict, gap-filling
+  #                                lookups). Lower volume, same non-batch
+  #                                shape as cultural_events.search_provider
+  #                                above -- switched to claude on the same
+  #                                citation-fidelity evidence.
   search_provider: "grok"
+  nonbatch_search_provider: "claude"
   alltrails_source: direct_link_batch
   attraction_source: direct_link_batch
   restaurant_source: direct_link_batch

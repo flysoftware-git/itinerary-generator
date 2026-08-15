@@ -24,17 +24,18 @@ logger = logging.getLogger(__name__)
 _VALID_SEARCH_PROVIDERS = {"grok", "claude"}
 
 
-def _read_search_provider(config_path: str | Any, config_section: str) -> str:
+def _read_search_provider(config_path: str | Any, config_section: str, provider_key: str) -> str:
     try:
         import yaml
         with Path(config_path).open(encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         section = cfg.get(config_section, {}) or {}
-        provider = str(section.get("search_provider", "grok") or "grok").strip().lower()
+        provider = str(section.get(provider_key, "grok") or "grok").strip().lower()
         if provider not in _VALID_SEARCH_PROVIDERS:
             logger.warning(
-                "Unknown %s.search_provider '%s', falling back to grok",
+                "Unknown %s.%s '%s', falling back to grok",
                 config_section,
+                provider_key,
                 provider,
             )
             return "grok"
@@ -51,6 +52,7 @@ def build_search_client(
     config_path: str | Any,
     *,
     config_section: str,
+    provider_key: str = "search_provider",
     grok_model: str | None = None,
     claude_model: str | None = None,
     usage_tracker: Any | None = None,
@@ -58,13 +60,17 @@ def build_search_client(
 ) -> GrokSearch | ClaudeSearch:
     """Construct the configured search/harvest provider client.
 
-    config_section is the top-level config.yaml block to read
-    "search_provider" from (e.g. "url_discovery" or "cultural_events") --
-    each call site selects grok or claude independently. Defaults to grok
-    when unset, invalid, or unreadable -- unchanged behavior from before
-    this provider selection existed.
+    config_section is the top-level config.yaml block to read from (e.g.
+    "url_discovery" or "cultural_events"); provider_key is which key within
+    that section selects the provider. Defaults to "search_provider" --
+    url_discovery.py also uses "nonbatch_search_provider" as a second,
+    independent knob within the same section, since its direct-batch HTML
+    harvest and its per-item search fallback are different clients that can
+    be pinned to different providers (see url_discovery.py's __init__).
+    Defaults to grok when unset, invalid, or unreadable -- unchanged
+    behavior from before this provider selection existed.
     """
-    provider = _read_search_provider(config_path, config_section)
+    provider = _read_search_provider(config_path, config_section, provider_key)
     if provider == "claude":
         return ClaudeSearch(
             model=claude_model,

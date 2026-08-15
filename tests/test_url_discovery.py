@@ -2733,16 +2733,77 @@ def test_url_discoverer_shares_llm_model_with_grok_search_when_provider_is_grok(
     its own independent XAI_MODEL env var, disconnected from whatever model
     MultiLLMClient actually resolved -- the two could silently diverge."""
     mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
-    with patch("generator.search_provider.GrokSearch") as mock_grok_search_cls:
+    # ClaudeSearch is also patched: config.yaml's url_discovery.
+    # nonbatch_search_provider is claude, so __init__ now also builds a
+    # second (fallback) client that would otherwise need a real
+    # ANTHROPIC_API_KEY. Only GrokSearch's call_args (the batch client,
+    # search_provider=grok) matters for this assertion.
+    with patch("generator.search_provider.GrokSearch") as mock_grok_search_cls, patch(
+        "generator.search_provider.ClaudeSearch"
+    ):
         URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
     assert mock_grok_search_cls.call_args.kwargs["model"] == "grok-4.5"
 
 
 def test_url_discoverer_leaves_grok_search_model_alone_when_provider_is_not_grok():
     mock_llm = type("MockLLM", (), {"provider": "openai", "model": "gpt-4o-mini", "usage_tracker": None})()
-    with patch("generator.search_provider.GrokSearch") as mock_grok_search_cls:
+    with patch("generator.search_provider.GrokSearch") as mock_grok_search_cls, patch(
+        "generator.search_provider.ClaudeSearch"
+    ):
         URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
     assert mock_grok_search_cls.call_args.kwargs["model"] is None
+
+
+def test_url_discoverer_builds_grok_batch_client_and_claude_fallback_client_from_real_config():
+    """Regression: url_discovery.search_provider (batch/direct-batch-harvest)
+    and url_discovery.nonbatch_search_provider (per-item fallback, used by
+    _search_cached) are independent knobs -- config.yaml pins the batch path
+    to grok and the fallback path to claude. self._search must end up a
+    GrokSearch and self._search_fallback a ClaudeSearch, not the same
+    instance twice."""
+    from generator.claude_search import ClaudeSearch
+    from generator.grok_search import GrokSearch
+
+    mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+    with patch.dict("os.environ", {"XAI_API_KEY": "test-key", "ANTHROPIC_API_KEY": "test-key"}):
+        discoverer = URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+
+    assert isinstance(discoverer._search, GrokSearch)
+    assert isinstance(discoverer._search_fallback, ClaudeSearch)
+    assert discoverer._search is not discoverer._search_fallback
+
+
+def test_search_cached_prefers_fallback_client_over_batch_client_when_both_set():
+    """_search_cached (used by _search_first/_search_first_strict) must route
+    through self._search_fallback when it's present, not self._search --
+    that's the whole point of the split: the batch harvest client and the
+    per-item fallback client can be pinned to different providers."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._search = MagicMock()
+    discoverer._search.search.return_value = [{"name": "wrong client", "url": "https://example.com/batch"}]
+    discoverer._search_fallback = MagicMock()
+    discoverer._search_fallback.search.return_value = [{"name": "right client", "url": "https://example.com/fallback"}]
+
+    results = discoverer._search_cached("some query")
+
+    assert results == [{"name": "right client", "url": "https://example.com/fallback"}]
+    discoverer._search_fallback.search.assert_called_once()
+    discoverer._search.search.assert_not_called()
+
+
+def test_search_cached_falls_back_to_batch_client_when_fallback_client_unset():
+    """Partially-constructed instances (e.g. URLDiscoverer.__new__ in other
+    tests) that only ever set self._search must keep working unchanged --
+    _search_cached degrades to the batch client rather than returning []."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._request_cache_lock = Lock()
+    discoverer._search = MagicMock()
+    discoverer._search.search.return_value = [{"name": "only client", "url": "https://example.com/only"}]
+
+    results = discoverer._search_cached("some query")
+
+    assert results == [{"name": "only client", "url": "https://example.com/only"}]
 
 
 def test_direct_batch_html_cache_ignores_empty_cached_results_for_retries():

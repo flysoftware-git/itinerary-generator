@@ -498,10 +498,25 @@ class URLDiscoverer:
         self._search = build_search_client(
             config_path,
             config_section="url_discovery",
+            provider_key="search_provider",
             grok_model=grok_model,
             claude_model=claude_model,
             usage_tracker=self._llm.usage_tracker,
             usage_operation_prefix="url_discovery",
+        )
+        # Separate client for the per-item search fallback (_search_cached,
+        # used by _search_first/_search_first_strict) -- a lower-volume,
+        # different-shaped call than the direct-batch HTML harvest above, and
+        # independently pinned via nonbatch_search_provider (config.yaml).
+        # See that key's comment for the rationale.
+        self._search_fallback = build_search_client(
+            config_path,
+            config_section="url_discovery",
+            provider_key="nonbatch_search_provider",
+            grok_model=grok_model,
+            claude_model=claude_model,
+            usage_tracker=self._llm.usage_tracker,
+            usage_operation_prefix="url_discovery_fallback",
         )
         self._url_validator = URLValidator()
 
@@ -8635,7 +8650,11 @@ class URLDiscoverer:
                 # naturally expires still gets a real attempt.
                 return []
 
-        search_client = getattr(self, "_search", None)
+        # Falls back to self._search (the batch client) if _search_fallback
+        # isn't set -- keeps ad hoc/partially-constructed instances (e.g.
+        # URLDiscoverer.__new__(URLDiscoverer) in tests) working without
+        # requiring every one to set both attributes.
+        search_client = getattr(self, "_search_fallback", None) or getattr(self, "_search", None)
         if search_client is None:
             return []
 
