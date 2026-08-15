@@ -601,7 +601,12 @@ class URLDiscoverer:
         self._en_route_detour_max_minutes: int = DEFAULT_EN_ROUTE_DETOUR_MAX_MINUTES
         self._en_route_detour_max_miles: float = DEFAULT_EN_ROUTE_DETOUR_MAX_MILES
         self._en_route_require_detour_metadata: bool = DEFAULT_EN_ROUTE_REQUIRE_DETOUR_METADATA
-        self._direct_batch_authoritative_urls: set[str] = set()
+        # Maps a normalized "known-good" URL to the set of item-name token-keys it
+        # was actually validated against. Keyed by (url, item), NOT just url --
+        # see _is_remembered_direct_batch_authoritative_url for why a flat url-only
+        # cache is unsafe (it let a URL validated for one item silently vouch for
+        # an unrelated item that happened to reuse the same URL string).
+        self._direct_batch_authoritative_urls: dict[str, set[frozenset[str]]] = {}
         self._alltrails_apify_actor_id: str = DEFAULT_ALLTRAILS_APIFY_ACTOR_ID
         self._alltrails_apify_token_env: str = DEFAULT_ALLTRAILS_APIFY_TOKEN_ENV
         self._alltrails_apify_max_items: int = DEFAULT_ALLTRAILS_APIFY_MAX_ITEMS
@@ -2010,7 +2015,7 @@ class URLDiscoverer:
                 attr_context = self._attraction_trail_context(attr)
                 url = str(attr.get("url", "") or "").strip()
                 trail_like = self._is_trail_like_attraction(attr_name, attr_type, attr_context) or self._is_alltrails_trail_url(url)
-                direct_batch_authoritative_url = self._is_remembered_direct_batch_authoritative_url(url)
+                direct_batch_authoritative_url = self._is_remembered_direct_batch_authoritative_url(url, attr_name)
                 maps_url = str(attr.get("maps_url", "") or "").strip()
                 if not maps_url and self._classify_url_policy_class(url) in {"google_maps_search", "google_maps_dir"}:
                     maps_url = url
@@ -2138,7 +2143,7 @@ class URLDiscoverer:
             for stop in ai.get("getting_here", {}).get("en_route_stops", []) or []:
                 stop_name = str(stop.get("name", "") or "")
                 url = str(stop.get("url", "") or "").strip()
-                direct_batch_authoritative_url = self._is_remembered_direct_batch_authoritative_url(url)
+                direct_batch_authoritative_url = self._is_remembered_direct_batch_authoritative_url(url, stop_name)
                 maps_url = str(stop.get("maps_url", "") or "").strip()
                 if not maps_url and self._classify_url_policy_class(url) in {"google_maps_search", "google_maps_dir"}:
                     maps_url = url
@@ -2187,7 +2192,7 @@ class URLDiscoverer:
             for rest in ai.get("dinner_recommendations", []) or []:
                 rest_name = str(rest.get("name", "") or "")
                 url = str(rest.get("url", "") or "").strip()
-                direct_batch_authoritative_url = self._is_remembered_direct_batch_authoritative_url(url)
+                direct_batch_authoritative_url = self._is_remembered_direct_batch_authoritative_url(url, rest_name)
                 maps_url = str(rest.get("maps_url", "") or "").strip()
                 if not maps_url and self._classify_url_policy_class(url) in {"google_maps_search", "google_maps_dir"}:
                     maps_url = url
@@ -2402,7 +2407,7 @@ class URLDiscoverer:
                             url,
                         )
                         return ""
-        if self._direct_batch_is_authoritative() and self._is_remembered_direct_batch_authoritative_url(url):
+        if self._direct_batch_is_authoritative() and self._is_remembered_direct_batch_authoritative_url(url, item_name):
             logger.info(
                 "Remembered authoritative direct-batch URL preserved for %s '%s' (%s): %s",
                 kind,
@@ -3292,7 +3297,7 @@ class URLDiscoverer:
                     if (
                         self._passes_alltrails_post_search_filters(direct_batch_url, attr_name, dest_name)
                         and (
-                            self._is_remembered_direct_batch_authoritative_url(direct_batch_url)
+                            self._is_remembered_direct_batch_authoritative_url(direct_batch_url, attr_name)
                             or self._meets_alltrails_publish_confidence(direct_batch_url, attr_name, dest_name)
                         )
                     ):
@@ -3325,7 +3330,7 @@ class URLDiscoverer:
                     url
                     and not (
                         self._direct_batch_is_authoritative()
-                        and self._is_remembered_direct_batch_authoritative_url(url)
+                        and self._is_remembered_direct_batch_authoritative_url(url, attr_name)
                     )
                     and not self._meets_alltrails_publish_confidence(url, attr_name, dest_name)
                 ):
@@ -3732,16 +3737,31 @@ class URLDiscoverer:
             return ""
         return candidate.split("#", 1)[0].strip()
 
-    def _remember_direct_batch_authoritative_url(self, url: str | None) -> None:
+    @staticmethod
+    def _direct_batch_authoritative_item_key(item_name: str | None) -> frozenset[str]:
+        """Token-based identity key for an item name, used to scope the
+        remembered-authoritative-URL cache to the specific item it was
+        validated for (see _remember_direct_batch_authoritative_url)."""
+        return frozenset(URLDiscoverer._significant_tokens(str(item_name or "")))
+
+    def _remember_direct_batch_authoritative_url(self, url: str | None, item_name: str | None = None) -> None:
         normalized = self._normalize_direct_batch_authoritative_url(url)
         if not normalized:
             return
-        if not hasattr(self, "_direct_batch_authoritative_urls"):
-            self._direct_batch_authoritative_urls = set()
         if not hasattr(self, "_request_cache_lock"):
             self._request_cache_lock = Lock()
+        item_key = self._direct_batch_authoritative_item_key(item_name)
         with self._request_cache_lock:
-            self._direct_batch_authoritative_urls.add(normalized)
+            existing = getattr(self, "_direct_batch_authoritative_urls", None)
+            if not isinstance(existing, dict):
+                # Upgrade a legacy/externally-assigned flat set() (or missing attr)
+                # in place rather than dropping whatever it already held.
+                upgraded: dict[str, set[frozenset[str]]] = {}
+                if isinstance(existing, set):
+                    for legacy_url in existing:
+                        upgraded[legacy_url] = {frozenset()}
+                self._direct_batch_authoritative_urls = upgraded
+            self._direct_batch_authoritative_urls.setdefault(normalized, set()).add(item_key)
         self._record_url_recommendation_source(normalized, "direct_batch")
 
     def _record_url_recommendation_source(self, url: str | None, source: str) -> None:
@@ -3769,14 +3789,26 @@ class URLDiscoverer:
         sources = getattr(self, "_url_recommendation_sources", {})
         return len(sources.get(normalized, ()))
 
-    def _is_remembered_direct_batch_authoritative_url(self, url: str | None) -> bool:
+    def _is_remembered_direct_batch_authoritative_url(self, url: str | None, item_name: str | None = None) -> bool:
         normalized = self._normalize_direct_batch_authoritative_url(url)
         if not normalized:
             return False
-        remembered = getattr(self, "_direct_batch_authoritative_urls", set())
-        if not isinstance(remembered, set):
+        remembered = getattr(self, "_direct_batch_authoritative_urls", None)
+        if isinstance(remembered, set):
+            # Legacy/externally-assigned flat set of URLs with no per-item context
+            # (e.g. a test fixture built before this cache carried identity info).
+            return normalized in remembered
+        if not isinstance(remembered, dict):
             return False
-        return normalized in remembered
+        item_keys = remembered.get(normalized)
+        if not item_keys:
+            return False
+        if item_name is None:
+            # Caller only wants to know whether this URL was validated as
+            # authoritative for *some* item this run (e.g. deciding whether a
+            # bulk prewarm fetch is redundant) -- not attributing it to one.
+            return True
+        return self._direct_batch_authoritative_item_key(item_name) in item_keys
 
     @staticmethod
     def _batch_cache_key(destination: str, context: str = "") -> str:
@@ -5099,7 +5131,7 @@ class URLDiscoverer:
 
             selected = matching_urls[0] if matching_urls else ""
             if selected:
-                self._remember_direct_batch_authoritative_url(selected)
+                self._remember_direct_batch_authoritative_url(selected, item_name)
                 self._log_decision(
                     kind="attraction",
                     dest_name=dest_name,
@@ -5165,7 +5197,7 @@ class URLDiscoverer:
             return None
 
         selected = self._prefer_canonical_alltrails_url(best[-1], item_name)
-        self._remember_direct_batch_authoritative_url(selected)
+        self._remember_direct_batch_authoritative_url(selected, item_name)
         self._log_decision(
             kind="attraction",
             dest_name=dest_name,
@@ -5290,7 +5322,7 @@ class URLDiscoverer:
                         key=lambda entry: (entry[1], entry[2], entry[3], entry[4], entry[5]),
                     )[6]
             if selected:
-                self._remember_direct_batch_authoritative_url(selected)
+                self._remember_direct_batch_authoritative_url(selected, item_name)
                 self._log_decision(
                     kind="attraction",
                     dest_name=dest_name,
@@ -5589,7 +5621,7 @@ class URLDiscoverer:
             # contract, a destination batch with no row/URL match for this item must
             # publish no canonical URL rather than borrow another restaurant's link.
             if selected:
-                self._remember_direct_batch_authoritative_url(selected)
+                self._remember_direct_batch_authoritative_url(selected, item_name)
                 return selected
             self._log_decision(
                 kind="restaurant",
@@ -5857,7 +5889,7 @@ class URLDiscoverer:
             elif matching_other_urls:
                 selected = sorted(matching_other_urls, key=lambda row: row[0], reverse=True)[0][1]
             if selected:
-                self._remember_direct_batch_authoritative_url(selected)
+                self._remember_direct_batch_authoritative_url(selected, item_name)
                 self._log_decision(
                     kind="en_route_stop",
                     dest_name=dest_name,

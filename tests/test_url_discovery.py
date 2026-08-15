@@ -4566,9 +4566,10 @@ def test_audit_demotes_direct_batch_authoritative_trail_when_over_miles_threshol
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._max_trail_miles = 3.0
     discoverer._direct_batch_authoritative = True
-    discoverer._direct_batch_authoritative_urls = {
-        "https://www.alltrails.com/trail/us/utah/observation-point-trail"
-    }
+    discoverer._remember_direct_batch_authoritative_url(
+        "https://www.alltrails.com/trail/us/utah/observation-point-trail",
+        "Observation Point Trail",
+    )
 
     trip = {
         "destinations": [
@@ -4607,9 +4608,10 @@ def test_audit_demotes_long_trail_when_over_miles_threshold() -> None:
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
     discoverer._max_trail_miles = 3.0
-    discoverer._direct_batch_authoritative_urls = {
-        "https://www.alltrails.com/trail/us/utah/angels-landing-trail"
-    }
+    discoverer._remember_direct_batch_authoritative_url(
+        "https://www.alltrails.com/trail/us/utah/angels-landing-trail",
+        "Angels Landing",
+    )
 
     trip = {
         "destinations": [
@@ -4693,9 +4695,10 @@ def test_audit_demotes_trail_over_threshold_keeps_primary_maps_search_url() -> N
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
     discoverer._max_trail_miles = 3.0
-    discoverer._direct_batch_authoritative_urls = {
-        "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
-    }
+    discoverer._remember_direct_batch_authoritative_url(
+        "https://www.alltrails.com/trail/us/utah/the-narrows-top-down",
+        "The Narrows",
+    )
 
     trip = {
         "destinations": [
@@ -5099,9 +5102,10 @@ def test_retain_url_rejects_matched_restaurant_row_with_unresolvable_domain() ->
 def test_audit_keeps_direct_batch_authoritative_restaurant_even_if_generic_landing_url():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
-    discoverer._direct_batch_authoritative_urls = {
-        "https://www.discovermoab.com/restaurants/"
-    }
+    discoverer._remember_direct_batch_authoritative_url(
+        "https://www.discovermoab.com/restaurants/",
+        "Desert Bistro",
+    )
 
     trip = {
         "destinations": [
@@ -5157,7 +5161,10 @@ def test_retain_url_keeps_authoritative_direct_batch_restaurant_when_candidate_m
 def test_retain_url_keeps_remembered_authoritative_direct_batch_restaurant_without_candidate_row():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
-    discoverer._direct_batch_authoritative_urls = {"https://www.telluride.com/dining/"}
+    discoverer._remember_direct_batch_authoritative_url(
+        "https://www.telluride.com/dining/",
+        "Allred's Restaurant",
+    )
 
     out = discoverer._retain_discovered_url(
         "https://www.telluride.com/dining/",
@@ -5445,9 +5452,10 @@ def test_audit_keeps_seed_trail_link_even_when_over_max_trail_miles() -> None:
 def test_audit_validates_authoritative_restaurant_maps_place_url():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
-    discoverer._direct_batch_authoritative_urls = {
-        "https://www.google.com/maps/place/Oscar's+Cafe/@37.1647,-112.9994,17z"
-    }
+    discoverer._remember_direct_batch_authoritative_url(
+        "https://www.google.com/maps/place/Oscar's+Cafe/@37.1647,-112.9994,17z",
+        "Oscar's Cafe",
+    )
 
     trip = {
         "destinations": [
@@ -5482,7 +5490,7 @@ def test_audit_validates_authoritative_attraction_url():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
     bad_url = "https://www.alltrails.com/trail/us/utah/rim-trail-sunset-point-to-sunrise-point"
-    discoverer._direct_batch_authoritative_urls = {bad_url}
+    discoverer._remember_direct_batch_authoritative_url(bad_url, "Sunrise Point")
 
     trip = {
         "destinations": [
@@ -5520,7 +5528,7 @@ def test_audit_validates_authoritative_en_route_stop_url():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
     bad_url = "https://www.google.com/maps/place/Red+Canyon+Visitor+Center,+UT"
-    discoverer._direct_batch_authoritative_urls = {bad_url}
+    discoverer._remember_direct_batch_authoritative_url(bad_url, "Red Canyon")
 
     trip = {
         "destinations": [
@@ -6438,7 +6446,7 @@ def test_discover_attractions_keeps_remembered_direct_batch_trail_when_confidenc
     discoverer._direct_batch_authoritative = True
     discoverer._alltrails_source = "direct_link_batch"
     direct_url = "https://www.alltrails.com/trail/us/utah/angels-landing-trail"
-    discoverer._direct_batch_authoritative_urls = {direct_url}
+    discoverer._remember_direct_batch_authoritative_url(direct_url, "Angels Landing")
 
     ai = {
         "top_attractions": [
@@ -10470,3 +10478,106 @@ def test_update_route_distance_uses_live_fetch_when_enabled():
     discoverer._parse_route_info_from_maps_html.assert_called_once()
     assert getting_here.get("distance_miles") == "84"
     assert getting_here.get("drive_time") == "1 hr 45 min"
+
+
+# --- dipstick55 Theme B/C regression: remembered-authoritative-URL cache must
+# be scoped per item, not just per URL. Before this fix, _remember_direct_batch_
+# authoritative_url stored a flat set() of URL strings; once a URL was validated
+# for ANY item during a run, _is_remembered_direct_batch_authoritative_url (and
+# the bypass in _retain_discovered_url that consults it) would vouch for that
+# same URL string being reused for a completely different, unrelated item --
+# e.g. a row-parsing hiccup attaching Arches' "double-arch-trail" AllTrails URL
+# to both "Double Arch" and "Delicate Arch". These tests cover the four
+# concretely reported mismatches plus the underlying cache API.
+
+
+def test_remembered_authoritative_url_scoped_to_the_item_it_was_validated_for():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    double_arch_url = "https://www.alltrails.com/trail/us/utah/double-arch-trail"
+    discoverer._remember_direct_batch_authoritative_url(double_arch_url, "Double Arch")
+
+    assert discoverer._is_remembered_direct_batch_authoritative_url(double_arch_url, "Double Arch") is True
+    assert discoverer._is_remembered_direct_batch_authoritative_url(double_arch_url, "Delicate Arch") is False
+
+
+def test_remembered_authoritative_url_scoping_covers_all_four_reported_mismatches():
+    """Reproduces the exact four wrong-attribution cases from the dipstick55
+    triage doc's Theme B: a URL remembered for one trail must not also
+    validate for the differently-named trail it got wrongly attached to."""
+    cases = [
+        ("https://www.alltrails.com/trail/us/utah/double-arch-trail", "Double Arch", "Delicate Arch"),
+        ("https://www.alltrails.com/trail/us/utah/mesa-arch", "Mesa Arch", "Landscape Arch"),
+        (
+            "https://www.alltrails.com/trail/us/colorado/cornet-creek-falls-hike",
+            "Cornet Creek Falls",
+            "Bridal Veil Falls",
+        ),
+        (
+            "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail",
+            "Canyon Overlook Trail",
+            "The Narrows, Emerald Pools trail",
+        ),
+    ]
+    for url, remembered_for, wrong_item in cases:
+        discoverer = URLDiscoverer.__new__(URLDiscoverer)
+        discoverer._remember_direct_batch_authoritative_url(url, remembered_for)
+        assert discoverer._is_remembered_direct_batch_authoritative_url(url, remembered_for) is True
+        assert discoverer._is_remembered_direct_batch_authoritative_url(url, wrong_item) is False, (
+            f"{url} remembered for {remembered_for!r} must not validate for {wrong_item!r}"
+        )
+
+
+def test_remembered_authoritative_url_with_no_item_name_checks_any_item():
+    """The item-agnostic overload (item_name=None) is used by the bulk
+    prewarm-cache eligibility check (_is_high_confidence_provenance_url),
+    which only needs to know a URL was vetted for *some* item this run, not
+    attribute it to one. This must keep working after the per-item scoping."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    url = "https://www.alltrails.com/trail/us/utah/double-arch-trail"
+    discoverer._remember_direct_batch_authoritative_url(url, "Double Arch")
+
+    assert discoverer._is_remembered_direct_batch_authoritative_url(url) is True
+    assert discoverer._is_remembered_direct_batch_authoritative_url("https://example.com/nope") is False
+
+
+def test_retain_discovered_url_rejects_wrong_item_even_when_url_remembered_for_different_item():
+    """End-to-end through _retain_discovered_url: the 'remembered authoritative
+    direct-batch URL' bypass must not short-circuit normal rejection when the
+    URL was remembered for a different item than the one currently being
+    checked (the actual Theme B bug path)."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    double_arch_url = "https://www.alltrails.com/trail/us/utah/double-arch-trail"
+    discoverer._remember_direct_batch_authoritative_url(double_arch_url, "Double Arch")
+
+    with patch.object(discoverer, "_meets_alltrails_publish_confidence", return_value=False):
+        out = discoverer._retain_discovered_url(
+            double_arch_url,
+            "Delicate Arch",
+            "Arches National Park",
+            allow_alltrails=True,
+            kind="attraction",
+        )
+
+    assert out == ""
+
+
+def test_retain_discovered_url_keeps_remembered_url_for_the_same_item():
+    """Sanity check that the legitimate fast-path is preserved: a URL
+    remembered as authoritative for the SAME item still bypasses the
+    (expensive) confidence re-check."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    double_arch_url = "https://www.alltrails.com/trail/us/utah/double-arch-trail"
+    discoverer._remember_direct_batch_authoritative_url(double_arch_url, "Double Arch")
+
+    with patch.object(discoverer, "_meets_alltrails_publish_confidence", return_value=False):
+        out = discoverer._retain_discovered_url(
+            double_arch_url,
+            "Double Arch",
+            "Arches National Park",
+            allow_alltrails=True,
+            kind="attraction",
+        )
+
+    assert out == double_arch_url
