@@ -647,3 +647,34 @@ in `tests/test_url_discovery.py`;
 `tests/test_cultural_events.py`;
 `test_estimate_cost_has_a_real_entry_for_claude_sonnet_5` in
 `tests/test_llm_client.py`.
+
+## 11. Timeout stale after the max_uses cut, and rate limits ruled out (2026-08-15)
+
+Follow-up to a live "Claude's still getting lots of timeouts" report during
+the first `--search-provider claude` comparison run. Checked two
+hypotheses.
+
+**Anthropic rate limits, checked against the official docs**: unlikely to
+be the mechanism. Even the lowest published tier (Start) allows 1,000
+RPM / 2,000,000 ITPM / 400,000 OTPM for Sonnet 5 — our own concurrency is
+hard-capped at 4 simultaneous connections (`_CLAUDE_SEMAPHORE`) and a full
+run makes at most a few dozen calls, nowhere near that ceiling. More to
+the point, a real rate-limit rejection comes back fast as a `429` with a
+`retry-after` header — it doesn't manifest as a slow timeout. "Lots of
+timeouts" is a different failure signature than what rate limiting
+produces. (Not fully ruled out: a low-usage account can start on an
+unlisted below-Start "Evaluation tier" — only visible on the account's
+own Rate Limits console page, not checkable from here.)
+
+**What was actually found**: `_DEFAULT_TIMEOUT_SECONDS = 150` was
+calibrated for §10's `max_uses=5` (agentic search compounding across up
+to 5 rounds; the 90s probe budget wasn't enough for that worst case).
+§10 cut `max_uses` to 1 specifically to stop that compounding, but never
+revisited the timeout sized for the old behavior — so every call that's
+genuinely struggling was still burning the full 150s before giving up,
+even though a single search round shouldn't need anywhere near that. Under
+`_CLAUDE_SEMAPHORE`'s 4-slot cap, a stuck first wave could take up to 150
+real seconds before the breaker even accumulated enough failures to trip.
+Lowered to 60s. Not yet backed by real single-round timing data at the
+new call shape — revisit with real numbers once a few runs have gone
+through it, per the comment left in `claude_search.py`.

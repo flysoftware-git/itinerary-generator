@@ -41,12 +41,19 @@ CLAUDE_ENDPOINT_DEFAULT = "https://api.anthropic.com/v1/messages"
 # coverage rather than just cheaper.
 CLAUDE_SEARCH_TOOL = {"type": "web_search_20260318", "name": "web_search", "max_uses": 1}
 _DEFAULT_DELAY = 0.05
-# Claude web-search calls run materially longer than Grok's: 3/4 initial
-# probe calls timed out at 90s under real search load, all 4 succeeded once
-# raised to 150s (search-provider-capability-probe.md §3.3). This class
-# always requests search, so the longer budget applies uniformly rather than
-# conditionally.
-_DEFAULT_TIMEOUT_SECONDS = 150
+# Originally 150s: the 90s probe timeout was too short for CLAUDE_SEARCH_TOOL's
+# old max_uses=5 (up to 5 agentic search rounds compounding per call), so this
+# was raised to 150s to cover that worst case (search-provider-capability-
+# probe.md §3.3). Lowered to 60s (2026-08-15) now that max_uses=1 caps every
+# call to a single search round -- a call that's still stuck past 60s under
+# the new, much narrower call shape is a stronger signal of genuine trouble
+# than "needed more of its compounding budget," and the old 150s ceiling was
+# actively hurting failure detection: under _CLAUDE_SEMAPHORE's 4-slot
+# concurrency cap, a stuck first wave of calls could burn the full 150s
+# before the circuit breaker even accumulated enough failures to trip. Not
+# yet backed by real single-round timing data at the new call shape --
+# revisit with real numbers once a few runs have gone through it.
+_DEFAULT_TIMEOUT_SECONDS = 60
 _DEFAULT_NETWORK_RETRIES = 2
 # Same derivation as GrokSearch's XAI_CIRCUIT_BREAKER_* defaults (see
 # grok_search.py) -- sized to a burst of concurrent-slot timeouts, not
