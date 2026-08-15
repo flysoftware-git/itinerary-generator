@@ -15,8 +15,11 @@ Search API history:
   v1.2: Brave Search API (retired in favour of Azure AI Services)
   v1.3: Bing Web Search API (deprecated, limited availability)
   v1.4: Google Programmable Search Engine (rate-limited, prohibitive costs)
-  v1.5: xAI Grok semantic search (current)
-        api.x.ai/v1/chat/completions
+  v1.5: xAI Grok semantic search via chat-completions + live_search
+        (superseded 2026-08-14: live_search tool deprecated, returns 410)
+  v1.6: xAI Grok via /v1/responses + web_search tool, SSE streaming
+        (current default). The search provider is pluggable -- see
+        generator/search_provider.py for Claude/OpenAI alternatives.
 """
 from __future__ import annotations
 import html as html_lib
@@ -8593,7 +8596,7 @@ class URLDiscoverer:
                     url=(url or ""),
                 )
 
-    # ── Bing Search helpers ──────────────────────────────────────────────────
+    # ── Search helpers ───────────────────────────────────────────────────────
 
     def _search_first(
         self,

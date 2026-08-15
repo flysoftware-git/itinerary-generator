@@ -5,8 +5,8 @@ Travel dates:     {dates}
 Destination type: {destination_type}
   (values: national_park | small_town | resort_town | city)
 
-Search results (Bing API, raw):
-{bing_results}
+Search results (raw):
+{search_results}
 
 ════════════════════════════════════════════════════════
 CORE RULE: HONESTY OVER COMPLETENESS
