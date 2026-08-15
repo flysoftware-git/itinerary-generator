@@ -175,6 +175,19 @@ class ClaudeSearch:
         self._circuit_breaker_lock = threading.Lock()
         self._circuit_breaker_failure_times: list[float] = []
         self._circuit_breaker_open_until: float = 0.0
+        # Half-open recovery state -- see GrokSearch._circuit_breaker_check
+        # for the full rationale (2026-08-15): exactly one caller becomes
+        # the recovery probe when cooldown elapses, instead of the full
+        # concurrent backlog rushing back in at once. Lease-bounded rather
+        # than a plain flag so a probe that exits through an unanticipated
+        # path can't wedge the breaker in "probe permanently in flight."
+        self._circuit_breaker_probe_claimed_until: float = 0.0
+        self._circuit_breaker_probe_lease_seconds = (
+            self._timeout * (self._network_retries + 1) + 5.0
+        )
+        self._circuit_breaker_trip_count: int = 0
+        self._circuit_breaker_total_open_seconds: float = 0.0
+        self._circuit_breaker_trip_opened_at: float = 0.0
         self._max_tokens = int(os.environ.get("ANTHROPIC_SEARCH_MAX_TOKENS", str(_DEFAULT_MAX_TOKENS)))
 
     # ── Thread-local session ─────────────────────────────────────────────────
@@ -447,7 +460,7 @@ class ClaudeSearch:
             open_until = self._circuit_breaker_open_until
         return open_until > time.monotonic()
 
-    def _circuit_breaker_check(self) -> None:
+    def _circuit_breaker_check(self) -> bool:
         """Fail fast if a recent burst of transient errors tripped the breaker.
 
         Under a provider-side outage, every concurrent caller would otherwise
@@ -455,21 +468,47 @@ class ClaudeSearch:
         more load onto an already-struggling endpoint and stalling the whole
         run. Once enough transient failures land in a short window, later
         callers short-circuit immediately instead of queuing up behind them.
+
+        Returns True if this call is the half-open recovery probe -- see
+        GrokSearch._circuit_breaker_check for the full rationale
+        (2026-08-15): exactly one caller is let through once cooldown
+        elapses, instead of the full concurrent backlog rushing back in at
+        once and risking an near-instant re-trip off a noisy multi-caller
+        signal. Non-probe callers keep failing fast until the probe
+        resolves or its lease expires.
         """
+        now = time.monotonic()
         with self._circuit_breaker_lock:
             open_until = self._circuit_breaker_open_until
-        remaining = open_until - time.monotonic()
-        if remaining > 0:
-            raise ClaudeCircuitOpenError(
-                f"Claude circuit breaker open ({remaining:.1f}s remaining) after repeated transient errors"
-            )
+            if open_until > now:
+                remaining = open_until - now
+                raise ClaudeCircuitOpenError(
+                    f"Claude circuit breaker open ({remaining:.1f}s remaining) after repeated transient errors"
+                )
+            if open_until <= 0.0:
+                return False
+            probe_claimed_until = self._circuit_breaker_probe_claimed_until
+            if probe_claimed_until > now:
+                raise ClaudeCircuitOpenError(
+                    f"Claude circuit breaker recovering (probe in flight, "
+                    f"{probe_claimed_until - now:.1f}s until next probe window)"
+                )
+            self._circuit_breaker_probe_claimed_until = now + self._circuit_breaker_probe_lease_seconds
+            return True
 
-    def _record_circuit_breaker_outcome(self, *, transient_failure: bool) -> None:
+    def _record_circuit_breaker_outcome(self, *, transient_failure: bool, is_probe: bool = False) -> None:
         now = time.monotonic()
         with self._circuit_breaker_lock:
             if not transient_failure:
+                was_open = self._circuit_breaker_open_until > 0.0
                 self._circuit_breaker_failure_times.clear()
                 self._circuit_breaker_open_until = 0.0
+                if was_open:
+                    self._note_recovery_locked(now)
+                return
+            if is_probe:
+                self._circuit_breaker_open_until = now + self._circuit_breaker_cooldown_seconds
+                self._note_trip_locked(now)
                 return
             cutoff = now - self._circuit_breaker_window_seconds
             self._circuit_breaker_failure_times = [
@@ -478,10 +517,48 @@ class ClaudeSearch:
             self._circuit_breaker_failure_times.append(now)
             if len(self._circuit_breaker_failure_times) >= self._circuit_breaker_threshold:
                 self._circuit_breaker_open_until = now + self._circuit_breaker_cooldown_seconds
+                self._note_trip_locked(now)
+
+    def _note_trip_locked(self, now: float) -> None:
+        """Must be called with _circuit_breaker_lock held."""
+        if self._circuit_breaker_trip_opened_at > 0.0:
+            return
+        self._circuit_breaker_trip_opened_at = now
+        self._circuit_breaker_trip_count += 1
+        logger.warning(
+            "Claude circuit breaker OPENED (trip #%d this instance) -- cooling down %.1fs",
+            self._circuit_breaker_trip_count,
+            self._circuit_breaker_cooldown_seconds,
+        )
+
+    def _note_recovery_locked(self, now: float) -> None:
+        """Must be called with _circuit_breaker_lock held."""
+        if self._circuit_breaker_trip_opened_at > 0.0:
+            open_duration = now - self._circuit_breaker_trip_opened_at
+            self._circuit_breaker_total_open_seconds += open_duration
+            self._circuit_breaker_trip_opened_at = 0.0
+            logger.info(
+                "Claude circuit breaker RECOVERED after %.1fs open (trip #%d; %.1fs total open this instance)",
+                open_duration,
+                self._circuit_breaker_trip_count,
+                self._circuit_breaker_total_open_seconds,
+            )
+
+    def get_circuit_breaker_stats(self) -> dict[str, Any]:
+        """Snapshot for run-summary reporting."""
+        with self._circuit_breaker_lock:
+            total_open = self._circuit_breaker_total_open_seconds
+            if self._circuit_breaker_trip_opened_at > 0.0:
+                total_open += time.monotonic() - self._circuit_breaker_trip_opened_at
+            return {
+                "trip_count": self._circuit_breaker_trip_count,
+                "total_open_seconds": round(total_open, 1),
+                "currently_open": self._circuit_breaker_open_until > time.monotonic(),
+            }
 
     def _post_with_retries(self, payload: dict[str, Any], query: str) -> requests.Response:
         """POST to Claude with lightweight retry/backoff for transient read timeouts."""
-        self._circuit_breaker_check()
+        is_probe = self._circuit_breaker_check()
         max_attempts = self._network_retries + 1
         last_exc: requests.RequestException | None = None
         for attempt in range(1, max_attempts + 1):
@@ -492,13 +569,13 @@ class ClaudeSearch:
                         json=payload,
                         timeout=self._timeout,
                     )
-                self._record_circuit_breaker_outcome(transient_failure=False)
+                self._record_circuit_breaker_outcome(transient_failure=False, is_probe=is_probe)
                 return resp
             except requests.RequestException as exc:
                 last_exc = exc
                 is_transient = self._is_transient_request_error(exc)
                 if is_transient:
-                    self._record_circuit_breaker_outcome(transient_failure=True)
+                    self._record_circuit_breaker_outcome(transient_failure=True, is_probe=is_probe)
                 if attempt >= max_attempts or not is_transient:
                     raise
                 backoff = min(2.0, 0.4 * attempt)

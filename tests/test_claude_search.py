@@ -1,5 +1,6 @@
 """Tests for generator.claude_search"""
 
+import time
 from unittest.mock import MagicMock
 import pytest
 import requests
@@ -85,6 +86,116 @@ def test_post_with_retries_resets_failure_count_after_success() -> None:
         cs._post_with_retries({"model": "test"}, "query")
 
     assert cs._circuit_breaker_open_until == 0.0
+
+
+def test_circuit_breaker_check_returns_probe_flag_after_cooldown_elapses() -> None:
+    cs = ClaudeSearch(api_key="test", model="test")
+    cs._circuit_breaker_open_until = time.monotonic() - 0.01
+
+    assert cs._circuit_breaker_check() is True
+
+
+def test_circuit_breaker_check_returns_false_when_never_tripped() -> None:
+    cs = ClaudeSearch(api_key="test", model="test")
+    assert cs._circuit_breaker_check() is False
+
+
+def test_circuit_breaker_check_rejects_non_probe_callers_while_probe_in_flight() -> None:
+    cs = ClaudeSearch(api_key="test", model="test")
+    cs._circuit_breaker_open_until = time.monotonic() - 0.01
+
+    assert cs._circuit_breaker_check() is True
+
+    with pytest.raises(ClaudeCircuitOpenError, match="probe in flight"):
+        cs._circuit_breaker_check()
+
+
+def test_successful_probe_fully_resets_breaker_state() -> None:
+    cs = ClaudeSearch(api_key="test", model="test", network_retries=0)
+    cs._circuit_breaker_open_until = time.monotonic() - 0.01
+    cs._circuit_breaker_failure_times = [time.monotonic()]
+
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    session = MagicMock()
+    session.post.return_value = fake_response
+    cs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    out = cs._post_with_retries({"model": "test"}, "query")
+
+    assert out is fake_response
+    assert cs._circuit_breaker_open_until == 0.0
+    assert cs._circuit_breaker_failure_times == []
+    assert cs._circuit_breaker_check() is False
+
+
+def test_failed_probe_reopens_breaker_immediately_without_needing_threshold_failures() -> None:
+    cs = ClaudeSearch(api_key="test", model="test", network_retries=0)
+    cs._circuit_breaker_threshold = 4
+    cs._circuit_breaker_open_until = time.monotonic() - 0.01
+
+    session = MagicMock()
+    session.post.side_effect = _dns_error()
+    cs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    with pytest.raises(requests.ConnectionError):
+        cs._post_with_retries({"model": "test"}, "query")
+
+    assert cs._circuit_breaker_open_until > time.monotonic()
+    with pytest.raises(ClaudeCircuitOpenError):
+        cs._post_with_retries({"model": "test"}, "query")
+
+
+def test_non_probe_callers_do_not_touch_network_while_probe_pending() -> None:
+    cs = ClaudeSearch(api_key="test", model="test", network_retries=0)
+    cs._circuit_breaker_open_until = time.monotonic() - 0.01
+
+    session = MagicMock()
+    session.post.side_effect = requests.exceptions.ReadTimeout("still slow")
+    cs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        cs._post_with_retries({"model": "test"}, "query")
+    assert session.post.call_count == 1
+
+    with pytest.raises(ClaudeCircuitOpenError):
+        cs._post_with_retries({"model": "test"}, "query")
+    assert session.post.call_count == 1
+
+
+def test_circuit_breaker_stats_track_trip_count_and_total_open_seconds() -> None:
+    cs = ClaudeSearch(api_key="test", model="test", network_retries=0)
+    cs._circuit_breaker_threshold = 1
+    cs._circuit_breaker_cooldown_seconds = 60.0
+
+    session = MagicMock()
+    session.post.side_effect = _dns_error()
+    cs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    assert cs.get_circuit_breaker_stats() == {
+        "trip_count": 0,
+        "total_open_seconds": 0.0,
+        "currently_open": False,
+    }
+
+    with pytest.raises(requests.ConnectionError):
+        cs._post_with_retries({"model": "test"}, "query")
+
+    stats_open = cs.get_circuit_breaker_stats()
+    assert stats_open["trip_count"] == 1
+    assert stats_open["currently_open"] is True
+
+    cs._circuit_breaker_open_until = time.monotonic() - 0.01
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    session.post.side_effect = None
+    session.post.return_value = fake_response
+    cs._post_with_retries({"model": "test"}, "query")
+
+    stats_recovered = cs.get_circuit_breaker_stats()
+    assert stats_recovered["currently_open"] is False
+    assert stats_recovered["total_open_seconds"] >= 0.0
+    assert stats_recovered["trip_count"] == 1
 
 
 def test_is_circuit_open_reflects_current_breaker_state() -> None:

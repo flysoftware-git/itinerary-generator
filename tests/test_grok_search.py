@@ -1,5 +1,6 @@
 """Tests for generator.grok_search"""
 
+import time
 from unittest.mock import MagicMock
 import pytest
 import requests
@@ -122,6 +123,156 @@ def test_post_with_retries_resets_failure_count_after_success() -> None:
     # Success cleared the failure count, so the 3rd (single) failure alone
     # isn't enough to trip a threshold-of-2 breaker.
     assert gs._circuit_breaker_open_until == 0.0
+
+
+def test_circuit_breaker_check_returns_probe_flag_after_cooldown_elapses() -> None:
+    """Once cooldown elapses, the check grants exactly one caller "probe"
+    status (True) instead of fully closing the breaker for everyone at once."""
+    gs = GrokSearch(api_key="test", model="test")
+    gs._circuit_breaker_open_until = time.monotonic() - 0.01
+
+    assert gs._circuit_breaker_check() is True
+
+
+def test_circuit_breaker_check_returns_false_when_never_tripped() -> None:
+    gs = GrokSearch(api_key="test", model="test")
+    assert gs._circuit_breaker_check() is False
+
+
+def test_circuit_breaker_check_rejects_non_probe_callers_while_probe_in_flight() -> None:
+    """Regression for the 2026-08-15 half-open fix: the old design let the
+    full concurrent backlog rush back in the instant cooldown elapsed,
+    risking an near-instant re-trip off a noisy multi-caller signal. Only
+    the first caller after cooldown should get through; everyone else must
+    keep failing fast until that probe resolves."""
+    gs = GrokSearch(api_key="test", model="test")
+    gs._circuit_breaker_open_until = time.monotonic() - 0.01
+
+    assert gs._circuit_breaker_check() is True
+
+    with pytest.raises(GrokCircuitOpenError, match="probe in flight"):
+        gs._circuit_breaker_check()
+
+
+def test_successful_probe_fully_resets_breaker_state() -> None:
+    gs = GrokSearch(api_key="test", model="test", network_retries=0)
+    gs._circuit_breaker_open_until = time.monotonic() - 0.01
+    gs._circuit_breaker_failure_times = [time.monotonic()]
+
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    session = MagicMock()
+    session.post.return_value = fake_response
+    gs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    out = gs._post_with_retries({"model": "test"}, "query")
+
+    assert out is fake_response
+    assert gs._circuit_breaker_open_until == 0.0
+    assert gs._circuit_breaker_failure_times == []
+    # Fully closed now, not "just recovered" -- a fresh caller isn't
+    # treated as a probe.
+    assert gs._circuit_breaker_check() is False
+
+
+def test_failed_probe_reopens_breaker_immediately_without_needing_threshold_failures() -> None:
+    """A single failed recovery probe is itself sufficient evidence the
+    provider hasn't recovered -- must not require `threshold` fresh
+    failures to reaccumulate before reopening."""
+    gs = GrokSearch(api_key="test", model="test", network_retries=0)
+    gs._circuit_breaker_threshold = 4  # would normally need 4 fresh failures
+    gs._circuit_breaker_open_until = time.monotonic() - 0.01
+
+    session = MagicMock()
+    session.post.side_effect = _dns_error()
+    gs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    with pytest.raises(requests.ConnectionError):
+        gs._post_with_retries({"model": "test"}, "query")
+
+    assert gs._circuit_breaker_open_until > time.monotonic()
+    with pytest.raises(GrokCircuitOpenError):
+        gs._post_with_retries({"model": "test"}, "query")
+
+
+def test_non_probe_callers_do_not_touch_network_while_probe_pending() -> None:
+    gs = GrokSearch(api_key="test", model="test", network_retries=0)
+    gs._circuit_breaker_open_until = time.monotonic() - 0.01
+
+    session = MagicMock()
+    session.post.side_effect = requests.exceptions.ReadTimeout("still slow")
+    gs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        gs._post_with_retries({"model": "test"}, "query")
+    assert session.post.call_count == 1
+
+    # A second caller arriving while that probe's lease is still active
+    # must fail fast without touching the network a second time.
+    with pytest.raises(GrokCircuitOpenError):
+        gs._post_with_retries({"model": "test"}, "query")
+    assert session.post.call_count == 1
+
+
+def test_circuit_breaker_stats_track_trip_count_and_total_open_seconds() -> None:
+    gs = GrokSearch(api_key="test", model="test", network_retries=0)
+    gs._circuit_breaker_threshold = 1
+    gs._circuit_breaker_cooldown_seconds = 60.0
+
+    session = MagicMock()
+    session.post.side_effect = _dns_error()
+    gs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    assert gs.get_circuit_breaker_stats() == {
+        "trip_count": 0,
+        "total_open_seconds": 0.0,
+        "currently_open": False,
+    }
+
+    with pytest.raises(requests.ConnectionError):
+        gs._post_with_retries({"model": "test"}, "query")
+
+    stats_open = gs.get_circuit_breaker_stats()
+    assert stats_open["trip_count"] == 1
+    assert stats_open["currently_open"] is True
+
+    # Simulate cooldown elapsing, then a successful probe recovers it.
+    gs._circuit_breaker_open_until = time.monotonic() - 0.01
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    session.post.side_effect = None
+    session.post.return_value = fake_response
+    gs._post_with_retries({"model": "test"}, "query")
+
+    stats_recovered = gs.get_circuit_breaker_stats()
+    assert stats_recovered["currently_open"] is False
+    # A mocked, near-instant recovery can legitimately round to 0.0s open --
+    # the point of this assertion is that recording ran (no exception, a
+    # real float back), not that measurable wall-clock time elapsed.
+    assert stats_recovered["total_open_seconds"] >= 0.0
+    assert stats_recovered["trip_count"] == 1  # unchanged -- recovery isn't a new trip
+
+
+def test_repeated_probe_failures_within_same_episode_do_not_inflate_trip_count() -> None:
+    """A flapping sequence (trip -> failed probe -> failed probe -> ...) is
+    one continuous outage episode, not N separate trips -- trip_count
+    should reflect distinct open episodes, not every probe attempt."""
+    gs = GrokSearch(api_key="test", model="test", network_retries=0)
+    gs._circuit_breaker_threshold = 1
+
+    session = MagicMock()
+    session.post.side_effect = _dns_error()
+    gs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    with pytest.raises(requests.ConnectionError):
+        gs._post_with_retries({"model": "test"}, "query")
+    assert gs.get_circuit_breaker_stats()["trip_count"] == 1
+
+    gs._circuit_breaker_open_until = time.monotonic() - 0.01
+    with pytest.raises(requests.ConnectionError):
+        gs._post_with_retries({"model": "test"}, "query")
+
+    assert gs.get_circuit_breaker_stats()["trip_count"] == 1
 
 
 def test_chat_completion_returns_empty_string_when_circuit_breaker_open() -> None:

@@ -6,8 +6,10 @@ Claude added as a second working search/harvest provider (§4), implemented
 and test-covered; live end-to-end validation blocked by an Anthropic
 account credit-balance issue (not a code problem -- see §4.1). Probe script
 hardened into a repeatable, parameterized, history-tracking CLI (§5).
-OpenAI/Gemini capability follow-up remains open (tracked via the same
-probe, not yet separately scoped).
+Grok/Claude batch-vs-fallback provider split, live-validated during a
+genuine xAI outage (§6). Half-open circuit-breaker recovery implemented
+and test-covered (§7). OpenAI/Gemini capability follow-up remains open
+(tracked via the same probe, not yet separately scoped).
 
 ## 0. Why this investigation started
 
@@ -350,3 +352,90 @@ Tests: `test_url_discoverer_builds_grok_batch_client_and_claude_fallback_client_
 `test_search_cached_prefers_fallback_client_over_batch_client_when_both_set`,
 `test_search_cached_falls_back_to_batch_client_when_fallback_client_unset`
 in `tests/test_url_discovery.py`.
+
+## 7. Half-open circuit-breaker recovery (2026-08-15)
+
+Follow-up investigation, prompted by a direct question: given the
+observed timeouts, "is there a throttle, and can concurrency defeat the
+pause strategy?"
+
+**Diagnosis.** `grok_search.py`'s own pre-existing module comment
+(`_GROK_SEMAPHORE`) already documents the mechanism: *"16 parallel
+threads → xAI rate-limits → all time out. Keep it at 4."* xAI's
+throttling doesn't return a clean `429` — it hangs the connection until
+the client's own timeout fires, so "rate-limited" and "genuinely
+degraded" are indistinguishable from the client side. A live,
+single-request, unconcurrent diagnostic call during the same period
+(`GrokSearch().chat_completion(...)`, no other traffic in flight)
+returned cleanly in under 5 seconds, and a real search in 18.5s — strong
+evidence a concurrent smoke-test run's timeouts were substantially
+self-inflicted (our own request volume), not a blanket provider outage.
+
+**The specific flaw**: the breaker was strictly binary (open/closed), no
+half-open state. The moment cooldown elapsed, the *entire* concurrent
+backlog (up to `_GROK_SEMAPHORE`'s cap of 4, fed continuously by
+`url_discovery.py`'s per-destination × per-category parallelism, which
+can queue well more than 4 logical callers behind that one semaphore)
+rushed back in at once — not "one lucky ticket gets tested," but a full
+flood. Worse: the failure-detection window (30s) is longer than the
+cooldown (15s), so some pre-trip failures were still "in window" the
+instant cooldown ended — a burst could re-trip off as few as 1-2 fresh
+failures stacked on stale ones, even when the provider had recovered
+enough to serve a single gentle request cleanly. This produces exactly
+the "flapping" pattern that can masquerade as a long outage: trip → 15s
+cooldown → flood → re-trip → 15s cooldown → flood → re-trip...
+
+Also found in the course of this investigation: `request_delay_seconds`
+(`self._delay` in both `grok_search.py` and `claude_search.py`) is set
+from a constructor parameter but **never read anywhere else** — a dead
+parameter. There has never been any proactive inter-request pacing;
+only the hard concurrency cap and the reactive breaker.
+
+**Fix**: a real half-open state. `_circuit_breaker_check()` now returns
+`bool` — `True` for exactly one caller (the recovery probe) once
+cooldown elapses, `False` when the breaker was never open. Every other
+caller keeps failing fast (`GrokCircuitOpenError`/`ClaudeCircuitOpenError`,
+"probe in flight") until that probe resolves. A successful probe fully
+resets breaker state (clean signal, full recovery); a failed probe
+reopens immediately — a single failed probe is itself sufficient evidence
+the provider hasn't recovered, no need to wait for `threshold` fresh
+failures to reaccumulate. The probe "claim" is a lease bounded by
+`timeout × (network_retries + 1) + 5s`, not a plain boolean flag, so a
+probe that exits through an unanticipated path (e.g. a non-transient
+error, which never reaches the outcome-recording call) can't wedge the
+breaker in "probe permanently in flight" — it just expires and the next
+caller gets a fresh chance.
+
+**Instrumentation**: both classes now track `trip_count` and
+`total_open_seconds` (a flapping episode — trip → failed probe → failed
+probe → ... → eventual success — counts as one trip and one continuous
+open duration, not N), with `OPENED`/`RECOVERED` log lines and a
+`get_circuit_breaker_stats()` snapshot method. `main.py` surfaces this
+into `runtime_metrics["circuit_breaker_stats"]` for `url_discoverer`'s
+batch and fallback clients, so a run's actual wall-clock cost of breaker-open
+time is a real number in the run's metrics, not something inferred from
+scattered log lines after the fact.
+
+**Expected impact, calibrated honestly**: this does not shorten a
+genuine sustained provider-side outage — the floor is set by however
+long the provider is actually degraded, and no client-side breaker logic
+changes that. What it targets is the *self-inflicted* portion: each
+avoided flap cycle saves roughly one cooldown-plus-detection round
+(~15s cooldown + ~25-30s for a fresh multi-caller round to reach its own
+timeout, i.e. ~40-55s), and avoids the "stale failure carryover" risk
+where a recovered-but-fragile provider gets re-tripped by our own burst
+rather than genuinely still being down. What fraction of any given
+incident was self-inflicted-flap versus genuine unavailability isn't
+known precisely without real production telemetry from a comparable
+incident — `runtime_metrics["circuit_breaker_stats"]` is the mechanism to
+get that data on the next one, rather than continuing to guess.
+
+Tests: `test_circuit_breaker_check_returns_probe_flag_after_cooldown_elapses`,
+`test_circuit_breaker_check_returns_false_when_never_tripped`,
+`test_circuit_breaker_check_rejects_non_probe_callers_while_probe_in_flight`,
+`test_successful_probe_fully_resets_breaker_state`,
+`test_failed_probe_reopens_breaker_immediately_without_needing_threshold_failures`,
+`test_non_probe_callers_do_not_touch_network_while_probe_pending`,
+`test_circuit_breaker_stats_track_trip_count_and_total_open_seconds`,
+`test_repeated_probe_failures_within_same_episode_do_not_inflate_trip_count`
+in both `tests/test_grok_search.py` and `tests/test_claude_search.py`.

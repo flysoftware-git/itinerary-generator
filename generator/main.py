@@ -2086,6 +2086,22 @@ def main(
     image_counter_delta = _counter_delta(image_counters_before, ImageFetcher.snapshot_counters())
     url_validator_counter_delta = _counter_delta(url_validator_counters_before, URLValidator.snapshot_counters())
 
+    # Circuit-breaker trip count / total-open-seconds per search client,
+    # for measuring how much of this run's wall-clock time was actually
+    # spent blocked (2026-08-15 half-open-recovery follow-up) instead of
+    # inferring it after the fact from scattered log lines. url_discoverer
+    # is None when skip_url_discovery was set -- no clients to report on.
+    if url_discoverer is not None:
+        circuit_breaker_stats: dict[str, Any] = {}
+        for label, client in (
+            ("url_discovery_batch", getattr(url_discoverer, "_search", None)),
+            ("url_discovery_fallback", getattr(url_discoverer, "_search_fallback", None)),
+        ):
+            if client is not None and hasattr(client, "get_circuit_breaker_stats"):
+                circuit_breaker_stats[label] = client.get_circuit_breaker_stats()
+        if circuit_breaker_stats:
+            runtime_metrics["circuit_breaker_stats"] = circuit_breaker_stats
+
     if verbose:
         registry_report_path = _write_entity_registry_debug_report(output_dir, registry)
         click.echo(f"  ✓ Entity registry debug report: {registry_report_path}")

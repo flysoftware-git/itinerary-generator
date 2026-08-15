@@ -159,6 +159,25 @@ class GrokSearch:
         self._circuit_breaker_lock = threading.Lock()
         self._circuit_breaker_failure_times: list[float] = []
         self._circuit_breaker_open_until: float = 0.0
+        # Half-open recovery state: when cooldown elapses, exactly one caller
+        # becomes the recovery probe instead of the full concurrent backlog
+        # rushing back in at once (see _circuit_breaker_check). The lease is
+        # timeout-bounded rather than a plain boolean flag so a probe that
+        # exits through an unanticipated path (e.g. a non-transient error,
+        # which never calls _record_circuit_breaker_outcome) can't wedge the
+        # breaker in "probe permanently in flight" -- it just expires and the
+        # next caller gets a fresh chance.
+        self._circuit_breaker_probe_claimed_until: float = 0.0
+        self._circuit_breaker_probe_lease_seconds = (
+            self._timeout * (self._network_retries + 1) + 5.0
+        )
+        # Trip/duration instrumentation (2026-08-15): lets a run's summary
+        # answer "how much of this run's wall-clock time was actually spent
+        # with the breaker open" instead of inferring it from scattered log
+        # lines after the fact.
+        self._circuit_breaker_trip_count: int = 0
+        self._circuit_breaker_total_open_seconds: float = 0.0
+        self._circuit_breaker_trip_opened_at: float = 0.0
         self._chat_max_tokens = int(os.environ.get("XAI_CHAT_MAX_TOKENS", str(_DEFAULT_CHAT_MAX_TOKENS)))
 
     # ── Thread-local session ─────────────────────────────────────────────────
@@ -458,7 +477,7 @@ class GrokSearch:
             open_until = self._circuit_breaker_open_until
         return open_until > time.monotonic()
 
-    def _circuit_breaker_check(self) -> None:
+    def _circuit_breaker_check(self) -> bool:
         """Fail fast if a recent burst of transient errors tripped the breaker.
 
         Under a provider-side outage, every concurrent caller would otherwise
@@ -466,21 +485,58 @@ class GrokSearch:
         more load onto an already-struggling endpoint and stalling the whole
         run. Once enough transient failures land in a short window, later
         callers short-circuit immediately instead of queuing up behind them.
+
+        Returns True if this call is the half-open recovery probe: once
+        cooldown elapses, exactly one caller is let through to test whether
+        the provider has actually recovered, instead of the full concurrent
+        backlog (up to _GROK_SEMAPHORE's cap, times however many logical
+        callers are queued behind it) rushing back in at once. That flood
+        was a real self-inflicted-flapping risk (2026-08-15 finding): with a
+        30s failure-detection window and only a 15s cooldown, some pre-trip
+        failures are still "in window" the instant cooldown ends, so it can
+        take as few as 1-2 fresh failures from a multi-caller burst to
+        re-trip -- even when the provider had recovered enough to serve a
+        single gentle request cleanly. A lone probe either fully resets
+        breaker state on success or reopens immediately on failure, giving a
+        clean signal either way. Non-probe callers keep failing fast (same
+        as during open) until the probe resolves or its lease expires.
         """
+        now = time.monotonic()
         with self._circuit_breaker_lock:
             open_until = self._circuit_breaker_open_until
-        remaining = open_until - time.monotonic()
-        if remaining > 0:
-            raise GrokCircuitOpenError(
-                f"Grok circuit breaker open ({remaining:.1f}s remaining) after repeated transient errors"
-            )
+            if open_until > now:
+                remaining = open_until - now
+                raise GrokCircuitOpenError(
+                    f"Grok circuit breaker open ({remaining:.1f}s remaining) after repeated transient errors"
+                )
+            if open_until <= 0.0:
+                return False
+            probe_claimed_until = self._circuit_breaker_probe_claimed_until
+            if probe_claimed_until > now:
+                raise GrokCircuitOpenError(
+                    f"Grok circuit breaker recovering (probe in flight, "
+                    f"{probe_claimed_until - now:.1f}s until next probe window)"
+                )
+            self._circuit_breaker_probe_claimed_until = now + self._circuit_breaker_probe_lease_seconds
+            return True
 
-    def _record_circuit_breaker_outcome(self, *, transient_failure: bool) -> None:
+    def _record_circuit_breaker_outcome(self, *, transient_failure: bool, is_probe: bool = False) -> None:
         now = time.monotonic()
         with self._circuit_breaker_lock:
             if not transient_failure:
+                was_open = self._circuit_breaker_open_until > 0.0
                 self._circuit_breaker_failure_times.clear()
                 self._circuit_breaker_open_until = 0.0
+                if was_open:
+                    self._note_recovery_locked(now)
+                return
+            if is_probe:
+                # A single failed recovery probe is itself sufficient
+                # evidence the provider hasn't actually recovered yet --
+                # reopen immediately rather than waiting for `threshold`
+                # fresh failures to reaccumulate.
+                self._circuit_breaker_open_until = now + self._circuit_breaker_cooldown_seconds
+                self._note_trip_locked(now)
                 return
             cutoff = now - self._circuit_breaker_window_seconds
             self._circuit_breaker_failure_times = [
@@ -489,6 +545,48 @@ class GrokSearch:
             self._circuit_breaker_failure_times.append(now)
             if len(self._circuit_breaker_failure_times) >= self._circuit_breaker_threshold:
                 self._circuit_breaker_open_until = now + self._circuit_breaker_cooldown_seconds
+                self._note_trip_locked(now)
+
+    def _note_trip_locked(self, now: float) -> None:
+        """Must be called with _circuit_breaker_lock held. Records a fresh
+        trip (only -- re-affirming an already-open breaker, e.g. a probe's
+        own internal retry attempts each failing, doesn't double-count)."""
+        if self._circuit_breaker_trip_opened_at > 0.0:
+            return
+        self._circuit_breaker_trip_opened_at = now
+        self._circuit_breaker_trip_count += 1
+        logger.warning(
+            "Grok circuit breaker OPENED (trip #%d this instance) -- cooling down %.1fs",
+            self._circuit_breaker_trip_count,
+            self._circuit_breaker_cooldown_seconds,
+        )
+
+    def _note_recovery_locked(self, now: float) -> None:
+        """Must be called with _circuit_breaker_lock held."""
+        if self._circuit_breaker_trip_opened_at > 0.0:
+            open_duration = now - self._circuit_breaker_trip_opened_at
+            self._circuit_breaker_total_open_seconds += open_duration
+            self._circuit_breaker_trip_opened_at = 0.0
+            logger.info(
+                "Grok circuit breaker RECOVERED after %.1fs open (trip #%d; %.1fs total open this instance)",
+                open_duration,
+                self._circuit_breaker_trip_count,
+                self._circuit_breaker_total_open_seconds,
+            )
+
+    def get_circuit_breaker_stats(self) -> dict[str, Any]:
+        """Snapshot for run-summary reporting: how much of this run's
+        wall-clock time was actually spent with the breaker open, not just
+        inferred after the fact from scattered log lines."""
+        with self._circuit_breaker_lock:
+            total_open = self._circuit_breaker_total_open_seconds
+            if self._circuit_breaker_trip_opened_at > 0.0:
+                total_open += time.monotonic() - self._circuit_breaker_trip_opened_at
+            return {
+                "trip_count": self._circuit_breaker_trip_count,
+                "total_open_seconds": round(total_open, 1),
+                "currently_open": self._circuit_breaker_open_until > time.monotonic(),
+            }
 
     def _post_with_retries(
         self, payload: dict[str, Any], query: str, *, endpoint: str = GROK_ENDPOINT
@@ -499,7 +597,7 @@ class GrokSearch:
         /v1/responses endpoint (real search -- see GROK_RESPONSES_ENDPOINT)
         pass it explicitly, reusing the same circuit-breaker/retry protection
         rather than duplicating it."""
-        self._circuit_breaker_check()
+        is_probe = self._circuit_breaker_check()
         max_attempts = self._network_retries + 1
         last_exc: requests.RequestException | None = None
         for attempt in range(1, max_attempts + 1):
@@ -510,13 +608,13 @@ class GrokSearch:
                         json=payload,
                         timeout=self._timeout,
                     )
-                self._record_circuit_breaker_outcome(transient_failure=False)
+                self._record_circuit_breaker_outcome(transient_failure=False, is_probe=is_probe)
                 return resp
             except requests.RequestException as exc:
                 last_exc = exc
                 is_transient = self._is_transient_request_error(exc)
                 if is_transient:
-                    self._record_circuit_breaker_outcome(transient_failure=True)
+                    self._record_circuit_breaker_outcome(transient_failure=True, is_probe=is_probe)
                 if attempt >= max_attempts or not is_transient:
                     raise
                 backoff = min(2.0, 0.4 * attempt)
