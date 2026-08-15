@@ -1145,6 +1145,65 @@ def test_persistent_cache_never_saves_empty_direct_batch_harvest_results(tmp_pat
     assert payload["direct_batch_harvest_attractions"] == {}
 
 
+def test_get_direct_batch_html_rows_marks_persistent_cache_dirty_on_success(tmp_path) -> None:
+    """Regression (2026-08-15, dipstick55): the earlier round-trip test
+    manually set _persistent_cache_dirty=True before saving, which proved
+    the save/load mechanics work but never proved the real write path
+    (_get_direct_batch_html_rows_for_destination) actually flips that flag.
+    It didn't -- a successful harvest updated the in-memory cache but never
+    marked the persistent cache dirty, so nothing was ever actually
+    persisted to disk despite the feature being enabled by default and
+    fully wired on the load side. Real cost: a same-run retry pass building
+    a fresh URLDiscoverer had no persisted cache to load and re-fetched
+    every destination from scratch, roughly doubling that run's real spend."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._persistent_cache_dirty = False
+    discoverer._persistent_cache_pending_writes = 0
+    discoverer._persistent_cache_write_every = 25
+    discoverer._persistent_cache_enabled = True
+    discoverer._persistent_cache_path = str(tmp_path / "persistent_cache.json")
+
+    html = "<h2>Zion National Park</h2><ul><li>Angels Landing <a href='https://www.alltrails.com/x'>Source</a></li></ul>"
+    with patch.object(discoverer, "_fetch_direct_batch_html_rows", return_value=[{"name": "Angels Landing", "url": "https://www.alltrails.com/x"}]):
+        rows = discoverer._get_direct_batch_html_rows_for_destination(
+            cache={}, destination="Zion National Park", dates="October 7-9, 2026", kind="trail",
+        )
+
+    assert rows
+    assert discoverer._persistent_cache_dirty is True
+
+
+def test_fetch_and_cache_grouped_direct_batch_marks_persistent_cache_dirty() -> None:
+    """Same regression as above, for the new grouped-batch write path
+    (_fetch_and_cache_grouped_direct_batch) -- this is the path that was
+    actually running in the real dipstick55 run."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_direct_batch_item_count = 4
+    discoverer._restaurant_direct_batch_min_results = 1
+    discoverer._request_cache_lock = Lock()
+    discoverer._persistent_cache_dirty = False
+    discoverer._persistent_cache_pending_writes = 0
+    discoverer._persistent_cache_write_every = 25
+    discoverer._search = MagicMock()
+    discoverer._search.is_circuit_open.return_value = False
+    discoverer._search.chat_completion.return_value = (
+        "<h2>St. George, Utah</h2><ul>"
+        "<li>Cliffside Restaurant <a href='https://www.cliffsiderestaurant.com/'>Source</a> 4.4/5 $$</li>"
+        "</ul>"
+        "<h2>Springdale, Utah</h2><ul>"
+        "<li>Oscar's Cafe <a href='https://oscarscafe.com/'>Source</a> 4.5/5 $$</li>"
+        "</ul>"
+    )
+
+    group = [
+        {"name": "St. George, Utah", "dates": "October 17, 2026"},
+        {"name": "Springdale, Utah", "dates": "October 18, 2026"},
+    ]
+    discoverer._fetch_and_cache_grouped_direct_batch(kind="restaurant", group=group)
+
+    assert discoverer._persistent_cache_dirty is True
+
+
 def test_load_persistent_caches_respects_harvest_ttl(tmp_path) -> None:
     cache_path = tmp_path / "persistent_cache.json"
     cache_path.write_text(
@@ -1856,6 +1915,216 @@ def test_direct_batch_html_prompt_for_attractions_uses_precise_maps_guidance():
     system_prompt, _user_prompt = prompt
     assert "precise google maps place or search link" in system_prompt.lower()
     assert "generic destination listing pages" in system_prompt.lower()
+
+
+def test_direct_batch_html_prompt_multi_covers_each_destination_with_own_count():
+    """The multi-destination prompt builder must list every destination with
+    its own day-scaled item count in the user prompt, and instruct the model
+    to keep each destination's items in its own <h2> section."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    prompt = discoverer._direct_batch_html_prompt_multi(
+        kind="restaurant",
+        destinations=[
+            ("St. George, Utah", "October 17, 2026"),
+            ("Springdale, Utah", "October 18, 2026"),
+        ],
+    )
+
+    assert prompt is not None
+    system_prompt, user_prompt = prompt
+    assert "<h2>" in system_prompt
+    assert "do not mix items between destinations" in system_prompt.lower()
+    assert "St. George, Utah" in user_prompt
+    assert "Springdale, Utah" in user_prompt
+
+
+def test_direct_batch_html_prompt_multi_excludes_en_route_stop():
+    """en_route_stop depends on per-destination origin/route context that
+    doesn't fit the shared multi-destination shape -- must return None so
+    callers keep it on the original one-call-per-destination path."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    prompt = discoverer._direct_batch_html_prompt_multi(
+        kind="en_route_stop",
+        destinations=[("Zion National Park", "October 7, 2026"), ("Moab", "October 8, 2026")],
+    )
+
+    assert prompt is None
+
+
+def test_split_multi_destination_html_separates_sections_by_h2():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    html = (
+        "<h2>St. George, Utah</h2><ul><li>Cliffside</li><li>Painted Pony</li></ul>"
+        "<h2>Springdale, Utah</h2><ul><li>Oscar's Cafe</li></ul>"
+    )
+
+    sections = discoverer._split_multi_destination_html(html)
+
+    assert [header for header, _body in sections] == ["St. George, Utah", "Springdale, Utah"]
+    assert "Cliffside" in sections[0][1]
+    assert "Painted Pony" in sections[0][1]
+    assert "Cliffside" not in sections[1][1]
+    assert "Oscar's Cafe" in sections[1][1]
+
+
+def test_split_multi_destination_html_returns_empty_for_no_headers():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    assert discoverer._split_multi_destination_html("<ul><li>no header here</li></ul>") == []
+    assert discoverer._split_multi_destination_html("") == []
+
+
+def test_match_destination_section_exact_then_fuzzy():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    sections = [("St. George, Utah", "a"), ("Springdale, Utah", "b")]
+
+    assert discoverer._match_destination_section("St. George, Utah", sections) == 0
+    assert discoverer._match_destination_section("Springdale, Utah", sections) == 1
+    # Tolerates the model dropping/adding minor formatting around the name.
+    assert discoverer._match_destination_section("St. George", sections) == 0
+    assert discoverer._match_destination_section("Nonexistent Place", sections) is None
+
+
+def test_prefetch_grouped_direct_batch_noop_when_group_size_is_one():
+    """group_size=1 (the safe-rollback value) must not fire any grouped
+    calls at all -- exercised via a client whose chat_completion would raise
+    if grouping incorrectly fired."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_group_size = 1
+    discoverer._search = MagicMock()
+    discoverer._search.chat_completion.side_effect = AssertionError("must not be called when group_size=1")
+
+    discoverer._prefetch_grouped_direct_batch(
+        [{"name": "Zion National Park", "dates": "October 7, 2026"}, {"name": "Moab", "dates": "October 8, 2026"}]
+    )
+
+    discoverer._search.chat_completion.assert_not_called()
+
+
+def test_prefetch_grouped_direct_batch_noop_with_fewer_than_two_destinations():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_group_size = 2
+    discoverer._search = MagicMock()
+    discoverer._search.chat_completion.side_effect = AssertionError("must not be called with <2 destinations")
+
+    discoverer._prefetch_grouped_direct_batch([{"name": "Zion National Park", "dates": "October 7, 2026"}])
+
+    discoverer._search.chat_completion.assert_not_called()
+
+
+def test_fetch_and_cache_grouped_direct_batch_populates_per_destination_caches():
+    """End-to-end (mocked network) check: a single grouped call's combined
+    HTML response must be split and land in the SAME per-kind cache dict
+    and SAME cache key shape the existing single-destination getters check,
+    so real call sites get transparent cache hits."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_direct_batch_item_count = 4
+    discoverer._restaurant_direct_batch_min_results = 1
+    discoverer._request_cache_lock = Lock()
+
+    combined_html = (
+        "<h2>St. George, Utah</h2><ul>"
+        "<li>Cliffside Restaurant <a href='https://www.cliffsiderestaurant.com/'>Source</a> 4.4/5 $$</li>"
+        "</ul>"
+        "<h2>Springdale, Utah</h2><ul>"
+        "<li>Oscar's Cafe <a href='https://oscarscafe.com/'>Source</a> 4.5/5 $$</li>"
+        "</ul>"
+    )
+    discoverer._search = MagicMock()
+    discoverer._search.chat_completion.return_value = combined_html
+    discoverer._search.is_circuit_open.return_value = False
+
+    group = [
+        {"name": "St. George, Utah", "dates": "October 17, 2026"},
+        {"name": "Springdale, Utah", "dates": "October 18, 2026"},
+    ]
+    discoverer._fetch_and_cache_grouped_direct_batch(kind="restaurant", group=group)
+
+    key1 = discoverer._batch_cache_key("St. George, Utah", "October 17, 2026|html|restaurant")
+    key2 = discoverer._batch_cache_key("Springdale, Utah", "October 18, 2026|html|restaurant")
+    assert discoverer._restaurant_direct_batch_cache[key1][0]["title"] == "Cliffside Restaurant"
+    assert discoverer._restaurant_direct_batch_cache[key2][0]["title"] == "Oscar's Cafe"
+
+    # And the existing single-destination getter must see this as a cache hit.
+    with patch.object(
+        discoverer, "_get_direct_batch_rows_for_destination", side_effect=AssertionError("must not re-fetch on cache hit")
+    ):
+        rows = discoverer._get_restaurant_direct_batch_rows_for_destination("St. George, Utah", "October 17, 2026")
+    assert rows[0]["title"] == "Cliffside Restaurant"
+
+
+def test_fetch_and_cache_grouped_direct_batch_leaves_thin_destination_uncached():
+    """A destination whose section parses to fewer rows than
+    _direct_batch_min_required must NOT be cached -- it should fall through
+    to a real single-destination retry rather than locking in a too-thin
+    result."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_direct_batch_item_count = 4
+    discoverer._restaurant_direct_batch_min_results = 2
+    discoverer._request_cache_lock = Lock()
+
+    combined_html = (
+        "<h2>St. George, Utah</h2><ul>"
+        "<li>Cliffside Restaurant <a href='https://www.cliffsiderestaurant.com/'>Source</a> 4.4/5 $$</li>"
+        "</ul>"
+        "<h2>Springdale, Utah</h2><ul></ul>"
+    )
+    discoverer._search = MagicMock()
+    discoverer._search.chat_completion.return_value = combined_html
+    discoverer._search.is_circuit_open.return_value = False
+
+    group = [
+        {"name": "St. George, Utah", "dates": "October 17, 2026"},
+        {"name": "Springdale, Utah", "dates": "October 18, 2026"},
+    ]
+    discoverer._fetch_and_cache_grouped_direct_batch(kind="restaurant", group=group)
+
+    key1 = discoverer._batch_cache_key("St. George, Utah", "October 17, 2026|html|restaurant")
+    key2 = discoverer._batch_cache_key("Springdale, Utah", "October 18, 2026|html|restaurant")
+    # St. George only got 1 row < min_results=2, so it must also be left uncached.
+    assert key1 not in discoverer._restaurant_direct_batch_cache
+    assert key2 not in discoverer._restaurant_direct_batch_cache
+
+
+def test_fetch_and_cache_grouped_direct_batch_handles_empty_response_gracefully():
+    """A failed/empty grouped call must not raise and must leave the cache
+    untouched, so every destination falls through to the normal
+    single-destination path."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_direct_batch_item_count = 4
+    discoverer._restaurant_direct_batch_min_results = 1
+    discoverer._request_cache_lock = Lock()
+    discoverer._search = MagicMock()
+    discoverer._search.chat_completion.return_value = ""
+    discoverer._search.is_circuit_open.return_value = False
+
+    group = [
+        {"name": "St. George, Utah", "dates": "October 17, 2026"},
+        {"name": "Springdale, Utah", "dates": "October 18, 2026"},
+    ]
+    discoverer._fetch_and_cache_grouped_direct_batch(kind="restaurant", group=group)
+
+    assert not hasattr(discoverer, "_restaurant_direct_batch_cache")
+
+
+def test_fetch_and_cache_grouped_direct_batch_skips_when_circuit_open():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_direct_batch_item_count = 4
+    discoverer._restaurant_direct_batch_min_results = 1
+    discoverer._request_cache_lock = Lock()
+    discoverer._search = MagicMock()
+    discoverer._search.is_circuit_open.return_value = True
+    discoverer._search.chat_completion.side_effect = AssertionError("must not call out when circuit is open")
+
+    group = [
+        {"name": "St. George, Utah", "dates": "October 17, 2026"},
+        {"name": "Springdale, Utah", "dates": "October 18, 2026"},
+    ]
+    discoverer._fetch_and_cache_grouped_direct_batch(kind="restaurant", group=group)
+
+    discoverer._search.chat_completion.assert_not_called()
 
 
 def test_direct_batch_html_prompt_scales_attraction_count_to_short_stay():
@@ -2856,14 +3125,14 @@ def test_url_discoverer_leaves_grok_search_model_alone_when_provider_is_not_grok
     assert mock_grok_search_cls.call_args.kwargs["model"] is None
 
 
-def test_url_discoverer_builds_grok_batch_client_and_claude_fallback_client_from_real_config():
+def test_url_discoverer_builds_grok_batch_client_and_grok_fallback_client_from_real_config():
     """Regression: url_discovery.search_provider (batch/direct-batch-harvest)
     and url_discovery.nonbatch_search_provider (per-item fallback, used by
-    _search_cached) are independent knobs -- config.yaml pins the batch path
-    to grok and the fallback path to claude. self._search must end up a
-    GrokSearch and self._search_fallback a ClaudeSearch, not the same
-    instance twice."""
-    from generator.claude_search import ClaudeSearch
+    _search_cached) are independent knobs -- config.yaml pins both to grok
+    (2026-08-15: reverted from claude for the fallback path after the Claude
+    account stopped being funded, see config.yaml's comment). self._search
+    and self._search_fallback must both end up GrokSearch, but as two
+    distinct instances, not the same object reused twice."""
     from generator.grok_search import GrokSearch
 
     mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
@@ -2871,7 +3140,7 @@ def test_url_discoverer_builds_grok_batch_client_and_claude_fallback_client_from
         discoverer = URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
 
     assert isinstance(discoverer._search, GrokSearch)
-    assert isinstance(discoverer._search_fallback, ClaudeSearch)
+    assert isinstance(discoverer._search_fallback, GrokSearch)
     assert discoverer._search is not discoverer._search_fallback
 
 

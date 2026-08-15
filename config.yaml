@@ -166,14 +166,17 @@ cultural_events:
   verify_event_urls: true
   # Which search/harvest provider backs this module's real web search:
   # grok or claude. This module is entirely non-batch (one per-destination
-  # query, see generator/cultural_events.py's discover()) -- 2026-08-14
-  # probe evidence put Claude close behind Grok on citation fidelity
-  # (93% vs 100%) for this shape of call, so it's set to claude here.
-  # Independent of ai.provider (content generation) and of
+  # query, see generator/cultural_events.py's discover()). Was claude
+  # (2026-08-14 probe evidence put it close behind Grok on citation fidelity,
+  # 93% vs 100%, for this shape of call) -- reverted to grok 2026-08-15: a
+  # same-shape real-run comparison found Claude costing ~4.6x Grok for
+  # equivalent output, and the account is no longer being funded, so citation
+  # fidelity being marginally better is moot if the provider can't be relied
+  # on to have credit. Independent of ai.provider (content generation) and of
   # url_discovery.search_provider/nonbatch_search_provider below -- each
   # search call site picks its own. See generator/search_provider.py,
   # generator/claude_search.py, docs/design/search-provider-capability-probe.md.
-  search_provider: "claude"
+  search_provider: "grok"
 
 # ── URL discovery ─────────────────────────────────────────────────────────────
 url_discovery:
@@ -191,10 +194,26 @@ url_discovery:
   #                                (e.g. _search_first_strict, gap-filling
   #                                lookups). Lower volume, same non-batch
   #                                shape as cultural_events.search_provider
-  #                                above -- switched to claude on the same
-  #                                citation-fidelity evidence.
+  #                                above. Was claude (same citation-fidelity
+  #                                evidence); reverted to grok 2026-08-15
+  #                                alongside cultural_events.search_provider
+  #                                -- see that comment for why. With no
+  #                                working fallback provider, self._search_fallback
+  #                                effectively becomes a second grok client;
+  #                                harmless (still independently rate-limited/
+  #                                breaker-tracked) but no longer adds
+  #                                cross-provider resilience.
   search_provider: "grok"
-  nonbatch_search_provider: "claude"
+  nonbatch_search_provider: "grok"
+  # How many destinations' worth of attraction/restaurant/trail direct-batch
+  # harvest requests get combined into a single call, instead of one call
+  # per destination. 1 disables grouping (original behavior, safe rollback).
+  # 2026-08-15 real-call evidence: 2 completed reliably (~90s, matching a
+  # single destination's own latency) with correct results; 3 never
+  # converged (300s+, zero output across 2 attempts). Kept at 2 pending more
+  # evidence before raising further -- also overridable per-run via the
+  # DIRECT_BATCH_GROUP_SIZE env var without editing this file.
+  direct_batch_group_size: 2
   alltrails_source: direct_link_batch
   attraction_source: direct_link_batch
   restaurant_source: direct_link_batch

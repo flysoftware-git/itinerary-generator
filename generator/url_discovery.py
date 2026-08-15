@@ -319,6 +319,17 @@ DEFAULT_RESTAURANT_DIRECT_BATCH_ITEM_COUNT = 4
 DEFAULT_EN_ROUTE_DIRECT_BATCH_ITEM_COUNT = 4
 DEFAULT_ATTRACTION_DIRECT_BATCH_ITEMS_PER_DAY = 3
 DEFAULT_TRAIL_DIRECT_BATCH_ITEMS_PER_DAY = 2
+# Direct-batch destination grouping (2026-08-15): how many destinations'
+# worth of a given kind (attraction/restaurant/trail) get asked for in a
+# single direct-batch harvest call, instead of one call per destination.
+# Real-call evidence: 2 destinations in one call completed in ~90s (in line
+# with a single destination's own 68-150s range) with correct, cleanly
+# separated results; 3 destinations never converged across 2 full retry
+# attempts (300s+, zero output). 1 disables grouping entirely (the original
+# one-call-per-destination behavior) -- the safe rollback value. Deliberately
+# NOT raised above 2 by default until more evidence justifies it; the knob
+# exists so that can happen later without further code changes.
+DEFAULT_DIRECT_BATCH_GROUP_SIZE = 2
 # Generic descriptive suffixes AI-generated attraction names often append to a
 # place name (e.g. harvest row "Bryce Point" vs AI-generated item name "Bryce
 # Point Overlook") that carry no matching-relevant meaning of their own.
@@ -584,6 +595,7 @@ class URLDiscoverer:
         self._en_route_direct_batch_item_count: int = DEFAULT_EN_ROUTE_DIRECT_BATCH_ITEM_COUNT
         self._attraction_direct_batch_items_per_day: int = DEFAULT_ATTRACTION_DIRECT_BATCH_ITEMS_PER_DAY
         self._trail_direct_batch_items_per_day: int = DEFAULT_TRAIL_DIRECT_BATCH_ITEMS_PER_DAY
+        self._direct_batch_group_size: int = DEFAULT_DIRECT_BATCH_GROUP_SIZE
         self._restaurant_direct_batch_min_results: int = DEFAULT_RESTAURANT_DIRECT_BATCH_MIN_RESULTS
         self._en_route_direct_batch_min_results: int = DEFAULT_EN_ROUTE_DIRECT_BATCH_MIN_RESULTS
         self._en_route_detour_max_minutes: int = DEFAULT_EN_ROUTE_DETOUR_MAX_MINUTES
@@ -1104,6 +1116,20 @@ class URLDiscoverer:
                     self._trail_direct_batch_items_per_day = parsed_trail_items_per_day
             except (TypeError, ValueError):
                 self._trail_direct_batch_items_per_day = DEFAULT_TRAIL_DIRECT_BATCH_ITEMS_PER_DAY
+
+            # DIRECT_BATCH_GROUP_SIZE env var takes priority over config.yaml so
+            # this can be ramped up/down for a single experimental run without
+            # editing tracked config -- see DEFAULT_DIRECT_BATCH_GROUP_SIZE.
+            direct_batch_group_size = os.environ.get(
+                "DIRECT_BATCH_GROUP_SIZE",
+                url_cfg.get("direct_batch_group_size", DEFAULT_DIRECT_BATCH_GROUP_SIZE),
+            )
+            try:
+                parsed_group_size = int(direct_batch_group_size)
+                if parsed_group_size > 0:
+                    self._direct_batch_group_size = parsed_group_size
+            except (TypeError, ValueError):
+                self._direct_batch_group_size = DEFAULT_DIRECT_BATCH_GROUP_SIZE
 
             restaurant_direct_batch_item_count = url_cfg.get(
                 "restaurant_direct_batch_item_count",
@@ -1929,6 +1955,15 @@ class URLDiscoverer:
             dest["_en_route_origin"] = origin_name
             dest["_en_route_origin_lat"] = origin_lat
             dest["_en_route_origin_lng"] = origin_lng
+
+        # Pre-populate per-destination direct-batch caches from grouped
+        # multi-destination calls before the per-destination pass below runs,
+        # so _discover_attractions (attractions + AllTrails trails) and
+        # _discover_restaurants (via their _get_*_direct_batch_rows_for_destination
+        # getters) see cache hits instead of firing individual calls -- see
+        # _prefetch_grouped_direct_batch for the no-op-when-disabled and
+        # fail-open-per-destination behavior.
+        self._prefetch_grouped_direct_batch(destinations)
 
         with ThreadPoolExecutor(max_workers=min(len(destinations), 3)) as pool:
             futures = [pool.submit(_discover_one, d) for d in destinations]
@@ -4214,6 +4249,334 @@ class URLDiscoverer:
 
         return None
 
+    def _direct_batch_html_prompt_multi(
+        self, *, kind: str, destinations: list[tuple[str, str]]
+    ) -> tuple[str, str] | None:
+        """Multi-destination variant of _direct_batch_html_prompt: one call
+        asking for several destinations at once, each its own
+        <h2>Destination Name</h2><ul>...</ul> section -- see
+        _prefetch_grouped_direct_batch / DEFAULT_DIRECT_BATCH_GROUP_SIZE.
+        Deliberately does not cover en_route_stop: that kind depends on
+        per-destination origin/route context that doesn't fit this shape
+        cleanly, so it stays on the original one-call-per-destination path.
+        """
+        if not destinations:
+            return None
+
+        if kind == "trail":
+            max_miles = max(0.5, float(getattr(self, "_max_trail_miles", DEFAULT_MAX_TRAIL_MILES) or DEFAULT_MAX_TRAIL_MILES))
+            min_rating = float(getattr(self, "_alltrails_rating_min", DEFAULT_ALLTRAILS_RATING_MIN))
+            min_votes = int(getattr(self, "_alltrails_rating_min_votes", DEFAULT_ALLTRAILS_RATING_MIN_VOTES))
+            items_per_day = int(
+                getattr(self, "_trail_direct_batch_items_per_day", DEFAULT_TRAIL_DIRECT_BATCH_ITEMS_PER_DAY)
+                or DEFAULT_TRAIL_DIRECT_BATCH_ITEMS_PER_DAY
+            )
+            dest_lines = [
+                f"- {name}{f' ({dates})' if str(dates or '').strip() else ''}: exactly "
+                f"{self._day_scaled_direct_batch_count(dates, items_per_day=items_per_day)} hikes"
+                for name, dates in destinations
+            ]
+            system_prompt = (
+                "Return HTML only. For EACH destination listed below, emit one <h2>Destination Name</h2> "
+                "(use the exact destination name given, nothing else in the header) followed by one <ul> "
+                "with the specified number of <li> hike items from AllTrails for that destination only. "
+                "Do not mix items between destinations. "
+                "Each <li> must begin with the trail name and include at least one AllTrails <a href=...> link; "
+                "an additional official/source link is optional when available. "
+                "After the links, include the trail's rating as a clear numeric value like '4.6/5' and its "
+                "round-trip distance in miles like '3.2 mi', when available. "
+                f"Keep only likely-open hikes of {max_miles:g} miles or less rated {min_rating:g}+ with at least {min_votes} reviews. "
+                "Exclude generic listings and drop any item without a reliable trail-specific AllTrails link."
+            )
+            user_prompt = (
+                "Generate clickable hikes from AllTrails for these destinations:\n"
+                + "\n".join(dest_lines)
+                + "\nInclude a rating and distance in miles for each item when available."
+            )
+            return system_prompt, user_prompt
+
+        if kind == "attraction":
+            items_per_day = int(
+                getattr(self, "_attraction_direct_batch_items_per_day", DEFAULT_ATTRACTION_DIRECT_BATCH_ITEMS_PER_DAY)
+                or DEFAULT_ATTRACTION_DIRECT_BATCH_ITEMS_PER_DAY
+            )
+            dest_lines = [
+                f"- {name}{f' ({dates})' if str(dates or '').strip() else ''}: exactly "
+                f"{self._day_scaled_direct_batch_count(dates, items_per_day=items_per_day)} attractions"
+                for name, dates in destinations
+            ]
+            system_prompt = (
+                "Return HTML only. For EACH destination listed below, emit one <h2>Destination Name</h2> "
+                "(use the exact destination name given, nothing else in the header) followed by one <ul> "
+                "with the specified number of <li> attraction items for that destination only. "
+                "Do not mix items between destinations. Exclude hikes and trails — those are covered separately. "
+                "Each <li> must begin with the attraction name and include up to two links: "
+                "<a href=...>Source</a> for the attraction's official or authoritative page, "
+                "and <a href=\"https://www.google.com/maps/search/?api=1&query=Attraction+Name+Address+City+State\">Maps</a> as a precise Google Maps place or search link. "
+                "Use the Maps link to target a specific place, not a generic destination overview. "
+                "Include the attraction's rating as a clear numeric value like '4.7/5' or '4.7 stars' after the links, when available. "
+                "Keep only highly rated items (>4.3), include a mixture of experiences, "
+                "and keep only places likely open on the indicated dates. "
+                "Avoid generic destination listing pages, general travel guides, and broad area pages."
+            )
+            user_prompt = (
+                "Generate local points of interest, cultural landmarks, and tourist attractions "
+                "for these destinations, excluding hikes:\n"
+                + "\n".join(dest_lines)
+                + "\nInclude clickable links to source material and corresponding Google Maps content, "
+                "and a rating for each item when available, using a clear numeric format. "
+                "Keep only highly rated items (>4.3), include a mixture of experiences, "
+                "and keep only places likely open on the indicated dates. "
+                "Include only suggestions with reliable clickable links."
+            )
+            return system_prompt, user_prompt
+
+        if kind == "restaurant":
+            count = int(
+                getattr(self, "_restaurant_direct_batch_item_count", DEFAULT_RESTAURANT_DIRECT_BATCH_ITEM_COUNT)
+                or DEFAULT_RESTAURANT_DIRECT_BATCH_ITEM_COUNT
+            )
+            dest_lines = [
+                f"- {name}{f' ({dates})' if str(dates or '').strip() else ''}"
+                for name, dates in destinations
+            ]
+            system_prompt = (
+                "Return HTML only. For EACH destination listed below, emit one <h2>Destination Name</h2> "
+                "(use the exact destination name given, nothing else in the header) followed by one <ul> "
+                f"with exactly {count} <li> restaurant items for that destination only. "
+                "Do not mix items between destinations. "
+                "Each <li> must begin with the restaurant name and include up to two links: "
+                "<a href=...>Source</a> for the restaurant's own website or TripAdvisor page, "
+                "and <a href=\"https://www.google.com/maps/search/?api=1&query=Restaurant+Name+Address+City+State\">Maps</a> as an address-qualified Google Maps search link. "
+                "Include the restaurant's rating as a clear numeric value like '4.7/5' or '4.7 stars' and include a price indicator like '$$', '$$$', or 'moderate' when available. "
+                "Keep only highly rated items (>4.3), include cuisine variety, "
+                "and keep only likely-open, high-confidence options. "
+                "Avoid generic destination listing pages."
+            )
+            user_prompt = (
+                "Generate local restaurants near these destinations:\n"
+                + "\n".join(dest_lines)
+                + "\nInclude clickable links to source material and corresponding Google Maps content. "
+                "Include a rating and price indicator for each item when available, using a clear numeric or price format. "
+                "Keep only highly rated items (>4.3), include cuisine variety, "
+                "and keep only places likely open on the indicated dates. "
+                "Include only suggestions with reliable clickable links."
+            )
+            return system_prompt, user_prompt
+
+        return None
+
+    @staticmethod
+    def _split_multi_destination_html(html_text: str) -> list[tuple[str, str]]:
+        """Split a multi-destination direct-batch HTML response into
+        (destination_header_text, section_html) pairs, one per <h2> section
+        -- so each section can be fed independently through the existing
+        single-destination _direct_batch_rows_from_html parser."""
+        text = str(html_text or "")
+        parts = re.split(r"<h2[^>]*>(.*?)</h2>", text, flags=re.IGNORECASE | re.DOTALL)
+        sections: list[tuple[str, str]] = []
+        for i in range(1, len(parts), 2):
+            header = re.sub(r"<[^>]+>", "", parts[i]).strip()
+            body = parts[i + 1] if i + 1 < len(parts) else ""
+            if header:
+                sections.append((header, body))
+        return sections
+
+    @staticmethod
+    def _match_destination_section(dest_name: str, sections: list[tuple[str, str]]) -> int | None:
+        """Match a destination name to its <h2> section, tolerating minor
+        formatting drift from the model (exact match first, then either
+        string containing the other)."""
+        target = str(dest_name or "").strip().lower()
+        if not target:
+            return None
+        for i, (header, _body) in enumerate(sections):
+            if header.strip().lower() == target:
+                return i
+        for i, (header, _body) in enumerate(sections):
+            h = header.strip().lower()
+            if h and (target in h or h in target):
+                return i
+        return None
+
+    def _group_already_cached(self, kind: str, group: list[dict]) -> bool:
+        """True only if EVERY destination in group already has a real
+        (non-empty) cached direct-batch result for this kind.
+
+        Without this guard, _prefetch_grouped_direct_batch fires a fresh
+        grouped call for every group/kind combination on every invocation --
+        harmless if it only ever runs once per URLDiscoverer instance, but
+        a real, expensive bug if discover_all runs more than once against
+        the same destinations in one process (e.g. main.py's selective
+        retry pass re-invoking URL discovery). Found 2026-08-15: a real run
+        (dipstick55) captured every single (destination, kind) combo TWICE,
+        ~1 hour apart, both from the grouped path -- a full duplicate pass
+        that roughly doubled url_discovery's real Grok spend for zero
+        benefit, since the second pass's results were near-identical to the
+        first's. The existing single-destination getters already skip
+        re-fetching a cache hit; this brings the grouped path in line with
+        that same behavior instead of bypassing it.
+        """
+        cache_attr = {
+            "attraction": "_attraction_direct_batch_cache",
+            "restaurant": "_restaurant_direct_batch_cache",
+            "trail": "_alltrails_direct_batch_cache",
+        }.get(kind)
+        if cache_attr is None:
+            return False
+        cache = getattr(self, cache_attr, None)
+        if not cache:
+            return False
+        for dest in group:
+            dest_name = str(dest.get("name", "") or "").strip()
+            dates = str(dest.get("dates", "") or "")
+            if not dest_name:
+                return False
+            key = self._batch_cache_key(dest_name, f"{dates}|html|{kind}")
+            cached = cache.get(key)
+            if not cached:
+                return False
+        return True
+
+    def _prefetch_grouped_direct_batch(self, destinations: list[dict]) -> None:
+        """Pre-fetch attraction/restaurant/trail direct-batch rows for
+        groups of destinations in a single call each, populating the same
+        per-kind caches the existing single-destination getters
+        (_get_attraction_direct_batch_rows_for_destination etc.) check
+        first -- so every existing call site transparently gets a cache hit
+        instead of re-fetching, with zero changes needed at those call
+        sites. A destination whose group call fails, times out, or gets
+        dropped during splitting/matching simply isn't written into the
+        cache, so it falls through to the normal single-destination path
+        exactly as if grouping didn't exist -- this is purely additive.
+
+        Controlled by self._direct_batch_group_size
+        (DEFAULT_DIRECT_BATCH_GROUP_SIZE / url_discovery.direct_batch_group_size
+        / DIRECT_BATCH_GROUP_SIZE env var). <=1 disables this entirely.
+        """
+        group_size = max(1, int(getattr(self, "_direct_batch_group_size", DEFAULT_DIRECT_BATCH_GROUP_SIZE) or 1))
+        if group_size <= 1:
+            return
+
+        valid_destinations = [
+            d for d in destinations if isinstance(d, dict) and str(d.get("name", "") or "").strip()
+        ]
+        if len(valid_destinations) < 2:
+            return
+
+        groups = [
+            valid_destinations[i : i + group_size] for i in range(0, len(valid_destinations), group_size)
+        ]
+        jobs = [
+            (kind, group)
+            for kind in ("attraction", "restaurant", "trail")
+            for group in groups
+            if len(group) >= 2 and not self._group_already_cached(kind, group)
+        ]
+        if not jobs:
+            return
+
+        def _run_one(kind: str, group: list[dict]) -> None:
+            try:
+                self._fetch_and_cache_grouped_direct_batch(kind=kind, group=group)
+            except Exception:
+                logger.warning(
+                    "Grouped direct-batch prefetch failed for kind=%s (%d destinations); "
+                    "falling back to per-destination calls for this group",
+                    kind,
+                    len(group),
+                    exc_info=True,
+                )
+
+        with ThreadPoolExecutor(max_workers=min(len(jobs), 8)) as pool:
+            futs = [pool.submit(_run_one, kind, group) for kind, group in jobs]
+            for f in as_completed(futs):
+                f.result()
+
+    def _fetch_and_cache_grouped_direct_batch(self, *, kind: str, group: list[dict]) -> None:
+        pairs = [(str(d.get("name", "") or ""), str(d.get("dates", "") or "")) for d in group]
+        prompt_pair = self._direct_batch_html_prompt_multi(kind=kind, destinations=pairs)
+        if prompt_pair is None:
+            return
+        system_prompt, user_prompt = prompt_pair
+
+        search_client = getattr(self, "_search", None)
+        if search_client is None:
+            return
+        if hasattr(search_client, "is_circuit_open") and search_client.is_circuit_open():
+            return
+
+        html = str(
+            search_client.chat_completion(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.1,
+                response_format=None,
+                live_search=True,
+            )
+            or ""
+        )
+        if not html:
+            return
+
+        sections = self._split_multi_destination_html(html)
+        if not sections:
+            return
+
+        cache_attr = {
+            "attraction": "_attraction_direct_batch_cache",
+            "restaurant": "_restaurant_direct_batch_cache",
+            "trail": "_alltrails_direct_batch_cache",
+        }.get(kind)
+        if cache_attr is None:
+            return
+        if not hasattr(self, cache_attr):
+            setattr(self, cache_attr, {})
+        if not hasattr(self, "_request_cache_lock"):
+            self._request_cache_lock = Lock()
+        if not hasattr(self, "_direct_batch_html_failure_ts"):
+            self._direct_batch_html_failure_ts = {}
+        cache = getattr(self, cache_attr)
+
+        min_required = self._direct_batch_min_required(kind)
+        remaining = list(sections)
+        for dest in group:
+            dest_name = str(dest.get("name", "") or "").strip()
+            dates = str(dest.get("dates", "") or "")
+            if not dest_name:
+                continue
+            match_idx = self._match_destination_section(dest_name, remaining)
+            if match_idx is None:
+                continue
+            header, body = remaining.pop(match_idx)
+            rows = self._direct_batch_rows_from_html(body)
+            filtered_rows = [dict(row) for row in rows if isinstance(row, dict)]
+            key = self._batch_cache_key(dest_name, f"{dates}|html|{kind}")
+            if not key:
+                continue
+            self._persist_direct_batch_html_capture(
+                destination=dest_name,
+                dates=dates,
+                kind=kind,
+                key=key,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                query="",
+                html=body,
+                rows=filtered_rows,
+                provider=f"{search_client.__class__.__name__}(grouped x{len(group)})",
+            )
+            if len(filtered_rows) < min_required:
+                # Below the same bar _fetch_direct_batch_html_rows enforces --
+                # leave this destination's cache unpopulated so it falls
+                # through to a normal, individually-retried single-destination
+                # fetch rather than locking in a too-thin result.
+                continue
+            with self._request_cache_lock:
+                cache[key] = filtered_rows
+                self._direct_batch_html_failure_ts.pop(key, None)
+                self._mark_persistent_cache_dirty()
+
     def _direct_batch_html_cache_hit_or_recent_failure(
         self, cache: dict[str, list[dict[str, Any]]], key: str
     ) -> tuple[bool, list[dict[str, Any]]]:
@@ -4285,6 +4648,21 @@ class URLDiscoverer:
                 if filtered_rows:
                     cache[key] = filtered_rows
                     self._direct_batch_html_failure_ts.pop(key, None)
+                    # Found 2026-08-15: this write updates the in-memory cache
+                    # but, without this call, never marks the persistent
+                    # cache dirty -- _save_persistent_caches' harvest-cache
+                    # section (see _load_persistent_caches' matching read
+                    # side, already wired up and enabled by default) never
+                    # actually had anything to save, so a genuinely
+                    # successful harvest was silently lost the moment the
+                    # process exited, for both the single-destination path
+                    # here and the grouped path (_fetch_and_cache_grouped_direct_batch).
+                    # Real cost: a same-run retry pass constructing a fresh
+                    # URLDiscoverer had no persisted cache to load from and
+                    # had to refetch everything from scratch (dipstick55:
+                    # every direct-batch call repeated in full, ~doubling
+                    # that run's real Grok spend for no benefit).
+                    self._mark_persistent_cache_dirty()
                 else:
                     if key in cache:
                         # Empty direct-batch HTML captures are not authoritative
