@@ -59,10 +59,36 @@ class LLMCircuitOpenError(RuntimeError):
 DEFAULT_PRICING_USD_PER_1M: dict[str, dict[str, float]] = {
     "openai:gpt-4o": {"input": 5.00, "output": 15.00},
     "openai:gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    # Confirmed 2026-08-15 against developers.openai.com/api/docs/pricing
+    # (Standard tier). Added after openai_search.py's real bandwidth test
+    # showed $0.00 cost for 6 real completed calls -- the exact same class
+    # of silent-cost bug found for claude-sonnet-5 and grok-4-fast earlier
+    # this session, now a third time from the identical root cause (a new
+    # model used before its pricing entry existed). Web search's separate
+    # $10-per-1000-calls fee is NOT included here -- same known gap as
+    # Claude's untracked search fee; UsageTracker has no field for it yet.
+    "openai:gpt-4.1-mini": {"input": 0.40, "output": 1.60},
     "deepseek:deepseek-chat": {"input": 0.27, "output": 1.10},
     "deepseek:deepseek-reasoner": {"input": 0.55, "output": 2.19},
+    # grok-latest's $2/$10 rate is confirmed against real production billing
+    # (2026-08-15: a real run's token counts reproduced its exact invoiced
+    # cost to the penny using this rate) -- but that only proves internal
+    # consistency of our own formula, not that $2/$10 matches xAI's current
+    # published rate for whatever model "latest" resolves to today. Treat as
+    # empirically-grounded but not re-verified against xAI's docs each time
+    # "latest" silently repoints to a new underlying model.
     "grok:grok-latest": {"input": 2.00, "output": 10.00},
     "grok:grok-4.5": {"input": 3.00, "output": 15.00},
+    # Added 2026-08-15 after discovering grok-4-fast calls were silently
+    # costed at $0.00 (same class of bug as claude-sonnet-5's missing entry
+    # above) -- this model completed real production-shaped calls in
+    # 14-20s using ~22-27K tokens each, dramatically faster/cheaper than
+    # grok-latest's typical 68-250s/~79K tokens. Pricing not yet confirmed
+    # against a real xAI invoice (unlike grok-latest above) -- $0.20/$0.50
+    # is the best available figure (third-party aggregator, xAI's own docs
+    # page didn't list this model at all despite the API accepting it), so
+    # treat this entry as provisional until checked against real billing.
+    "grok:grok-4-fast": {"input": 0.20, "output": 0.50},
     "anthropic:claude-3-5-sonnet-latest": {"input": 3.00, "output": 15.00},
     "anthropic:claude-3-7-sonnet-latest": {"input": 3.00, "output": 15.00},
     # Confirmed 2026-08-15 against platform.claude.com/docs/en/about-claude/pricing
