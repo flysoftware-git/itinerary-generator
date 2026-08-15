@@ -5,11 +5,15 @@ Seeds must be plain name strings only — no URLs. The generator resolves
 all URLs independently via Bing Search after content generation.
 """
 from __future__ import annotations
+from datetime import datetime
 import logging
+import re
 from pathlib import Path
 from typing import Any
 import yaml
 import jsonschema
+
+from generator.multi_site_grouping import VALID_BASE_OWNED_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +161,24 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                         "items": {"type": "string", "minLength": 2},
                         "description": "Attraction/hike/experience name hints only — no URLs.",
                     },
+                    "group_with": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9_]+$",
+                        "description": "GH #68 multi-site grouping: id of another destination entry "
+                                       "this one shares a lodging base with. Omitted = current "
+                                       "behavior, unchanged. See docs/design/"
+                                       "multi-site-destination-grouping.md.",
+                    },
+                    "base_owned_categories": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": sorted(VALID_BASE_OWNED_CATEGORIES)},
+                        "description": "GH #68 multi-site grouping: per-entry override of which "
+                                       "discovery categories defer to the group base instead of "
+                                       "being independently discovered for this entry. Omitted = "
+                                       "inherit config.yaml's multi_site_grouping.base_owned_categories "
+                                       "default. An explicit empty list opts this entry out of any "
+                                       "deferral. Only meaningful when group_with is also set.",
+                    },
                 },
             },
         },
@@ -175,6 +197,7 @@ class ManifestParser:
         self._validate_schema(data)
         self._validate_seeds(data)
         self._validate_ids_unique(data)
+        self._validate_group_with(data)
         logger.info(
             "Manifest valid — %d destination(s): %s",
             len(data["destinations"]),
@@ -205,3 +228,101 @@ class ManifestParser:
             if did in seen:
                 raise ValueError(f"duplicate destination id: '{did}'")
             seen.add(did)
+
+    def _validate_group_with(self, data: dict[str, Any]) -> None:
+        """GH #68 multi-site grouping: validate `group_with` references.
+
+        - Must reference an `id` that exists elsewhere in destinations[].
+        - A destination cannot reference itself.
+        - The referenced destination cannot itself have a `group_with`
+          (no chains/cycles — one base, N day-trip entries).
+        A grouped entry whose `dates` fall outside its base's date range
+        only warns (logged), matching this codebase's existing lenient
+        free-text `dates` handling elsewhere — see cultural_events.py's
+        own best-effort date-range parsing for precedent.
+        """
+        destinations = data.get("destinations", [])
+        by_id = {d["id"]: d for d in destinations if isinstance(d, dict) and "id" in d}
+        for dest in destinations:
+            if not isinstance(dest, dict):
+                continue
+            group_with = str(dest.get("group_with", "") or "").strip()
+            if not group_with:
+                continue
+            dest_id = dest.get("id")
+            if group_with == dest_id:
+                raise ValueError(
+                    f"Destination '{dest_id}': group_with cannot reference itself."
+                )
+            base = by_id.get(group_with)
+            if base is None:
+                raise ValueError(
+                    f"Destination '{dest_id}': group_with '{group_with}' does not match "
+                    "any destination id."
+                )
+            base_group_with = str(base.get("group_with", "") or "").strip()
+            if base_group_with:
+                raise ValueError(
+                    f"Destination '{dest_id}': group_with target '{group_with}' is itself "
+                    f"grouped (group_with: '{base_group_with}') — chained/nested grouping "
+                    "is not supported. Point every grouped entry directly at one ungrouped "
+                    "base destination."
+                )
+            self._warn_if_group_dates_outside_base_range(dest, base)
+
+    @staticmethod
+    def _parse_lenient_date_range(dates: str) -> tuple[datetime, datetime] | None:
+        """Best-effort free-text date-range parse. Returns None (not an
+        error) on anything it can't confidently parse — this is only used
+        for an advisory warning, never a hard validation failure."""
+        if not dates:
+            return None
+        normalized = str(dates).replace("–", "-").replace("—", "-")
+
+        m = re.search(
+            r"([A-Za-z]+)\s+(\d{1,2})(?:\s*-\s*(?:[A-Za-z]+\s+)?(\d{1,2}))?,?\s*(\d{4})",
+            normalized,
+        )
+        if m:
+            month_name, day_start, day_end, year = m.group(1), m.group(2), m.group(3), m.group(4)
+            try:
+                start = datetime.strptime(f"{month_name} {int(day_start)} {year}", "%B %d %Y")
+                end = datetime.strptime(f"{month_name} {int(day_end or day_start)} {year}", "%B %d %Y")
+            except ValueError:
+                return None
+            if end < start:
+                return None
+            return start, end
+
+        iso = re.findall(r"(\d{4}-\d{2}-\d{2})", normalized)
+        if len(iso) >= 2:
+            try:
+                start = datetime.strptime(iso[0], "%Y-%m-%d")
+                end = datetime.strptime(iso[1], "%Y-%m-%d")
+            except ValueError:
+                return None
+            if end < start:
+                start, end = end, start
+            return start, end
+        if len(iso) == 1:
+            try:
+                start = datetime.strptime(iso[0], "%Y-%m-%d")
+            except ValueError:
+                return None
+            return start, start
+
+        return None
+
+    def _warn_if_group_dates_outside_base_range(self, dest: dict[str, Any], base: dict[str, Any]) -> None:
+        dest_range = self._parse_lenient_date_range(str(dest.get("dates", "") or ""))
+        base_range = self._parse_lenient_date_range(str(base.get("dates", "") or ""))
+        if not dest_range or not base_range:
+            return
+        dest_start, dest_end = dest_range
+        base_start, base_end = base_range
+        if dest_start < base_start or dest_end > base_end:
+            logger.warning(
+                "Destination '%s' dates ('%s') fall outside group base '%s' dates ('%s') — "
+                "group_with entries are expected to be day trips within the base's stay.",
+                dest.get("id"), dest.get("dates"), base.get("id"), base.get("dates"),
+            )
