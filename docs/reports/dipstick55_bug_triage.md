@@ -7,20 +7,43 @@ items are almost certainly the same underlying bug surfacing in different places
 Status legend: `[ ]` open, `[~]` in progress, `[x]` fixed+tested, `[!]` needs a
 human design decision, not a pure bug fix.
 
-## Theme A — Wrong-geography hallucinations in en-route stops (SEVERE)
+## Theme A — Wrong-geography hallucinations in en-route stops (SEVERE) [x]
 
-- [ ] "Stan's Overlook Trail, Snoqualmie, WA 98065" appears as a Google Maps
+- [x] "Stan's Overlook Trail, Snoqualmie, WA 98065" appears as a Google Maps
   waypoint for the Zion -> Bryce en-route leg. Snoqualmie is in Washington
   state, nowhere near this trip. (user)
-- [ ] "Looking Glass Rock, Brevard, NC 28712" appears as an en-route map link
+- [x] "Looking Glass Rock, Brevard, NC 28712" appears as an en-route map link
   for Moab -> Telluride. North Carolina, nowhere near this trip. (user)
 
-Both are en-route-stop discovery, both are real places that exist -- just in
-the wrong US region entirely. Root cause is very likely a same-name trail
-existing in multiple states, and whatever resolves "trail name" -> "specific
-place/URL" isn't constraining by geographic proximity to the actual route.
-Highest severity: this isn't a missing link, it's an actively wrong,
-plausible-looking one a user could drive toward.
+**Root cause found and fixed.** `url_discovery.py` already had a geocoding-
+based route-proximity guard (`_geocode_en_route_stop_for_route` /
+`_prune_en_route_stops_by_geometry`, added the day before in commit
+`b3e4e76`, so it was already active during the dipstick55 run) that queries
+Nominatim with a route-biased viewbox and, when that finds nothing, sanity-
+checks an unrestricted fallback match against the route's midpoint. The gap:
+when the sanity check *did* correctly identify and reject a same-named
+place far outside the route (e.g. the real "Looking Glass Rock" landmark in
+Transylvania County, NC, ~1442 mi from the Moab-Telluride route midpoint
+against a ~156 mi sanity radius -- confirmed live against the real
+Nominatim API), that rejection collapsed into the exact same `None` result
+as "we have no geocoding data at all" -- and the *latter* case is
+intentionally lenient (falls back to a detour-metadata heuristic and keeps
+the stop, since Nominatim often just lacks minor POIs and being too
+aggressive there would wrongly drop legitimate stops). So a stop with
+**positive evidence of being wrong-region** was treated exactly like a
+stop with **no evidence either way**, and survived with its own stop
+card/link intact. Fixed by recording the sanity-radius rejection distinctly
+(`_mark_en_route_stop_geocode_rejected_out_of_region` /
+`_en_route_stop_geocode_was_rejected_out_of_region`) so
+`_prune_en_route_stops_by_geometry` can tell the two cases apart: "no data"
+still falls back to the lenient heuristic as before, but "confirmed
+far outside the route" now drops the stop entirely (`en_route_geometry_
+filtered_wrong_region`) rather than just marking it ineligible for
+waypoint-ordering purposes while still rendering its card and link. Verified
+with unit tests reproducing the exact reported case ("Stan's Overlook
+Trail" resolving only to Snoqualmie, WA) plus a live (free, no-cost)
+Nominatim query confirming the real "Looking Glass Rock, Brevard, NC"
+mechanism and sanity-radius math exactly as described above.
 
 ## Theme B — Wrong trail/landmark -> AllTrails URL attribution (SEVERE, RECURRING) [x]
 

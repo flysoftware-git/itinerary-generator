@@ -8533,6 +8533,18 @@ class URLDiscoverer:
                     and sanity_radius_miles is not None
                     and self._haversine_miles(route_midpoint, parsed) > sanity_radius_miles
                 ):
+                    # This is a real, named-place hit -- not an absence of data --
+                    # that just happens to sit far outside any plausible reading
+                    # of this route (e.g. a same-named trail/park hundreds of
+                    # miles away in another state). That is positive evidence the
+                    # stop is a wrong-geography hallucination, not merely
+                    # "unconfirmed" -- record it distinctly from the plain-miss
+                    # case below so _prune_en_route_stops_by_geometry can drop
+                    # the stop outright instead of just deprioritizing it for
+                    # waypoint ordering (see dipstick55 Theme A: "Stan's Overlook
+                    # Trail, Snoqualmie, WA" / "Looking Glass Rock, Brevard, NC"
+                    # appearing as en-route stops for unrelated UT/CO routes).
+                    self._mark_en_route_stop_geocode_rejected_out_of_region(key)
                     continue
                 cache[key] = parsed
                 self._mark_persistent_cache_dirty()
@@ -8542,6 +8554,21 @@ class URLDiscoverer:
 
         cache[key] = None
         return None
+
+    def _mark_en_route_stop_geocode_rejected_out_of_region(self, cache_key: str) -> None:
+        if not hasattr(self, "_en_route_stop_geocode_rejected_out_of_region"):
+            self._en_route_stop_geocode_rejected_out_of_region = set()
+        self._en_route_stop_geocode_rejected_out_of_region.add(cache_key)
+
+    def _en_route_stop_geocode_was_rejected_out_of_region(self, stop_name: str, *, origin_name: str, dest_name: str) -> bool:
+        """True only when a prior geocode attempt for this exact stop found a
+        real named-place match that was rejected specifically for being
+        implausibly far from the route -- not merely "no data available"."""
+        rejected = getattr(self, "_en_route_stop_geocode_rejected_out_of_region", None)
+        if not rejected:
+            return False
+        key = f"{str(stop_name or '').strip().lower()}|{str(origin_name or '').lower()}|{str(dest_name or '').lower()}"
+        return key in rejected
 
     def _respect_nominatim_rate_limit(self) -> None:
         """Nominatim's usage policy caps requests at 1/sec. This function can
@@ -8610,6 +8637,23 @@ class URLDiscoverer:
                 dest=dest,
             )
             if stop_coords is None:
+                # Distinguish "we have no data either way" (lenient: fall back to
+                # the detour-metadata heuristic, keep the stop) from "geocoding
+                # found a real named-place match for this exact name, but it was
+                # implausibly far from the route" (positive evidence of a
+                # wrong-geography hallucination -- drop the stop outright rather
+                # than merely excluding it from waypoint ordering).
+                if self._en_route_stop_geocode_was_rejected_out_of_region(
+                    stop_name, origin_name=origin_name, dest_name=dest_name
+                ):
+                    self._log_decision(
+                        kind="en_route_stop",
+                        dest_name=dest_name,
+                        item_name=stop_name,
+                        reason="en_route_geometry_filtered_wrong_region",
+                        message="en-route stop removed: only resolvable to a place far outside the route",
+                    )
+                    continue
                 if isinstance(stop, dict):
                     keep_waypoint = False
                     if not self._is_generic_en_route_stop_title(stop_name):

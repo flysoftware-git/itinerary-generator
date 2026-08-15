@@ -7289,6 +7289,107 @@ def test_geocode_en_route_stop_accepts_unrestricted_match_within_sanity_radius()
     assert coords == (37.9, -111.8)
 
 
+def test_geocode_en_route_stop_marks_out_of_region_rejection_distinctly_from_no_data() -> None:
+    """Regression for dipstick55 Theme A: when the sanity-radius check rejects
+    a real named-place hit (not merely an absence of data), that must be
+    recorded so the caller can tell 'we found this name, but only far away'
+    apart from 'we have no information either way'."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+
+    origin = (37.1889, -112.9986)
+    dest = (37.5930, -112.1871)
+    snoqualmie_wa = ("47.5301", "-121.8253")
+
+    def fake_get(_url, params=None, **_kwargs):
+        if params and params.get("bounded") == 1:
+            return _make_nominatim_empty_response()
+        return _make_nominatim_response(*snoqualmie_wa)
+
+    discoverer._url_validator.session.get.side_effect = fake_get
+
+    with patch("generator.url_discovery.time.sleep"):
+        coords = discoverer._geocode_en_route_stop_for_route(
+            "Stan's Overlook Trail",
+            origin_name="Zion National Park",
+            dest_name="Bryce Canyon National Park",
+            origin=origin,
+            dest=dest,
+        )
+
+    assert coords is None
+    assert discoverer._en_route_stop_geocode_was_rejected_out_of_region(
+        "Stan's Overlook Trail",
+        origin_name="Zion National Park",
+        dest_name="Bryce Canyon National Park",
+    ) is True
+    # A totally different, never-attempted name must not be flagged.
+    assert discoverer._en_route_stop_geocode_was_rejected_out_of_region(
+        "Some Other Stop",
+        origin_name="Zion National Park",
+        dest_name="Bryce Canyon National Park",
+    ) is False
+
+
+def test_prune_en_route_stops_drops_stop_confirmed_out_of_region() -> None:
+    """End-to-end regression for the exact dipstick55 Theme A report: 'Stan's
+    Overlook Trail' resolving to Snoqualmie, WA must be removed from the
+    en-route stop list for a Zion -> Bryce Canyon leg, not merely excluded
+    from waypoint ordering while still rendering its own stop card/link."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._decision_threads_by_destination = {}
+    discoverer._decision_stats_by_destination = {}
+    discoverer._decision_source_stats_by_destination = {}
+    discoverer._decision_event_sequence = 0
+    discoverer._request_cache_lock = Lock()
+
+    origin = (37.1889, -112.9986)
+    dest = (37.5930, -112.1871)
+    snoqualmie_wa = ("47.5301", "-121.8253")
+    mesquite_on_route = ("36.8055", "-114.0672")
+
+    def fake_get(_url, params=None, **_kwargs):
+        q = str((params or {}).get("q", ""))
+        if "Mesquite" in q:
+            if params.get("bounded") == 1:
+                return _make_nominatim_response(*mesquite_on_route)
+            return _make_nominatim_empty_response()
+        # "Stan's Overlook Trail": nothing found in-region (viewbox), only
+        # an unrestricted match clear across the country.
+        if params.get("bounded") == 1:
+            return _make_nominatim_empty_response()
+        return _make_nominatim_response(*snoqualmie_wa)
+
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.side_effect = fake_get
+
+    stops = [
+        {"name": "Stan's Overlook Trail"},
+        {"name": "Mesquite"},
+    ]
+
+    with patch("generator.url_discovery.time.sleep"):
+        with patch.object(
+            discoverer,
+            "_geocode_en_route_stop_for_route",
+            wraps=discoverer._geocode_en_route_stop_for_route,
+        ):
+            with patch.object(discoverer, "_route_progress_ratio", side_effect=lambda **_k: 0.4):
+                result = discoverer._prune_en_route_stops_by_geometry(
+                    stops=stops,
+                    origin_name="Zion National Park",
+                    dest_name="Bryce Canyon National Park",
+                    origin_lat=origin[0],
+                    origin_lng=origin[1],
+                    dest_lat=dest[0],
+                    dest_lng=dest[1],
+                )
+
+    names = [str(stop.get("name", "") or "") for stop in result]
+    assert "Stan's Overlook Trail" not in names
+    assert "Mesquite" in names
+
+
 def test_alltrails_confidence_boosted_to_high_when_corroborating_search_agrees() -> None:
     """Corroboration piece: a blocked-fetch 'medium' confidence trail must be
     promoted to 'high' when an independent secondary lookup (opt-in via the
