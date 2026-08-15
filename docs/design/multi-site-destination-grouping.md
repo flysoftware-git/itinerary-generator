@@ -12,11 +12,15 @@ per-destination subsystem exactly as it works today.
 `html_assembler.py` all hard-assume one place per destination entry today
 (one NPS code, one flat attraction list, one section/heading/weather
 link — see the architecture survey this design followed from). Option 3
-doesn't touch any of that: Moab, Arches, and Canyonlands become **three
-ordinary destination entries**, each independently geocoded, discovered,
-content-generated, and rendered exactly as any destination is today —
-genuinely correct, genuinely verified content per site, no LLM
-self-attribution of "which park is this actually in."
+leaves nearly all of that untouched: Moab, Arches, and Canyonlands become
+**three ordinary destination entries**, each independently geocoded,
+discovered, content-generated, and rendered exactly as any destination is
+today — genuinely correct, genuinely verified content per site, no LLM
+self-attribution of "which park is this actually in." The one real
+exception is category ownership (§5) — physical proximity means some
+categories (restaurants, by default) need to be deferred to the shared
+base rather than independently discovered per site, or grouped cards read
+as duplicated rather than distinct.
 
 The only new work is **cross-destination**: recognizing that three
 sequential destination entries aren't three separate lodging stops, and
@@ -116,17 +120,89 @@ ungrouped destination after the group should compute its distance from
 the shared base, not from whichever grouped sibling happened to render
 last, since the group doesn't move the traveler's actual physical base.
 
-## 5. What does NOT change
+## 5. Category ownership: base-owned vs. park-owned content
+
+Physical proximity, not just shared lodging, creates a distinctiveness
+problem §0-§4 don't address. Attractions and trails stay genuinely
+distinct without any change — Arches and Canyonlands are real, physically
+separate parks with their own named entities, and discovery is already
+scoped to each entry's own name. But **restaurant discovery already
+anchors on `lodging_location`, not `dest_name`**
+(`url_discovery.py:4144-4146`) — for a grouped entry, that's the *shared*
+base, so unmodified restaurant discovery for Arches and for Canyonlands
+would both really mean "restaurants near Moab Springs Ranch" and produce
+duplicate or near-duplicate dining lists on both cards. Scenic drives and
+"what to know" prose have a milder version of the same risk (a regional
+scenic byway or generic area tip isn't really park-specific, so two
+independently-generated cards can converge on interchangeable content).
+The fix is splitting ownership by what's tied to *place* vs. tied to the
+shared *base*:
+
+- **Park-owned** (each grouped entry keeps its own): attractions, trails,
+  and park-specific practical info — entrance fees, permits, timed-entry
+  systems (Arches has one, Canyonlands doesn't — genuinely distinguishing
+  content, not filler).
+- **Base-owned** (rendered once, on the group's base entry only): by
+  default, restaurants — plus whatever else a specific trip decides is
+  regional rather than park-specific.
+
+**This split must be configurable, not hardcoded** — proximity varies
+trip to trip. Arches/Canyonlands are ~30-40 min from the same Moab base,
+so shared dining makes sense; a different grouped pair might be far
+enough apart that independent restaurant discovery is actually correct,
+and hardcoding "restaurants are always base-owned" would be wrong for
+that case. Two-tier configuration, matching the pattern this codebase
+already uses for provider selection (`url_discovery.search_provider`):
+
+1. **Project-wide default**, `config.yaml`:
+   ```yaml
+   multi_site_grouping:
+     # Categories deferred to the group's base entry when a destination
+     # sets group_with. Valid values: trail | attraction | restaurant |
+     # en_route_stop | scenic_drive.
+     base_owned_categories: ["restaurant"]
+   ```
+2. **Per-group override**, on the grouped (child) entry itself, alongside
+   `group_with`:
+   ```yaml
+     - id: arches
+       name: "Arches National Park"
+       dates: "August 2, 2026"
+       group_with: moab
+       base_owned_categories: ["restaurant", "scenic_drive"]  # overrides the config default for this entry only
+   ```
+   Omitted = inherit the `config.yaml` default. An explicit empty list
+   (`base_owned_categories: []`) opts an entry *out* of any deferral even
+   when `config.yaml` sets a default — for the "sites are far enough
+   apart that independent discovery is actually correct" case.
+
+**Where this plugs in**: `discover_all` needs one small, additive gate
+per category — before running that category's direct-batch discovery for
+a destination, check whether it's in the entry's resolved
+`base_owned_categories` (manifest override, else config default). If so,
+skip discovery for that category on this entry entirely; the base entry
+supplies it, unaffected since it has no `group_with`. This is a
+mechanical skip-check at the top of each category's discovery call, not a
+rewrite — attraction/trail discovery logic itself is untouched.
+**Rendering side**: a grouped entry with a base-owned category renders no
+section for it, plus a pointer to the base entry (mirroring the
+lodging-dedup treatment in §2 — e.g., "Dining: see Moab").
+
+## 6. What does NOT change
 
 - `nps_resolver.py`: no change. Arches and Canyonlands each resolve their
   own real NPS code exactly as any single-park destination does today.
-- `url_discovery.py`: no change. Each grouped entry runs the full,
-  independently-verified discover_all pass for its own name — real
-  AllTrails/restaurant/attraction links, not inherited or re-tagged from
-  a combined harvest.
+- `url_discovery.py`: **one small additive gate** (§5), not zero change —
+  each category's discovery call gains a one-line skip-check against the
+  entry's resolved `base_owned_categories` before running. The discovery
+  logic itself (queries, parsing, verification, entity matching) is
+  completely untouched; only whether a given category runs at all for a
+  given entry is new.
 - `ai_content.py`: no change. Each grouped entry gets its own real
   LLM-generated `top_attractions`/`what_to_know`/`scenic_drives`, scoped
-  to its own name, exactly like today.
+  to its own name, exactly like today. (Whether `scenic_drives` content
+  should also respect `base_owned_categories` at the content-generation
+  level, not just the URL-discovery level, is an open question — §7.)
 - Day-count/schedule-budget inference (`_infer_destination_day_count`,
   `_infer_day_count`): no change needed. Each grouped entry already
   declares its own `dates` sub-range, and existing per-destination day
@@ -135,7 +211,7 @@ last, since the group doesn't move the traveler's actual physical base.
   for free, as long as each entry's `dates` is scoped to its own days
   within the stay (already true in the example above).
 
-## 6. Open questions before implementation
+## 7. Open questions before implementation
 
 1. Exact visual treatment for nav clustering (§3) — needs a quick mockup
    pass, not a data decision.
@@ -146,20 +222,35 @@ last, since the group doesn't move the traveler's actual physical base.
 3. Whether the departure/return route leg (last grouped entry back to the
    trip's next real stop, or to the return leg) needs its own
    "distance from base, not from last-rendered-entry" fix, symmetric to §4.
+4. Whether `base_owned_categories: ["scenic_drive"]` should also suppress
+   scenic-drive *content generation* in `ai_content.py` (not just URL
+   discovery) for a grouped entry, or whether AI-written scenic-drive
+   descriptions are distinctive enough per park to leave untouched and
+   only gate the URL-discovery layer. Leaning toward gating both — a
+   scenic-drive text block with no linked URL is a worse reading
+   experience than no block at all — but worth deciding at
+   implementation time against a real example.
 
-## 7. Rough scope estimate
+## 8. Rough scope estimate
 
-- `manifest_parser.py`: schema field + validation — small.
-- `html_assembler.py`: lodging-dedup rendering, nav-tab clustering — small
-  to medium (mostly template/CSS).
+- `manifest_parser.py`: `group_with` + `base_owned_categories` schema
+  fields, validation — small.
+- `config.yaml`: new `multi_site_grouping.base_owned_categories` default
+  — trivial.
+- `url_discovery.py`: per-category skip-check gate (§5) — small,
+  mechanical, discovery logic itself untouched.
+- `html_assembler.py`: lodging-dedup rendering, nav-tab clustering,
+  base-owned-category "see base" pointers — small to medium (mostly
+  template/CSS).
 - Route/distance calculation (`main.py` and/or `url_discovery.py`,
   wherever `_update_route_distance_and_time` and the route-overview
-  builder live) — small to medium, the one piece with real logic
-  (base-tracking through a group) rather than just new rendering.
-- No changes to `nps_resolver.py`, `url_discovery.py`'s discovery logic,
-  or `ai_content.py`.
+  builder live) — small to medium, the one piece with real cross-entry
+  logic (base-tracking through a group) rather than just new rendering.
+- No changes to `nps_resolver.py`, or to `url_discovery.py`'s/
+  `ai_content.py`'s actual discovery/generation logic — only whether a
+  given category runs at all for a given entry.
 
 Overall: a moderate, mostly-additive change concentrated in manifest
-validation and rendering, with one real logic change (route/distance
-base-tracking, §4) — not a rewrite of any core discovery/content
-subsystem.
+validation, a config-driven category-ownership gate, and rendering, with
+one real cross-entry logic change (route/distance base-tracking, §4) —
+not a rewrite of any core discovery/content subsystem.
