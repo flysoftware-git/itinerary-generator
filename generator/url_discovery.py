@@ -8416,7 +8416,7 @@ class URLDiscoverer:
         own throttle rather than relying on the caller to pace calls.
 
         Destination discovery runs on a multi-thread pool (see
-        _discover_all's ThreadPoolExecutor), so multiple threads can reach
+        discover_all's ThreadPoolExecutor), so multiple threads can reach
         this method concurrently. Without a lock, each one independently
         reads the same last-request timestamp, decides it's safe, and fires
         at the same time -- the check-sleep-write sequence must be atomic or
