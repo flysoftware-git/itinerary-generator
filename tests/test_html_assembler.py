@@ -1401,6 +1401,45 @@ def test_build_attractions_drops_scenic_drive_duplicating_a_rendered_attraction(
     assert "nps.gov/brca/planyourvisit/inspiration-point.htm" in html
 
 
+def test_drive_descriptions_omit_drive_duplicating_a_rendered_attraction() -> None:
+    """Regression for a real validation failure (dipstick54, 2026-08-15):
+    'Potash Road' existed as both a top_attraction and a scenic_drive for
+    Moab. _build_attractions correctly drops the redundant drive card (see
+    test_build_attractions_drops_scenic_drive_duplicating_a_rendered_attraction),
+    but _build_drive_descriptions built the JS DRIVE_DESCRIPTIONS object
+    independently and still emitted an entry for it -- an orphan key with no
+    modal-trigger button to open it, caught by HTMLValidator's
+    'DRIVE_DESCRIPTIONS keys with no modal button' check."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [
+        {
+            "name": "Moab",
+            "ai_content": {
+                "top_attractions": [
+                    {
+                        "name": "Potash Road",
+                        "type": "scenic",
+                        "description": "A dirt road along the Colorado River.",
+                        "url": "https://www.moab-utah.com/potash-road.html",
+                    }
+                ]
+            },
+            "scenic_drives": [
+                {
+                    "title": "Potash Road",
+                    "category": "drive",
+                    "description": "A scenic dirt road with river views and petroglyphs.",
+                    "distance_or_duration": "1-2 hrs",
+                }
+            ],
+        }
+    ]
+
+    payload = assembler._build_drive_descriptions(destinations)
+
+    assert "Potash Road" not in payload
+
+
 def test_build_attractions_keeps_distinctly_named_scenic_drive() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {

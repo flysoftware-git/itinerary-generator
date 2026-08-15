@@ -1737,8 +1737,23 @@ class HTMLAssembler:
         result: dict[str, Any] = {}
         for dest in destinations:
             dest_name = str(dest.get("name", "") or "").strip()
+            ai = dest.get("ai_content", {})
+            attraction_names = {
+                self._normalize_attraction_name_for_dedup(str(attr.get("name", "") or ""))
+                for attr in ai.get("top_attractions", [])
+                if isinstance(attr, dict)
+            }
             for drive in dest.get("scenic_drives", []):
                 key = drive.get("title", "")
+                # Must mirror _build_attractions' inline drive-link dedup: a
+                # drive sharing its name with an already-rendered attraction
+                # never gets a modal-trigger button there, so it can't get a
+                # DRIVE_DESCRIPTIONS entry here either -- otherwise this
+                # produces an orphan key with no button to open it (found
+                # 2026-08-15: validator caught 'Potash Road' doing exactly
+                # this for a Moab run).
+                if key and self._normalize_attraction_name_for_dedup(key) in attraction_names:
+                    continue
                 entry = {
                     "title": drive.get("title", ""),
                     "category": drive.get("category", "scenic_drive"),
