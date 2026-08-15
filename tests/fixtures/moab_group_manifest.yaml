@@ -1,0 +1,40 @@
+trip:
+  title: "Moab Basecamp Test Trip"
+  subtitle: "Arches & Canyonlands from a Moab Base"
+  theme_color: "#C0623E"
+  departure: "Grand Junction, CO"
+  return: "Grand Junction, CO"
+
+destinations:
+  - id: moab
+    name: "Moab"
+    dates: "August 1-4, 2026"
+    lodging:
+      name: "Moab Springs Ranch"
+      location: "Moab Springs Ranch, Moab, UT"
+      checkin_time: "4:00 PM"
+    planning_links:
+      - label: "Moab Trip Notes"
+        url: "https://example.com/moab-notes"
+    seeds:
+      - "Moab Diner"
+
+  - id: arches
+    name: "Arches National Park"
+    dates: "August 2, 2026"
+    group_with: moab
+    planning_links:
+      - label: "Arches NP Info"
+        url: "https://example.com/arches-notes"
+    seeds:
+      - "Delicate Arch"
+
+  - id: canyonlands
+    name: "Canyonlands National Park"
+    dates: "August 3, 2026"
+    group_with: moab
+    planning_links:
+      - label: "Canyonlands NP Info"
+        url: "https://example.com/canyonlands-notes"
+    seeds:
+      - "Grand View Point"

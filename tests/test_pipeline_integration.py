@@ -15,6 +15,7 @@ checksum verification, HTML rendering.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -24,7 +25,10 @@ import requests
 from generator.ai_content import AIContentGenerator
 from generator.html_assembler import HTMLAssembler
 from generator.llm_client import UsageTracker
+from generator.parser import ManifestParser
 from generator.url_discovery import URLDiscoverer
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class _FakeLLMClient:
@@ -207,3 +211,156 @@ def test_core_pipeline_generates_valid_checksummed_html_with_no_network(_no_netw
     # none of the fixture's clean prose should trip it, but this proves the call
     # didn't silently except-and-skip.
     assert ai_gen.last_banned_phrase_violations == {}
+
+
+# ── GH #68 multi-site grouping: real Moab/Arches/Canyonlands manifest ───────
+
+
+class _FakeMultiDestLLMClient:
+    """Like _FakeLLMClient, but returns genuinely distinct content per
+    destination id (keyed off the `destination_bundle:{id}` operation
+    ai_content.py always passes) -- needed to prove Arches and Canyonlands
+    keep their own real, distinct attractions/scenic-drives per docs/design/
+    multi-site-destination-grouping.md §0/§6, not a duplicated fixture."""
+
+    _BUNDLES: dict[str, dict[str, Any]] = {
+        "moab": {
+            "destination_content": {
+                "expected_environment": {"summary": "Hot, dry desert days.", "temperature_high_f": 95, "temperature_low_f": 68, "what_to_pack": ["sun hat"]},
+                "getting_here": {"drive_time": "1 hr 50 min", "distance_miles": 108, "route_summary": "Take I-70 to US-191 south.", "en_route_stops": []},
+                "top_attractions": [],
+                "possible_daily_schedule": ["Morning: Settle into lodging.", "Evening: Dinner in town."],
+                "dinner_recommendations": [
+                    {"name": "Moab Diner", "cuisine": "American", "price_range": "$$", "description": "Classic diner breakfast and burgers."},
+                ],
+            },
+            "what_to_know": {"summary": "Basecamp town for Arches and Canyonlands.", "local_customs": "", "best_times_of_day": "", "transportation_quirks": ""},
+            "scenic_drives": [],
+        },
+        "arches": {
+            "destination_content": {
+                "expected_environment": {"summary": "Hot, dry desert days.", "temperature_high_f": 96, "temperature_low_f": 66, "what_to_pack": ["sun hat"]},
+                "getting_here": {"drive_time": "10 min", "distance_miles": 5, "route_summary": "Short hop north on US-191.", "en_route_stops": []},
+                "top_attractions": [
+                    {"name": "Delicate Arch", "type": "hike", "difficulty": "Moderate", "duration": "2-3 hrs round-trip", "description": "Iconic freestanding arch reached via a slickrock trail."},
+                ],
+                "possible_daily_schedule": ["Morning: Delicate Arch hike.", "Afternoon: Windows Section."],
+                "dinner_recommendations": [
+                    {"name": "Arches Snack Bar", "cuisine": "American", "price_range": "$", "description": "In-park quick bites."},
+                ],
+            },
+            "what_to_know": {"summary": "Timed-entry reservation required in season.", "local_customs": "", "best_times_of_day": "", "transportation_quirks": ""},
+            "scenic_drives": [
+                {"title": "Arches Scenic Drive", "category": "drive", "distance_or_duration": "18 miles", "best_time": "Morning", "description": "Paved road past the park's major formations."},
+            ],
+        },
+        "canyonlands": {
+            "destination_content": {
+                "expected_environment": {"summary": "Hot, dry desert days.", "temperature_high_f": 94, "temperature_low_f": 64, "what_to_pack": ["sun hat"]},
+                "getting_here": {"drive_time": "40 min", "distance_miles": 32, "route_summary": "Head west on UT-313.", "en_route_stops": []},
+                "top_attractions": [
+                    {"name": "Grand View Point", "type": "viewpoint", "difficulty": "Easy", "duration": "30 min", "description": "Sweeping overlook of the canyon confluence below."},
+                ],
+                "possible_daily_schedule": ["Morning: Grand View Point.", "Afternoon: Mesa Arch."],
+                "dinner_recommendations": [
+                    {"name": "Canyonlands Cafe", "cuisine": "American", "price_range": "$", "description": "Casual stop near the visitor center."},
+                ],
+            },
+            "what_to_know": {"summary": "No entrance timed-entry system, unlike Arches.", "local_customs": "", "best_times_of_day": "", "transportation_quirks": ""},
+            "scenic_drives": [
+                {"title": "Shafer Trail Road", "category": "drive", "distance_or_duration": "24 miles", "best_time": "Sunset", "description": "Switchback dirt road descending the canyon rim."},
+            ],
+        },
+    }
+
+    def __init__(self) -> None:
+        self.provider = "openai"
+        self.model = "gpt-4o-mini"
+        self.usage_tracker = UsageTracker()
+
+    def generate_json(self, *, system_prompt: str, user_prompt: str, operation: str, temperature: float | None = None, max_tokens: int | None = None) -> dict[str, Any]:
+        dest_id = operation.split(":", 1)[1] if ":" in operation else ""
+        if dest_id in self._BUNDLES:
+            return self._BUNDLES[dest_id]
+        # what_to_know / url_candidates / other non-bundle operations: return
+        # a harmless empty-ish shape so callers that don't expect this
+        # fixture's bundle keys don't blow up.
+        return {"summary": "", "local_customs": "", "best_times_of_day": "", "transportation_quirks": ""}
+
+
+def _geocode_moab_group(trip: dict[str, Any]) -> None:
+    coords = {
+        "moab": (38.5733, -109.5498),
+        "arches": (38.7331, -109.5925),
+        "canyonlands": (38.2, -109.93),
+    }
+    for dest in trip["destinations"]:
+        lat, lng = coords[dest["id"]]
+        dest["lat"] = lat
+        dest["lng"] = lng
+
+
+def test_moab_group_manifest_parses_discovers_and_renders_with_correct_grouping(_no_network) -> None:
+    """Real Moab/Arches/Canyonlands-style manifest (docs/design/
+    multi-site-destination-grouping.md's own example), run through the
+    actual parse -> generate -> discover -> audit -> render chain with only
+    the network boundary mocked. Confirms GH #68 end to end: schema
+    validation accepts group_with, restaurants defer to the base by
+    default, park-specific attractions/scenic-drives stay genuinely
+    distinct per entry, nav tabs cluster, and the base's lodging is
+    referenced (not duplicated) on both grouped children.
+    """
+    trip = ManifestParser().load(str(FIXTURES / "moab_group_manifest.yaml"))
+    _geocode_moab_group(trip)
+
+    fake_llm = _FakeMultiDestLLMClient()
+    ai_gen = AIContentGenerator("config.yaml", llm_client=fake_llm)
+    ai_gen.generate_all(trip)
+
+    dest_by_id = {d["id"]: d for d in trip["destinations"]}
+    assert dest_by_id["arches"]["ai_content"]["top_attractions"][0]["name"] == "Delicate Arch"
+    assert dest_by_id["canyonlands"]["ai_content"]["top_attractions"][0]["name"] == "Grand View Point"
+
+    url_discoverer = URLDiscoverer("config.yaml", llm_client=fake_llm, output_dir="output")
+    url_discoverer._search = MagicMock()
+    url_discoverer._search.is_circuit_open.return_value = False
+    url_discoverer._search.chat_completion.return_value = ""
+
+    url_discoverer.discover_all(trip)
+
+    # §5 default: restaurant is the only base-owned category out of the box --
+    # both grouped children defer dining to Moab, the base keeps its own.
+    assert dest_by_id["moab"]["ai_content"]["dinner_recommendations"], "base entry should keep its own restaurants"
+    assert dest_by_id["arches"]["ai_content"]["dinner_recommendations"] == []
+    assert dest_by_id["canyonlands"]["ai_content"]["dinner_recommendations"] == []
+
+    # §0/§6: attractions and scenic drives stay genuinely distinct per park --
+    # discovery never touched/cleared them (only restaurant is base-owned by default).
+    assert dest_by_id["arches"]["scenic_drives"]
+    assert dest_by_id["canyonlands"]["scenic_drives"]
+    assert dest_by_id["arches"]["scenic_drives"][0]["title"] != dest_by_id["canyonlands"]["scenic_drives"][0]["title"]
+
+    url_discoverer.audit_discovered_urls(trip)
+    ai_gen.normalize_trip_content(trip)
+
+    assembler = HTMLAssembler("config.yaml")
+    html = assembler.assemble(trip)  # raises RuntimeError if template checksum mismatches
+
+    assert "<html" in html.lower()
+    # §3 nav clustering
+    assert 'class="tab-group"' in html
+    assert 'data-tab="section-arches"' in html
+    assert 'data-tab="section-canyonlands"' in html
+    # §2 lodging dedup pointer on both grouped children, base's own lodging
+    # never duplicated as a separate full block
+    assert html.count("Based from Moab Springs Ranch") == 2
+    # §5 rendering: "see base" pointer for the deferred restaurant category
+    assert html.count("Dinner recommendations: see Moab") == 2
+    assert "Moab Diner" in html
+    # §0: each grouped entry's own genuinely distinct content survives to render
+    assert "Delicate Arch" in html
+    assert "Grand View Point" in html
+    assert "Arches Scenic Drive" in html
+    assert "Shafer Trail Road" in html
+    # §4: grouped entries render as day trips, not relocation legs
+    assert html.count("Day Trip") == 2
