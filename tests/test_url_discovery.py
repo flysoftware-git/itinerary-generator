@@ -8014,7 +8014,6 @@ def test_filtered_alltrails_does_not_pad_with_weak_matches_when_only_one_candida
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = True
     discoverer._alltrails_filtered_selection_cache = {}
-    discoverer._strict_filtered_alltrails_names = ("canyon overlook trail", "sand bench trail")
     discoverer._uninterested_keywords = ()
     discoverer._seasonal_ski_keywords = ()
     discoverer._ski_in_season_months = ()
@@ -9525,7 +9524,6 @@ def test_seeded_alltrails_candidate_blocked_fetch_with_verify_404_stays_empty_un
 def test_non_strict_trail_ai_candidate_can_pass_when_filtered_metadata_missing():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = True
-    discoverer._strict_filtered_alltrails_names = ("angels landing", "the narrows")
     discoverer._alltrails_filtered_selection_cache = {}
     discoverer._alltrails_min_confidence_for_publish = "low"
     discoverer._alltrails_source = "search"

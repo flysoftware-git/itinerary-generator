@@ -2,7 +2,8 @@
 manifest_parser.py — YAML manifest parsing and schema validation.
 
 Seeds must be plain name strings only — no URLs. The generator resolves
-all URLs independently via Bing Search after content generation.
+all URLs independently via live web search (see generator/url_discovery.py
+and generator/search_provider.py) after content generation.
 """
 from __future__ import annotations
 import logging
