@@ -416,25 +416,39 @@ def test_is_circuit_open_reflects_current_breaker_state() -> None:
     assert gs.is_circuit_open() is False
 
 
-def _responses_payload(text: str, *, with_reasoning: bool = True, with_search_call: bool = True) -> dict:
-    """Matches the real /v1/responses shape captured 2026-08-14 -- output is
-    an interleaved array of reasoning, web_search_call, and message items;
-    only message/output_text blocks are the actual answer text."""
-    output = []
+def _responses_stream_lines(
+    text: str, *, with_reasoning: bool = True, with_search_call: bool = True,
+    usage: dict | None = None,
+) -> list[str]:
+    """SSE lines matching the real /v1/responses streaming shape captured
+    2026-08-15 -- reasoning and web_search_call events interleave with
+    response.output_text.delta events, terminated by response.completed
+    carrying usage. Only output_text.delta content is the answer text."""
+    lines: list[str] = []
     if with_reasoning:
-        output.append({"type": "reasoning", "summary": [{"type": "summary_text", "text": "thinking..."}]})
+        lines.append('data: {"type": "response.reasoning_summary_text.delta", "delta": "thinking..."}')
     if with_search_call:
-        output.append({
-            "type": "web_search_call",
-            "status": "completed",
-            "action": {"type": "search", "query": "test query", "sources": [{"type": "url", "url": "https://example.com"}]},
+        lines.append('data: {"type": "response.web_search_call.searching"}')
+    import json as _json
+    lines.append("data: " + _json.dumps({"type": "response.output_text.delta", "delta": text}))
+    lines.append(
+        "data: "
+        + _json.dumps({
+            "type": "response.completed",
+            "response": {"usage": usage or {"input_tokens": 100, "output_tokens": 50}},
         })
-    output.append({
-        "type": "message",
-        "role": "assistant",
-        "content": [{"type": "output_text", "text": text, "annotations": []}],
-    })
-    return {"output": output, "usage": {"input_tokens": 100, "output_tokens": 50}}
+    )
+    return lines
+
+
+def _make_streaming_response(lines: list[str]) -> MagicMock:
+    """session.post(..., stream=True) is used directly (no `with` block) in
+    _post_responses_streaming_with_retries, so the mock just needs
+    raise_for_status() and iter_lines()."""
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.iter_lines = MagicMock(return_value=iter(lines))
+    return resp
 
 
 def test_chat_completion_live_search_posts_to_responses_endpoint() -> None:
@@ -445,10 +459,9 @@ def test_chat_completion_live_search_posts_to_responses_endpoint() -> None:
     from generator.grok_search import GROK_RESPONSES_ENDPOINT
 
     gs = GrokSearch(api_key="test", model="test")
-    fake_response = MagicMock()
-    fake_response.status_code = 200
-    fake_response.raise_for_status = MagicMock()
-    fake_response.json.return_value = _responses_payload("<ul><li>Real Trail <a href='https://alltrails.com/x'>Source</a></li></ul>")
+    fake_response = _make_streaming_response(
+        _responses_stream_lines("<ul><li>Real Trail <a href='https://alltrails.com/x'>Source</a></li></ul>")
+    )
     session = MagicMock()
     session.post.return_value = fake_response
     gs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
@@ -468,9 +481,9 @@ def test_chat_completion_live_search_skips_reasoning_and_search_call_items() -> 
     and the raw web_search_call action must not leak into the returned text
     that callers parse as HTML."""
     gs = GrokSearch(api_key="test", model="test")
-    fake_response = MagicMock()
-    fake_response.raise_for_status = MagicMock()
-    fake_response.json.return_value = _responses_payload("<ul><li>Clean output only</li></ul>")
+    fake_response = _make_streaming_response(
+        _responses_stream_lines("<ul><li>Clean output only</li></ul>")
+    )
     session = MagicMock()
     session.post.return_value = fake_response
     gs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
@@ -488,9 +501,7 @@ def test_chat_completion_live_search_tracks_usage_with_responses_token_fields() 
     read the right fields or search-path spend goes uncounted."""
     tracker = MagicMock()
     gs = GrokSearch(api_key="test", model="test", usage_tracker=tracker)
-    fake_response = MagicMock()
-    fake_response.raise_for_status = MagicMock()
-    fake_response.json.return_value = _responses_payload("<ul></ul>")
+    fake_response = _make_streaming_response(_responses_stream_lines("<ul></ul>"))
     session = MagicMock()
     session.post.return_value = fake_response
     gs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
@@ -529,10 +540,10 @@ def test_grok_search_uses_real_web_search_via_responses_endpoint() -> None:
     from generator.grok_search import GROK_RESPONSES_ENDPOINT
 
     gs = GrokSearch(api_key="test", model="test")
-    fake_response = MagicMock()
-    fake_response.raise_for_status = MagicMock()
-    fake_response.json.return_value = _responses_payload(
-        '{"results": [{"title": "Real Place", "url": "https://example.com/real", "snippet": "s"}]}'
+    fake_response = _make_streaming_response(
+        _responses_stream_lines(
+            '{"results": [{"title": "Real Place", "url": "https://example.com/real", "snippet": "s"}]}'
+        )
     )
     session = MagicMock()
     session.post.return_value = fake_response
@@ -549,17 +560,15 @@ def test_grok_search_uses_real_web_search_via_responses_endpoint() -> None:
 
 def test_grok_search_retries_with_stricter_prompt_on_malformed_json() -> None:
     gs = GrokSearch(api_key="test", model="test")
-    bad_response = MagicMock()
-    bad_response.raise_for_status = MagicMock()
     # Balanced braces (so the brace-matching fallback in _extract_json_object
     # finds a candidate substring) but a trailing comma makes that substring
     # itself invalid JSON -- this is the specific shape that raises
     # json.JSONDecodeError (as opposed to unbalanced/no-brace text, which
     # raises ValueError instead and isn't what _grok_search's retry catches).
-    bad_response.json.return_value = _responses_payload('{"results": [{"title": "x",}]}')
-    good_response = MagicMock()
-    good_response.raise_for_status = MagicMock()
-    good_response.json.return_value = _responses_payload('{"results": []}')
+    bad_response = _make_streaming_response(
+        _responses_stream_lines('{"results": [{"title": "x",}]}')
+    )
+    good_response = _make_streaming_response(_responses_stream_lines('{"results": []}'))
     session = MagicMock()
     session.post.side_effect = [bad_response, good_response]
     gs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]

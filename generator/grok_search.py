@@ -30,8 +30,9 @@ GROK_ENDPOINT = "https://api.x.ai/v1/chat/completions"
 # returns 410 Gone, "Live search is deprecated. Please switch to the Agent
 # Tools API"). Real search now requires this separate endpoint with a
 # differently-shaped request (top-level "input" string, not "messages") and
-# response ("output": [...] items, not "choices"). See _extract_responses_text
-# and the call sites in chat_completion(live_search=True) / _grok_search.
+# response ("output": [...] items, not "choices", consumed via SSE streaming
+# -- see _post_responses_streaming_with_retries). See the call sites in
+# chat_completion(live_search=True) / _grok_search.
 GROK_RESPONSES_ENDPOINT = "https://api.x.ai/v1/responses"
 _DEFAULT_DELAY = 0.05
 # Raised from 25s and retries cut from 2->1 (2026-08-15): the 2026-08-14
@@ -46,29 +47,61 @@ _DEFAULT_DELAY = 0.05
 # without compounding a hang into 3x spend.
 _DEFAULT_TIMEOUT_SECONDS = 45
 _DEFAULT_NETWORK_RETRIES = 1
+# Streaming timeouts for /v1/responses + web_search (2026-08-15): a raw SSE
+# probe of this exact endpoint found the connection alive and progressing
+# the whole time -- real gaps up to ~29s with zero bytes on the wire between
+# events (reasoning -> search call -> second search round -> output text),
+# total completion in ~68s for a real restaurant direct-batch harvest
+# prompt. A single blocking, non-streaming read simply cannot survive that
+# gap profile within any timeout tight enough to still catch a genuinely
+# dead connection, which is what was misdiagnosed as a provider outage
+# before this was found.
+# _STREAM_READ_TIMEOUT_SECONDS bounds each individual chunk read (catches a
+# truly dead connection); _STREAM_TOTAL_TIMEOUT_SECONDS is a wall-clock
+# safety ceiling in case the stream stays alive but never sends
+# response.completed. Raised 150s->250s the same day after a real attraction
+# harvest call (same endpoint, same code path) needed more than 150s on its
+# first attempt -- the too-tight ceiling killed a call that was still
+# legitimately working, forcing a full wasted retry (total 306.7s across 2
+# attempts for work a single more-patient attempt would have finished
+# sooner and cheaper). Per-call latency varies a lot by kind/complexity
+# (68s-150s+ observed); 250s leaves real margin above the worst case seen
+# so far rather than repeating the same "too tight" mistake at a new number.
+_DEFAULT_STREAM_READ_TIMEOUT_SECONDS = 60
+_DEFAULT_STREAM_TOTAL_TIMEOUT_SECONDS = 250
 
-# threshold=4/window=50s (window widened from 30s alongside the 25s->45s
-# per-attempt timeout change above -- 2026-08-15) is sized to the real
-# failure cadence under a sustained provider outage: with _GROK_SEMAPHORE
-# capping concurrency at 4, the largest failure burst physically possible is
-# one failure per occupied slot roughly every ~45-46s (attempt timeout +
-# backoff) -- a full round of all 4 concurrent slots timing out. Leaving
-# window at 30s after raising the per-attempt timeout to 45s would silently
-# reintroduce the exact bug this sizing was built to fix (a burst that can no
-# longer land inside its own window, so the breaker never trips -- the
-# original 5-within-20s combination's failure mode, observed over a 3.5-hour
-# outage in Dipstick48). threshold=4 trips on exactly one full
-# concurrent-timeout round; window=50s (not exactly 45s) leaves a few
-# seconds of margin for slot-start jitter rather than cutting it exactly to
-# the round's own expected duration.
+# threshold=4/window=70s (widened again 2026-08-15 once the live-search path
+# moved to streaming, above): almost all real traffic through this class is
+# live_search=True (every direct-batch harvest call and every .search()
+# call), whose dominant failure-detection latency is now
+# _STREAM_READ_TIMEOUT_SECONDS (60s), not the plain chat-completions
+# _timeout (45s) -- a truly dead streaming connection is caught by the
+# per-chunk read timeout well before the 150s total-timeout safety ceiling
+# in the common case. With _GROK_SEMAPHORE capping concurrency at 4, the
+# largest failure burst physically possible is one failure per occupied slot
+# roughly every ~60-61s (chunk read timeout + backoff) -- a full round of
+# all 4 concurrent slots timing out. A window shorter than that round's own
+# duration would silently reintroduce the exact bug this sizing was built to
+# fix (a burst that can't land inside its own window, so the breaker never
+# trips -- the original 5-within-20s combination's failure mode, observed
+# over a 3.5-hour outage in Dipstick48). window=70s leaves margin above the
+# ~61s expected round.
 _DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 4
-_DEFAULT_CIRCUIT_BREAKER_WINDOW_SECONDS = 50.0
+_DEFAULT_CIRCUIT_BREAKER_WINDOW_SECONDS = 70.0
 _DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 15.0
 _DEFAULT_CHAT_MAX_TOKENS = 6000
 
 # Global semaphore: cap concurrent connections to xAI API to avoid rate limiting.
-# 16 parallel threads → xAI rate-limits → all time out. Keep it at 4.
-_GROK_SEMAPHORE = threading.Semaphore(4)
+# 16 parallel threads -> xAI rate-limits -> all time out (2026-07-20 finding).
+# Raised 4->8 (2026-08-15) now that discover_all's per-destination category
+# parallelism (4 categories) plus per-run destination parallelism (up to 3
+# destinations) was queuing entirely behind this single 4-slot cap, serializing
+# work that was already logically concurrent. Kept well below the 16 that
+# broke things rather than assuming the old finding no longer applies --
+# that measurement predates the /v1/responses + streaming migration, so
+# xAI's actual rate limit for this heavier endpoint under load is still
+# unverified, not confirmed safe at a higher number.
+_GROK_SEMAPHORE = threading.Semaphore(8)
 
 
 class GrokCircuitOpenError(requests.RequestException):
@@ -154,6 +187,12 @@ class GrokSearch:
         self._timeout = int(os.environ.get("XAI_TIMEOUT_SECONDS", str(timeout_seconds)))
         self._delay = request_delay_seconds
         self._network_retries = max(0, int(os.environ.get("XAI_NETWORK_RETRIES", str(network_retries))))
+        self._stream_read_timeout = int(
+            os.environ.get("XAI_STREAM_READ_TIMEOUT_SECONDS", str(_DEFAULT_STREAM_READ_TIMEOUT_SECONDS))
+        )
+        self._stream_total_timeout = int(
+            os.environ.get("XAI_STREAM_TOTAL_TIMEOUT_SECONDS", str(_DEFAULT_STREAM_TOTAL_TIMEOUT_SECONDS))
+        )
         self._session_local = threading.local()
         self._usage_tracker = usage_tracker
         self._usage_operation_prefix = usage_operation_prefix
@@ -181,8 +220,13 @@ class GrokSearch:
         # breaker in "probe permanently in flight" -- it just expires and the
         # next caller gets a fresh chance.
         self._circuit_breaker_probe_claimed_until: float = 0.0
+        # max(...) with _stream_total_timeout: the live-search path (used for
+        # every direct-batch harvest and .search() call) now streams with a
+        # 150s wall-clock safety ceiling, longer than the plain
+        # chat-completions timeout -- the probe lease must cover whichever
+        # call type is actually in flight, not just the shorter one.
         self._circuit_breaker_probe_lease_seconds = (
-            self._timeout * (self._network_retries + 1) + 5.0
+            max(self._timeout, self._stream_total_timeout) * (self._network_retries + 1) + 5.0
         )
         # Trip/duration instrumentation (2026-08-15): lets a run's summary
         # answer "how much of this run's wall-clock time was actually spent
@@ -222,26 +266,7 @@ class GrokSearch:
             logger.warning("Grok search error for %r: %s", query[:60], exc)
             return []
 
-    @staticmethod
-    def _extract_responses_text(response_json: dict[str, Any]) -> str:
-        """Pull the final assistant text out of a /v1/responses payload.
-
-        The "output" array interleaves reasoning, web_search_call, and
-        message items; only "message" items with "output_text" content
-        blocks are the actual answer -- reasoning summaries and raw search
-        actions are intentionally skipped, matching what chat-completions'
-        message.content already gave callers."""
-        parts: list[str] = []
-        for item in response_json.get("output", []) or []:
-            if item.get("type") != "message":
-                continue
-            for block in item.get("content", []) or []:
-                if block.get("type") == "output_text":
-                    parts.append(str(block.get("text", "") or ""))
-        return "\n".join(parts)
-
-    def _record_responses_usage(self, response_json: dict[str, Any], *, operation_suffix: str) -> None:
-        usage = response_json.get("usage", {})
+    def _record_responses_usage(self, usage: dict[str, Any], *, operation_suffix: str) -> None:
         if not (self._usage_tracker and isinstance(usage, dict)):
             return
         prompt_tokens = int(usage.get("input_tokens", 0) or 0)
@@ -290,11 +315,10 @@ class GrokSearch:
                 # both share for this one format kind, so pass it through.
                 payload["text"] = {"format": response_format}
             try:
-                resp = self._post_with_retries(payload, user_prompt, endpoint=GROK_RESPONSES_ENDPOINT)
-                resp.raise_for_status()
-                response_json = resp.json()
-                content = self._extract_responses_text(response_json)
-                self._record_responses_usage(response_json, operation_suffix="chat_completion_search")
+                content, usage = self._post_responses_streaming_with_retries(
+                    payload, user_prompt, endpoint=GROK_RESPONSES_ENDPOINT
+                )
+                self._record_responses_usage(usage, operation_suffix="chat_completion_search")
                 return content
             except requests.RequestException as exc:
                 self._log_request_exception(user_prompt, exc)
@@ -375,13 +399,10 @@ class GrokSearch:
             logger.debug(f"[Grok-Attempt{attempt}] Posting to {GROK_RESPONSES_ENDPOINT} with model={self._model}")
             logger.debug(f"[Grok-Attempt{attempt}] Query: {query[:100]}")
 
-            resp = self._post_with_retries(payload, query, endpoint=GROK_RESPONSES_ENDPOINT)
-            logger.debug(f"[Grok-Attempt{attempt}] Response Status: {resp.status_code}")
-
-            resp.raise_for_status()
-            response_json = resp.json()
-            content = self._extract_responses_text(response_json)
-            self._record_responses_usage(response_json, operation_suffix="search")
+            content, usage = self._post_responses_streaming_with_retries(
+                payload, query, endpoint=GROK_RESPONSES_ENDPOINT
+            )
+            self._record_responses_usage(usage, operation_suffix="search")
 
             # Parse JSON from Grok response
             parsed = _extract_json_object(content)
@@ -671,6 +692,92 @@ class GrokSearch:
     @staticmethod
     def _is_retryable_http_status(status_code: int) -> bool:
         return status_code in (429, 500, 502, 503, 504)
+
+    def _post_responses_streaming_with_retries(
+        self, payload: dict[str, Any], query: str, *, endpoint: str
+    ) -> tuple[str, dict[str, Any]]:
+        """Stream a /v1/responses call and accumulate the final output text
+        + usage from its SSE events, with the same circuit-breaker/retry
+        protection as _post_with_retries.
+
+        A plain (non-streaming) request to this endpoint blocks until the
+        entire multi-round agentic search+synthesis loop finishes
+        server-side. Real probing (2026-08-15) found that loop alive and
+        progressing the whole time -- gaps up to ~29s with zero bytes on the
+        wire between events, ~68s total for a real direct-batch harvest
+        prompt -- which is exactly the failure mode that had been
+        misdiagnosed as a provider outage: any single blocking-read timeout
+        tight enough to still be useful cuts off a call that was actually
+        going to succeed. Streaming surfaces the same content incrementally
+        instead, so a per-chunk read timeout only needs to survive a gap
+        between events, not the whole call.
+        """
+        payload = dict(payload)
+        payload["stream"] = True
+        is_probe = self._circuit_breaker_check()
+        max_attempts = self._network_retries + 1
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            text_parts: list[str] = []
+            usage: dict[str, Any] = {}
+            deadline = time.monotonic() + self._stream_total_timeout
+            try:
+                with _GROK_SEMAPHORE:
+                    resp = self._get_session().post(
+                        endpoint,
+                        json=payload,
+                        timeout=self._stream_read_timeout,
+                        stream=True,
+                    )
+                resp.raise_for_status()
+                completed = False
+                for line in resp.iter_lines(decode_unicode=True):
+                    if time.monotonic() > deadline:
+                        raise requests.exceptions.ReadTimeout(
+                            f"Grok streaming response exceeded {self._stream_total_timeout}s total"
+                        )
+                    if not line or not line.startswith("data: "):
+                        continue
+                    try:
+                        evt = json.loads(line[6:])
+                    except (ValueError, json.JSONDecodeError):
+                        continue
+                    etype = evt.get("type", "")
+                    if etype == "response.output_text.delta":
+                        text_parts.append(str(evt.get("delta", "") or ""))
+                    elif etype == "response.completed":
+                        usage = (evt.get("response", {}) or {}).get("usage", {}) or {}
+                        completed = True
+                        break
+                    elif etype in ("response.failed", "response.incomplete"):
+                        err = (evt.get("response", {}) or {}).get("error") or etype
+                        raise RuntimeError(f"Grok streaming response ended with {etype}: {err}")
+                self._record_circuit_breaker_outcome(transient_failure=False, is_probe=is_probe)
+                return "".join(text_parts), usage
+            except requests.RequestException as exc:
+                last_exc = exc
+                is_transient = self._is_transient_request_error(exc)
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code is not None and self._is_retryable_http_status(status_code):
+                    is_transient = True
+                counts_toward_breaker = is_transient or status_code is not None
+                if counts_toward_breaker:
+                    self._record_circuit_breaker_outcome(transient_failure=True, is_probe=is_probe)
+                if attempt >= max_attempts or not is_transient:
+                    raise
+                backoff = min(2.0, 0.4 * attempt)
+                logger.info(
+                    "Grok transient %s for %r (attempt %s/%s), retrying in %.1fs",
+                    self._classify_request_exception(exc),
+                    query[:60],
+                    attempt,
+                    max_attempts,
+                    backoff,
+                )
+                time.sleep(backoff)
+        if last_exc:
+            raise last_exc
+        raise requests.RequestException("Unknown Grok streaming POST failure")
 
     # ── URL-resolution helper ────────────────────────────────────────────────
 
