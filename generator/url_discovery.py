@@ -2927,6 +2927,75 @@ class URLDiscoverer:
 
             dest["scenic_drives"] = kept_drives
 
+        # Merge top_attractions entries that point at the exact same URL --
+        # the AI-generated content and the direct-batch link harvest run
+        # independently, so the same real place can surface twice under
+        # different names that both resolve to the same canonical page
+        # (dipstick55 Theme F: "Telluride Mountain Village" and "Telluride
+        # Mountain Village Gondola" both resolved to
+        # telluride.com/discover/the-gondola/; Bryce Canyon's "Inspiration
+        # Point" and "Sunset and Inspiration Points via Rim Trail and Bryce
+        # Canyon Path" both resolved to the same AllTrails page). An exact
+        # URL match is about as high-confidence a "same place" signal as
+        # exists -- unlike name-similarity heuristics, it has no false-
+        # positive risk from two genuinely distinct places that just share a
+        # word (e.g. a third, different "Lower, Mid, and Upper Inspiration
+        # Points" AllTrails page legitimately survives this pass since its
+        # URL differs).
+        if attractions:
+            by_url: dict[str, list[dict[str, Any]]] = {}
+            for attr in attractions:
+                url = str(attr.get("url", "") or "").strip()
+                if not url:
+                    continue
+                by_url.setdefault(url, []).append(attr)
+
+            def _keep_rank(a: dict[str, Any]) -> tuple[int, int, int]:
+                has_desc = 1 if str(a.get("description", "") or "").strip() else 0
+                has_rating = 1 if (a.get("rating") is not None or str(a.get("raw_rating", "") or "").strip()) else 0
+                name_len = len(str(a.get("name", "") or ""))
+                # Prefer richer metadata, then a shorter (more likely
+                # canonical) name.
+                return (has_desc, has_rating, -name_len)
+
+            to_remove_ids: set[int] = set()
+            for url, group in by_url.items():
+                if len(group) < 2:
+                    continue
+
+                best = max(group, key=_keep_rank)
+                for attr in group:
+                    if attr is best:
+                        continue
+                    to_remove_ids.add(id(attr))
+                    logger.info(
+                        "  Within-destination dedup: removing attraction '%s' "
+                        "(duplicates '%s' via shared URL %s)",
+                        attr.get("name", ""),
+                        best.get("name", ""),
+                        url,
+                    )
+                    self._record_registry_entity_removal(
+                        dest,
+                        section_target="top_attractions",
+                        entity_class=(
+                            "trail"
+                            if self._is_trail_like_attraction(
+                                str(attr.get("name", "") or ""),
+                                str(attr.get("type", "") or ""),
+                                str(attr.get("description", "") or ""),
+                            )
+                            else "attraction"
+                        ),
+                        display_name=str(attr.get("name", "") or ""),
+                        rejection_reason="duplicate_of_attraction_same_url",
+                        description=str(attr.get("description", "") or ""),
+                    )
+
+            if to_remove_ids:
+                attractions = [attr for attr in attractions if id(attr) not in to_remove_ids]
+                ai["top_attractions"] = attractions
+
         # Remove attraction cards that duplicate a retained en-route stop.
         getting_here = ai.get("getting_here", {}) if isinstance(ai.get("getting_here", {}), dict) else {}
         en_route_stops = getting_here.get("en_route_stops", []) or []

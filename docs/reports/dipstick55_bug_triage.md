@@ -227,14 +227,39 @@ answer sitting unused. Verified with a unit test reproducing the exact case
 (coordinates come from a live Nominatim lookup for "Swasey's Beach, USA")
 confirming both `url` and `maps_url` end up coordinate-precise.
 
-## Theme F — Duplicate/overlapping entities
+## Theme F — Duplicate/overlapping entities [~]
 
-- [ ] "Telluride Mountain Village" and "Telluride Mountain Village Gondola"
+- [x] "Telluride Mountain Village" and "Telluride Mountain Village Gondola"
   render as two separate cards for what's effectively the same place. (user)
-- [ ] Bryce Canyon: "Inspiration Point" renders as its own card, AND "Sunset
+- [~] Bryce Canyon: "Inspiration Point" renders as its own card, AND "Sunset
   and Inspiration Points via Rim Trail and Bryce Canyon Path", AND "Lower,
   Mid, and Upper Inspiration Points" -- three overlapping entries covering
   the same viewpoint. (mine)
+
+**Root cause: `_deduplicate_within_destination` only ever deduped
+attraction-vs-scenic-drive and attraction-vs-en-route-stop -- it never
+deduped `top_attractions` against itself, so two entries pointing at the
+exact same URL (both discovered independently, one from the original AI
+content pass and one from the direct-batch link harvest) both survived as
+separate cards.** Confirmed via the real captured run: "Mountain Village"
+and "Telluride Mountain Village Gondola" both resolved to
+`telluride.com/discover/the-gondola/`; "Inspiration Point" and "Sunset and
+Inspiration Points via Rim Trail and Bryce Canyon Path" both resolved to the
+same AllTrails page. Fixed by adding an exact-URL-match merge pass over
+`top_attractions` within each destination, keeping whichever entry has
+richer metadata (description, then rating, then a shorter/more-canonical
+name) -- exact URL identity has no false-positive risk the way a name-
+similarity heuristic would, since two attractions that happen to share a
+word but point at genuinely different pages (Bryce's third "Lower, Mid, and
+Upper Inspiration Points" entry, a different AllTrails URL) are correctly
+left alone. This resolves the Telluride pair fully. It resolves 2 of Bryce's
+3 overlapping "Inspiration Point" entries (marked `[~]` rather than `[x]`
+since the third, distinctly-URLed entry is a genuinely different page
+covering overlapping real-world geography, not a same-URL duplicate --
+deciding whether/how to also merge *distinct-URL* near-duplicates would need
+a fuzzier heuristic with real false-positive risk, which is a product
+judgment call rather than a mechanical fix, so it's left as-is rather than
+guessed at.
 
 ## Theme G — En-route waypoint ordering
 

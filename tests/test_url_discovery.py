@@ -9063,6 +9063,108 @@ def test_deduplicate_within_destination_removes_attraction_matching_en_route_sto
     assert "Treasure Falls" in kept_names
 
 
+def test_deduplicate_within_destination_merges_attractions_sharing_exact_url():
+    """Regression for the exact dipstick55 Theme F report: 'Telluride
+    Mountain Village' and 'Telluride Mountain Village Gondola' both
+    resolved to https://www.telluride.com/discover/the-gondola/ and
+    rendered as two separate cards. An exact-URL match within the same
+    destination's top_attractions is merged, keeping whichever entry has
+    richer metadata (description/rating) rather than the bare duplicate."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Telluride",
+        "ai_content": {
+            "top_attractions": [
+                {
+                    "name": "Mountain Village",
+                    "type": "attraction",
+                    "url": "https://www.telluride.com/discover/the-gondola/",
+                    "description": "Mountain Village offers a modern contrast to Telluride with shopping and dining.",
+                    "rating": 4.9,
+                },
+                {
+                    "name": "Telluride Mountain Village Gondola",
+                    "type": "attraction",
+                    "url": "https://www.telluride.com/discover/the-gondola/",
+                },
+            ],
+            "getting_here": {"en_route_stops": []},
+        },
+        "scenic_drives": [],
+    }
+
+    discoverer._deduplicate_within_destination(dest)
+
+    attractions = dest["ai_content"]["top_attractions"]
+    assert len(attractions) == 1
+    assert attractions[0]["name"] == "Mountain Village"
+
+
+def test_deduplicate_within_destination_merges_bryce_inspiration_point_duplicates_but_keeps_distinct_trail():
+    """Regression for the second real dipstick55 Theme F case: Bryce
+    Canyon's 'Inspiration Point' and 'Sunset and Inspiration Points via Rim
+    Trail and Bryce Canyon Path' both resolved to the same AllTrails page and
+    must merge, but the genuinely distinct 'Lower, Mid, and Upper
+    Inspiration Points' (a different AllTrails URL) must survive -- exact-
+    URL matching must not over-merge just because names share a word."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Bryce Canyon National Park",
+        "ai_content": {
+            "top_attractions": [
+                {
+                    "name": "Inspiration Point",
+                    "type": "attraction",
+                    "url": "https://www.alltrails.com/trail/us/utah/sunset-and-inspiration-points-via-rim-trail-and-bryce-canyon-path",
+                    "description": "Provides one of the best panoramic views of the Bryce Canyon amphitheater.",
+                    "rating": 4.8,
+                },
+                {
+                    "name": "Sunset and Inspiration Points via Rim Trail and Bryce Canyon Path",
+                    "type": "hike",
+                    "url": "https://www.alltrails.com/trail/us/utah/sunset-and-inspiration-points-via-rim-trail-and-bryce-canyon-path",
+                    "rating": 4.8,
+                },
+                {
+                    "name": "Lower, Mid, and Upper Inspiration Points",
+                    "type": "hike",
+                    "url": "https://www.alltrails.com/trail/us/utah/lower-mid-and-upper-inspiration-points",
+                    "rating": 4.8,
+                },
+            ],
+            "getting_here": {"en_route_stops": []},
+        },
+        "scenic_drives": [],
+    }
+
+    discoverer._deduplicate_within_destination(dest)
+
+    names = [a["name"] for a in dest["ai_content"]["top_attractions"]]
+    assert names == ["Inspiration Point", "Lower, Mid, and Upper Inspiration Points"]
+
+
+def test_deduplicate_within_destination_records_attraction_url_merge_for_registry():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {
+        "name": "Telluride",
+        "ai_content": {
+            "top_attractions": [
+                {"name": "Mountain Village", "type": "attraction", "url": "https://example.com/gondola"},
+                {"name": "Telluride Mountain Village Gondola", "type": "attraction", "url": "https://example.com/gondola"},
+            ],
+            "getting_here": {"en_route_stops": []},
+        },
+        "scenic_drives": [],
+    }
+    discoverer._deduplicate_within_destination(dest)
+
+    decisions = dest.get("_registry_decisions", [])
+    assert len(decisions) == 1
+    assert decisions[0]["display_name"] == "Telluride Mountain Village Gondola"
+    assert decisions[0]["section_target"] == "top_attractions"
+    assert decisions[0]["validation_status"] == "rejected"
+
+
 def test_deduplicate_within_destination_records_scenic_drive_removal_for_registry():
     """Regression: this removal used to be invisible to the entity registry
     (and, transitively, schedule reconciliation), so a schedule could keep
