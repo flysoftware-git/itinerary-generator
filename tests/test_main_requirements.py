@@ -787,6 +787,91 @@ def test_selective_retry_runs_only_flagged_destinations() -> None:
     assert called["urls"] == [["taos"]]
 
 
+def test_selective_retry_skips_url_stage_when_breaker_reopens_after_outer_gate() -> None:
+    """Regression for a real, observed run (2026-08-15, all-Grok
+    --search-provider comparison): the outer caller only checks the
+    circuit breaker once, before _selective_retry_destinations is even
+    entered. Events/images retry (which run first, inside this function)
+    can take real time, and the breaker can reopen in that gap -- firing
+    url retry anyway burned 231s across 8 destinations for 0% improvement
+    in that run. is_search_circuit_open is re-checked immediately before
+    the url retry sub-stage specifically to catch that gap."""
+    trip = {
+        "trip": {"title": "Test"},
+        "destinations": [{"id": "taos", "name": "Taos"}],
+    }
+    status_report = {
+        "destinations": [
+            {"destination_id": "taos", "status": "needs_retry", "retry_recommended": True},
+        ]
+    }
+    called = {"events": 0, "images": 0, "urls": 0}
+
+    retry_ids = main_mod._selective_retry_destinations(
+        trip=trip,
+        status_report=status_report,
+        config_path="config.yaml",
+        llm_client=None,
+        output_dir=main_mod.Path("output"),
+        refresh_image_cache=False,
+        skip_events=False,
+        skip_images=False,
+        skip_url_discovery=False,
+        no_trails=False,
+        alltrails_source="direct_link_batch",
+        alltrails_apify_actor_id=None,
+        attraction_source="search",
+        restaurant_source="search",
+        en_route_source="direct_link_batch",
+        is_search_circuit_open=lambda: True,
+        run_events=lambda _subset_trip: called.__setitem__("events", called["events"] + 1),
+        run_images=lambda _subset_trip: called.__setitem__("images", called["images"] + 1),
+        run_urls=lambda _subset_trip: called.__setitem__("urls", called["urls"] + 1),
+    )
+
+    # Events/images retry still ran (they don't depend on the search
+    # breaker); only the url retry sub-stage was skipped.
+    assert retry_ids == ["taos"]
+    assert called["events"] == 1
+    assert called["images"] == 1
+    assert called["urls"] == 0
+
+
+def test_selective_retry_runs_url_stage_when_breaker_check_returns_false() -> None:
+    trip = {
+        "trip": {"title": "Test"},
+        "destinations": [{"id": "taos", "name": "Taos"}],
+    }
+    status_report = {
+        "destinations": [
+            {"destination_id": "taos", "status": "needs_retry", "retry_recommended": True},
+        ]
+    }
+    called = {"urls": 0}
+
+    main_mod._selective_retry_destinations(
+        trip=trip,
+        status_report=status_report,
+        config_path="config.yaml",
+        llm_client=None,
+        output_dir=main_mod.Path("output"),
+        refresh_image_cache=False,
+        skip_events=True,
+        skip_images=True,
+        skip_url_discovery=False,
+        no_trails=False,
+        alltrails_source="direct_link_batch",
+        alltrails_apify_actor_id=None,
+        attraction_source="search",
+        restaurant_source="search",
+        en_route_source="direct_link_batch",
+        is_search_circuit_open=lambda: False,
+        run_urls=lambda _subset_trip: called.__setitem__("urls", called["urls"] + 1),
+    )
+
+    assert called["urls"] == 1
+
+
 def test_selective_retry_respects_skip_flags() -> None:
     trip = {
         "trip": {"title": "Test"},

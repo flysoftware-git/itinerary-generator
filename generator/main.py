@@ -1073,6 +1073,7 @@ def _selective_retry_destinations(
     restaurant_source: str | None,
     en_route_source: str | None,
     search_provider_override: str | None = None,
+    is_search_circuit_open: Any | None = None,
     run_events: Any | None = None,
     run_images: Any | None = None,
     run_urls: Any | None = None,
@@ -1127,7 +1128,26 @@ def _selective_retry_destinations(
             ).fetch_all(subset_trip)
         run_images(images_trip)
 
-    if not skip_url_discovery and urls_trip is not None:
+    if not skip_url_discovery and urls_trip is not None and is_search_circuit_open is not None and is_search_circuit_open():
+        # Regression for a real, observed run (2026-08-15, all-Grok
+        # --search-provider comparison): the caller's own pre-retry gate
+        # checks the breaker exactly once, before this whole function is
+        # entered. Events and images retry (above) can each take real
+        # wall-clock time, and the breaker can reopen in that gap -- firing
+        # url retry into a since-reopened breaker anyway burned 231s across
+        # 8 destinations for a 0% improvement in that run. Re-checking here,
+        # immediately before the expensive part fires, catches exactly that
+        # gap; it cannot catch the breaker tripping *during* url retry
+        # itself (each destination's own network calls already fail fast
+        # via their own per-call breaker check once that happens -- this
+        # only avoids paying for a retry we already know is doomed before
+        # we even start it).
+        click.echo(
+            "  ⚠ Selective URL retry SKIPPED — search circuit breaker reopened since the "
+            "outer retry gate check (events/images retry ran first); retrying now would "
+            "repeat the same failures."
+        )
+    elif not skip_url_discovery and urls_trip is not None:
         if run_urls is None:
             from generator.url_discovery import URLDiscoverer
 
@@ -2065,6 +2085,9 @@ def main(
                 restaurant_source=normalized_restaurant_source,
                 en_route_source=normalized_en_route_source,
                 search_provider_override=search_provider,
+                is_search_circuit_open=(
+                    url_discoverer.is_search_circuit_open if url_discoverer is not None else None
+                ),
                 run_urls=_run_urls_for_retry,
             )
     runtime_metrics["retry_skipped_due_to_circuit_open"] = retry_skipped_due_to_circuit_open
