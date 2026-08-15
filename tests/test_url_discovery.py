@@ -2674,7 +2674,14 @@ def test_classify_url_policy_class_handles_maps_url_variants():
     ) == "general"
 
 
-def test_direct_batch_html_uses_plain_chat_completion_without_live_search():
+def test_direct_batch_html_uses_real_live_search():
+    """Regression for the 2026-08-14 fix: live_search=False used to be
+    hardcoded here (this test used to assert exactly that), silently running
+    every harvest call on the model's training-data memory since xAI's
+    live_search mechanism was itself deprecated. Real search must be
+    requested now -- probe evidence showed 21/21 embedded URLs matching the
+    model's own search citations with this enabled, vs. no verifiable
+    provenance at all without it."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_link_batch_limit = lambda: 3
     discoverer._direct_batch_min_required = lambda kind: 1
@@ -2691,7 +2698,7 @@ def test_direct_batch_html_uses_plain_chat_completion_without_live_search():
     )
 
     assert rows
-    assert discoverer._search.chat_completion.call_args.kwargs["live_search"] is False
+    assert discoverer._search.chat_completion.call_args.kwargs["live_search"] is True
 
 
 def test_direct_batch_html_retries_empty_attraction_result():

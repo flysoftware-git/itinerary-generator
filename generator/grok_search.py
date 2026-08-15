@@ -26,6 +26,13 @@ import requests
 
 logger = logging.getLogger(__name__)
 GROK_ENDPOINT = "https://api.x.ai/v1/chat/completions"
+# xAI's chat-completions "live_search" tool is deprecated (confirmed 2026-08-14:
+# returns 410 Gone, "Live search is deprecated. Please switch to the Agent
+# Tools API"). Real search now requires this separate endpoint with a
+# differently-shaped request (top-level "input" string, not "messages") and
+# response ("output": [...] items, not "choices"). See _extract_responses_text
+# and the call sites in chat_completion(live_search=True) / _grok_search.
+GROK_RESPONSES_ENDPOINT = "https://api.x.ai/v1/responses"
 _DEFAULT_DELAY = 0.05
 _DEFAULT_TIMEOUT_SECONDS = 25
 _DEFAULT_NETWORK_RETRIES = 2
@@ -183,6 +190,39 @@ class GrokSearch:
             logger.warning("Grok search error for %r: %s", query[:60], exc)
             return []
 
+    @staticmethod
+    def _extract_responses_text(response_json: dict[str, Any]) -> str:
+        """Pull the final assistant text out of a /v1/responses payload.
+
+        The "output" array interleaves reasoning, web_search_call, and
+        message items; only "message" items with "output_text" content
+        blocks are the actual answer -- reasoning summaries and raw search
+        actions are intentionally skipped, matching what chat-completions'
+        message.content already gave callers."""
+        parts: list[str] = []
+        for item in response_json.get("output", []) or []:
+            if item.get("type") != "message":
+                continue
+            for block in item.get("content", []) or []:
+                if block.get("type") == "output_text":
+                    parts.append(str(block.get("text", "") or ""))
+        return "\n".join(parts)
+
+    def _record_responses_usage(self, response_json: dict[str, Any], *, operation_suffix: str) -> None:
+        usage = response_json.get("usage", {})
+        if not (self._usage_tracker and isinstance(usage, dict)):
+            return
+        prompt_tokens = int(usage.get("input_tokens", 0) or 0)
+        completion_tokens = int(usage.get("output_tokens", 0) or 0)
+        if prompt_tokens or completion_tokens:
+            self._usage_tracker.add(
+                provider="grok",
+                model=self._model,
+                operation=f"{self._usage_operation_prefix}:{operation_suffix}",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+
     def chat_completion(
         self,
         *,
@@ -193,12 +233,45 @@ class GrokSearch:
         live_search: bool = False,
         max_tokens: int | None = None,
     ) -> str:
-        """Execute a single Grok chat completion and return message content.
+        """Execute a single Grok completion and return message content.
 
         This is used by URL discovery HTML-mode direct-batch prompts where the
         caller needs raw model text rather than normalized search rows.
+
+        live_search=True routes to the /v1/responses endpoint with the real
+        web_search tool (see GROK_RESPONSES_ENDPOINT) -- the old
+        tools:[{"type":"live_search"}] mechanism on chat-completions is
+        deprecated. Probe evidence (2026-08-14): with search genuinely
+        enabled, 21/21 embedded URLs matched Grok's own search citations
+        across 4 real test cases (582 total citations) -- vs zero citations
+        and no way to verify provenance at all with live_search=False.
         """
-        payload: dict[str, Any] = {
+        if live_search:
+            payload: dict[str, Any] = {
+                "model": self._model,
+                "input": f"{str(system_prompt or '')}\n\n{str(user_prompt or '')}",
+                "tools": [{"type": "web_search"}],
+            }
+            if response_format is not None:
+                # /v1/responses uses "text.format", not chat-completions'
+                # "response_format" -- {"type": "json_object"} is the shape
+                # both share for this one format kind, so pass it through.
+                payload["text"] = {"format": response_format}
+            try:
+                resp = self._post_with_retries(payload, user_prompt, endpoint=GROK_RESPONSES_ENDPOINT)
+                resp.raise_for_status()
+                response_json = resp.json()
+                content = self._extract_responses_text(response_json)
+                self._record_responses_usage(response_json, operation_suffix="chat_completion_search")
+                return content
+            except requests.RequestException as exc:
+                self._log_request_exception(user_prompt, exc)
+                return ""
+            except Exception as exc:
+                logger.warning("Grok search completion error for %r: %s", user_prompt[:60], exc)
+                return ""
+
+        payload = {
             "model": self._model,
             "messages": [
                 {"role": "system", "content": str(system_prompt or "")},
@@ -212,8 +285,6 @@ class GrokSearch:
         }
         if response_format is not None:
             payload["response_format"] = response_format
-        if live_search:
-            payload["tools"] = [{"type": "live_search"}]
 
         try:
             resp = self._post_with_retries(payload, user_prompt)
@@ -242,7 +313,15 @@ class GrokSearch:
             return ""
 
     def _grok_search(self, query: str, attempt: int = 1) -> list[dict[str, Any]]:
-        """Execute Grok search with optional retry on malformed JSON."""
+        """Execute a real Grok web search (via /v1/responses + the web_search
+        tool) with optional retry on malformed JSON.
+
+        Previously this just told the model "You are a web search engine" via
+        the system prompt on the plain chat-completions endpoint, with no
+        actual search tool granted -- results could be entirely reproduced
+        from training-data memory, not live search. Fixed 2026-08-14
+        alongside chat_completion's live_search=True path; see
+        GROK_RESPONSES_ENDPOINT."""
         system_prompt = (
             "You are a web search engine. Perform a web search for the user query and return results "
             "strictly in this JSON format:\n"
@@ -257,36 +336,20 @@ class GrokSearch:
         try:
             payload = {
                 "model": self._model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": query},
-                ],
-                "temperature": 0.1,
-                "response_format": {"type": "json_object"},
+                "input": f"{system_prompt}\n\n{query}",
+                "tools": [{"type": "web_search"}],
+                "text": {"format": {"type": "json_object"}},
             }
-            logger.debug(f"[Grok-Attempt{attempt}] Posting to {GROK_ENDPOINT} with model={self._model}")
-            logger.debug(f"[Grok-Attempt{attempt}] API Key prefix: {self._api_key[:20]}...")
+            logger.debug(f"[Grok-Attempt{attempt}] Posting to {GROK_RESPONSES_ENDPOINT} with model={self._model}")
             logger.debug(f"[Grok-Attempt{attempt}] Query: {query[:100]}")
 
-            resp = self._post_with_retries(payload, query)
+            resp = self._post_with_retries(payload, query, endpoint=GROK_RESPONSES_ENDPOINT)
             logger.debug(f"[Grok-Attempt{attempt}] Response Status: {resp.status_code}")
-            
+
             resp.raise_for_status()
             response_json = resp.json()
-            content = response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-            usage = response_json.get("usage", {})
-            if self._usage_tracker and isinstance(usage, dict):
-                prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-                completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-                if prompt_tokens or completion_tokens:
-                    self._usage_tracker.add(
-                        provider="grok",
-                        model=self._model,
-                        operation=f"{self._usage_operation_prefix}:search",
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                    )
+            content = self._extract_responses_text(response_json)
+            self._record_responses_usage(response_json, operation_suffix="search")
 
             # Parse JSON from Grok response
             parsed = _extract_json_object(content)
@@ -427,8 +490,15 @@ class GrokSearch:
             if len(self._circuit_breaker_failure_times) >= self._circuit_breaker_threshold:
                 self._circuit_breaker_open_until = now + self._circuit_breaker_cooldown_seconds
 
-    def _post_with_retries(self, payload: dict[str, Any], query: str) -> requests.Response:
-        """POST to Grok with lightweight retry/backoff for transient read timeouts."""
+    def _post_with_retries(
+        self, payload: dict[str, Any], query: str, *, endpoint: str = GROK_ENDPOINT
+    ) -> requests.Response:
+        """POST to Grok with lightweight retry/backoff for transient read timeouts.
+
+        endpoint defaults to the chat-completions endpoint; callers using the
+        /v1/responses endpoint (real search -- see GROK_RESPONSES_ENDPOINT)
+        pass it explicitly, reusing the same circuit-breaker/retry protection
+        rather than duplicating it."""
         self._circuit_breaker_check()
         max_attempts = self._network_retries + 1
         last_exc: requests.RequestException | None = None
@@ -436,7 +506,7 @@ class GrokSearch:
             try:
                 with _GROK_SEMAPHORE:
                     resp = self._get_session().post(
-                        GROK_ENDPOINT,
+                        endpoint,
                         json=payload,
                         timeout=self._timeout,
                     )

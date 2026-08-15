@@ -4283,7 +4283,16 @@ class URLDiscoverer:
                     user_prompt=user_prompt,
                     temperature=0.1,
                     response_format=None,
-                    live_search=False,
+                    # Real search (2026-08-14 fix): the old live_search
+                    # mechanism this flag used to gate was silently
+                    # deprecated by xAI -- every harvest call in production
+                    # was running on the model's training-data memory, not
+                    # live search, regardless of this flag's value. Probe
+                    # evidence: with search genuinely enabled, 21/21 embedded
+                    # URLs matched Grok's own citations across 4 real test
+                    # cases (582 citations); the previous behavior produced
+                    # zero citations and no way to verify provenance at all.
+                    live_search=True,
                 )
                 or ""
             )
@@ -4319,7 +4328,16 @@ class URLDiscoverer:
                     user_prompt=retry_prompt,
                     temperature=0.1,
                     response_format=None,
-                    live_search=False,
+                    # Real search (2026-08-14 fix): the old live_search
+                    # mechanism this flag used to gate was silently
+                    # deprecated by xAI -- every harvest call in production
+                    # was running on the model's training-data memory, not
+                    # live search, regardless of this flag's value. Probe
+                    # evidence: with search genuinely enabled, 21/21 embedded
+                    # URLs matched Grok's own citations across 4 real test
+                    # cases (582 citations); the previous behavior produced
+                    # zero citations and no way to verify provenance at all.
+                    live_search=True,
                 )
                 or ""
             )
