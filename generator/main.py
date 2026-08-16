@@ -270,7 +270,6 @@ def _run_quality_gate(trip: dict[str, Any], html_path: "Path | None" = None) -> 
 
     for dest in trip.get("destinations", []) or []:
         ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content"), dict) else {}
-        dest_name = str(dest.get("name", "") or "")
 
         for rest in ai.get("dinner_recommendations", []) or []:
             desc = str(rest.get("description", "") or "").strip().lower()

@@ -4972,7 +4972,6 @@ class URLDiscoverer:
     @staticmethod
     def _infer_direct_batch_quality_metadata(text: str, url: str) -> dict[str, Any]:
         blob = str(text or "")
-        lowered = blob.lower()
         lower_url = (url or "").lower()
         out: dict[str, Any] = {}
 
@@ -6738,7 +6737,6 @@ class URLDiscoverer:
         url = self._strip_alltrails_tracking(url)
 
         parsed = urlparse(url)
-        slug = unquote(parsed.path.rsplit("/", 1)[-1]).lower()
         if not self._is_noisy_alltrails_slug(url, item_name):
             return url
 
@@ -9323,7 +9321,6 @@ class URLDiscoverer:
         title = str(item.get("name", "") or "")
         snippet = str(item.get("snippet", "") or "")
 
-        lower_url = url.lower()
         parsed = urlparse(url)
         host_path = f"{parsed.netloc}{parsed.path}".lower()
         text = f"{title} {snippet}".lower()

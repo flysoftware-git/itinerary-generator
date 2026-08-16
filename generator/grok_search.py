@@ -732,7 +732,6 @@ class GrokSearch:
                         stream=True,
                     )
                 resp.raise_for_status()
-                completed = False
                 for line in resp.iter_lines(decode_unicode=True):
                     if time.monotonic() > deadline:
                         raise requests.exceptions.ReadTimeout(
@@ -749,7 +748,6 @@ class GrokSearch:
                         text_parts.append(str(evt.get("delta", "") or ""))
                     elif etype == "response.completed":
                         usage = (evt.get("response", {}) or {}).get("usage", {}) or {}
-                        completed = True
                         break
                     elif etype in ("response.failed", "response.incomplete"):
                         err = (evt.get("response", {}) or {}).get("error") or etype

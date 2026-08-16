@@ -38,7 +38,7 @@ class Geocoder:
                     Geocoder._cache[query] = (location.latitude, location.longitude)
                     return Geocoder._cache[query]
                 raise ValueError(f"Nominatim returned no results for: '{query}'")
-            except GeocoderRateLimited as exc:
+            except GeocoderRateLimited:
                 if attempt == retries:
                     raise
                 backoff = 15 * (attempt + 1)

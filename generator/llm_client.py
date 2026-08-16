@@ -247,7 +247,6 @@ class MultiLLMClient:
         # served a given call -- a fresh per-instance tracker would silently
         # lose track of spend incurred during failover.
         self.usage_tracker = usage_tracker or UsageTracker()
-        self._config_path = config_path
         self._fallback_client: "MultiLLMClient | None" = None
         fallback_provider = str(
             llm_cfg.get("fallback_provider") or ai_cfg.get("fallback_provider") or ""
