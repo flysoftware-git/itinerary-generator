@@ -1,14 +1,28 @@
 # Multi-Site Destination Grouping (GH #68)
 
-Status: **implemented, isolated, not yet merged** (2026-08-15). Built by a
-background agent in its own worktree, branched from `issue-6-v2`, all 4 §7
-open questions resolved (see each question's entry below) -- see
-`branch: worktree-agent-a0de01b67c19935db`,
-`worktree: C:\Dev\Road-trip-generator\.claude\worktrees\agent-a0de01b67c19935db`.
-Not merged, not pushed, no PR -- the plan was to merge before finalizing
-V2, once the rest of the stability work concluded. Deliberately parked
-rather than merged automatically; a human should review the actual diff
-before it lands, especially given the deviation noted in §7 item 5.
+Status: **merged into `issue-6-v2`** (2026-08-16). Built by a background
+agent in its own worktree, all 4 §7 open questions resolved (see each
+question's entry below), then merged fresh against current tip (the
+original worktree had gone 35 commits stale by merge time, so the merge
+was redone against everything landed since rather than trusting the old
+worktree's own readiness). 864 tests passing post-merge.
+
+Real manifest entries now exist exercising this feature:
+`C:\Dev\Sandbox\sw_manifest.yaml` has `arches` and `canyonlands` entries
+with `group_with: moab`, with `Delicate Arch`/`Landscape Arch` and
+`Island in the Sky`/`Mesa Arch` moved into them respectively from Moab's
+`seeds:` list (previous manifests crammed these into Moab's own
+attraction list, which is exactly the bug that motivated merging this
+now -- see the dipstick58 triage notes for the concrete Delicate Arch
+finding). `Corona Arch Trail` stayed under Moab -- it's BLM land, not
+inside either park.
+
+**Still needs your eyes**: §7 item 5's deviation is real and unresolved
+-- the "Based from X (see Y)" lodging pointer
+(`_build_group_lodging_pointer` in `generator/html_assembler.py`) was
+built as new UI, not a dedup of a pre-existing lodging block, since no
+such block existed in current rendering. Confirm this still matches the
+UX you want.
 
 Follow-up to the three design options presented for GH #68 ("Multi-site
 destinations") -- this is Option 3 ("grouped destinations via manifest"),
