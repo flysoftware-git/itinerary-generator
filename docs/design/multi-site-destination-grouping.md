@@ -248,9 +248,30 @@ lodging-dedup treatment in §2 — e.g., "Dining: see Moab").
    still matches the intended UX, since it's not exactly what was
    originally speced.
 
-## 8. Relationship to Side Trips (GH #3)
+## 8. Relationship to Side Trips (GH #3) and Multiple Bases (GH #4)
 
 Added 2026-08-16, following a design discussion with the project owner.
+Two other open issues describe shapes close enough to this one that
+they're worth distinguishing explicitly rather than letting them blur
+together.
+
+### GH #4 — the inverse topology
+
+**GH #4 ("Multiple bases per location")** describes the *inverse* of this
+document: "one destination, many bases" (e.g. fly into Las Vegas, stay in
+St George, see part of Zion from St George and the rest from a base
+nearer the park) — versus this doc's "one base, many destinations" (Moab
+base, with Arches/Canyonlands as day-trip entries). Both are real, both
+are open, and a future `base_locations`-style schema (per-day base
+assignment within a single destination, as #4 proposes) needs to stay
+clearly distinguishable from `group_with` (per-destination base
+assignment across several destination entries, this doc) rather than
+merged into one mechanism — they solve different problems (splitting one
+place's lodging across days vs. sharing one lodging across several
+places) even though both relax the "one destination = one base"
+assumption this codebase currently hard-codes everywhere.
+
+### GH #3 — the advisory/unverified version
 GH #3 ("Side trips") describes a superficially similar shape — a
 destination near enough to a base that the traveler explores it and
 returns — and the owner asked whether the two features overlap enough to
