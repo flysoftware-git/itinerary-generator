@@ -595,6 +595,29 @@ def test_build_restaurants_omits_items_when_only_maps_search_fallback_exists() -
     assert "google.com/search?q=Fallback%20Grill" not in html
 
 
+def test_build_restaurants_renders_caution_badge_when_promoted_without_url() -> None:
+    """A restaurant with no direct URL and no maps fallback can still be
+    promoted (_should_render_without_url) on description strength alone, but
+    must be visually flagged as unverified rather than shown like a
+    source-linked entry."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_restaurants(
+        {
+            "dinner_recommendations": [
+                {
+                    "name": "Cozy Corner Cafe",
+                    "description": "A cozy trailside cafe known for its green chile stew and fresh sopapillas.",
+                    "cuisine": "Southwestern",
+                },
+            ]
+        },
+        "St. George",
+    )
+
+    assert "Cozy Corner Cafe" in html
+    assert '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>' in html
+
+
 def test_assembled_html_preserves_marker_date_context_alongside_stop_indices() -> None:
     assembler = HTMLAssembler(config_path="config.yaml")
     trip = {
@@ -1262,6 +1285,49 @@ def test_build_attractions_renders_seed_badge_for_user_requested_anchor() -> Non
     assert "badge-seed" not in kolob_row
 
 
+def test_build_attractions_renders_caution_badge_when_promoted_without_url() -> None:
+    """An attraction with no URL can still be promoted (_should_render_without_url)
+    when it carries enough metadata/description to be useful, but must be
+    visually flagged as unverified rather than rendered indistinguishably from
+    a source-linked entry."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_attractions(
+        {
+            "top_attractions": [
+                {
+                    "name": "Quiet Overlook",
+                    "difficulty": "Easy",
+                    "duration": "30 min",
+                    "description": "A short pull-off with sweeping canyon views.",
+                }
+            ]
+        },
+        drives=[],
+        dest_name="Zion National Park",
+    )
+
+    assert '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>' in html
+
+
+def test_build_attractions_omits_caution_badge_when_url_present() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_attractions(
+        {
+            "top_attractions": [
+                {
+                    "name": "Angels Landing",
+                    "url": "https://www.nps.gov/zion/angels-landing.htm",
+                    "description": "A strenuous chain-assisted climb to a narrow summit ridge.",
+                }
+            ]
+        },
+        drives=[],
+        dest_name="Zion National Park",
+    )
+
+    assert "badge-caution" not in html
+
+
 def test_build_attractions_seed_and_must_see_badges_are_independent() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     html = assembler._build_attractions(
@@ -1636,6 +1702,32 @@ def test_build_getting_here_renders_en_route_stop_maps_search_fallback_link() ->
     assert "google.com/maps/search/?api=1&amp;query=Snow+Canyon+St+George" in html
     assert ">Snow Canyon</a>" in html
     assert "Snow Canyon" in html
+
+
+def test_build_getting_here_renders_caution_badge_for_en_route_stop_promoted_without_any_url() -> None:
+    """An en-route stop with no direct URL and no maps fallback can still be
+    promoted on description strength alone (_should_render_without_url), but
+    must carry the same unverified-caution flag as attractions/restaurants."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "getting_here": {
+            "route_summary": "Drive to Santa Fe.",
+            "distance_miles": "60",
+            "drive_time": "1h 15m",
+            "en_route_stops": [
+                {
+                    "name": "Adobe Plaza",
+                    "description": "A quiet detour through an old adobe plaza with local artisan shops.",
+                }
+            ],
+        }
+    }
+    dest = {"name": "Santa Fe"}
+
+    html = assembler._build_getting_here(ai, dest, previous_name="Albuquerque")
+
+    assert "Adobe Plaza" in html
+    assert '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>' in html
 
 
 def test_build_getting_here_falls_back_to_maps_url_when_canonical_missing() -> None:

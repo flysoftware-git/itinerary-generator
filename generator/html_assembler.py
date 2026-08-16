@@ -955,6 +955,10 @@ class HTMLAssembler:
                 rating_badge_html = (
                     f' <span class="badge badge-rating">★ {html_escape.escape(rating_text)}</span>' if rating_text else ""
                 )
+                caution_html = (
+                    ' <span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>'
+                    if not url else ""
+                )
 
                 description = html_escape.escape(description_raw)
                 practical_note = html_escape.escape(practical_note_raw)
@@ -962,7 +966,7 @@ class HTMLAssembler:
                 html += (
                     f'    <div class="stop-card">'
                     f'<span class="stop-icon">{icon}</span>'
-                    f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}{rating_badge_html}'
+                    f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}{rating_badge_html}{caution_html}'
                     f'<div class="stop-desc">{description}</div>{note_html}</div>'
                     f'</div>\n'
                 )
@@ -1099,6 +1103,13 @@ class HTMLAssembler:
             # (docs/requirements.md §3.4), distinct from Must-See's verified-
             # quality signal -- surfaced first since it's the more personal claim.
             seed_html = '<span class="badge badge-seed">Your Pick</span>' if attr.get("is_seed") else ""
+            # Rendered without a verified source link (see _should_render_without_url):
+            # promoted anyway because we had enough descriptive metadata to be useful,
+            # but flagged so it's visually distinguishable from a linked, source-checked entry.
+            caution_html = (
+                '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>'
+                if not url else ""
+            )
             note_html = f'<span class="practical-note">📌 {note}</span>' if note else ""
 
             attraction_rows.append(
@@ -1108,6 +1119,7 @@ class HTMLAssembler:
                 f'<span class="attr-name">{name_html}</span>'
                 f'<div class="attr-badges attr-badges-inline">'
                 f'{seed_html}'
+                f'{caution_html}'
                 f'{must_html}'
                 f'{rating_html}'
                 f'{diff_html}'
@@ -1500,6 +1512,10 @@ class HTMLAssembler:
             reserve_badge = '<span class="badge badge-reserve">Reservations Recommended</span>' if reserve else ""
             price_badge = f'<span class="badge badge-price">{html_escape.escape(price)}</span>' if price else ""
             rating_badge = f'<span class="badge badge-rating">★ {html_escape.escape(rating_text)}</span>' if rating_text else ""
+            caution_badge = (
+                '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>'
+                if not url else ""
+            )
 
             desc_html = f'    <span class="rest-desc">{html_escape.escape(desc)}</span>\n' if desc else ""
             rows.append(
@@ -1507,6 +1523,7 @@ class HTMLAssembler:
                 f'    <div class="rest-header rest-header-inline">\n'
                 f'      <span class="rest-name"><span class="rest-icon">🍽️</span> {name_html}</span>\n'
                 f'      <div class="rest-badges">\n'
+                f'        {caution_badge}\n'
                 f'        {cuisine_badge}\n'
                 f'        {rating_badge}\n'
                 f'        {price_badge}\n'
