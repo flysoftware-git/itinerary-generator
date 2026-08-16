@@ -4715,6 +4715,97 @@ def test_build_primary_items_from_direct_batch_carries_rating_fields() -> None:
     assert merged[0].get("rating") == 4.7
 
 
+def test_direct_batch_rows_from_html_recognizes_bistro_as_cuisine() -> None:
+    """Dipstick58 bug 2: a harvested row like "Book Club Bistro 4.9/5 $$
+    Bistro" trails the word "Bistro" as its cuisine token (matching the
+    format used for every other restaurant row), but "bistro" was missing
+    from `_infer_restaurant_metadata_from_text_and_url`'s cuisine keyword
+    map, so the cuisine field stayed empty and the rendered card lost its
+    cuisine badge entirely even though the harvest source did supply one."""
+    html = (
+        "<li>Book Club Bistro 4.9/5 $$ Bistro "
+        '<a href="https://www.opentable.com/r/book-club-bistro-saint-george">Source</a> '
+        '<a href="https://www.google.com/maps/search/?api=1&query=Book+Club+Bistro+St.+George+UT">Maps</a></li>'
+    )
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    assert rows[0]["name"] == "Book Club Bistro"
+    assert rows[0]["cuisine"] == "Bistro"
+
+
+def test_build_primary_items_from_direct_batch_does_not_synthesize_description_from_name_and_metadata() -> None:
+    """Dipstick58 bug 1: when a harvested row has no real description/
+    practical_note (just the item's own name plus rating/price/cuisine
+    metadata -- e.g. "Book Club Bistro 4.9/5 $$ Bistro"), the row-merge
+    logic used to fall back to the row's raw "snippet" field as the
+    description. That snippet is just the name plus the same metadata
+    already rendered as badges, so once html_assembler's rating/price
+    stripping ran on it, "Book Club Bistro 4.9/5 $$ Bistro" collapsed into
+    "Book Club Bistro Bistro" -- the cuisine word duplicated onto the end
+    of the name. The merge must recognize that snippet as metadata-only and
+    fall back to the generic fallback_description instead."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    rows = [
+        {
+            "name": "Book Club Bistro",
+            "title": "Book Club Bistro",
+            "url": "https://www.opentable.com/r/book-club-bistro-saint-george",
+            "snippet": (
+                "Book Club Bistro 4.9/5 $$ Bistro Source Maps "
+                "Links: https://www.opentable.com/r/book-club-bistro-saint-george "
+                "https://www.google.com/maps/search/?api=1&query=Book+Club+Bistro+St.+George+UT"
+            ),
+            "description": "",
+            "practical_note": "",
+            "cuisine": "Bistro",
+            "price_range": "$$",
+            "rating": 4.9,
+            "raw_rating": "4.9/5",
+        }
+    ]
+
+    merged = discoverer._build_primary_items_from_direct_batch(
+        rows=rows,
+        existing_items=[],
+        target_count=1,
+        fallback_description="Locally surfaced dinner option.",
+    )
+
+    assert merged
+    assert merged[0]["description"] == "Locally surfaced dinner option."
+    assert "Bistro" not in merged[0]["description"]
+
+
+def test_book_club_bistro_direct_batch_html_renders_clean_name_cuisine_badge_no_duplicate_description() -> None:
+    """Full-pipeline regression for dipstick58: the real captured St. George
+    direct-batch restaurant HTML row for "Book Club Bistro" must render with
+    its full name intact, a populated cuisine badge, and no duplicated
+    "Bistro Bistro"-style description text."""
+    from generator.html_assembler import HTMLAssembler
+
+    html = (
+        "<li>Book Club Bistro 4.9/5 $$ Bistro "
+        '<a href="https://www.opentable.com/r/book-club-bistro-saint-george">Source</a> '
+        '<a href="https://www.google.com/maps/search/?api=1&query=Book+Club+Bistro+St.+George+UT">Maps</a></li>'
+    )
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    merged = discoverer._build_primary_items_from_direct_batch(
+        rows=rows,
+        existing_items=[],
+        target_count=1,
+        fallback_description="Locally surfaced dinner option.",
+    )
+
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    out = assembler._build_restaurants({"dinner_recommendations": merged}, "St. George")
+
+    assert ">Book Club Bistro<" in out
+    assert '<span class="badge cuisine-badge">Bistro</span>' in out
+    assert "Book Club Bistro Bistro" not in out
+    assert ">Book Club<" not in out
+
+
 def test_build_primary_items_from_direct_batch_rejects_generic_listing_row() -> None:
     """Reproduces the Dipstick48 bug: a harvested row whose only "name" is a
     TripAdvisor/Yelp listicle title (and whose url is the listing page itself)

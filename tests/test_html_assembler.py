@@ -1187,6 +1187,39 @@ def test_build_restaurants_uses_cuisine_tickler_for_american_and_cafe() -> None:
     assert "American-style dinner spot" not in html
     assert "Cafe-style dinner spot" not in html
     assert "verify current hours before you go" not in html
+    # The names are already clean (no rating/price glued on) -- the cuisine
+    # badge matching the name's own trailing word must not cause the
+    # sanitizer to chop it off (see the dedicated regression below).
+    assert "Wild Rabbit Cafe</span>" in html
+
+
+def test_sanitize_restaurant_display_name_leaves_clean_name_alone_when_cuisine_matches_tail() -> None:
+    """Dipstick58 bug 2 fallout: fixing the missing "bistro" cuisine keyword
+    (see test_direct_batch_rows_from_html_recognizes_bistro_as_cuisine in
+    test_url_discovery.py) surfaced a latent bug in the display-name
+    sanitizer's cuisine-suffix "last resort" heuristic. That heuristic is
+    only supposed to fire when rating/price decoration is glued onto the
+    name (the docstring explicitly says "Wild Rabbit Cafe" with
+    cuisine="Cafe" must not be touched), but the "not truncated" guard alone
+    doesn't actually protect that case: an already-clean name (no rating or
+    price at all) also leaves `truncated` False, so the cuisine match at the
+    tail was still wrongly stripped -- "Book Club Bistro" with cuisine=
+    "Bistro" collapsed to "Book Club". The fix requires independent evidence
+    of glued-on decoration (a rating pattern or a price-symbol run
+    elsewhere in the name) before trusting a cuisine match at the tail is
+    decoration rather than the restaurant's real name."""
+    assert HTMLAssembler._sanitize_restaurant_display_name("Wild Rabbit Cafe", cuisine="Cafe") == "Wild Rabbit Cafe"
+    assert HTMLAssembler._sanitize_restaurant_display_name("Book Club Bistro", cuisine="Bistro") == "Book Club Bistro"
+    # Genuine glued-on decoration (rating present) must still be stripped.
+    assert (
+        HTMLAssembler._sanitize_restaurant_display_name(
+            "Cliffside Restaurant 4.4/5 $$$ American",
+            rating_text="4.4/5",
+            price="$$$",
+            cuisine="American",
+        )
+        == "Cliffside Restaurant"
+    )
 
 
 def test_build_restaurants_rewrites_generic_locally_surfaced_description() -> None:

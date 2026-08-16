@@ -5153,6 +5153,7 @@ class URLDiscoverer:
             "korean": "Korean",
             "pizza": "Pizza",
             "burger": "American",
+            "bistro": "Bistro",
         }
         for key, label in cuisine_keywords.items():
             if re.search(rf"\b{re.escape(key)}\b", lowered):
@@ -7691,6 +7692,21 @@ class URLDiscoverer:
             row_desc = self._sanitize_direct_batch_description_text(
                 str(row.get("description", "") or row.get("practical_note", "") or row.get("snippet", "") or "")
             )
+            # The "snippet" fallback above exists for rows whose description/
+            # practical_note were never populated but whose raw snippet still
+            # carries real prose. When description/practical_note are empty
+            # because _direct_batch_rows_from_html already determined there was
+            # nothing but the item's own name plus rating/price/cuisine
+            # metadata (_is_metadata_only_residual_text), falling back to the
+            # snippet re-introduces that exact metadata as a fake "description"
+            # (e.g. row_desc="Book Club Bistro 4.9/5 $$ Bistro" for a row whose
+            # name is "Book Club Bistro" -- dipstick58: after downstream
+            # rating/price stripping this rendered as "Book Club Bistro
+            # Bistro", the cuisine word glued onto the end of the name). Apply
+            # the same metadata-only guard here so a name-only snippet never
+            # masquerades as a real description.
+            if row_desc and self._is_metadata_only_residual_text(row_desc, name=row_name):
+                row_desc = ""
             existing_desc = str(merged_item.get("description", "") or "").strip()
             if row_desc and row_desc.lower() != row_name.lower():
                 if not existing_desc or existing_desc == fallback_description:
