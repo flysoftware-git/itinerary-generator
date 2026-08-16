@@ -3681,6 +3681,47 @@ def test_looks_like_item_specific_homepage_distinguishes_brand_homepage_from_cit
     )
 
 
+def test_generic_section_landing_page_catches_bare_nps_park_code_homepage():
+    """Regression for dipstick58: real Canyonlands seed attraction "Island in
+    the Sky" (a specific district within the park) rendered linked to
+    https://www.nps.gov/cany/ -- the bare park-code homepage, not a
+    district-specific page -- because _is_generic_section_landing_page only
+    caught an empty path or a small set of named generic segments
+    ("plan-your-visit", "about", etc.), not a bare single-segment NPS unit
+    code like "cany". This is the same "area-reference instead of
+    subject-specific destination" pattern PR-011 already polices for other
+    URL shapes.
+    """
+    assert URLDiscoverer._is_generic_section_landing_page("https://www.nps.gov/cany/")
+    assert URLDiscoverer._is_generic_section_landing_page("https://www.nps.gov/zion")
+    # A real district/subject-specific page under the same park must not be
+    # caught by this new rule.
+    assert not URLDiscoverer._is_generic_section_landing_page(
+        "https://www.nps.gov/cany/planyourvisit/islandinthesky.htm"
+    )
+    # Non-nps.gov hosts with an incidental 4-letter path segment are unaffected.
+    assert not URLDiscoverer._is_generic_section_landing_page("https://www.example.com/blog/")
+
+
+def test_looks_like_item_specific_homepage_allows_bare_nps_code_only_for_that_exact_park():
+    """The bare nps.gov/<code>/ homepage newly caught above as generic must
+    still pass through for the one item it's genuinely correct for: an
+    attraction that names the park itself (e.g. "Canyonlands National Park").
+    Any other item within that park -- like the real "Island in the Sky"
+    district from dipstick58 -- still needs a more specific page.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    assert discoverer._looks_like_item_specific_homepage(
+        "https://www.nps.gov/cany/",
+        "Canyonlands National Park",
+    )
+    assert not discoverer._looks_like_item_specific_homepage(
+        "https://www.nps.gov/cany/",
+        "Island in the Sky",
+    )
+
+
 def test_alltrails_slug_matches_item_requires_non_generic_anchor_token():
     assert not URLDiscoverer._alltrails_slug_matches_item(
         "https://www.alltrails.com/trail/us/colorado/cornet-creek-falls",

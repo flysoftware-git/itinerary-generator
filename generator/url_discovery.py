@@ -9647,6 +9647,18 @@ class URLDiscoverer:
         if not host:
             return False
 
+        # A bare nps.gov/<code>/ homepage is specific -- not generic -- exactly
+        # when the item itself names the park that code belongs to (e.g. an
+        # attraction literally titled "Canyonlands National Park"), using the
+        # same code table _infer_item_nps_code already uses elsewhere for NPS
+        # lookups. Any other item within that park (a district, trail,
+        # viewpoint, etc. -- e.g. "Island in the Sky") still needs a more
+        # specific page and does not get this pass.
+        if "nps.gov" in host:
+            norm_segments = [s for s in norm_path.strip("/").split("/") if s]
+            if len(norm_segments) == 1 and self._infer_item_nps_code(item_name) == norm_segments[0]:
+                return True
+
         host_text = re.sub(r"[^a-z0-9]+", " ", host).lower()
         host_slug = re.sub(r"[^a-z0-9]+", "", host).lower()
         path_slug = re.sub(r"[^a-z0-9]+", "", path).lower()
@@ -9715,6 +9727,20 @@ class URLDiscoverer:
 
         segments = [seg for seg in path.strip("/").split("/") if seg]
         if not segments:
+            return True
+
+        # A bare nps.gov/<park-code>/ homepage (no further path) is the whole
+        # park's generic landing page -- the same generic-ness as an empty
+        # path, just with the park's own 4-letter NPS unit code standing in
+        # for it (e.g. nps.gov/cany/ for Canyonlands National Park). Real
+        # dipstick58 example: "Island in the Sky", a specific district within
+        # Canyonlands, rendered with this bare park homepage instead of a
+        # district-specific page -- this is the PR-011 "area-reference
+        # instead of subject-specific destination" pattern this function
+        # exists to catch, it just didn't cover the bare-park-code shape.
+        # _looks_like_item_specific_homepage still allows this through for an
+        # item that names that exact park (see _infer_item_nps_code).
+        if "nps.gov" in host and len(segments) == 1 and re.fullmatch(r"[a-z]{4}", segments[0]):
             return True
 
         last = segments[-1]
