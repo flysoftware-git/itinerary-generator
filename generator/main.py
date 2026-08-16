@@ -2022,7 +2022,6 @@ def main(
     # Post-parallel content normalization: cross-section and cross-destination dedup.
     stage_reconcile_started = perf_counter()
     ai_gen.normalize_trip_content(trip)
-    runtime_metrics["banned_phrase_violations"] = dict(ai_gen.last_banned_phrase_violations)
     click.echo("  ✓ Content normalized")
     trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
     click.echo("  ✓ Entity registry reconciled")
@@ -2108,6 +2107,14 @@ def main(
             retry_policy=retry_policy,
         )
     stage_timings["selective_retry"] = _elapsed_seconds(retry_started)
+    # Read after BOTH possible normalize_trip_content() calls (the
+    # unconditional one earlier, and the conditional one above that only
+    # runs when retried_destination_ids is non-empty) -- last_banned_phrase_violations
+    # accumulates across both, so this always reflects the real final total
+    # regardless of whether a retry pass ran. Previously read right after
+    # only the first call, so a run that retried anything reported a stale,
+    # incomplete count that matched neither pass's real findings.
+    runtime_metrics["banned_phrase_violations"] = dict(ai_gen.last_banned_phrase_violations)
     destination_status_report = _annotate_retry_outcomes(
         status_report=destination_status_report,
         attempted_destination_ids=retried_destination_ids,

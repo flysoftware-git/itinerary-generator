@@ -77,6 +77,24 @@ images:
     - "snorkeling"
   cache_ttl_hours: 168
   max_fallback_attempts: 4
+
+# ── Content-quality gate ─────────────────────────────────────────────────────
+# Promoted 2026-08-15 from main.py's _run_quality_gate, which only ever
+# printed these to the console -- never persisted to validation_report.json
+# and never affected validation's pass/fail status, so a run with 12 orphan
+# attraction cards (dipstick56+) still reported valid:true. These thresholds
+# now produce real, persisted warnings. Kept as warnings (not errors) by
+# design: orphan-card/teaser gaps are a known, currently-unresolved
+# data-coverage issue (see docs/reports/dipstick55_bug_triage.md, Theme
+# C/D residuals) -- hard-failing on the CURRENT baseline would block every
+# run until that's separately fixed. Duplicate-URL detection is a genuinely
+# new check (not in the old quality gate) with no known false-positive risk,
+# since it only flags identical URLs within the same destination.
+quality_gate:
+  max_no_url_attractions: 3
+  max_no_url_en_route_stops: 2
+  max_no_url_restaurants: 0
+  max_empty_teaser_ratio: 0.15
   verify_timeout_seconds: 8
   valid_content_types:
     - "image/jpeg"

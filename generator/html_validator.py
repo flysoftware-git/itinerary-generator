@@ -7,6 +7,18 @@ Checks:
   3. var DRIVE_DESCRIPTIONS present (not const)
   4. Drive modal element IDs match DRIVE_DESCRIPTIONS keys
   5. Image count >= min_per_destination per section
+  6. Orphan-content rate (attractions/restaurants/en-route-stops with no URL)
+     within configured thresholds
+  7. No duplicate URLs within a single destination's top_attractions
+  8. Attraction/trail teaser (description) completeness above a configured
+     minimum ratio
+
+Checks 6-8 (added 2026-08-15) are content-quality checks, not structural
+HTML checks -- promoted from main.py's _run_quality_gate, which only ever
+printed to the console and never affected validation_report.json's
+pass/fail status (see that check's own docstring/comments for why). All
+three are currently warnings, not errors, by design -- see config.yaml's
+quality_gate section for the threshold rationale.
 """
 from __future__ import annotations
 import html
@@ -17,6 +29,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 MIN_PER_DESTINATION_DEFAULT = 2
+DEFAULT_MAX_NO_URL_ATTRACTIONS = 3
+DEFAULT_MAX_NO_URL_EN_ROUTE_STOPS = 2
+DEFAULT_MAX_NO_URL_RESTAURANTS = 0
+DEFAULT_MAX_EMPTY_TEASER_RATIO = 0.15
 
 
 class HTMLValidator:
@@ -25,6 +41,11 @@ class HTMLValidator:
         with Path(config_path).open() as f:
             cfg = yaml.safe_load(f)
         self._min_images = cfg.get("images", {}).get("min_per_destination", MIN_PER_DESTINATION_DEFAULT)
+        quality_cfg = cfg.get("quality_gate", {}) or {}
+        self._max_no_url_attractions = int(quality_cfg.get("max_no_url_attractions", DEFAULT_MAX_NO_URL_ATTRACTIONS))
+        self._max_no_url_en_route_stops = int(quality_cfg.get("max_no_url_en_route_stops", DEFAULT_MAX_NO_URL_EN_ROUTE_STOPS))
+        self._max_no_url_restaurants = int(quality_cfg.get("max_no_url_restaurants", DEFAULT_MAX_NO_URL_RESTAURANTS))
+        self._max_empty_teaser_ratio = float(quality_cfg.get("max_empty_teaser_ratio", DEFAULT_MAX_EMPTY_TEASER_RATIO))
 
     def validate(self, html_path: str | Path, trip: dict[str, Any]) -> dict[str, Any]:
         html_path = Path(html_path)
@@ -37,6 +58,9 @@ class HTMLValidator:
         self._check_section_div_balance(html, trip, errors)
         self._check_script_isolation(html, warnings)
         self._check_image_counts(html, trip, errors)
+        self._check_orphan_content_rate(trip, warnings)
+        self._check_duplicate_urls_within_destination(trip, warnings)
+        self._check_teaser_completeness(trip, warnings)
 
         report = {
             "html_path": str(html_path),
@@ -174,3 +198,78 @@ class HTMLValidator:
                     f"Destination '{dest['id']}' has {count} image(s) "
                     f"(minimum: {self._min_images})"
                 )
+
+    # ── Check 6: Orphan-content rate (attractions/restaurants/en-route stops
+    #    with no URL or maps fallback) ─────────────────────────────────────
+
+    def _check_orphan_content_rate(self, trip: dict[str, Any], warnings: list[str]) -> None:
+        no_url_attractions = 0
+        no_url_restaurants = 0
+        no_url_stops = 0
+        for dest in trip.get("destinations", []) or []:
+            ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content"), dict) else {}
+            for attr in ai.get("top_attractions", []) or []:
+                if not str(attr.get("url", "") or attr.get("maps_url", "") or "").strip():
+                    no_url_attractions += 1
+            for rest in ai.get("dinner_recommendations", []) or []:
+                if not str(rest.get("url", "") or "").strip():
+                    no_url_restaurants += 1
+            getting_here = ai.get("getting_here", {}) if isinstance(ai.get("getting_here"), dict) else {}
+            for stop in getting_here.get("en_route_stops", []) or []:
+                if not str(stop.get("url", "") or "").strip():
+                    no_url_stops += 1
+
+        if no_url_attractions > self._max_no_url_attractions:
+            warnings.append(
+                f"Attractions with no URL or maps fallback: {no_url_attractions} "
+                f"(threshold: {self._max_no_url_attractions})"
+            )
+        if no_url_restaurants > self._max_no_url_restaurants:
+            warnings.append(
+                f"Restaurants with no URL: {no_url_restaurants} "
+                f"(threshold: {self._max_no_url_restaurants})"
+            )
+        if no_url_stops > self._max_no_url_en_route_stops:
+            warnings.append(
+                f"En-route stops with no URL: {no_url_stops} "
+                f"(threshold: {self._max_no_url_en_route_stops})"
+            )
+
+    # ── Check 7: Duplicate URLs within a destination's top_attractions ──────
+
+    def _check_duplicate_urls_within_destination(self, trip: dict[str, Any], warnings: list[str]) -> None:
+        for dest in trip.get("destinations", []) or []:
+            ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content"), dict) else {}
+            seen: dict[str, str] = {}
+            for attr in ai.get("top_attractions", []) or []:
+                url = str(attr.get("url", "") or "").strip()
+                if not url:
+                    continue
+                name = str(attr.get("name", "") or "").strip()
+                if url in seen and seen[url] != name:
+                    warnings.append(
+                        f"Duplicate attraction URL in '{dest.get('id', dest.get('name', 'unknown'))}': "
+                        f"'{seen[url]}' and '{name}' both point to {url}"
+                    )
+                else:
+                    seen[url] = name
+
+    # ── Check 8: Attraction/trail teaser completeness ────────────────────────
+
+    def _check_teaser_completeness(self, trip: dict[str, Any], warnings: list[str]) -> None:
+        total = 0
+        empty = 0
+        for dest in trip.get("destinations", []) or []:
+            ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content"), dict) else {}
+            for attr in ai.get("top_attractions", []) or []:
+                total += 1
+                if not str(attr.get("description", "") or "").strip():
+                    empty += 1
+        if total == 0:
+            return
+        ratio = empty / total
+        if ratio > self._max_empty_teaser_ratio:
+            warnings.append(
+                f"Attraction/trail teasers empty: {empty}/{total} "
+                f"({ratio:.0%}, threshold: {self._max_empty_teaser_ratio:.0%})"
+            )

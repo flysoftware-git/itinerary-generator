@@ -84,6 +84,17 @@ class AIContentGenerator:
         self._drives_template = (PROMPTS_DIR / "scenic_drives.txt").read_text(encoding="utf-8")
         self._what_to_know_template = (PROMPTS_DIR / "what_to_know.txt").read_text(encoding="utf-8")
         self._weather_cache: dict[tuple[float, float, int], tuple[int, int] | None] = {}
+        # Cumulative across every normalize_trip_content() call this run --
+        # main.py calls it twice (once after initial generation, again
+        # after the selective-retry pass regenerates a subset of
+        # destinations' content). Overwriting here instead of accumulating
+        # meant runtime_metrics["banned_phrase_violations"] (frozen right
+        # after the FIRST call) went stale the moment retry ran a second
+        # pass, showing neither the first pass's real findings nor the
+        # second's -- found 2026-08-15 comparing a real run's console log
+        # (from the second call) against its persisted runtime_metrics
+        # (from the first): completely different phrase sets and counts
+        # for content that was, in the end, genuinely clean either way.
         self.last_banned_phrase_violations: dict[str, int] = {}
         self._enable_url_candidate_experiment = bool(
             self._config.get("ai", {}).get("enable_url_candidate_experiment", False)
@@ -215,6 +226,8 @@ class AIContentGenerator:
                 cls._scrub_banned_language_in_place(item, violation_counts)
 
     def _enforce_banned_marketing_language(self, trip: dict[str, Any]) -> dict[str, int]:
+        if not hasattr(self, "last_banned_phrase_violations"):
+            self.last_banned_phrase_violations = {}
         violation_counts: dict[str, int] = {}
         for dest in trip.get("destinations", []) or []:
             if not isinstance(dest, dict):
@@ -230,7 +243,12 @@ class AIContentGenerator:
                 len(violation_counts),
                 violation_counts,
             )
-        self.last_banned_phrase_violations = violation_counts
+        # Accumulate, don't overwrite -- see last_banned_phrase_violations'
+        # own comment for why (this method runs more than once per real run).
+        for phrase, count in violation_counts.items():
+            self.last_banned_phrase_violations[phrase] = (
+                self.last_banned_phrase_violations.get(phrase, 0) + count
+            )
         return violation_counts
 
     def normalize_trip_content(self, trip: dict[str, Any]) -> None:

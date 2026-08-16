@@ -92,7 +92,7 @@ Also confirmed via the same real data that **Jud Wiebe Trail** (Telluride) is
 a fourth real instance of this exact bug, reusing Bridal Veil Falls' wrongly-
 remembered `cornet-creek-falls-hike` URL.
 
-## Theme C — Orphan cards: link removed, card survives [x]
+## Theme C — Orphan cards: link removed, card survives [~]
 
 - [x] "Peek-a-boo Loop" (Bryce Canyon) renders as a card with no link.
   Confirmed independently by both the user and my own automated pass. User
@@ -129,12 +129,29 @@ attraction/scenic-drive-name-collision orphan-description bug already fixed
 by commit `3988c8f` (the commit immediately preceding this session), not a
 new issue.
 
-## Theme D — Metadata/teaser inconsistency [x]
+**Downgraded to `[~]` after live validation (dipstick56+, 2026-08-15).** The
+specific reported mechanism (a link stolen by another item's cache entry) is
+genuinely fixed and can no longer produce this exact symptom. But a real,
+fresh end-to-end run afterward found the *broader* symptom class -- link-less
+attraction cards in general -- got worse, not better: 12 orphan cards in
+dipstick56+ vs. ~7-8 in dipstick55, including marquee names (Delicate Arch,
+The Narrows, Bryce Amphitheater, Fiery Furnace, Bandelier National Monument).
+As predicted in this theme's own analysis above, this is the data-coverage
+half of the problem re-surfacing on its own: the AI's direct-batch search
+simply not returning a matching row for every named item, independent of the
+matching-logic bug. Not a regression from tonight's fixes -- a
+pre-existing, unrelated gap that the wrong-link bug was previously masking
+by giving *some* of these items a (wrong) link instead of no link. Needs a
+product decision (improve harvest recall, vs. treat "no match" as a hard
+filter that drops the card instead of rendering it link-less) before this
+can go to `[x]`.
+
+## Theme D — Metadata/teaser inconsistency [~]
 
 - [x] Restaurant ratings appear in both the card title text AND the rating
   badge -- redundant, only want the badge. (user) -- likely a simple
   template/rendering fix, not a data problem.
-- [x] Restaurant teasers are inconsistently present; several links (e.g.
+- [~] Restaurant teasers are inconsistently present; several links (e.g.
   `redhillsdesertgarden.com`, `alltrails.com/trail/us/utah/chuckwalla-trail`)
   have no teaser at all. User suspects different sourcing paths produce
   different completeness. (user)
@@ -195,6 +212,17 @@ wrong in an informative way.**
    grok-4-fast calls (Bryce Canyon attractions, Moab trails) confirming the
    model follows the new instruction and the updated parser produces clean
    names and real teasers end-to-end against actual API output.
+
+**Downgraded to `[~]` after live validation (dipstick56+, 2026-08-15).**
+Item 1 (restaurant title/badge duplication) and the restaurant half of item 2
+are confirmed fully fixed in real output: 0/57 restaurant teasers empty, no
+rating-in-title duplication found anywhere. But the attraction/trail half of
+item 2 (originally reported partly via a trail URL, `chuckwalla-trail`) is
+only partially resolved: 14/73 (19%) attraction/trail teasers still render
+empty in the fresh run (e.g. Chuckwalla Trail itself). The prompt/parser fix
+was real and necessary but evidently not sufficient to close the gap for
+every harvested row -- same underlying data-coverage class of problem as
+Theme C's residual issue, likely worth investigating together.
 
 ## Theme E — Imprecise geocoding rendered instead of pruned [x]
 
@@ -314,3 +342,70 @@ guessed at.
   `generator/cultural_events.py` -- dead config left over from before the
   3-query collapse. Harmless (no behavior depends on them) but worth a
   cleanup pass separately.
+
+## New findings from dipstick56+ live validation, not yet triaged
+
+- [ ] **Call volume did not go down after the double-harvest cache-dirty fix.**
+  dipstick56+ made *more* real Grok calls than dipstick55 (168 vs 137,
+  +23%), not fewer, despite that fix's whole premise being "every
+  attraction/restaurant/trail harvest call ran twice." All of the
+  $26.94->$0.457 cost improvement is attributable to the `grok-4-fast` model
+  swap (confirmed: ~9.8x from per-token price, ~7.7x from fewer
+  tokens/call); essentially none of it came from fewer calls. Needs
+  investigation into why the fix didn't reduce call count as expected --
+  possibly the persistent-cache TTL/write-timing means it still doesn't
+  help within a single run the way intended, or dipstick55's inflated call
+  count had a different dominant cause than believed.
+- [x] **Banned-phrase metric/log inconsistency.** `runtime_metrics.
+  banned_phrase_violations` for dipstick56+ reported 17 "stunning," 8
+  "iconic," 5 "breathtaking" detected, but the enforcement log line only
+  claimed `{charming: 2, iconic: 2}` removed -- and the final rendered
+  `index.html` was genuinely clean of all of them either way.
+
+  **Root cause found and fixed.** `main.py` calls
+  `ai_gen.normalize_trip_content()` (which runs the banned-phrase scrub)
+  twice per run -- once unconditionally after initial generation, again
+  after the selective-retry pass if anything was retried. Each call
+  *overwrote* `self.last_banned_phrase_violations` instead of accumulating,
+  and `runtime_metrics["banned_phrase_violations"]` was captured right
+  after the FIRST call -- before the second (retry-triggered) call ever
+  ran. So the persisted metric was a stale, incomplete mid-run snapshot,
+  and the console's last-printed log line (from the second call) reflected
+  only whatever fresh, not-yet-scrubbed content the retry pass introduced
+  -- neither number was ever the real total. Fixed by accumulating counts
+  across calls (`generator/ai_content.py`) and moving the
+  `runtime_metrics` read to after both possible calls
+  (`generator/main.py`), so it always reflects the true final total
+  regardless of whether retry ran. Verified with a new unit test
+  reproducing two sequential calls with overlapping and distinct phrases.
+
+  Separately: I initially also flagged `stage_timings` as an empty `{}` in
+  both dipstick55 and dipstick56+'s `runtime_metrics` -- **this was my own
+  mistake, not a real gap.** The data was there the whole time, just at
+  `run_ledger.jsonl`'s top-level `stage_timings_seconds` key (sibling to
+  `runtime_metrics`, not nested inside it). No code change was needed;
+  correcting the record here since I'd stated it as a real finding before
+  checking carefully.
+
+## Open risk: validator coverage gap for Theme A/B, not yet signed off
+
+Themes A (wrong-geography en-route stops) and B (wrong AllTrails URL
+attribution) are fixed at the data-generation layer and covered by real
+unit tests against the specific fixes -- but they have **no
+validator-level (HTMLValidator) backstop**, unlike Themes C/D/F, which now
+have persisted, structural checks in `validation_report.json` (see the
+"Content-quality gate" section of `config.yaml` and
+`html_validator.py`'s checks 6-8). A regression of either fix would only
+be caught if it happens to also break one of the existing unit tests for
+that exact code path -- there is currently no independent, integration-
+level signal that would catch a *different* code path reintroducing either
+bug.
+
+This is a real, currently-unresolved gap between "protected by tests" and
+"protected by validation" for two of the most severe bug classes found
+this session. A validator-level backstop for these would require live
+re-verification (geocoding, live AllTrails fetches) on every validation
+run, which is a real cost/latency tradeoff, not a free addition like
+checks 6-8 were. **This has not been decided or signed off on -- flagging
+it explicitly rather than treating unit-test coverage as sufficient on my
+own judgment.**

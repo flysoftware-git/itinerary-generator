@@ -1,10 +1,20 @@
 # Multi-Site Destination Grouping (GH #68)
 
-Status: spec only, not implemented. Follow-up to the three design options
-presented for GH #68 ("Multi-site destinations") — this is Option 3
-("grouped destinations via manifest"), the recommended starting point:
-smallest invasive surface, zero new fabrication risk, reuses every
-per-destination subsystem exactly as it works today.
+Status: **implemented, isolated, not yet merged** (2026-08-15). Built by a
+background agent in its own worktree, branched from `issue-6-v2`, all 4 §7
+open questions resolved (see each question's entry below) -- see
+`branch: worktree-agent-a0de01b67c19935db`,
+`worktree: C:\Dev\Road-trip-generator\.claude\worktrees\agent-a0de01b67c19935db`.
+Not merged, not pushed, no PR -- the plan was to merge before finalizing
+V2, once the rest of the stability work concluded. Deliberately parked
+rather than merged automatically; a human should review the actual diff
+before it lands, especially given the deviation noted in §7 item 5.
+
+Follow-up to the three design options presented for GH #68 ("Multi-site
+destinations") -- this is Option 3 ("grouped destinations via manifest"),
+the recommended starting point: smallest invasive surface, zero new
+fabrication risk, reuses every per-destination subsystem exactly as it
+works today.
 
 ## 0. Why this option, restated
 
@@ -211,25 +221,32 @@ lodging-dedup treatment in §2 — e.g., "Dining: see Moab").
   for free, as long as each entry's `dates` is scoped to its own days
   within the stay (already true in the example above).
 
-## 7. Open questions before implementation
+## 7. Open questions — resolved during implementation (2026-08-15)
 
-1. Exact visual treatment for nav clustering (§3) — needs a quick mockup
-   pass, not a data decision.
-2. Whether `group_with` validation (date-sub-range-within-base-range)
-   should warn or hard-fail on an obviously wrong manifest (e.g. grouped
-   entry's dates entirely outside the base's range) — lean warn, matching
-   this codebase's existing lenient free-text `dates` handling.
-3. Whether the departure/return route leg (last grouped entry back to the
-   trip's next real stop, or to the return leg) needs its own
-   "distance from base, not from last-rendered-entry" fix, symmetric to §4.
-4. Whether `base_owned_categories: ["scenic_drive"]` should also suppress
-   scenic-drive *content generation* in `ai_content.py` (not just URL
-   discovery) for a grouped entry, or whether AI-written scenic-drive
-   descriptions are distinctive enough per park to leave untouched and
-   only gate the URL-discovery layer. Leaning toward gating both — a
-   scenic-drive text block with no linked URL is a worse reading
-   experience than no block at all — but worth deciding at
-   implementation time against a real example.
+1. **Nav-tab visual treatment**: resolved as indent + shared pill
+   background, inline-styled (no template/checksum changes needed).
+2. **`group_with` date-sub-range validation**: resolved as warn (via
+   `logger.warning`), not hard-fail — matches this codebase's existing
+   lenient free-text `dates` handling, as this doc originally leaned.
+3. **Departure/return route leg base-tracking**: resolved yes, handled
+   symmetrically with the arrival case. `_build_getting_there` now labels
+   the departure leg from the group base when the trip's last destination
+   is grouped, not from whichever sibling rendered last.
+4. **`base_owned_categories: ["scenic_drive"]` gating both layers**:
+   resolved yes, gated both — but the mechanism turned out simpler than
+   expected. Clearing `dest["scenic_drives"]` in `url_discovery.py` (which
+   runs *after* `ai_content.py` in the pipeline) suppresses the
+   AI-generated content too for free; no separate `ai_content.py` change
+   was needed, contrary to this doc's original assumption that both
+   layers would need independent gates.
+5. **Deviation not anticipated by this doc**: §2 assumed a pre-existing
+   "lodging block" in the current rendering that a grouped entry's pointer
+   would dedup against. That block doesn't actually exist in the current
+   codebase. The "Based from X (see Y)" pointer was implemented as new,
+   minimal UI rather than a dedup of something that was never being
+   rendered in the first place. Worth a human's eyes on whether this
+   still matches the intended UX, since it's not exactly what was
+   originally speced.
 
 ## 8. Rough scope estimate
 

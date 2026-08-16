@@ -1216,6 +1216,66 @@ def test_get_direct_batch_html_rows_marks_persistent_cache_dirty_on_success(tmp_
     assert discoverer._persistent_cache_dirty is True
 
 
+def test_second_url_discoverer_instance_skips_refetch_via_persistent_cache(tmp_path) -> None:
+    """Regression (2026-08-15, dipstick56+): the dirty-flag tests above prove
+    a write marks the cache dirty and gets saved, but never prove the thing
+    that actually matters for cost -- that a SECOND URLDiscoverer instance
+    (e.g. a same-run selective-retry pass, which constructs a fresh
+    instance with empty in-memory caches) actually loads the persisted
+    cache and skips a real refetch. It wasn't tested, and a real live
+    validation run (dipstick56+) found url_discovery's batching-efficiency
+    ratio (requests avoided vs. a naive one-call-per-item baseline) was
+    WORSE than the prior run despite this exact fix landing first --
+    meaning this end-to-end path may not be working as intended in
+    practice.
+
+    Must go through the real production entry point
+    (_get_alltrails_direct_batch_rows_for_destination), not the lower-level
+    _get_direct_batch_html_rows_for_destination directly -- that method
+    takes `cache` as an injected parameter, and calling it with a bare `{}`
+    (as an earlier version of this test, and the existing dirty-flag tests
+    above, both do) writes into a throwaway dict that's never attached to
+    the instance's real _alltrails_direct_batch_cache attribute, silently
+    passing without ever exercising real persistence. Found exactly this
+    gap while writing this test: it initially "passed" the wrong way (by
+    proving persistence was broken) because of this exact mistake."""
+    cache_path = tmp_path / "persistent_cache.json"
+
+    writer = URLDiscoverer.__new__(URLDiscoverer)
+    writer._persistent_cache_dirty = False
+    writer._persistent_cache_pending_writes = 0
+    writer._persistent_cache_write_every = 25
+    writer._persistent_cache_enabled = True
+    writer._persistent_cache_path = str(cache_path)
+
+    with patch.object(writer, "_fetch_direct_batch_html_rows", return_value=[{"name": "Angels Landing", "url": "https://www.alltrails.com/x"}]) as fetch_mock:
+        rows = writer._get_alltrails_direct_batch_rows_for_destination("Zion National Park", "October 7-9, 2026")
+    assert rows
+    assert fetch_mock.call_count == 1
+    # discover_all calls this explicitly at the end of every run (see
+    # url_discovery.py) -- without it, nothing in _mark_persistent_cache_dirty's
+    # write_every=25 threshold would flush a single write to disk.
+    writer._save_persistent_caches()
+    assert cache_path.exists()
+    assert json.loads(cache_path.read_text(encoding="utf-8"))["direct_batch_harvest_alltrails"], (
+        "sanity check: the saved JSON must actually contain the harvested row, "
+        "not an empty section"
+    )
+
+    reader = URLDiscoverer.__new__(URLDiscoverer)
+    reader._persistent_cache_enabled = True
+    reader._persistent_cache_path = str(cache_path)
+    reader._load_persistent_caches()
+
+    with patch.object(
+        reader, "_fetch_direct_batch_html_rows",
+        side_effect=AssertionError("must not re-fetch: a second instance should see the persisted cache hit"),
+    ):
+        reader_rows = reader._get_alltrails_direct_batch_rows_for_destination("Zion National Park", "October 7-9, 2026")
+
+    assert reader_rows == rows
+
+
 def test_fetch_and_cache_grouped_direct_batch_marks_persistent_cache_dirty() -> None:
     """Same regression as above, for the new grouped-batch write path
     (_fetch_and_cache_grouped_direct_batch) -- this is the path that was

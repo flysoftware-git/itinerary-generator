@@ -342,6 +342,34 @@ def test_enforce_banned_marketing_language_walks_full_trip_and_records_counts() 
     assert g.last_banned_phrase_violations == counts
 
 
+def test_enforce_banned_marketing_language_accumulates_across_calls() -> None:
+    """Regression (2026-08-15, dipstick56+): main.py calls
+    normalize_trip_content (which calls this) twice in a real run -- once
+    unconditionally after initial generation, again after the selective-
+    retry pass if anything was retried. Overwriting last_banned_phrase_violations
+    each call meant runtime_metrics["banned_phrase_violations"], read right
+    after the FIRST call, went stale/wrong the moment a real run's retry
+    pass triggered a second call -- a real run's persisted metric and its
+    own console log disagreed with each other and with neither call's
+    actual findings."""
+    g = _gen()
+    first_trip = {
+        "destinations": [
+            {"name": "Zion", "ai_content": {"top_attractions": [{"name": "Arch", "description": "A stunning arch."}]}}
+        ]
+    }
+    second_trip = {
+        "destinations": [
+            {"name": "Bryce", "ai_content": {"top_attractions": [{"name": "Point", "description": "A stunning, majestic point."}]}}
+        ]
+    }
+
+    g._enforce_banned_marketing_language(first_trip)
+    g._enforce_banned_marketing_language(second_trip)
+
+    assert g.last_banned_phrase_violations == {"stunning": 2, "majestic": 1}
+
+
 def test_manifest_attraction_target_prefers_highest_rated_candidates() -> None:
     g = _gen()
     items = [
