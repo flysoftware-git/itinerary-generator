@@ -65,3 +65,78 @@ def test_local_tip_kept_when_not_weekday_specific() -> None:
     }
     sanitized = d._sanitize_local_tip_by_itinerary_days(result, "Early October")
     assert sanitized.get("local_tip") == "Check ranger talks posted at the visitor center desk."
+
+
+def test_drop_events_before_arrival_removes_event_preceding_stay() -> None:
+    """Real dipstick58 St. George bug: destination stays October 17, 2026 only,
+    but an "October 12, 2026" event (5 days before arrival) rendered anyway.
+    Events dated before the destination's own arrival date must never show."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {
+                "name": "I-15 Country Rock Music Festival",
+                "venue": "Mesquite Regional Sports and Event Complex",
+                "dates_in_range": "October 17, 2026",
+                "admission": "Varies",
+            },
+            {
+                "name": "St. George Concert in the Park Series 2026",
+                "venue": "Vernon Worthen Park",
+                "dates_in_range": "October 12, 2026",
+                "admission": "Free",
+            },
+        ],
+        "ambient_scene": "St. George has a vibrant local music scene.",
+    }
+
+    filtered = d._drop_events_before_arrival(result, "October 17, 2026")
+
+    names = [e["name"] for e in filtered["events"]]
+    assert names == ["I-15 Country Rock Music Festival"]
+    assert filtered["has_events"] is True
+
+
+def test_drop_events_before_arrival_falls_back_when_all_events_precede_stay() -> None:
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {"name": "Early Bird Market", "dates_in_range": "October 5, 2026"},
+        ],
+    }
+
+    filtered = d._drop_events_before_arrival(result, "October 17, 2026")
+
+    assert filtered["events"] == []
+    assert filtered["has_events"] is False
+
+
+def test_drop_events_before_arrival_keeps_unparseable_recurring_dates() -> None:
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {"name": "Weekly Farmers Market", "dates_in_range": "Every Friday evening in October"},
+        ],
+    }
+
+    filtered = d._drop_events_before_arrival(result, "October 17, 2026")
+
+    assert len(filtered["events"]) == 1
+    assert filtered["has_events"] is True
+
+
+def test_drop_events_before_arrival_keeps_event_on_arrival_day() -> None:
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {"name": "Arrival Day Show", "dates_in_range": "October 17, 2026"},
+        ],
+    }
+
+    filtered = d._drop_events_before_arrival(result, "October 17, 2026")
+
+    assert len(filtered["events"]) == 1

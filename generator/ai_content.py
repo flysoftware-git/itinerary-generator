@@ -70,6 +70,83 @@ class AIContentGenerator:
         "chain restaurant",
     }
 
+    # Mirrors HTMLAssembler._first_sentence's abbreviation list (html_assembler.py)
+    # so schedule-text sentence splitting doesn't mistake "St.", "Mt.", "Dr.",
+    # etc. for a sentence boundary the way a naive `re.split(r"(?<=[.!?])\s+")`
+    # does.
+    _SENTENCE_BOUNDARY_ABBREVIATIONS = {
+        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "ft", "vs",
+        "etc", "e.g", "i.e", "am", "pm", "us", "uk", "no", "fig",
+    }
+
+    @staticmethod
+    def _split_sentences(text: str) -> list[str]:
+        """Split text into sentences without breaking on abbreviations.
+
+        A period only ends a sentence when the token immediately before it
+        is not a known abbreviation (e.g. "St." in "St. George Dinosaur
+        Discovery Site") -- otherwise "St." gets counted as its own
+        one-word "sentence", which throws off anything that counts or caps
+        sentences (see _cap_period_sentences).
+        """
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+
+        sentences: list[str] = []
+        start = 0
+        for index, ch in enumerate(raw):
+            if ch not in ".!?":
+                continue
+            prefix = raw[:index].rstrip()
+            last_token = (
+                prefix.rsplit(" ", 1)[-1].lower().strip(" ").strip(".,;:!?()[]{}\"'")
+                if prefix
+                else ""
+            )
+            if last_token in AIContentGenerator._SENTENCE_BOUNDARY_ABBREVIATIONS:
+                continue
+            # A real sentence boundary is followed by whitespace or the end
+            # of the string (matches the legacy regex's behavior for the
+            # non-abbreviation case).
+            if index + 1 < len(raw) and not raw[index + 1].isspace():
+                continue
+            sentence = raw[start : index + 1].strip()
+            if sentence:
+                sentences.append(sentence)
+            start = index + 1
+
+        remainder = raw[start:].strip()
+        if remainder:
+            sentences.append(remainder)
+        return sentences
+
+    # Venues whose name strongly implies fixed daytime operating hours (indoor
+    # exhibits, staffed front desk) rather than something realistically open
+    # for an after-dinner visit. This is a narrow, name-based heuristic --
+    # not a real hours-of-operation model (no such data exists anywhere in
+    # the schedule pipeline; see docs/design/schedule-normalization.md's
+    # "Physical Reality Model" section) -- so it only guards against the
+    # clearest cases rather than attempting general Evening-suitability
+    # judgment.
+    _EVENING_UNSUITABLE_VENUE_KEYWORDS = (
+        "museum",
+        "discovery site",
+        "visitor center",
+        "visitors center",
+        "science center",
+    )
+
+    @staticmethod
+    def _is_evening_unsuitable_venue(attraction: dict[str, Any]) -> bool:
+        name = str(attraction.get("name", "") or "").lower()
+        attr_type = str(attraction.get("type", "") or "").lower()
+        if attr_type == "museum":
+            return True
+        return any(
+            keyword in name for keyword in AIContentGenerator._EVENING_UNSUITABLE_VENUE_KEYWORDS
+        )
+
     def __init__(
         self,
         config_path: Path | str = "config.yaml",
@@ -441,11 +518,15 @@ class AIContentGenerator:
         days: list[dict[str, Any]],
         max_sentences: int = 3,
     ) -> list[dict[str, Any]]:
-        """Truncate each schedule period to at most max_sentences sentences (PR-005).
+        r"""Truncate each schedule period to at most max_sentences sentences (PR-005).
 
         Prevents over-packed AI periods from surfacing as unrealistic activity lists.
+
+        Uses the abbreviation-aware _split_sentences so a mid-summary "St.",
+        "Mt.", "Dr.", etc. isn't miscounted as its own sentence -- a naive
+        `re.split(r"(?<=[.!?])\s+")` would inflate the sentence count and
+        wrongly truncate real trailing content that was well within the cap.
         """
-        import re as _re
         if max_sentences <= 0:
             return days
         for day in days:
@@ -453,7 +534,7 @@ class AIContentGenerator:
                 summary = str(period.get("summary", "") or "").strip()
                 if not summary:
                     continue
-                sentences = _re.split(r"(?<=[.!?])\s+", summary)
+                sentences = AIContentGenerator._split_sentences(summary)
                 if len(sentences) > max_sentences:
                     period["summary"] = " ".join(sentences[:max_sentences]).strip()
         return days
@@ -1930,6 +2011,57 @@ class AIContentGenerator:
 
                     if label == "Evening" and dinner_name:
                         period["summary"] = _rotate_restaurant_summary(summary, dinner_name)
+
+        # Evening periods shouldn't send travelers to museums, discovery
+        # sites, or visitor centers -- these are indoor, staffed venues that
+        # realistically close in the late afternoon, not places open for an
+        # after-dinner visit. No real operating-hours data exists to check
+        # against (see docs/design/schedule-normalization.md), so this only
+        # strips the specific sentence mentioning a name-recognizable
+        # closes-early venue rather than trying to validate Evening content
+        # generally.
+        unsuitable_evening_names = [
+            str(attr.get("name", "") or "").strip()
+            for attr in attractions
+            if isinstance(attr, dict)
+            and AIContentGenerator._is_evening_unsuitable_venue(attr)
+            and str(attr.get("name", "") or "").strip()
+        ]
+        if unsuitable_evening_names:
+            for day in days:
+                for period in day.get("periods", []) or []:
+                    if str(period.get("period", "")).title() != "Evening":
+                        continue
+                    summary = str(period.get("summary", "") or "")
+                    if not summary or summary.lower().startswith("reserved for return travel"):
+                        continue
+                    matched_name = next(
+                        (
+                            name
+                            for name in unsuitable_evening_names
+                            if re.search(re.escape(name), summary, re.IGNORECASE)
+                        ),
+                        None,
+                    )
+                    if not matched_name:
+                        continue
+                    sentences = AIContentGenerator._split_sentences(summary)
+                    kept = [
+                        s
+                        for s in sentences
+                        if not re.search(re.escape(matched_name), s, re.IGNORECASE)
+                    ]
+                    cleaned = " ".join(kept).strip()
+                    if not cleaned:
+                        cleaned = "Enjoy a relaxed evening back at your lodging after dinner."
+                    if cleaned != summary:
+                        period["summary"] = cleaned
+                        logger.info(
+                            "  Evening schedule: removed likely-closed venue mention '%s' "
+                            "(indoor/exhibit-type venue unsuitable for an evening visit)",
+                            matched_name,
+                        )
+
         return days
 
     def _infer_day_count(self, dates: str) -> int:
