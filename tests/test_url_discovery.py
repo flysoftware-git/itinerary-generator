@@ -3888,6 +3888,47 @@ def test_looks_like_item_specific_homepage_distinguishes_brand_homepage_from_cit
     )
 
 
+def test_generic_section_landing_page_catches_bare_nps_park_code_homepage():
+    """Regression for dipstick58: real Canyonlands seed attraction "Island in
+    the Sky" (a specific district within the park) rendered linked to
+    https://www.nps.gov/cany/ -- the bare park-code homepage, not a
+    district-specific page -- because _is_generic_section_landing_page only
+    caught an empty path or a small set of named generic segments
+    ("plan-your-visit", "about", etc.), not a bare single-segment NPS unit
+    code like "cany". This is the same "area-reference instead of
+    subject-specific destination" pattern PR-011 already polices for other
+    URL shapes.
+    """
+    assert URLDiscoverer._is_generic_section_landing_page("https://www.nps.gov/cany/")
+    assert URLDiscoverer._is_generic_section_landing_page("https://www.nps.gov/zion")
+    # A real district/subject-specific page under the same park must not be
+    # caught by this new rule.
+    assert not URLDiscoverer._is_generic_section_landing_page(
+        "https://www.nps.gov/cany/planyourvisit/islandinthesky.htm"
+    )
+    # Non-nps.gov hosts with an incidental 4-letter path segment are unaffected.
+    assert not URLDiscoverer._is_generic_section_landing_page("https://www.example.com/blog/")
+
+
+def test_looks_like_item_specific_homepage_allows_bare_nps_code_only_for_that_exact_park():
+    """The bare nps.gov/<code>/ homepage newly caught above as generic must
+    still pass through for the one item it's genuinely correct for: an
+    attraction that names the park itself (e.g. "Canyonlands National Park").
+    Any other item within that park -- like the real "Island in the Sky"
+    district from dipstick58 -- still needs a more specific page.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    assert discoverer._looks_like_item_specific_homepage(
+        "https://www.nps.gov/cany/",
+        "Canyonlands National Park",
+    )
+    assert not discoverer._looks_like_item_specific_homepage(
+        "https://www.nps.gov/cany/",
+        "Island in the Sky",
+    )
+
+
 def test_alltrails_slug_matches_item_requires_non_generic_anchor_token():
     assert not URLDiscoverer._alltrails_slug_matches_item(
         "https://www.alltrails.com/trail/us/colorado/cornet-creek-falls",
@@ -4076,6 +4117,71 @@ def test_discover_attractions_direct_batch_authoritative_no_match_does_not_assig
     source_stats = getattr(discoverer, "_decision_source_stats_by_destination", {}).get("St. George, Utah", {})
     assert source_stats.get("direct_batch", 0) == 1
     fanout_search.assert_not_called()
+
+
+def test_discover_attractions_trail_like_misclassification_recovers_via_attraction_batch() -> None:
+    """Regression for dipstick58: real Bryce Canyon "Bryce Point" (type
+    "viewpoint") rendered unverified with no link, even though the attraction
+    direct-batch harvest for that exact run had a matching row ("Bryce Point
+    Overlook" -> https://www.nps.gov/brca/planyourvisit/brycepoint.htm).
+
+    Root cause: _is_trail_like_attraction's generic keyword catch-all matched
+    the word "walk" in the real harvested description ("...via a short drive
+    followed by a short walk"), so the item was classified trail_like=True and
+    routed into the AllTrails-only direct-batch path. That path predictably
+    found no matching trail row (Bryce Point isn't a trail), and in
+    authoritative direct-batch mode the trail branch locked to "no match"
+    without ever falling through to the general attraction-batch matching
+    that sibling items like "Sunrise Point" and "Inspiration Point" (whose
+    descriptions had no trail keyword) used successfully in the same real run.
+
+    The fix adds a same-cost fallback: when the trail path's direct-batch
+    search finds no trail, try the already-harvested attraction rows before
+    giving up.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+    discoverer._alltrails_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Bryce Point",
+                "type": "viewpoint",
+                "description": (
+                    "Offering one of the best panoramic views in the park, Bryce "
+                    "Point overlooks the main amphitheater. It's accessible via a "
+                    "short drive followed by a short walk."
+                ),
+            }
+        ]
+    }
+
+    attraction_rows = [
+        {
+            "title": "Bryce Point Overlook",
+            "name": "Bryce Point Overlook",
+            "url": "https://www.nps.gov/brca/planyourvisit/brycepoint.htm",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Bryce+Point+Bryce+Canyon+National+Park+UT",
+            "snippet": "Bryce Point Overlook Source Maps 4.7/5 One of the best panoramic views in the park.",
+        }
+    ]
+
+    with patch.object(discoverer, "_search_alltrails_for_trail_from_direct_batch", return_value=None):
+        with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
+            with patch.object(
+                discoverer,
+                "_get_attraction_direct_batch_rows_for_destination",
+                return_value=attraction_rows,
+            ):
+                discoverer._discover_attractions(ai, "Bryce Canyon National Park", "brca", "October 19-21, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == "https://www.nps.gov/brca/planyourvisit/brycepoint.htm"
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("Bryce Canyon National Park", {})
+    assert stats.get("trail_like_misclassified_attraction_batch_recovered", 0) == 1
+    assert stats.get("direct_batch_source_locked_no_match", 0) == 0
 
 
 def test_discover_attractions_direct_batch_authoritative_uses_item_fanout_when_batch_has_no_match() -> None:
@@ -5209,6 +5315,80 @@ def test_audit_demotes_long_trail_when_over_miles_threshold() -> None:
     assert str(attractions[0].get("maps_url", "") or "") == ""
     assert "5.4" in str(attractions[0].get("practical_note", "") or "")
     assert "3-mile threshold" in str(attractions[0].get("practical_note", "") or "")
+
+
+def test_audit_demotion_strips_hike_badge_fields_not_just_type_and_url() -> None:
+    """Regression for dipstick58: "Peek-a-boo Loop" and "Fairyland Loop" (Bryce
+    Canyon, real run data) were correctly demoted -- url stripped, type flipped
+    to "attraction", threshold note attached -- yet still rendered with a
+    badge-hike-strenuous "Strenuous" badge in html_assembler, because that
+    badge is driven purely by the item's "difficulty" field (see
+    html_assembler.py's diff_class = difficulty_colors.get(diff, "")), which
+    is independent of "type" and was never cleared during demotion. A demoted
+    trail must present as a genuinely plain attraction, not a hike whose link
+    happened to be removed.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 3.0
+
+    trip = {
+        "destinations": [
+            {
+                "id": "bryce",
+                "name": "Bryce Canyon National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Peek-a-boo Loop",
+                            "type": "hike",
+                            "difficulty": "Strenuous",
+                            "duration": "3-4 hrs round-trip",
+                            "elevation_gain_feet": 1500,
+                            "description": (
+                                "This 5.5-mile trail winds through the heart of the "
+                                "hoodoos, offering unique perspectives. Expect steep "
+                                "sections and views."
+                            ),
+                            "practical_note": "Best to start early to avoid midday heat.",
+                            "rating": 4.9,
+                        },
+                        {
+                            "name": "Fairyland Loop",
+                            "type": "hike",
+                            "difficulty": "Strenuous",
+                            "duration": "4-5 hrs round-trip",
+                            "elevation_gain_feet": 1700,
+                            "description": (
+                                "A 8-mile loop that showcases less-visited hoodoos and "
+                                "rock formations. The trail offers views and fewer crowds."
+                            ),
+                            "practical_note": "Bring plenty of water as there are no water sources along the trail.",
+                            "rating": 4.5,
+                        },
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 2
+    for attr in attractions:
+        assert attr.get("type") == "attraction"
+        assert str(attr.get("url", "")) == ""
+        assert "threshold" in str(attr.get("practical_note", "") or "").lower()
+        # The real bug: these hike-specific fields survived demotion and kept
+        # rendering badge-hike-strenuous/badge-elevation despite the item no
+        # longer being presented as a hike.
+        assert "difficulty" not in attr
+        assert "elevation_gain_feet" not in attr
 
 
 def test_audit_demotes_alltrails_linked_attraction_when_description_lacks_trail_keywords() -> None:
@@ -7971,6 +8151,50 @@ def test_alltrails_confidence_boosted_to_high_when_corroborating_search_agrees()
                         confidence = discoverer._alltrails_confidence_level(url, "Angels Landing", "Zion National Park")
 
     assert confidence == "high"
+
+
+def test_alltrails_confidence_promoted_to_high_for_extra_term_slug_when_corroborated() -> None:
+    """Regression for dipstick58: Zion "The Narrows" resolved to the real,
+    correct, slug-matched candidate https://www.alltrails.com/trail/us/utah/
+    the-narrows-top-down via seed-relaxed search -- but it was silently
+    dropped (no disposition-log entry; rejection only visible via
+    _log_rejected_url's plain logger.warning) because AllTrails' bot-blocked
+    fetch could not confirm it and the slug's "top down" qualifier counts as
+    one extra term beyond item tokens {"narrow"}, which previously routed
+    straight to "low" with no chance to corroborate at all. An independent,
+    differently-queried search landing on the exact same URL must still be
+    able to rescue it.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+    url = "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
+
+    with patch.object(discoverer, "_alltrails_slug_matches_item", return_value=True):
+        with patch.object(discoverer, "_alltrails_slug_has_numbered_suffix", return_value=False):
+            with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+                with patch.object(discoverer, "_get_filtered_alltrails_selection", return_value=url):
+                    confidence = discoverer._alltrails_confidence_level(url, "The Narrows", "Zion National Park")
+
+    assert confidence == "high"
+
+
+def test_alltrails_confidence_stays_low_for_extra_term_slug_without_corroboration_match() -> None:
+    """The extra-term relief must not become a blanket default: if the
+    independent corroboration search disagrees (or finds nothing), a
+    multi-extra-term slug stays "low" and gets rejected -- this is what keeps
+    the fix from reopening the Theme B wrong-trail-link bug (dipstick55).
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+    url = "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
+
+    with patch.object(discoverer, "_alltrails_slug_matches_item", return_value=True):
+        with patch.object(discoverer, "_alltrails_slug_has_numbered_suffix", return_value=False):
+            with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+                with patch.object(discoverer, "_get_filtered_alltrails_selection", return_value=None):
+                    confidence = discoverer._alltrails_confidence_level(url, "The Narrows", "Zion National Park")
+
+    assert confidence == "low"
 
 
 def test_alltrails_confidence_stays_medium_without_corroboration_opt_in() -> None:

@@ -2089,6 +2089,13 @@ class URLDiscoverer:
                         )
                         attr.pop("url", None)
                         attr["type"] = "attraction"
+                        # A demoted trail should present as a plain attraction, not
+                        # a hike whose link happened to be stripped -- clear the
+                        # hike-specific fields (difficulty/elevation) that would
+                        # otherwise still render hike badges (e.g. badge-hike-*)
+                        # in html_assembler despite the type change above.
+                        attr.pop("difficulty", None)
+                        attr.pop("elevation_gain_feet", None)
                         threshold_note = self._build_trail_threshold_note(
                             miles=threshold_miles,
                             max_miles=max_trail_miles,
@@ -2771,7 +2778,7 @@ class URLDiscoverer:
                 return "high"
             if slug_extra_terms == 0:
                 return self._boost_alltrails_confidence_via_corroboration("medium", url, item_name, dest_name)
-            return "low"
+            return self._corroborate_alltrails_slug_with_extra_terms(url, item_name, dest_name)
 
         if self._is_definitively_dead_status(status):
             return "low"
@@ -2788,8 +2795,46 @@ class URLDiscoverer:
             # Blocked fetches are common; only strict slug matches qualify as medium.
             if slug_extra_terms == 0:
                 return self._boost_alltrails_confidence_via_corroboration("medium", url, item_name, dest_name)
-            return "low"
+            return self._corroborate_alltrails_slug_with_extra_terms(url, item_name, dest_name)
 
+        return "low"
+
+    def _corroborate_alltrails_slug_with_extra_terms(self, url: str, item_name: str, dest_name: str) -> str:
+        """A slug carrying extra terms beyond the item name -- e.g. a route-variant
+        qualifier like "top-down" on "the-narrows-top-down" for item "The Narrows"
+        -- already passed the strict entity-identity check in
+        _alltrails_slug_matches_item; the extra terms alone don't prove it's the
+        wrong trail, they just make it too risky to grant a default "medium" the
+        way slug_extra_terms==0 candidates get via _boost_alltrails_confidence_via_
+        corroboration (that default-medium-then-maybe-upgrade shape is fine when
+        there's no extra term, but for a multi-word variant slug a default medium
+        for every candidate, corroborated or not, would reopen exactly the kind
+        of wrong-trail leak Theme B fixed). So instead of defaulting to medium,
+        require an independent, differently-queried search to land on the exact
+        same URL before granting any confidence above "low" at all -- true
+        corroboration, not a default with an optional upgrade. Fixes a real gap
+        found in dipstick58 (Zion "The Narrows" -> the-narrows-top-down): a
+        correct, harvested, slug-matched candidate was rejected outright because
+        AllTrails' bot-blocked page fetch could never single-handedly confirm it
+        and the extra "top down" qualifier disqualified it from even attempting
+        corroboration.
+        """
+        if not bool(getattr(self, "_enable_filtered_alltrails_selection", DEFAULT_ENABLE_FILTERED_ALLTRAILS_SELECTION)):
+            return "low"
+        try:
+            corroborated_url = self._get_filtered_alltrails_selection(item_name=item_name, dest_name=dest_name)
+        except Exception:
+            return "low"
+        if corroborated_url and self._same_alltrails_trail(url, corroborated_url):
+            self._log_decision(
+                kind="attraction",
+                dest_name=dest_name,
+                item_name=item_name,
+                reason="alltrails_confidence_boosted_by_corroboration",
+                message="alltrails confidence promoted low->high: independent search agreed despite extra slug terms",
+                url=url,
+            )
+            return "high"
         return "low"
 
     def _boost_alltrails_confidence_via_corroboration(
@@ -3487,6 +3532,44 @@ class URLDiscoverer:
                         )
                         continue
                 if self._direct_batch_is_authoritative():
+                    # The trail-like classification (_is_trail_like_attraction) is a
+                    # broad keyword catch-all -- e.g. a viewpoint whose description
+                    # happens to mention "a short walk" reads as trail-like even
+                    # though its actual type is "viewpoint". When that
+                    # misclassification sends an item down the AllTrails-only path
+                    # and it predictably finds no matching trail row there, don't
+                    # give up outright: the (already-harvested, zero-extra-cost)
+                    # attraction direct-batch rows may still have the real item --
+                    # e.g. dipstick58's real "Bryce Point" (type "viewpoint",
+                    # trail_like only because its description said "a short walk")
+                    # had a correct, harvested NPS row ("Bryce Point Overlook",
+                    # nps.gov/brca/planyourvisit/brycepoint.htm) that this
+                    # trail-only path never got a chance to check because
+                    # authoritative mode locks trail-like items to the trail
+                    # source and never falls through to the general
+                    # attraction_source_mode == "direct_link_batch" branch below.
+                    fallback_attraction_url = self._search_attraction_from_direct_batch(
+                        attr_name, dest_name, str(dest_dates or "")
+                    )
+                    if fallback_attraction_url:
+                        attr["url"] = fallback_attraction_url
+                        attr.update(
+                            self._direct_batch_row_quality_metadata_for_url(
+                                self._get_attraction_direct_batch_rows_for_destination(
+                                    dest_name, str(dest_dates or "")
+                                ),
+                                fallback_attraction_url,
+                            )
+                        )
+                        self._log_decision(
+                            kind="attraction",
+                            dest_name=dest_name,
+                            item_name=attr_name,
+                            reason="trail_like_misclassified_attraction_batch_recovered",
+                            message="no trail match for trail-like item; recovered via attraction direct-batch row",
+                            url=fallback_attraction_url,
+                        )
+                        continue
                     attr["url"] = ""
                     attr.pop("maps_url", None)
                     self._log_decision(
@@ -9723,6 +9806,18 @@ class URLDiscoverer:
         if not host:
             return False
 
+        # A bare nps.gov/<code>/ homepage is specific -- not generic -- exactly
+        # when the item itself names the park that code belongs to (e.g. an
+        # attraction literally titled "Canyonlands National Park"), using the
+        # same code table _infer_item_nps_code already uses elsewhere for NPS
+        # lookups. Any other item within that park (a district, trail,
+        # viewpoint, etc. -- e.g. "Island in the Sky") still needs a more
+        # specific page and does not get this pass.
+        if "nps.gov" in host:
+            norm_segments = [s for s in norm_path.strip("/").split("/") if s]
+            if len(norm_segments) == 1 and self._infer_item_nps_code(item_name) == norm_segments[0]:
+                return True
+
         host_text = re.sub(r"[^a-z0-9]+", " ", host).lower()
         host_slug = re.sub(r"[^a-z0-9]+", "", host).lower()
         path_slug = re.sub(r"[^a-z0-9]+", "", path).lower()
@@ -9791,6 +9886,20 @@ class URLDiscoverer:
 
         segments = [seg for seg in path.strip("/").split("/") if seg]
         if not segments:
+            return True
+
+        # A bare nps.gov/<park-code>/ homepage (no further path) is the whole
+        # park's generic landing page -- the same generic-ness as an empty
+        # path, just with the park's own 4-letter NPS unit code standing in
+        # for it (e.g. nps.gov/cany/ for Canyonlands National Park). Real
+        # dipstick58 example: "Island in the Sky", a specific district within
+        # Canyonlands, rendered with this bare park homepage instead of a
+        # district-specific page -- this is the PR-011 "area-reference
+        # instead of subject-specific destination" pattern this function
+        # exists to catch, it just didn't cover the bare-park-code shape.
+        # _looks_like_item_specific_homepage still allows this through for an
+        # item that names that exact park (see _infer_item_nps_code).
+        if "nps.gov" in host and len(segments) == 1 and re.fullmatch(r"[a-z]{4}", segments[0]):
             return True
 
         last = segments[-1]
