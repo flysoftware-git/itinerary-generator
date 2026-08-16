@@ -1650,6 +1650,17 @@ def main(
     log_level: str,
     verbose: bool,
 ) -> None:
+    # Windows falls back to the cp1252 codepage (can't encode emoji like the
+    # banner's map icon below) whenever stdout/stderr are redirected to a file
+    # or pipe instead of a real console -- crashing with UnicodeEncodeError
+    # before a single API call is made. Force UTF-8 explicitly so redirected/
+    # non-interactive runs (CI, background/batch invocations) behave the same
+    # as an interactive terminal.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+
     run_started_at = datetime.now(timezone.utc)
     run_started_at_perf = perf_counter()
     run_id = run_started_at.strftime("%Y%m%dT%H%M%S.%fZ")
