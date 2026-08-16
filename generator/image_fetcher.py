@@ -28,7 +28,14 @@ WIKIMEDIA_SEARCH = "https://commons.wikimedia.org/w/api.php"
 WIKIMEDIA_INFO = "https://commons.wikimedia.org/w/api.php"
 THUMB_WIDTH = 960
 MAX_FALLBACK_ATTEMPTS = 4
-REQUEST_DELAY = 1.5
+# Brief pacing delay after each downloaded image file. This is NOT a
+# documented rate limit for any of the three hosts it applies to uniformly
+# (NPS gov content delivery, Unsplash's images CDN, Wikimedia's upload CDN) --
+# all serve static media and publish no per-download throttle. It was 0.5s
+# originally, then bumped to 1.5s with no cited justification when Unsplash
+# was added (commit 8f0f358, 2026-07-18). Kept small and nonzero as basic
+# client courtesy rather than removed outright (GH #67 audit, 2026-08-16).
+REQUEST_DELAY = 0.3
 NOISY_CAPTION_MARKERS = (
     "when reusing",
     "please credit me",

@@ -4,7 +4,7 @@ import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from generator.image_fetcher import ImageFetcher
+from generator.image_fetcher import ImageFetcher, REQUEST_DELAY
 
 
 def _make_fetcher(tmp_path):
@@ -22,6 +22,15 @@ def _make_fetcher(tmp_path):
     fetcher._cache_index = {"version": 1, "entries": {}}
     fetcher._session = MagicMock()
     return fetcher
+
+
+def test_request_delay_is_a_small_courtesy_pause_not_a_rate_limit_workaround():
+    """REQUEST_DELAY paces raw file downloads after they succeed, applied
+    uniformly across three unrelated static-asset hosts (NPS, Unsplash,
+    Wikimedia) that document no per-download throttle. It should stay a
+    small courtesy value, not creep back up toward the old unjustified 1.5s
+    (GH #67 audit finding, 2026-08-16)."""
+    assert 0 < REQUEST_DELAY <= 0.5
 
 
 def test_fetch_all_keeps_destination_with_empty_images_if_not_enough_images(tmp_path):
