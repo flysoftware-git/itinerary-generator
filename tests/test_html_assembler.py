@@ -2105,3 +2105,299 @@ def test_build_getting_here_does_not_duplicate_stop_note_when_same_as_descriptio
     html = assembler._build_getting_here(ai, dest, previous_name="Zion National Park")
 
     assert html.count("Preserved 1870s silver mining town with original buildings and exhibits") == 1
+
+
+# ── GH #68 multi-site grouping ───────────────────────────────────────────────
+
+
+def _moab_group_destinations() -> list[dict]:
+    return [
+        {
+            "id": "moab",
+            "name": "Moab",
+            "dates": "August 1-4, 2026",
+            "lodging": {"name": "Moab Springs Ranch", "location": "Moab Springs Ranch, Moab, UT", "checkin_time": "4:00 PM"},
+        },
+        {
+            "id": "arches",
+            "name": "Arches National Park",
+            "dates": "August 2, 2026",
+            "group_with": "moab",
+        },
+        {
+            "id": "canyonlands",
+            "name": "Canyonlands National Park",
+            "dates": "August 3, 2026",
+            "group_with": "moab",
+        },
+    ]
+
+
+def test_build_nav_tabs_clusters_grouped_entries_under_base() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_nav_tabs(_moab_group_destinations(), {})
+
+    assert 'class="tab-group"' in html
+    assert 'data-tab="section-moab"' in html
+    assert 'data-tab="section-arches"' in html
+    assert 'data-tab="section-canyonlands"' in html
+    assert "tab-btn-grouped" in html
+    # Grouped tabs render inside the single tab-group span alongside their base.
+    group_start = html.index('class="tab-group"')
+    group_end = html.index("</span>", group_start)
+    group_chunk = html[group_start:group_end]
+    assert 'data-tab="section-moab"' in group_chunk
+    assert 'data-tab="section-arches"' in group_chunk
+    assert 'data-tab="section-canyonlands"' in group_chunk
+
+
+def test_build_nav_tabs_ungrouped_destinations_render_flat() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [
+        {"id": "zion", "name": "Zion National Park"},
+        {"id": "moab", "name": "Moab, Utah"},
+    ]
+    html = assembler._build_nav_tabs(destinations, {})
+
+    assert 'class="tab-group"' not in html
+    assert "tab-btn-grouped" not in html
+    assert 'data-tab="section-zion"' in html
+    assert 'data-tab="section-moab"' in html
+
+
+def test_build_group_lodging_pointer_renders_for_grouped_entry_without_own_lodging() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    arches = dest_by_id["arches"]
+
+    html = assembler._build_group_lodging_pointer(arches, dest_by_id)
+
+    assert "Moab Springs Ranch" in html
+    assert 'href="#section-moab"' in html
+
+
+def test_build_group_lodging_pointer_empty_when_entry_overrides_lodging() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    arches = dict(dest_by_id["arches"])
+    arches["lodging"] = {"name": "Arches Basecamp", "location": "Arches Basecamp, Moab, UT"}
+
+    assert assembler._build_group_lodging_pointer(arches, dest_by_id) == ""
+
+
+def test_build_group_lodging_pointer_empty_for_ungrouped_entry() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    moab = dest_by_id["moab"]
+
+    assert assembler._build_group_lodging_pointer(moab, dest_by_id) == ""
+
+
+def test_build_restaurants_renders_see_base_pointer_when_deferred() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._multi_site_base_owned_categories = frozenset({"restaurant"})
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    arches = dest_by_id["arches"]
+
+    html = assembler._build_restaurants({"dinner_recommendations": []}, "Arches National Park", dest=arches, dest_by_id=dest_by_id)
+
+    assert "see Moab" in html
+    assert 'href="#section-moab"' in html
+
+
+def test_build_restaurants_no_pointer_for_ungrouped_entry_with_no_restaurants() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._multi_site_base_owned_categories = frozenset({"restaurant"})
+
+    html = assembler._build_restaurants({"dinner_recommendations": []}, "Zion National Park", dest={"id": "zion"})
+
+    assert html == ""
+
+
+def test_build_attractions_renders_see_base_pointer_for_deferred_scenic_drives_only() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._multi_site_base_owned_categories = frozenset()
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    arches = dict(dest_by_id["arches"])
+    arches["base_owned_categories"] = ["scenic_drive"]
+
+    html = assembler._build_attractions({"top_attractions": []}, [], "Arches National Park", dest=arches, dest_by_id=dest_by_id)
+
+    assert "Scenic drives" in html
+    assert "see Moab" in html
+
+
+def test_build_attractions_appends_scenic_drive_pointer_alongside_own_attractions() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._multi_site_base_owned_categories = frozenset()
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    arches = dict(dest_by_id["arches"])
+    arches["base_owned_categories"] = ["scenic_drive"]
+    ai = {
+        "top_attractions": [
+            {"name": "Delicate Arch", "type": "hike", "description": "Iconic arch hike.", "url": "https://www.nps.gov/arch/delicate"},
+        ]
+    }
+
+    html = assembler._build_attractions(ai, [], "Arches National Park", dest=arches, dest_by_id=dest_by_id)
+
+    assert "Delicate Arch" in html
+    assert "Scenic drives" in html
+    assert "see Moab" in html
+
+
+def test_build_getting_here_renders_day_trip_badge_for_grouped_entry() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    arches = dest_by_id["arches"]
+    ai = {
+        "getting_here": {
+            "distance_miles": "5",
+            "drive_time": "15 min",
+            "en_route_stops": [],
+        }
+    }
+
+    html = assembler._build_getting_here(ai, arches, previous_name="Moab", dest_by_id=dest_by_id)
+
+    assert "Day Trip" in html
+
+
+def test_build_getting_here_no_day_trip_badge_for_ungrouped_entry() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {"distance_miles": "120", "drive_time": "2h 30m", "en_route_stops": []}}
+    dest = {"id": "moab", "name": "Moab"}
+
+    html = assembler._build_getting_here(ai, dest, previous_name="Zion National Park")
+
+    assert "Day Trip" not in html
+
+
+def test_build_getting_there_uses_group_base_name_when_final_destination_is_grouped() -> None:
+    """GH #68 §4 open question #3: the departure leg after a group must be
+    labeled from the shared base (where the traveler actually overnights),
+    not from the grouped entry itself, even when it's the trip's last stop."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    canyonlands = dest_by_id["canyonlands"]  # final destination, group_with: moab
+    ai = {
+        "getting_there": {
+            "route_summary": "Head toward Grand Junction for departure.",
+            "route_options": [],
+        }
+    }
+    trip_meta = {"return": "Grand Junction, CO airport"}
+
+    html = assembler._build_getting_there(ai, canyonlands, trip_meta, dest_by_id=dest_by_id)
+
+    assert "Moab" in html
+    assert "Canyonlands National Park →" not in html
+
+
+def test_build_getting_there_uses_own_name_when_ungrouped() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest = {"id": "santafe", "name": "Santa Fe"}
+    ai = {"getting_there": {"route_summary": "Head to Albuquerque.", "route_options": []}}
+    trip_meta = {"return": "Albuquerque, NM airport"}
+
+    html = assembler._build_getting_there(ai, dest, trip_meta)
+
+    assert "Santa Fe" in html
+
+
+def test_build_getting_here_renders_en_route_pointer_when_deferred_and_empty() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._multi_site_base_owned_categories = frozenset()
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    arches = dict(dest_by_id["arches"])
+    arches["base_owned_categories"] = ["en_route_stop"]
+    ai = {"getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []}}
+
+    html = assembler._build_getting_here(ai, arches, previous_name="Moab", dest_by_id=dest_by_id)
+
+    assert "En-route stops" in html
+    assert "see Moab" in html
+
+
+def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_clustering() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {
+        "trip": {"title": "Moab Group Trip", "subtitle": "Test", "theme_color": "#C0623E"},
+        "destinations": [
+            {
+                "id": "moab",
+                "name": "Moab",
+                "dates": "August 1-4, 2026",
+                "lodging": {"name": "Moab Springs Ranch", "location": "Moab Springs Ranch, Moab, UT", "checkin_time": "4:00 PM"},
+                "planning_links": [],
+                "ai_content": {
+                    "top_attractions": [],
+                    "dinner_recommendations": [
+                        {"name": "Moab Diner", "url": "https://www.moabdiner.example/", "description": "Classic diner."},
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                },
+                "scenic_drives": [],
+                "images": [],
+                "cultural_events": {},
+            },
+            {
+                "id": "arches",
+                "name": "Arches National Park",
+                "dates": "August 2, 2026",
+                "group_with": "moab",
+                "planning_links": [],
+                "ai_content": {
+                    "top_attractions": [
+                        {"name": "Delicate Arch", "type": "hike", "description": "Iconic hike.", "url": "https://www.nps.gov/arch/delicate"},
+                    ],
+                    "dinner_recommendations": [],
+                    "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+                },
+                "scenic_drives": [],
+                "images": [],
+                "cultural_events": {},
+            },
+            {
+                "id": "canyonlands",
+                "name": "Canyonlands National Park",
+                "dates": "August 3, 2026",
+                "group_with": "moab",
+                "planning_links": [],
+                "ai_content": {
+                    "top_attractions": [
+                        {"name": "Grand View Point", "type": "viewpoint", "description": "Sweeping canyon views.", "url": "https://www.nps.gov/cany/grandview"},
+                    ],
+                    "dinner_recommendations": [],
+                    "getting_here": {"distance_miles": "32", "drive_time": "40 min", "en_route_stops": []},
+                },
+                "scenic_drives": [],
+                "images": [],
+                "cultural_events": {},
+            },
+        ],
+    }
+
+    html = assembler.assemble(trip)
+
+    # Nav clustering
+    assert 'class="tab-group"' in html
+    # Lodging dedup pointers on both grouped children
+    assert html.count("Based from Moab Springs Ranch") == 2
+    # Restaurant deferral pointer on both grouped children, base keeps its own card
+    assert html.count("Dinner recommendations: see Moab") == 2
+    assert "Moab Diner" in html
+    # Each grouped entry keeps its own genuinely distinct attractions
+    assert "Delicate Arch" in html
+    assert "Grand View Point" in html
+    # Day-trip framing for both grouped entries
+    assert html.count("Day Trip") == 2

@@ -19,6 +19,13 @@ import re
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
+from generator.multi_site_grouping import (
+    DEFAULT_BASE_OWNED_CATEGORIES,
+    category_deferred_to_base,
+    group_base_id,
+    is_grouped,
+)
+
 logger = logging.getLogger(__name__)
 TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "v2.5_template.html"
 CHECKSUM_PATH = Path(__file__).parent.parent / "templates" / "checksums.txt"
@@ -53,6 +60,18 @@ class HTMLAssembler:
         import yaml
         with Path(config_path).open() as f:
             self._config = yaml.safe_load(f)
+        # GH #68 multi-site grouping default (see generator/multi_site_grouping.py
+        # and generator/url_discovery.py, which independently loads the same
+        # config key for its discovery gate).
+        raw_base_owned = (self._config or {}).get("multi_site_grouping", {}).get(
+            "base_owned_categories", DEFAULT_BASE_OWNED_CATEGORIES
+        )
+        if isinstance(raw_base_owned, list):
+            self._multi_site_base_owned_categories = frozenset(
+                str(c or "").strip().lower() for c in raw_base_owned if str(c or "").strip()
+            )
+        else:
+            self._multi_site_base_owned_categories = frozenset(DEFAULT_BASE_OWNED_CATEGORIES)
 
     def assemble(self, trip: dict[str, Any]) -> str:
         template_text = TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -92,6 +111,10 @@ class HTMLAssembler:
         # ── Per-destination sections ─────────────────────────────────────────
         sections_html = ""
         destinations = trip.get("destinations", [])
+        # GH #68 multi-site grouping: id -> destination lookup so a grouped
+        # entry's section can render "see base" pointers (lodging, deferred
+        # categories) that name and link to its group base.
+        dest_by_id = {d["id"]: d for d in destinations if isinstance(d, dict) and d.get("id")}
         departure_name = meta.get("departure", "")
         for index, dest in enumerate(destinations):
             previous_name = destinations[index - 1]["name"] if index > 0 else departure_name
@@ -107,6 +130,7 @@ class HTMLAssembler:
                 previous_route_target,
                 current_route_target,
                 is_last=(index == len(destinations) - 1),
+                dest_by_id=dest_by_id,
             )
         sections_html += self._build_packing_summary(destinations)
         html = html.replace("<!--DESTINATION_SECTIONS-->", sections_html)
@@ -257,18 +281,65 @@ class HTMLAssembler:
         return text, ""
 
     def _build_nav_tabs(self, destinations: list[dict[str, Any]], trip_meta: dict[str, Any] | None = None) -> str:
-        """Build tab-btn buttons (data-tab=section-{id}) + Google Maps link."""
+        """Build tab-btn buttons (data-tab=section-{id}) + Google Maps link.
+
+        GH #68 multi-site grouping (docs/design/
+        multi-site-destination-grouping.md §3): a grouped entry's tab
+        renders nested inside its group base's tab in a shared pill
+        container -- indent + connecting background -- instead of as an
+        unrelated flat top-level tab. Exact visual treatment is a
+        template/CSS call, not a data-model one (left open by the design
+        doc); implemented here as self-contained inline styling on the
+        generated tab markup so the frozen template file itself never
+        needs to change.
+        """
         gmaps_url = self._build_google_maps_url(destinations, trip_meta)
+
+        def _tab_label(i: int, dest: dict[str, Any]) -> str:
+            short = dest["name"].replace(" National Park", "").replace(" State Park", "").split(",")[0].strip()
+            return f"{i + 1} · {short}"
+
+        # Map each group base id -> its grouped children, in original
+        # destination order, regardless of where they fall in the list.
+        children_by_base: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+        for i, dest in enumerate(destinations):
+            base_id = group_base_id(dest)
+            if base_id:
+                children_by_base.setdefault(base_id, []).append((i, dest))
+        grouped_indices = {i for children in children_by_base.values() for i, _ in children}
+
         tabs = []
         for i, dest in enumerate(destinations):
+            if i in grouped_indices:
+                continue  # rendered nested inside its base's tab-group below
             active = ' active' if i == 0 else ''
             dest_id = dest["id"]  # use manifest id directly
-            short = dest["name"].replace(" National Park", "").replace(" State Park", "").split(",")[0].strip()
-            label = f"{i + 1} · {short}"
-            tabs.append(f'<button class="tab-btn{active}" data-tab="section-{dest_id}">{label}</button>')
+            label = _tab_label(i, dest)
+            base_btn = f'<button class="tab-btn{active}" data-tab="section-{dest_id}">{label}</button>'
+            children = children_by_base.get(dest_id, [])
+            if not children:
+                tabs.append(base_btn)
+                continue
+            child_btns = []
+            for ci, child in children:
+                child_active = ' active' if ci == 0 else ''
+                child_id = child["id"]
+                child_label = _tab_label(ci, child)
+                child_btns.append(
+                    f'<button class="tab-btn tab-btn-grouped{child_active}" '
+                    f'data-tab="section-{child_id}" '
+                    f'style="margin-left:2px;border-left:2px solid var(--terracotta);'
+                    f'border-radius:9999px;">↳ {child_label}</button>'
+                )
+            tabs.append(
+                '<span class="tab-group" '
+                'style="display:inline-flex;align-items:center;gap:2px;'
+                'background:var(--sandstone);border-radius:9999px;padding:3px;">'
+                f'{base_btn}{"".join(child_btns)}</span>'
+            )
         tabs.append(
             f'<a href="{gmaps_url}" target="_blank" rel="noopener" class="map-tab-btn">'
-            f'\U0001f5fa\ufe0f Full Route Map</a>'
+            f'🗺️ Full Route Map</a>'
         )
         return "\n          ".join(tabs)
 
@@ -281,6 +352,7 @@ class HTMLAssembler:
         current_route_target: str = "",
         *,
         is_last: bool = False,
+        dest_by_id: dict[str, dict[str, Any]] | None = None,
     ) -> str:
         import logging
         logger = logging.getLogger(__name__)
@@ -302,6 +374,10 @@ class HTMLAssembler:
             ai.get("top_attractions", []),
         )
 
+        # GH #68 multi-site grouping §2: grouped entry with no own lodging
+        # gets a compact "Based from X (see Y)" pointer instead of nothing.
+        section += self._build_group_lodging_pointer(dest, dest_by_id)
+
         # Intro note or cultural event summary belongs directly under hero
         section += self._build_intro_note(dest, events)
 
@@ -318,10 +394,11 @@ class HTMLAssembler:
             previous_name,
             previous_route_target=previous_route_target,
             current_route_target=current_route_target,
+            dest_by_id=dest_by_id,
         )
 
         # Attractions + scenic drives/viewpoints
-        section += self._build_attractions(ai, drives, dest.get("name", ""))
+        section += self._build_attractions(ai, drives, dest.get("name", ""), dest=dest, dest_by_id=dest_by_id)
 
         # Daily schedule
         section += self._build_schedule(ai, drives, dest["name"])
@@ -330,12 +407,12 @@ class HTMLAssembler:
         section += self._build_events(events, dest["name"])
 
         # Dinner recommendations
-        section += self._build_restaurants(ai, dest["name"])
+        section += self._build_restaurants(ai, dest["name"], dest=dest, dest_by_id=dest_by_id)
 
         # Final leg departure guidance for the last destination is rendered as a
         # separate trailing card so it does not displace inbound route context.
         if is_last:
-            section += self._build_getting_there(ai, dest, trip_meta)
+            section += self._build_getting_there(ai, dest, trip_meta, dest_by_id=dest_by_id)
 
         # Collapsible debug block (opt-in only)
         if self._config.get("render", {}).get("show_debug_block", False):
@@ -481,7 +558,14 @@ class HTMLAssembler:
         html += '</div>\n'
         return html
 
-    def _build_getting_there(self, ai: dict, dest: dict, trip_meta: dict[str, Any]) -> str:
+    def _build_getting_there(
+        self,
+        ai: dict,
+        dest: dict,
+        trip_meta: dict[str, Any],
+        *,
+        dest_by_id: dict[str, dict[str, Any]] | None = None,
+    ) -> str:
         getting_there = ai.get("getting_there", {}) if isinstance(ai, dict) else {}
         if not isinstance(getting_there, dict):
             getting_there = {}
@@ -497,9 +581,25 @@ class HTMLAssembler:
         if not return_name and not route_summary and not route_options:
             return ""
 
+        # GH #68 multi-site grouping §4 (open question #3, applied
+        # symmetrically to the arrival-side fix): when the trip's final
+        # destination is itself a grouped entry, the traveler's actual
+        # physical base for the departure leg is the group's base, not the
+        # grouped entry's own location -- they overnight at the base, not
+        # inside the day-trip park. Label-only fix; the Google Maps link
+        # below has never encoded an explicit origin (left to the device's
+        # current location), so no behavior change there.
+        departure_origin_name = str(dest.get("name", "") or "").strip()
+        base_id = group_base_id(dest)
+        if base_id:
+            base = (dest_by_id or {}).get(base_id) or {}
+            base_name = str(base.get("name", "") or "").strip()
+            if base_name:
+                departure_origin_name = base_name
+
         route_label = ""
         if return_name:
-            route_label = f'{self._short_place_name(dest.get("name", ""))} → {self._short_place_name(return_name)}'
+            route_label = f'{self._short_place_name(departure_origin_name)} → {self._short_place_name(return_name)}'
 
         gmaps_url = ""
         if return_name:
@@ -772,6 +872,71 @@ class HTMLAssembler:
             return lodging_location
         return str(dest.get("name", "") or "").strip()
 
+    # ── GH #68 multi-site grouping: "see base" rendering helpers ────────────
+    # See docs/design/multi-site-destination-grouping.md §2 (lodging dedup)
+    # and §5 (base-owned category pointers). Both funnel through
+    # _group_base_pointer_html so every deferred-category pointer looks and
+    # links the same way.
+
+    def _resolved_base_owned_categories_for_render(self, dest: dict[str, Any] | None) -> frozenset[str]:
+        default_categories = getattr(
+            self, "_multi_site_base_owned_categories", frozenset(DEFAULT_BASE_OWNED_CATEGORIES)
+        )
+        from generator.multi_site_grouping import resolve_base_owned_categories
+
+        return resolve_base_owned_categories(dest, default_categories)
+
+    def _category_deferred_for_render(self, dest: dict[str, Any] | None, category: str) -> bool:
+        return category_deferred_to_base(
+            dest,
+            category,
+            getattr(self, "_multi_site_base_owned_categories", frozenset(DEFAULT_BASE_OWNED_CATEGORIES)),
+        )
+
+    def _group_base_pointer_html(
+        self,
+        dest: dict[str, Any] | None,
+        dest_by_id: dict[str, dict[str, Any]] | None,
+        label: str,
+        *,
+        icon: str = "\U0001f4cd",
+        css_class: str = "group-base-pointer",
+    ) -> str:
+        """Compact link back to a grouped entry's base section, e.g.
+        'Dining: see Moab'. Returns "" when the base can't be resolved."""
+        base_id = group_base_id(dest)
+        if not base_id:
+            return ""
+        base = (dest_by_id or {}).get(base_id) or {}
+        base_name = str(base.get("name", "") or base_id).strip()
+        text = f"{label}: see {base_name}"
+        return (
+            f'<p class="{css_class}">'
+            f'<a href="#section-{base_id}">{icon} {html_escape.escape(text)}</a></p>\n'
+        )
+
+    def _build_group_lodging_pointer(
+        self, dest: dict[str, Any], dest_by_id: dict[str, dict[str, Any]] | None = None
+    ) -> str:
+        """§2: a grouped entry with no own `lodging` block renders a
+        compact 'Based from X (see Y)' pointer instead of repeating a full
+        lodging block for what is, physically, one stay."""
+        base_id = group_base_id(dest)
+        if not base_id:
+            return ""
+        own_lodging = dest.get("lodging")
+        if isinstance(own_lodging, dict) and own_lodging:
+            return ""  # this entry overrides lodging -- nothing to dedup
+        base = (dest_by_id or {}).get(base_id) or {}
+        base_name = str(base.get("name", "") or base_id).strip()
+        base_lodging = base.get("lodging") if isinstance(base.get("lodging"), dict) else {}
+        lodging_name = str(base_lodging.get("name") or base_lodging.get("location") or "").strip()
+        text = f"Based from {lodging_name} (see {base_name})" if lodging_name else f"See {base_name} for lodging"
+        return (
+            '<p class="group-lodging-pointer">'
+            f'<a href="#section-{base_id}">\U0001f3e8 {html_escape.escape(text)}</a></p>\n'
+        )
+
     def _build_getting_here(
         self,
         ai: dict,
@@ -780,6 +945,7 @@ class HTMLAssembler:
         *,
         previous_route_target: str = "",
         current_route_target: str = "",
+        dest_by_id: dict[str, dict[str, Any]] | None = None,
     ) -> str:
         gh = ai.get("getting_here", {})
         if not gh:
@@ -791,6 +957,12 @@ class HTMLAssembler:
         route_label = ""
         if previous_name:
             route_label = f'{self._short_place_name(previous_name)} → {self._short_place_name(dest.get("name", ""))}'
+
+        # GH #68 multi-site grouping §4: a group_with transition is a
+        # there-and-back day trip from the shared base, not a one-way
+        # relocation leg -- label it distinctly so "Moab → Arches" doesn't
+        # read as a new place to check into.
+        is_group_day_trip = is_grouped(dest)
 
         route_destination = {"name": current_route_target or dest.get("name", "")}
         gmaps_url = self._build_route_gmaps_url(
@@ -822,22 +994,38 @@ class HTMLAssembler:
             html += f'    <a href="{gmaps_url}" target="_blank" rel="noopener" class="gmaps-link">Open in Google Maps →</a>\n'
         html += '  </div>\n'
 
+        day_trip_badge = (
+            '<span class="badge badge-daytrip" style="background:var(--sage);color:#fff;">Day Trip</span>\n'
+            if is_group_day_trip
+            else ""
+        )
+
         # Route summary with distance and time badges
         if distance and drive_time:
             html += '  <div class="route-headline-row">\n'
             if route_label:
                 html += f'    <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
             html += '    <div class="route-badges route-badges-inline">\n'
+            if day_trip_badge:
+                html += f'      {day_trip_badge}'
             html += f'      <span class="badge badge-distance">{distance} mi</span>\n'
             html += f'      <span class="badge badge-time">{drive_time}</span>\n'
             html += '    </div>\n'
             html += '  </div>\n'
         elif route_label:
-            html += f'  <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
+            html += f'  <div class="route-headline">{html_escape.escape(route_label)}'
+            if day_trip_badge:
+                html += f' {day_trip_badge}'
+            html += '</div>\n'
 
         if route_summary:
             html += f'  <p class="route-summary">{route_summary}</p>\n'
-        
+
+        # GH #68 multi-site grouping §5: en-route stops deferred to the
+        # group base render a pointer instead of just silently vanishing.
+        if not stops and self._category_deferred_for_render(dest, "en_route_stop"):
+            html += self._group_base_pointer_html(dest, dest_by_id, "En-route stops", icon="\U0001f9ed")
+
         if stops:
             visible_stops: list[tuple[dict[str, Any], str, bool]] = []
             ordered_stops = sorted(
@@ -922,11 +1110,26 @@ class HTMLAssembler:
     def _normalize_attraction_name_for_dedup(name: str) -> str:
         return re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
 
-    def _build_attractions(self, ai: dict, drives: list[dict[str, Any]], dest_name: str = "") -> str:
+    def _build_attractions(
+        self,
+        ai: dict,
+        drives: list[dict[str, Any]],
+        dest_name: str = "",
+        *,
+        dest: dict[str, Any] | None = None,
+        dest_by_id: dict[str, dict[str, Any]] | None = None,
+    ) -> str:
         attrs = ai.get("top_attractions", [])
+        # GH #68 multi-site grouping §5: scenic drives deferred to the
+        # group base leave `drives` empty by design (url_discovery.py's
+        # gate clears it) -- render a pointer instead of silently omitting
+        # the whole subsection when there's nothing else on the card either.
+        scenic_drive_deferred = self._category_deferred_for_render(dest, "scenic_drive")
         if not attrs and not drives:
+            if scenic_drive_deferred:
+                return self._group_base_pointer_html(dest, dest_by_id, "Scenic drives", icon="\U0001f5fa️")
             return ""
-        
+
         # Icon and badge color map by type
         type_icons = {
             "hike": "🥾",
@@ -1074,6 +1277,8 @@ class HTMLAssembler:
             )
 
         if not attraction_rows and not drives:
+            if scenic_drive_deferred:
+                return self._group_base_pointer_html(dest, dest_by_id, "Scenic drives", icon="\U0001f5fa️")
             return ""
 
         html = '<div class="card attractions-card">\n<h3>🏔️ Top Attractions</h3>\n<div class="attraction-list">\n'
@@ -1119,6 +1324,8 @@ class HTMLAssembler:
                 f'<span class="attr-desc">{html_escape.escape(str(card_desc or ""))}</span>'
                 '</div>\n'
             )
+        if not drives and scenic_drive_deferred:
+            html += self._group_base_pointer_html(dest, dest_by_id, "Scenic drives", icon="\U0001f5fa️")
         html += '</div>\n</div>\n'
         return html
 
@@ -1389,9 +1596,22 @@ class HTMLAssembler:
 
         return bool(text_blob and len(re.findall(r"[A-Za-z0-9]+", text_blob)) >= 6)
 
-    def _build_restaurants(self, ai: dict, dest_name: str) -> str:
+    def _build_restaurants(
+        self,
+        ai: dict,
+        dest_name: str,
+        *,
+        dest: dict[str, Any] | None = None,
+        dest_by_id: dict[str, dict[str, Any]] | None = None,
+    ) -> str:
         rests = ai.get("dinner_recommendations", [])
         if not rests:
+            # GH #68 multi-site grouping §5: restaurants deferred to the
+            # group base leave dinner_recommendations empty by design
+            # (url_discovery.py's gate clears it) -- render a pointer
+            # instead of just omitting the section.
+            if self._category_deferred_for_render(dest, "restaurant"):
+                return self._group_base_pointer_html(dest, dest_by_id, "Dinner recommendations", icon="\U0001f37d️")
             return ""
         rows: list[str] = []
         for rest in rests:

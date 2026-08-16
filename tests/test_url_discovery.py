@@ -62,6 +62,92 @@ def test_discover_all_adds_urls_to_attractions():
     assert attr["url"] == "https://www.nps.gov/zion/angels"
 
 
+def _empty_dest(dest_id: str, name: str, lat: float, lng: float, group_with: str | None = None) -> dict:
+    dest: dict = {
+        "id": dest_id,
+        "name": name,
+        "lat": lat,
+        "lng": lng,
+        "nps_park_code": None,
+        "ai_content": {
+            "top_attractions": [],
+            "dinner_recommendations": [],
+            "getting_here": {"en_route_stops": []},
+        },
+        "scenic_drives": [],
+    }
+    if group_with:
+        dest["group_with"] = group_with
+    return dest
+
+
+def test_discover_all_group_origin_resolution_uses_shared_base_not_previous_sibling():
+    """GH #68 multi-site grouping §4: a grouped entry's origin must be its
+    group base (a day-trip/detour), and the next ungrouped destination
+    after a group must also measure from that shared base -- never from
+    whichever grouped sibling happened to render last."""
+    trip = {
+        "destinations": [
+            _empty_dest("moab", "Moab", 38.5733, -109.5498),
+            _empty_dest("arches", "Arches National Park", 38.7331, -109.5925, group_with="moab"),
+            _empty_dest("canyonlands", "Canyonlands National Park", 38.2, -109.93, group_with="moab"),
+            _empty_dest("springdale", "Springdale", 37.19, -112.98),
+        ]
+    }
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._key = "fake_key"
+    discoverer._session = MagicMock()
+    discoverer._route_distance_live_fetch_enabled = False
+
+    captured_origins: dict[str, str] = {}
+    real_en_route = URLDiscoverer._discover_en_route_stops
+
+    def spying_en_route_stops(self, ai, dest_name, dest_dates=None, origin_name="", origin_lat=None,
+                               origin_lng=None, dest_lat=None, dest_lng=None, dest=None):
+        captured_origins[dest_name] = origin_name
+        return real_en_route(
+            self, ai, dest_name, dest_dates, origin_name, origin_lat, origin_lng, dest_lat, dest_lng, dest,
+        )
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        with patch.object(URLDiscoverer, "_discover_en_route_stops", spying_en_route_stops):
+            discoverer.discover_all(trip)
+
+    assert captured_origins["Moab"] == ""  # trip's first destination -- unchanged legacy behavior
+    assert captured_origins["Arches National Park"] == "Moab"
+    assert captured_origins["Canyonlands National Park"] == "Moab"
+    # Springdale is the next *ungrouped* destination after the group -- its
+    # leg must be measured from Moab (the shared base), not Canyonlands
+    # (whichever grouped sibling happens to be last in list order).
+    assert captured_origins["Springdale"] == "Moab"
+
+
+def test_discover_all_group_origin_resolves_by_id_regardless_of_list_order():
+    """A grouped entry can legally appear before its base in the manifest;
+    origin resolution must not depend on iteration order."""
+    trip = {
+        "destinations": [
+            _empty_dest("arches", "Arches National Park", 38.7331, -109.5925, group_with="moab"),
+            _empty_dest("moab", "Moab", 38.5733, -109.5498),
+        ]
+    }
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._key = "fake_key"
+    discoverer._session = MagicMock()
+    discoverer._route_distance_live_fetch_enabled = False
+
+    captured_origins: dict[str, str] = {}
+
+    def spying_en_route_stops(self, ai, dest_name, dest_dates=None, origin_name="", *args, **kwargs):
+        captured_origins[dest_name] = origin_name
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        with patch.object(URLDiscoverer, "_discover_en_route_stops", spying_en_route_stops):
+            discoverer.discover_all(trip)
+
+    assert captured_origins["Arches National Park"] == "Moab"
+
+
 def test_discover_all_uses_google_fallback_for_missing_url():
     trip = {
         "destinations": [
@@ -117,6 +203,127 @@ def test_restaurant_discovery_two_pass():
     assert "google.com/maps" in call_log
     assert "tripadvisor.com" in call_log
     assert ai["dinner_recommendations"][0]["url"] == "https://www.tripadvisor.com/Restaurant_Test"
+
+
+# ── GH #68 multi-site grouping: base_owned_categories discovery gate ────────
+
+
+def test_discover_restaurants_skips_entirely_when_category_deferred_to_base():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "search"
+    discoverer._multi_site_base_owned_categories = frozenset({"restaurant"})
+
+    ai = {"dinner_recommendations": [{"name": "Arches Cafe"}]}
+    grouped_dest = {"id": "arches", "group_with": "moab"}
+
+    with patch.object(discoverer, "_search_first") as fake_search:
+        discoverer._discover_restaurants(ai, dest_name="Arches National Park", dest=grouped_dest)
+
+    fake_search.assert_not_called()
+    # Cleared (not left as dead-link placeholders) so html_assembler.py can
+    # render a clean "see base" pointer instead of urlless restaurant rows.
+    assert ai["dinner_recommendations"] == []
+
+
+def test_discover_restaurants_runs_normally_for_ungrouped_entry_even_with_config_default():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "search"
+    discoverer._multi_site_base_owned_categories = frozenset({"restaurant"})
+
+    ai = {"dinner_recommendations": [{"name": "Moab Diner"}]}
+    base_dest = {"id": "moab"}  # no group_with -- this IS the base
+
+    with patch.object(discoverer, "_search_first", return_value="https://example.com/moab-diner"):
+        discoverer._discover_restaurants(ai, dest_name="Moab", dest=base_dest)
+
+    assert ai["dinner_recommendations"][0]["url"] == "https://example.com/moab-diner"
+
+
+def test_discover_restaurants_runs_normally_when_entry_opts_out_via_empty_override():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "search"
+    discoverer._multi_site_base_owned_categories = frozenset({"restaurant"})
+
+    ai = {"dinner_recommendations": [{"name": "Canyonlands Grill"}]}
+    grouped_dest_opted_out = {"id": "canyonlands", "group_with": "moab", "base_owned_categories": []}
+
+    with patch.object(discoverer, "_search_first", return_value="https://example.com/canyonlands-grill"):
+        discoverer._discover_restaurants(ai, dest_name="Canyonlands National Park", dest=grouped_dest_opted_out)
+
+    assert ai["dinner_recommendations"][0]["url"] == "https://example.com/canyonlands-grill"
+
+
+def test_discover_restaurants_honors_per_entry_override_beyond_config_default():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_source = "search"
+    discoverer._multi_site_base_owned_categories = frozenset()  # config default: nothing deferred
+
+    ai = {"dinner_recommendations": [{"name": "Arches Cafe"}]}
+    grouped_dest = {"id": "arches", "group_with": "moab", "base_owned_categories": ["restaurant"]}
+
+    with patch.object(discoverer, "_search_first") as fake_search:
+        discoverer._discover_restaurants(ai, dest_name="Arches National Park", dest=grouped_dest)
+
+    fake_search.assert_not_called()
+
+
+def test_discover_en_route_stops_skips_stops_but_still_updates_route_distance_when_deferred():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+    discoverer._multi_site_base_owned_categories = frozenset({"en_route_stop"})
+    discoverer._route_distance_live_fetch_enabled = False
+
+    ai = {"getting_here": {"en_route_stops": [{"name": "Wilson Arch"}]}}
+    grouped_dest = {"id": "arches", "group_with": "moab"}
+
+    with patch.object(discoverer, "_search_first") as fake_search:
+        discoverer._discover_en_route_stops(
+            ai, "Arches National Park", origin_name="Moab",
+            origin_lat=38.5733, origin_lng=-109.5498,
+            dest_lat=38.7331, dest_lng=-109.5925,
+            dest=grouped_dest,
+        )
+
+    fake_search.assert_not_called()
+    assert ai["getting_here"]["en_route_stops"] == []
+    # Distance/time still gets computed from the real lat/lng pair -- this
+    # category gate must never silently disable route-distance math.
+    assert ai["getting_here"].get("distance_miles")
+
+
+def test_discover_scenic_drives_skips_and_clears_content_when_deferred():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._multi_site_base_owned_categories = frozenset({"scenic_drive"})
+
+    grouped_dest = {
+        "id": "arches",
+        "group_with": "moab",
+        "scenic_drives": [{"title": "Arches Scenic Drive", "description": "AI-generated blurb."}],
+    }
+
+    with patch.object(discoverer, "_search_first") as fake_search:
+        discoverer._discover_scenic_drives(grouped_dest, "Arches National Park", "arch")
+
+    fake_search.assert_not_called()
+    assert grouped_dest["scenic_drives"] == []
+
+
+def test_discover_attractions_defers_trail_category_when_configured():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._multi_site_base_owned_categories = frozenset()
+
+    ai = {
+        "top_attractions": [
+            {"name": "Delicate Arch Trail", "type": "hike", "description": "Iconic hike."},
+        ]
+    }
+    grouped_dest = {"id": "arches", "group_with": "moab", "base_owned_categories": ["trail"]}
+
+    with patch.object(discoverer, "_search_first") as fake_search:
+        discoverer._discover_attractions(ai, "Arches National Park", "arch", dest=grouped_dest)
+
+    fake_search.assert_not_called()
+    assert ai["top_attractions"][0]["url"] == ""
 
 
 def test_restaurant_discovery_uses_ai_url_candidates_before_search_passes():
@@ -8108,6 +8315,36 @@ def test_filtered_alltrails_does_not_pad_with_weak_matches_when_only_one_candida
 
     assert first_url == "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"
     assert second_url in (None, "")
+
+
+def test_load_interest_filters_applies_multi_site_base_owned_categories_default(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+multi_site_grouping:
+  base_owned_categories: ["restaurant", "scenic_drive"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._multi_site_base_owned_categories = frozenset({"restaurant"})
+
+    discoverer._load_interest_filters(str(config_file))
+
+    assert discoverer._multi_site_base_owned_categories == frozenset({"restaurant", "scenic_drive"})
+
+
+def test_load_interest_filters_defaults_multi_site_base_owned_categories_when_key_absent(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("url_discovery:\n  restaurant_source: search\n", encoding="utf-8")
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._multi_site_base_owned_categories = frozenset({"restaurant"})
+
+    discoverer._load_interest_filters(str(config_file))
+
+    assert discoverer._multi_site_base_owned_categories == frozenset({"restaurant"})
 
 
 def test_load_interest_filters_applies_rating_threshold_and_boost_controls(tmp_path):

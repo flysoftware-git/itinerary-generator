@@ -338,6 +338,19 @@ url_discovery:
         - "chairlift"
       in_season_months: [11, 12, 1, 2, 3, 4]
 
+# ── Multi-site destination grouping (GH #68, Option 3) ─────────────────────────
+# See docs/design/multi-site-destination-grouping.md. A destination entry can
+# set `group_with: <base id>` to share a lodging base with another entry
+# (e.g. Arches/Canyonlands day-tripping from a Moab base). Physical
+# proximity means some categories would otherwise produce duplicate content
+# across grouped entries if independently discovered per entry -- this
+# project-wide default defers those categories to the group's base entry.
+# Valid values: trail | attraction | restaurant | en_route_stop | scenic_drive.
+# Overridable per-entry via the grouped entry's own base_owned_categories
+# field (an explicit empty list there opts that entry out entirely).
+multi_site_grouping:
+  base_owned_categories: ["restaurant"]
+
 # ── Output validation ─────────────────────────────────────────────────────────
 validation:
   check_div_balance: true
