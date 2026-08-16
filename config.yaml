@@ -230,7 +230,27 @@ url_discovery:
   # converged (300s+, zero output across 2 attempts). Kept at 2 pending more
   # evidence before raising further -- also overridable per-run via the
   # DIRECT_BATCH_GROUP_SIZE env var without editing this file.
-  direct_batch_group_size: 2
+  #
+  # 2026-08-16 real-run evidence (dipstick58, group_size=2): of 12 attempted
+  # grouped jobs (4 destination-pairs x attraction/restaurant/trail), only 1
+  # had BOTH destinations' sections successfully split and matched --
+  # matching (not just underperforming) the earlier dipstick55/56+
+  # investigation's ~2-of-12 finding. Every other job silently fell through
+  # to the normal per-destination call it exists to avoid, so the feature
+  # is net overhead in practice, not net savings, and per this run's
+  # hypothesis check may also be costing real URL matches (a partially
+  # matched or wrongly split group could starve a destination that an
+  # individual call would have resolved cleanly). No exceptions were ever
+  # thrown -- the split/match failure is silent by design (see
+  # _fetch_and_cache_grouped_direct_batch's fail-open comment) -- and no
+  # raw failed-grouped-HTML sample survived this run to root-cause the
+  # *why* with confidence (diagnostic logging was added on
+  # _split_multi_destination_html / _match_destination_section failure
+  # paths in generator/url_discovery.py so the next attempt captures that
+  # evidence). Reverting to 1 (disabled) until a real fix lands and is
+  # re-verified against a live run; DIRECT_BATCH_GROUP_SIZE env var still
+  # allows opting back in for testing without editing this file.
+  direct_batch_group_size: 1
   alltrails_source: direct_link_batch
   attraction_source: direct_link_batch
   restaurant_source: direct_link_batch

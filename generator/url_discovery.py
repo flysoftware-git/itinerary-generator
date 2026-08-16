@@ -4588,6 +4588,7 @@ class URLDiscoverer:
         if hasattr(search_client, "is_circuit_open") and search_client.is_circuit_open():
             return
 
+        group_dest_names = [str(d.get("name", "") or "").strip() for d in group]
         html = str(
             search_client.chat_completion(
                 system_prompt=system_prompt,
@@ -4599,10 +4600,36 @@ class URLDiscoverer:
             or ""
         )
         if not html:
+            logger.info(
+                "Grouped direct-batch harvest for kind=%s destinations=%s returned an empty "
+                "response; falling back to per-destination calls for this group.",
+                kind,
+                group_dest_names,
+            )
             return
 
         sections = self._split_multi_destination_html(html)
         if not sections:
+            # Diagnostic for the split-matching failure mode: the model
+            # returned content but _split_multi_destination_html found zero
+            # <h2>...</h2> sections in it -- either the model didn't use the
+            # requested <h2>Destination Name</h2> heading format at all (e.g.
+            # markdown "## Name" or bold text instead of an <h2> tag), or the
+            # whole response is something else entirely (an apology, a
+            # truncated fragment, etc). Logging a head/tail snippet here
+            # (rather than the full body) keeps this readable while still
+            # showing the actual heading style the model chose, which is
+            # exactly what's needed to tell those cases apart.
+            snippet = html[:300].replace("\n", " ")
+            logger.info(
+                "Grouped direct-batch harvest for kind=%s destinations=%s produced no <h2> "
+                "sections (html_length=%d); falling back to per-destination calls for this "
+                "group. Response head: %r",
+                kind,
+                group_dest_names,
+                len(html),
+                snippet,
+            )
             return
 
         cache_attr = {
@@ -4629,6 +4656,19 @@ class URLDiscoverer:
                 continue
             match_idx = self._match_destination_section(dest_name, remaining)
             if match_idx is None:
+                # Diagnostic: show what headers WERE found in this response
+                # so a heading-format mismatch (e.g. the model dropping the
+                # state/park suffix, or emitting a section per subcategory
+                # instead of per destination) is visible without re-running
+                # anything.
+                logger.info(
+                    "Grouped direct-batch harvest for kind=%s: no <h2> section matched "
+                    "destination '%s' (group=%s). Headers found in response: %s",
+                    kind,
+                    dest_name,
+                    group_dest_names,
+                    [header for header, _body in remaining],
+                )
                 continue
             header, body = remaining.pop(match_idx)
             rows = self._direct_batch_rows_from_html(body)
@@ -4653,6 +4693,16 @@ class URLDiscoverer:
                 # leave this destination's cache unpopulated so it falls
                 # through to a normal, individually-retried single-destination
                 # fetch rather than locking in a too-thin result.
+                logger.info(
+                    "Grouped direct-batch harvest for kind=%s: matched section for '%s' "
+                    "(group=%s) but only parsed %d row(s), below min_required=%d; falling "
+                    "back to a per-destination call for this destination.",
+                    kind,
+                    dest_name,
+                    group_dest_names,
+                    len(filtered_rows),
+                    min_required,
+                )
                 continue
             with self._request_cache_lock:
                 cache[key] = filtered_rows
@@ -7803,7 +7853,23 @@ class URLDiscoverer:
             if key in seen_new_keys:
                 continue
             row_name = self._direct_batch_row_name(row)
-            added.append({"name": row_name, "type": "hike", "url": normalized_url})
+            new_item: dict[str, Any] = {"name": row_name, "type": "hike", "url": normalized_url}
+            # Found 2026-08-16 (dipstick58): unlike
+            # _prioritize_direct_batch_attractions just above, this trail path
+            # never copied the harvested row's description/practical_note into
+            # the new item -- every trail injected here rendered with a
+            # permanently empty teaser regardless of whether the direct-batch
+            # HTML actually contained a descriptive note (it usually did; see
+            # the row parsing in _direct_batch_rows_from_html). That alone
+            # accounted for 10/10 of the empty attraction/trail teasers in a
+            # real run (0 attractions were affected, only trails), so it's
+            # copied here the same way the attraction path already does.
+            row_desc = self._sanitize_direct_batch_description_text(
+                str(row.get("description", "") or row.get("practical_note", "") or "")
+            )
+            if row_desc and not self._is_metadata_only_residual_text(row_desc, name=row_name):
+                new_item["description"] = row_desc
+            added.append(new_item)
             seen_new_keys.add(key)
 
         if not added:

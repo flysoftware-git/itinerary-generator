@@ -10125,6 +10125,35 @@ def test_prioritize_direct_batch_trails_never_evicts_existing_and_injects_new() 
     assert len(names) == 2
 
 
+def test_prioritize_direct_batch_trails_copies_description_into_injected_items() -> None:
+    """Regression for a real bug (dipstick58, 2026-08-16): unlike
+    _prioritize_direct_batch_attractions, this trail-injection path built new
+    items with only name/type/url and silently dropped the harvested row's
+    description/practical_note -- every trail injected this way rendered
+    with a permanently empty teaser downstream (HTMLValidator's teaser-
+    completeness check), even when the direct-batch HTML captured a real
+    descriptive note for that trail."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._trail_direct_batch_items_per_day = 2
+    discoverer._max_trail_miles = 3.0
+    existing: list[dict] = []
+    rows = [
+        {
+            "name": "Sun Mountain Trail",
+            "url": "https://www.alltrails.com/trail/us/new-mexico/sun-mountain-trail",
+            "rating": 4.6,
+            "description": "Short steep ascent to panoramic mountain and valley views.",
+        },
+    ]
+
+    with patch.object(discoverer, "_get_alltrails_direct_batch_rows_for_destination", return_value=rows):
+        out = discoverer._prioritize_direct_batch_trails(existing, "Santa Fe", "October 27-29, 2026")
+
+    assert len(out) == 1
+    assert out[0]["name"] == "Sun Mountain Trail"
+    assert out[0]["description"] == "Short steep ascent to panoramic mountain and valley views."
+
+
 def test_prioritize_direct_batch_trails_prefers_highest_rated_and_respects_mileage_threshold() -> None:
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._trail_direct_batch_items_per_day = 1
