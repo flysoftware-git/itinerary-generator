@@ -418,6 +418,66 @@ def test_build_getting_here_orders_waypoints_by_route_progress() -> None:
     assert html.index("First Stop") < html.index("Mid Stop") < html.index("Last Stop")
 
 
+def test_build_getting_here_unresolved_progress_ratio_sorts_after_confirmed_stops() -> None:
+    """Regression for dipstick58 Bug 1 (real Bryce Canyon -> Capitol Reef leg).
+
+    Two en-route stops -- "Fremont Petroglyphs" and "Gifford Homestead" --
+    are both physically inside Capitol Reef National Park, i.e. at/past the
+    destination. url_discovery's Nominatim geocoder failed to resolve either
+    name to coordinates, so neither ever got a route_progress_ratio computed
+    (unlike the five Highway 12 stops below, which are well-known state
+    parks/overlooks that geocoded cleanly to real, verified ratios). Before
+    the fix, a missing ratio silently defaulted to 0.0 in the sort key --
+    tying with (and via stable sort, landing ahead of) "Kodachrome Basin
+    State Park" at ratio 0.05, the genuinely earliest real stop along the
+    route. The two unresolved, destination-adjacent stops rendered 1st and
+    2nd, backwards from reality. They must now sort after every stop with a
+    confirmed ratio instead.
+    """
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "getting_here": {
+            "route_summary": "Take US-89 S, then UT-12 E to UT-24 E.",
+            "en_route_stops": [
+                # Listed first in the AI-generated content, but never geocoded.
+                {"name": "Fremont Petroglyphs", "route_waypoint_eligible": True},
+                {"name": "Gifford Homestead", "route_waypoint_eligible": True},
+                # Real Highway 12 stops between Bryce and Torrey, in true
+                # geographic order, each with a verified route_progress_ratio.
+                {"name": "Kodachrome Basin State Park", "route_waypoint_eligible": True, "route_progress_ratio": 0.05},
+                {"name": "Escalante Petrified Forest State Park", "route_waypoint_eligible": True, "route_progress_ratio": 0.32},
+                {"name": "Head of the Rocks Overlook", "route_waypoint_eligible": True, "route_progress_ratio": 0.41},
+                {"name": "Lower Calf Creek Falls", "route_waypoint_eligible": True, "route_progress_ratio": 0.55},
+                {"name": "Anasazi State Park Museum", "route_waypoint_eligible": True, "route_progress_ratio": 0.58},
+            ],
+        }
+    }
+    dest = {"name": "Capitol Reef National Park"}
+
+    html = assembler._build_getting_here(
+        ai,
+        dest,
+        previous_name="Bryce Canyon City",
+        previous_route_target="Bryce Canyon City",
+        current_route_target="Capitol Reef National Park",
+    )
+
+    rendered_order = [
+        "Kodachrome Basin State Park",
+        "Escalante Petrified Forest State Park",
+        "Head of the Rocks Overlook",
+        "Lower Calf Creek Falls",
+        "Anasazi State Park Museum",
+        "Fremont Petroglyphs",
+        "Gifford Homestead",
+    ]
+    positions = [html.index(name) for name in rendered_order]
+    assert positions == sorted(positions), (
+        "Highway 12 stops with a confirmed route_progress_ratio must render "
+        "before destination-adjacent stops with no resolved ratio"
+    )
+
+
 def test_build_getting_here_uses_lodging_endpoint_but_destination_scoped_waypoints() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {
@@ -1585,6 +1645,92 @@ def test_build_attractions_keeps_distinctly_named_scenic_drive() -> None:
     assert "Inspiration Point" in html
     assert "Bryce Canyon Scenic Drive" in html
     assert "attr-drive-item" in html
+
+
+def test_build_attractions_drops_scenic_drive_describing_same_place_different_wording() -> None:
+    """Regression for dipstick58 Bug 3 (real Telluride data): a top_attraction
+    titled "Telluride Mountain Village Gondola" and a scenic_drives item
+    titled "Free Gondola to Mountain Village" describe the same real, free
+    town<->resort gondola -- just worded differently by two independent AI
+    generation passes. The prior exact-normalized-string dedup missed this
+    entirely (different wording => different normalized string => no dedup),
+    so both cards rendered. Token-overlap matching must catch it."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Telluride Mountain Village Gondola",
+                "type": "attraction",
+                "description": "Free gondola connecting Telluride and Mountain Village.",
+                "url": "https://www.telluride.com/activities/gondola",
+                "rating": 4.9,
+            }
+        ]
+    }
+    drives = [
+        {
+            "title": "Free Gondola to Mountain Village",
+            "category": "scenic",
+            "description": (
+                "The gondola ride connects Telluride and Mountain Village, "
+                "offering aerial views of the mountains and valleys below."
+            ),
+            "distance_or_duration": "13 min",
+        }
+    ]
+
+    html = assembler._build_attractions(ai, drives=drives, dest_name="Telluride")
+
+    assert "Telluride Mountain Village Gondola" in html
+    assert "attr-drive-item" not in html
+    assert "telluride.com/activities/gondola" in html
+
+
+def test_build_attractions_keeps_distinct_attractions_sharing_directional_qualifier() -> None:
+    """Guard against over-matching: two real, genuinely distinct places (e.g.
+    Bryce Canyon's actual Sunrise Point and Sunset Point viewpoints) can
+    share every word but a directional/temporal qualifier. High word overlap
+    alone must not be treated as evidence they're the same place."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Sunrise Point Overlook",
+                "type": "viewpoint",
+                "description": "A classic first-light view over the amphitheater.",
+                "url": "https://www.nps.gov/brca/planyourvisit/sunrise-point.htm",
+            }
+        ]
+    }
+    drives = [
+        {
+            "title": "Sunset Point Overlook",
+            "category": "viewpoint",
+            "description": "A classic end-of-day view over the amphitheater.",
+            "distance_or_duration": "5-min walk",
+        }
+    ]
+
+    html = assembler._build_attractions(ai, drives=drives, dest_name="Bryce Canyon National Park")
+
+    assert "Sunrise Point Overlook" in html
+    assert "Sunset Point Overlook" in html
+    assert "attr-drive-item" in html
+
+
+def test_attraction_names_are_duplicates_matches_and_guards() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+
+    assert assembler._attraction_names_are_duplicates(
+        "Telluride Mountain Village Gondola", "Free Gondola to Mountain Village"
+    )
+    assert not assembler._attraction_names_are_duplicates(
+        "Sunrise Point Overlook", "Sunset Point Overlook"
+    )
+    assert not assembler._attraction_names_are_duplicates(
+        "Inspiration Point", "Bryce Canyon Scenic Drive"
+    )
+    assert assembler._attraction_names_are_duplicates("Inspiration Point", "Inspiration Point")
 
 
 def test_build_attractions_omits_items_without_a_usable_url() -> None:

@@ -798,13 +798,26 @@ class HTMLAssembler:
     def _route_waypoint_sort_key(stop: Any) -> tuple[int, float]:
         if not isinstance(stop, dict):
             return (1, 0.0)
+        if stop.get("route_waypoint_eligible") is False:
+            return (1, 0.0)
         value = stop.get("route_progress_ratio")
         try:
             ratio = float(value)
         except (TypeError, ValueError):
-            ratio = 0.0
-        if stop.get("route_waypoint_eligible") is False:
-            return (1, 0.0)
+            # No confirmed position along the route (e.g. url_discovery's
+            # geocoder couldn't resolve this stop's coordinates) must not
+            # silently sort as "the very start of the route" -- that put
+            # destination-adjacent stops ahead of genuinely-earlier ones.
+            # See dipstick58 Bug 1: "Fremont Petroglyphs" and "Gifford
+            # Homestead" (both inside Capitol Reef, i.e. at/past the
+            # destination) rendered 1st/2nd on the Bryce -> Capitol Reef
+            # leg, ahead of real Highway 12 waypoints (Kodachrome Basin,
+            # Escalante Petrified Forest, Head of the Rocks Overlook, Lower
+            # Calf Creek Falls, Anasazi State Park Museum) that all had a
+            # verified, smaller route_progress_ratio. Sorting unknown-ratio
+            # stops after every stop with a confirmed ratio keeps the
+            # verified geographic order intact instead of corrupting it.
+            return (0, float("inf"))
         return (0, ratio)
 
     def _build_route_gmaps_url(
@@ -1110,6 +1123,73 @@ class HTMLAssembler:
     def _normalize_attraction_name_for_dedup(name: str) -> str:
         return re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
 
+    # Filler words stripped before comparing name tokens -- neither
+    # side of a genuine duplicate nor a genuine distinction hinges on these.
+    _ATTRACTION_DEDUP_STOPWORDS = frozenset({
+        "a", "an", "the", "to", "at", "in", "on", "of", "and", "for", "from",
+        "via", "near", "into", "with",
+    })
+
+    # Qualifiers that name two genuinely different, commonly-paired real
+    # places (e.g. Bryce Canyon's actual "Sunrise Point" and "Sunset Point"
+    # viewpoints, or a park's "North Overlook" vs "South Overlook"). If these
+    # are the words that differ between two names, every other word matching
+    # is not enough evidence they're the same place -- never merge on that
+    # basis alone.
+    _ATTRACTION_DEDUP_DIFFERENTIATORS = frozenset({
+        "sunrise", "sunset", "north", "south", "east", "west",
+        "upper", "lower", "inner", "outer", "main", "back", "front",
+        "old", "new",
+    })
+
+    @staticmethod
+    def _attraction_dedup_tokens(name: str) -> set[str]:
+        normalized = HTMLAssembler._normalize_attraction_name_for_dedup(name)
+        return {
+            token
+            for token in normalized.split()
+            if token and token not in HTMLAssembler._ATTRACTION_DEDUP_STOPWORDS
+        }
+
+    @staticmethod
+    def _attraction_names_are_duplicates(name_a: str, name_b: str) -> bool:
+        """True when two differently-worded names plausibly describe the
+        same real place.
+
+        See dipstick58 Bug 3: a top_attractions item titled "Telluride
+        Mountain Village Gondola" and a scenic_drives item titled "Free
+        Gondola to Mountain Village" are the same real, free town<->resort
+        gondola, described two different ways by independent AI generation
+        passes for the same destination. An exact normalized-string match
+        (the prior behavior) never catches this. Token-set overlap does, but
+        must guard against merging two real, distinct places that happen to
+        share every word but one directional/temporal qualifier (e.g.
+        "Sunrise Point" vs "Sunset Point") -- see
+        _ATTRACTION_DEDUP_DIFFERENTIATORS.
+        """
+        norm_a = HTMLAssembler._normalize_attraction_name_for_dedup(name_a)
+        norm_b = HTMLAssembler._normalize_attraction_name_for_dedup(name_b)
+        if not norm_a or not norm_b:
+            return False
+        if norm_a == norm_b:
+            return True
+
+        tokens_a = HTMLAssembler._attraction_dedup_tokens(name_a)
+        tokens_b = HTMLAssembler._attraction_dedup_tokens(name_b)
+        if not tokens_a or not tokens_b:
+            return False
+
+        shared = tokens_a & tokens_b
+        if len(shared) < 2:
+            return False
+
+        differing = (tokens_a | tokens_b) - shared
+        if differing & HTMLAssembler._ATTRACTION_DEDUP_DIFFERENTIATORS:
+            return False
+
+        smaller = min(len(tokens_a), len(tokens_b))
+        return (len(shared) / smaller) >= 0.66
+
     def _build_attractions(
         self,
         ai: dict,
@@ -1185,12 +1265,12 @@ class HTMLAssembler:
         must_see_ids = {id(a) for a in qualifying[: self._MUST_SEE_MAX_BADGES]}
 
         attraction_rows: list[str] = []
-        rendered_attraction_names: set[str] = set()
+        rendered_attraction_names: list[str] = []
         for attr in attrs:
             url, _is_map_fallback = self._select_preferred_external_link(attr, section="attraction")
             if not url and not self._should_render_without_url(attr, section="attraction"):
                 continue
-            rendered_attraction_names.add(self._normalize_attraction_name_for_dedup(str(attr.get("name", "") or "")))
+            rendered_attraction_names.append(str(attr.get("name", "") or ""))
             attr_type = attr.get("type", "attraction").lower()
             icon = type_icons.get(attr_type, "📍")
             attr_name = html_escape.escape(str(attr.get("name", "") or ""))
@@ -1288,12 +1368,17 @@ class HTMLAssembler:
             title = drive.get("title", "")
             if not title:
                 continue
-            # A scenic drive that shares its name with an already-rendered
+            # A scenic drive that shares its name -- or plausibly describes
+            # the same real place under different wording (see
+            # _attraction_names_are_duplicates) -- with an already-rendered
             # attraction (e.g. "Inspiration Point" appearing as both a
             # top_attraction and a scenic-drive item for the same destination)
             # must not render twice -- the attraction card, which carries a
             # real link/description, wins; the redundant drive card is dropped.
-            if self._normalize_attraction_name_for_dedup(title) in rendered_attraction_names:
+            if any(
+                self._attraction_names_are_duplicates(title, rendered_name)
+                for rendered_name in rendered_attraction_names
+            ):
                 continue
             safe = title.replace('"', '&quot;').replace("'", "&#39;")
             category = scenic_badges.get(drive.get("category", "drive"), "Scenic Drive")
@@ -1935,21 +2020,25 @@ class HTMLAssembler:
         for dest in destinations:
             dest_name = str(dest.get("name", "") or "").strip()
             ai = dest.get("ai_content", {})
-            attraction_names = {
-                self._normalize_attraction_name_for_dedup(str(attr.get("name", "") or ""))
+            attraction_names = [
+                str(attr.get("name", "") or "")
                 for attr in ai.get("top_attractions", [])
                 if isinstance(attr, dict)
-            }
+            ]
             for drive in dest.get("scenic_drives", []):
                 key = drive.get("title", "")
                 # Must mirror _build_attractions' inline drive-link dedup: a
-                # drive sharing its name with an already-rendered attraction
-                # never gets a modal-trigger button there, so it can't get a
-                # DRIVE_DESCRIPTIONS entry here either -- otherwise this
-                # produces an orphan key with no button to open it (found
+                # drive sharing its name -- or plausibly describing the same
+                # real place under different wording, see
+                # _attraction_names_are_duplicates -- with an already-rendered
+                # attraction never gets a modal-trigger button there, so it
+                # can't get a DRIVE_DESCRIPTIONS entry here either -- otherwise
+                # this produces an orphan key with no button to open it (found
                 # 2026-08-15: validator caught 'Potash Road' doing exactly
                 # this for a Moab run).
-                if key and self._normalize_attraction_name_for_dedup(key) in attraction_names:
+                if key and any(
+                    self._attraction_names_are_duplicates(key, name) for name in attraction_names
+                ):
                     continue
                 entry = {
                     "title": drive.get("title", ""),
