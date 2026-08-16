@@ -1287,3 +1287,76 @@ def test_cap_period_sentences_still_truncates_genuinely_long_summaries() -> None
     out = AIContentGenerator._cap_period_sentences(days, max_sentences=3)
 
     assert out[0]["periods"][0]["summary"] == "One sentence. Two sentence. Three sentence."
+
+
+def test_is_evening_unsuitable_venue_matches_museum_style_keywords() -> None:
+    assert AIContentGenerator._is_evening_unsuitable_venue(
+        {"name": "St. George Dinosaur Discovery Site at Johnson Farm", "type": "attraction"}
+    )
+    assert AIContentGenerator._is_evening_unsuitable_venue(
+        {"name": "Zion Human History Museum", "type": "attraction"}
+    )
+    assert AIContentGenerator._is_evening_unsuitable_venue({"name": "Any Old Place", "type": "museum"})
+    assert not AIContentGenerator._is_evening_unsuitable_venue(
+        {"name": "Sunrise Point", "type": "viewpoint"}
+    )
+    assert not AIContentGenerator._is_evening_unsuitable_venue(
+        {"name": "Navajo Loop Trail", "type": "hike"}
+    )
+
+
+def test_inject_travel_realism_strips_museum_mention_from_evening_schedule() -> None:
+    """dipstick58 regression: St. George Day 1 Evening text sent travelers to
+    a paleontology discovery site after dinner -- realistically closed by
+    then. The mention should be stripped from Evening, keeping dinner."""
+    g = _gen()
+    days = [{
+        "day_label": "Day 1",
+        "periods": [
+            {"period": "Morning", "summary": "Departure prep, airport transfer, and logistics before the main travel leg."},
+            {"period": "Afternoon", "summary": "Travel from Las Vegas International Airport (depart around 1:30 PM)."},
+            {
+                "period": "Evening",
+                "summary": (
+                    "Enjoy dinner at Painted Pony Restaurant. St. George Dinosaur "
+                    "Discovery Site at Johnson Farm. Explore the interactive exhibits."
+                ),
+            },
+        ],
+    }]
+    attractions = [
+        {"name": "Jenny's Canyon Trail", "type": "trail"},
+        {"name": "St. George Dinosaur Discovery Site at Johnson Farm", "type": "attraction"},
+    ]
+
+    updated = g._inject_travel_realism(
+        days,
+        {},
+        "none",
+        "Zion National Park",
+        attractions=attractions,
+        restaurants=[{"name": "Painted Pony Restaurant"}],
+    )
+
+    evening_summary = updated[0]["periods"][2]["summary"]
+    assert "Discovery Site" not in evening_summary
+    assert "Painted Pony Restaurant" in evening_summary
+
+
+def test_inject_travel_realism_leaves_evening_unchanged_when_no_unsuitable_venue() -> None:
+    g = _gen()
+    days = [{
+        "day_label": "Day 1",
+        "periods": [
+            {"period": "Morning", "summary": "Start at Santa Fe Plaza."},
+            {"period": "Afternoon", "summary": "Browse Canyon Road galleries."},
+            {"period": "Evening", "summary": "Enjoy dinner at The Shed, then a sunset walk around the plaza."},
+        ],
+    }]
+    attractions = [{"name": "Santa Fe Plaza", "type": "viewpoint"}]
+
+    updated = g._inject_travel_realism(
+        days, {}, "Albuquerque", "Taos", attractions=attractions, restaurants=[{"name": "The Shed"}],
+    )
+
+    assert updated[0]["periods"][2]["summary"] == "Enjoy dinner at The Shed, then a sunset walk around the plaza."

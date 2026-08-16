@@ -121,6 +121,32 @@ class AIContentGenerator:
             sentences.append(remainder)
         return sentences
 
+    # Venues whose name strongly implies fixed daytime operating hours (indoor
+    # exhibits, staffed front desk) rather than something realistically open
+    # for an after-dinner visit. This is a narrow, name-based heuristic --
+    # not a real hours-of-operation model (no such data exists anywhere in
+    # the schedule pipeline; see docs/design/schedule-normalization.md's
+    # "Physical Reality Model" section) -- so it only guards against the
+    # clearest cases rather than attempting general Evening-suitability
+    # judgment.
+    _EVENING_UNSUITABLE_VENUE_KEYWORDS = (
+        "museum",
+        "discovery site",
+        "visitor center",
+        "visitors center",
+        "science center",
+    )
+
+    @staticmethod
+    def _is_evening_unsuitable_venue(attraction: dict[str, Any]) -> bool:
+        name = str(attraction.get("name", "") or "").lower()
+        attr_type = str(attraction.get("type", "") or "").lower()
+        if attr_type == "museum":
+            return True
+        return any(
+            keyword in name for keyword in AIContentGenerator._EVENING_UNSUITABLE_VENUE_KEYWORDS
+        )
+
     def __init__(
         self,
         config_path: Path | str = "config.yaml",
@@ -1985,6 +2011,57 @@ class AIContentGenerator:
 
                     if label == "Evening" and dinner_name:
                         period["summary"] = _rotate_restaurant_summary(summary, dinner_name)
+
+        # Evening periods shouldn't send travelers to museums, discovery
+        # sites, or visitor centers -- these are indoor, staffed venues that
+        # realistically close in the late afternoon, not places open for an
+        # after-dinner visit. No real operating-hours data exists to check
+        # against (see docs/design/schedule-normalization.md), so this only
+        # strips the specific sentence mentioning a name-recognizable
+        # closes-early venue rather than trying to validate Evening content
+        # generally.
+        unsuitable_evening_names = [
+            str(attr.get("name", "") or "").strip()
+            for attr in attractions
+            if isinstance(attr, dict)
+            and AIContentGenerator._is_evening_unsuitable_venue(attr)
+            and str(attr.get("name", "") or "").strip()
+        ]
+        if unsuitable_evening_names:
+            for day in days:
+                for period in day.get("periods", []) or []:
+                    if str(period.get("period", "")).title() != "Evening":
+                        continue
+                    summary = str(period.get("summary", "") or "")
+                    if not summary or summary.lower().startswith("reserved for return travel"):
+                        continue
+                    matched_name = next(
+                        (
+                            name
+                            for name in unsuitable_evening_names
+                            if re.search(re.escape(name), summary, re.IGNORECASE)
+                        ),
+                        None,
+                    )
+                    if not matched_name:
+                        continue
+                    sentences = AIContentGenerator._split_sentences(summary)
+                    kept = [
+                        s
+                        for s in sentences
+                        if not re.search(re.escape(matched_name), s, re.IGNORECASE)
+                    ]
+                    cleaned = " ".join(kept).strip()
+                    if not cleaned:
+                        cleaned = "Enjoy a relaxed evening back at your lodging after dinner."
+                    if cleaned != summary:
+                        period["summary"] = cleaned
+                        logger.info(
+                            "  Evening schedule: removed likely-closed venue mention '%s' "
+                            "(indoor/exhibit-type venue unsuitable for an evening visit)",
+                            matched_name,
+                        )
+
         return days
 
     def _infer_day_count(self, dates: str) -> int:
