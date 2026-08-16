@@ -3463,6 +3463,44 @@ class URLDiscoverer:
                         )
                         continue
                 if self._direct_batch_is_authoritative():
+                    # The trail-like classification (_is_trail_like_attraction) is a
+                    # broad keyword catch-all -- e.g. a viewpoint whose description
+                    # happens to mention "a short walk" reads as trail-like even
+                    # though its actual type is "viewpoint". When that
+                    # misclassification sends an item down the AllTrails-only path
+                    # and it predictably finds no matching trail row there, don't
+                    # give up outright: the (already-harvested, zero-extra-cost)
+                    # attraction direct-batch rows may still have the real item --
+                    # e.g. dipstick58's real "Bryce Point" (type "viewpoint",
+                    # trail_like only because its description said "a short walk")
+                    # had a correct, harvested NPS row ("Bryce Point Overlook",
+                    # nps.gov/brca/planyourvisit/brycepoint.htm) that this
+                    # trail-only path never got a chance to check because
+                    # authoritative mode locks trail-like items to the trail
+                    # source and never falls through to the general
+                    # attraction_source_mode == "direct_link_batch" branch below.
+                    fallback_attraction_url = self._search_attraction_from_direct_batch(
+                        attr_name, dest_name, str(dest_dates or "")
+                    )
+                    if fallback_attraction_url:
+                        attr["url"] = fallback_attraction_url
+                        attr.update(
+                            self._direct_batch_row_quality_metadata_for_url(
+                                self._get_attraction_direct_batch_rows_for_destination(
+                                    dest_name, str(dest_dates or "")
+                                ),
+                                fallback_attraction_url,
+                            )
+                        )
+                        self._log_decision(
+                            kind="attraction",
+                            dest_name=dest_name,
+                            item_name=attr_name,
+                            reason="trail_like_misclassified_attraction_batch_recovered",
+                            message="no trail match for trail-like item; recovered via attraction direct-batch row",
+                            url=fallback_attraction_url,
+                        )
+                        continue
                     attr["url"] = ""
                     attr.pop("maps_url", None)
                     self._log_decision(

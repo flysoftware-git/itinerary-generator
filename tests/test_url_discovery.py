@@ -3871,6 +3871,71 @@ def test_discover_attractions_direct_batch_authoritative_no_match_does_not_assig
     fanout_search.assert_not_called()
 
 
+def test_discover_attractions_trail_like_misclassification_recovers_via_attraction_batch() -> None:
+    """Regression for dipstick58: real Bryce Canyon "Bryce Point" (type
+    "viewpoint") rendered unverified with no link, even though the attraction
+    direct-batch harvest for that exact run had a matching row ("Bryce Point
+    Overlook" -> https://www.nps.gov/brca/planyourvisit/brycepoint.htm).
+
+    Root cause: _is_trail_like_attraction's generic keyword catch-all matched
+    the word "walk" in the real harvested description ("...via a short drive
+    followed by a short walk"), so the item was classified trail_like=True and
+    routed into the AllTrails-only direct-batch path. That path predictably
+    found no matching trail row (Bryce Point isn't a trail), and in
+    authoritative direct-batch mode the trail branch locked to "no match"
+    without ever falling through to the general attraction-batch matching
+    that sibling items like "Sunrise Point" and "Inspiration Point" (whose
+    descriptions had no trail keyword) used successfully in the same real run.
+
+    The fix adds a same-cost fallback: when the trail path's direct-batch
+    search finds no trail, try the already-harvested attraction rows before
+    giving up.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+    discoverer._alltrails_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Bryce Point",
+                "type": "viewpoint",
+                "description": (
+                    "Offering one of the best panoramic views in the park, Bryce "
+                    "Point overlooks the main amphitheater. It's accessible via a "
+                    "short drive followed by a short walk."
+                ),
+            }
+        ]
+    }
+
+    attraction_rows = [
+        {
+            "title": "Bryce Point Overlook",
+            "name": "Bryce Point Overlook",
+            "url": "https://www.nps.gov/brca/planyourvisit/brycepoint.htm",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Bryce+Point+Bryce+Canyon+National+Park+UT",
+            "snippet": "Bryce Point Overlook Source Maps 4.7/5 One of the best panoramic views in the park.",
+        }
+    ]
+
+    with patch.object(discoverer, "_search_alltrails_for_trail_from_direct_batch", return_value=None):
+        with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
+            with patch.object(
+                discoverer,
+                "_get_attraction_direct_batch_rows_for_destination",
+                return_value=attraction_rows,
+            ):
+                discoverer._discover_attractions(ai, "Bryce Canyon National Park", "brca", "October 19-21, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == "https://www.nps.gov/brca/planyourvisit/brycepoint.htm"
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("Bryce Canyon National Park", {})
+    assert stats.get("trail_like_misclassified_attraction_batch_recovered", 0) == 1
+    assert stats.get("direct_batch_source_locked_no_match", 0) == 0
+
+
 def test_discover_attractions_direct_batch_authoritative_uses_item_fanout_when_batch_has_no_match() -> None:
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
