@@ -112,6 +112,7 @@ class CulturalEventsDiscoverer:
                         if not ok:
                             event.pop("url", None)
 
+            result = self._drop_events_before_arrival(result, dest.get("dates", ""))
             result = self._sanitize_local_tip_by_itinerary_days(result, dest.get("dates", ""))
             return result
         except Exception as e:
@@ -245,6 +246,65 @@ class CulturalEventsDiscoverer:
             return start, end
 
         return None
+
+    _MONTH_NAME_TO_NUMBER = {
+        "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+        "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+
+    def _drop_events_before_arrival(self, result: dict[str, Any], dates: str) -> dict[str, Any]:
+        """Filter out events dated entirely before the destination's arrival date.
+
+        The synthesis prompt deliberately allows the LLM to surface events
+        "within 7 days" of the travel dates for search-recall purposes, but a
+        rendered event that starts before the traveler ever arrives is never
+        useful and reads as a mistake (e.g. an event dated Oct 12 shown on a
+        destination whose stay starts Oct 17). Only drops events whose parsed
+        start date is strictly before the destination's own date-range start;
+        unparseable/recurring event dates ("Every Friday evening in October")
+        are left alone since there is no reliable date to compare.
+        """
+        if not isinstance(result, dict) or not result.get("has_events") or not result.get("events"):
+            return result
+
+        dest_range = self._parse_date_range(dates)
+        if not dest_range:
+            return result
+        dest_start, _dest_end = dest_range
+
+        kept: list[dict[str, Any]] = []
+        for event in result["events"]:
+            event_date_text = str(event.get("dates_in_range", "") or event.get("date", "") or "")
+            event_start = self._parse_event_start_date(event_date_text, fallback_year=dest_start.year)
+            if event_start is not None and event_start.date() < dest_start.date():
+                logger.info(
+                    "  Dropping cultural event before arrival: '%s' (%s) precedes destination start %s",
+                    event.get("name", ""), event_date_text, dest_start.date(),
+                )
+                continue
+            kept.append(event)
+
+        result["events"] = kept
+        if not kept:
+            result["has_events"] = False
+        return result
+
+    def _parse_event_start_date(self, date_text: str, fallback_year: int) -> datetime | None:
+        text = (date_text or "").replace("–", "-").strip()
+        if not text:
+            return None
+        m = re.search(r"([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*-\s*\d{1,2})?(?:,?\s*(\d{4}))?", text)
+        if not m:
+            return None
+        month = self._MONTH_NAME_TO_NUMBER.get(m.group(1).lower())
+        if not month:
+            return None
+        day = int(m.group(2))
+        year = int(m.group(3)) if m.group(3) else fallback_year
+        try:
+            return datetime(year, month, day)
+        except ValueError:
+            return None
 
     @_retry_transient_llm_errors
     def _synthesize(
