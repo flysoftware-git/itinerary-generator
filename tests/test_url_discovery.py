@@ -7749,6 +7749,50 @@ def test_alltrails_confidence_boosted_to_high_when_corroborating_search_agrees()
     assert confidence == "high"
 
 
+def test_alltrails_confidence_promoted_to_high_for_extra_term_slug_when_corroborated() -> None:
+    """Regression for dipstick58: Zion "The Narrows" resolved to the real,
+    correct, slug-matched candidate https://www.alltrails.com/trail/us/utah/
+    the-narrows-top-down via seed-relaxed search -- but it was silently
+    dropped (no disposition-log entry; rejection only visible via
+    _log_rejected_url's plain logger.warning) because AllTrails' bot-blocked
+    fetch could not confirm it and the slug's "top down" qualifier counts as
+    one extra term beyond item tokens {"narrow"}, which previously routed
+    straight to "low" with no chance to corroborate at all. An independent,
+    differently-queried search landing on the exact same URL must still be
+    able to rescue it.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+    url = "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
+
+    with patch.object(discoverer, "_alltrails_slug_matches_item", return_value=True):
+        with patch.object(discoverer, "_alltrails_slug_has_numbered_suffix", return_value=False):
+            with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+                with patch.object(discoverer, "_get_filtered_alltrails_selection", return_value=url):
+                    confidence = discoverer._alltrails_confidence_level(url, "The Narrows", "Zion National Park")
+
+    assert confidence == "high"
+
+
+def test_alltrails_confidence_stays_low_for_extra_term_slug_without_corroboration_match() -> None:
+    """The extra-term relief must not become a blanket default: if the
+    independent corroboration search disagrees (or finds nothing), a
+    multi-extra-term slug stays "low" and gets rejected -- this is what keeps
+    the fix from reopening the Theme B wrong-trail-link bug (dipstick55).
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+    url = "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
+
+    with patch.object(discoverer, "_alltrails_slug_matches_item", return_value=True):
+        with patch.object(discoverer, "_alltrails_slug_has_numbered_suffix", return_value=False):
+            with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+                with patch.object(discoverer, "_get_filtered_alltrails_selection", return_value=None):
+                    confidence = discoverer._alltrails_confidence_level(url, "The Narrows", "Zion National Park")
+
+    assert confidence == "low"
+
+
 def test_alltrails_confidence_stays_medium_without_corroboration_opt_in() -> None:
     """The boost must be opt-in (same flag as the existing filtered-selection
     search) since it costs one extra search call per borderline candidate --

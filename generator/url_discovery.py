@@ -2732,7 +2732,7 @@ class URLDiscoverer:
                 return "high"
             if slug_extra_terms == 0:
                 return self._boost_alltrails_confidence_via_corroboration("medium", url, item_name, dest_name)
-            return "low"
+            return self._corroborate_alltrails_slug_with_extra_terms(url, item_name, dest_name)
 
         if self._is_definitively_dead_status(status):
             return "low"
@@ -2749,8 +2749,46 @@ class URLDiscoverer:
             # Blocked fetches are common; only strict slug matches qualify as medium.
             if slug_extra_terms == 0:
                 return self._boost_alltrails_confidence_via_corroboration("medium", url, item_name, dest_name)
-            return "low"
+            return self._corroborate_alltrails_slug_with_extra_terms(url, item_name, dest_name)
 
+        return "low"
+
+    def _corroborate_alltrails_slug_with_extra_terms(self, url: str, item_name: str, dest_name: str) -> str:
+        """A slug carrying extra terms beyond the item name -- e.g. a route-variant
+        qualifier like "top-down" on "the-narrows-top-down" for item "The Narrows"
+        -- already passed the strict entity-identity check in
+        _alltrails_slug_matches_item; the extra terms alone don't prove it's the
+        wrong trail, they just make it too risky to grant a default "medium" the
+        way slug_extra_terms==0 candidates get via _boost_alltrails_confidence_via_
+        corroboration (that default-medium-then-maybe-upgrade shape is fine when
+        there's no extra term, but for a multi-word variant slug a default medium
+        for every candidate, corroborated or not, would reopen exactly the kind
+        of wrong-trail leak Theme B fixed). So instead of defaulting to medium,
+        require an independent, differently-queried search to land on the exact
+        same URL before granting any confidence above "low" at all -- true
+        corroboration, not a default with an optional upgrade. Fixes a real gap
+        found in dipstick58 (Zion "The Narrows" -> the-narrows-top-down): a
+        correct, harvested, slug-matched candidate was rejected outright because
+        AllTrails' bot-blocked page fetch could never single-handedly confirm it
+        and the extra "top down" qualifier disqualified it from even attempting
+        corroboration.
+        """
+        if not bool(getattr(self, "_enable_filtered_alltrails_selection", DEFAULT_ENABLE_FILTERED_ALLTRAILS_SELECTION)):
+            return "low"
+        try:
+            corroborated_url = self._get_filtered_alltrails_selection(item_name=item_name, dest_name=dest_name)
+        except Exception:
+            return "low"
+        if corroborated_url and self._same_alltrails_trail(url, corroborated_url):
+            self._log_decision(
+                kind="attraction",
+                dest_name=dest_name,
+                item_name=item_name,
+                reason="alltrails_confidence_boosted_by_corroboration",
+                message="alltrails confidence promoted low->high: independent search agreed despite extra slug terms",
+                url=url,
+            )
+            return "high"
         return "low"
 
     def _boost_alltrails_confidence_via_corroboration(
