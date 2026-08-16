@@ -1647,6 +1647,92 @@ def test_build_attractions_keeps_distinctly_named_scenic_drive() -> None:
     assert "attr-drive-item" in html
 
 
+def test_build_attractions_drops_scenic_drive_describing_same_place_different_wording() -> None:
+    """Regression for dipstick58 Bug 3 (real Telluride data): a top_attraction
+    titled "Telluride Mountain Village Gondola" and a scenic_drives item
+    titled "Free Gondola to Mountain Village" describe the same real, free
+    town<->resort gondola -- just worded differently by two independent AI
+    generation passes. The prior exact-normalized-string dedup missed this
+    entirely (different wording => different normalized string => no dedup),
+    so both cards rendered. Token-overlap matching must catch it."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Telluride Mountain Village Gondola",
+                "type": "attraction",
+                "description": "Free gondola connecting Telluride and Mountain Village.",
+                "url": "https://www.telluride.com/activities/gondola",
+                "rating": 4.9,
+            }
+        ]
+    }
+    drives = [
+        {
+            "title": "Free Gondola to Mountain Village",
+            "category": "scenic",
+            "description": (
+                "The gondola ride connects Telluride and Mountain Village, "
+                "offering aerial views of the mountains and valleys below."
+            ),
+            "distance_or_duration": "13 min",
+        }
+    ]
+
+    html = assembler._build_attractions(ai, drives=drives, dest_name="Telluride")
+
+    assert "Telluride Mountain Village Gondola" in html
+    assert "attr-drive-item" not in html
+    assert "telluride.com/activities/gondola" in html
+
+
+def test_build_attractions_keeps_distinct_attractions_sharing_directional_qualifier() -> None:
+    """Guard against over-matching: two real, genuinely distinct places (e.g.
+    Bryce Canyon's actual Sunrise Point and Sunset Point viewpoints) can
+    share every word but a directional/temporal qualifier. High word overlap
+    alone must not be treated as evidence they're the same place."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Sunrise Point Overlook",
+                "type": "viewpoint",
+                "description": "A classic first-light view over the amphitheater.",
+                "url": "https://www.nps.gov/brca/planyourvisit/sunrise-point.htm",
+            }
+        ]
+    }
+    drives = [
+        {
+            "title": "Sunset Point Overlook",
+            "category": "viewpoint",
+            "description": "A classic end-of-day view over the amphitheater.",
+            "distance_or_duration": "5-min walk",
+        }
+    ]
+
+    html = assembler._build_attractions(ai, drives=drives, dest_name="Bryce Canyon National Park")
+
+    assert "Sunrise Point Overlook" in html
+    assert "Sunset Point Overlook" in html
+    assert "attr-drive-item" in html
+
+
+def test_attraction_names_are_duplicates_matches_and_guards() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+
+    assert assembler._attraction_names_are_duplicates(
+        "Telluride Mountain Village Gondola", "Free Gondola to Mountain Village"
+    )
+    assert not assembler._attraction_names_are_duplicates(
+        "Sunrise Point Overlook", "Sunset Point Overlook"
+    )
+    assert not assembler._attraction_names_are_duplicates(
+        "Inspiration Point", "Bryce Canyon Scenic Drive"
+    )
+    assert assembler._attraction_names_are_duplicates("Inspiration Point", "Inspiration Point")
+
+
 def test_build_attractions_omits_items_without_a_usable_url() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {
