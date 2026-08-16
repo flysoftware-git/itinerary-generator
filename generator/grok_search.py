@@ -732,6 +732,18 @@ class GrokSearch:
                         stream=True,
                     )
                 resp.raise_for_status()
+                # SSE responses are "text/event-stream" with no charset param in
+                # the Content-Type header. requests' header-based encoding guess
+                # (used internally by iter_lines(decode_unicode=True)) defaults
+                # any charset-less "text/*" content type to ISO-8859-1 (Latin-1)
+                # per RFC 2616 -- but the xAI API actually sends UTF-8. Left
+                # unset, every multi-byte UTF-8 character in the streamed body
+                # (accented letters, curly quotes, em-dashes, ...) gets silently
+                # mis-decoded, then re-encoded as UTF-8 wherever the resulting
+                # text is later written to disk -- producing mojibake like
+                # "Angelica's" -> "Angelicaâs" (dipstick58 bug 3). Force the
+                # encoding requests should have used in the first place.
+                resp.encoding = "utf-8"
                 for line in resp.iter_lines(decode_unicode=True):
                     if time.monotonic() > deadline:
                         raise requests.exceptions.ReadTimeout(

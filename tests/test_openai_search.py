@@ -30,6 +30,66 @@ def _make_streaming_response(lines: list[str]) -> MagicMock:
     return resp
 
 
+def _make_real_sse_response(lines: list[str]) -> requests.Response:
+    """Build a genuine requests.Response (not a MagicMock) backed by real
+    UTF-8-encoded bytes, with the same charset-less "text/event-stream"
+    Content-Type header the OpenAI API actually sends, and .encoding
+    populated the same way requests.Session.send() populates it for a real
+    HTTP response. Unlike a MagicMock (whose iter_lines just replays
+    pre-decoded Python str objects, bypassing any real decoding), this
+    exercises the actual requests decode path -- including its RFC-2616
+    default of ISO-8859-1 for charset-less "text/*" responses -- so it can
+    actually catch a regression of the dipstick58 mojibake fix."""
+    import io
+
+    body = ("\n".join(lines) + "\n").encode("utf-8")
+    resp = requests.Response()
+    resp.status_code = 200
+    resp.headers["Content-Type"] = "text/event-stream"
+    resp.raw = io.BytesIO(body)
+    resp._content_consumed = False
+    # Mirrors what requests.Session.send() does for every real response.
+    resp.encoding = requests.utils.get_encoding_from_headers(resp.headers)
+    return resp
+
+
+def test_chat_completion_live_search_decodes_utf8_sse_body_correctly() -> None:
+    """Dipstick58 bug 3: the /v1/responses SSE stream's Content-Type is
+    "text/event-stream" with no charset param. requests' header-based
+    encoding guess defaults any charset-less "text/*" content type to
+    ISO-8859-1 (RFC 2616), so resp.iter_lines(decode_unicode=True) silently
+    mis-decoded the (actually UTF-8) body -- multi-byte characters like a
+    right single quote (U+2019) in a harvested restaurant name came out as
+    mojibake ("Angelica's" -> "Angelicaâs") once the resulting text was
+    later re-encoded as UTF-8 on disk. This uses a real requests.Response
+    (not a mock) so the real decode path -- including the ISO-8859-1
+    default -- is actually exercised. Same failure mode and fix as
+    GrokSearch (see test_grok_search.py's equivalent test)."""
+    import json as _json
+
+    # Built with ensure_ascii=False, like the real OpenAI API response body --
+    # the curly quote is genuine raw UTF-8 bytes on the wire, not a
+    # \uXXXX escape (which would be ASCII-safe and immune to this bug).
+    delta_line = "data: " + _json.dumps(
+        {"type": "response.output_text.delta", "delta": "Angelica’s Mexican Grill (Irmita’s Casita)"},
+        ensure_ascii=False,
+    )
+    completed_line = "data: " + _json.dumps(
+        {"type": "response.completed", "response": {"usage": {"input_tokens": 100, "output_tokens": 50}}}
+    )
+
+    oa = OpenAiSearch(api_key="test", model="test")
+    fake_response = _make_real_sse_response([delta_line, completed_line])
+    session = MagicMock()
+    session.post.return_value = fake_response
+    oa._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    out = oa.chat_completion(system_prompt="sys", user_prompt="find a restaurant", live_search=True)
+
+    assert out == "Angelica’s Mexican Grill (Irmita’s Casita)"
+    assert "â" not in out  # the mis-decode's tell-tale "â" byte artifact
+
+
 def test_extract_json_object_handles_raw_json():
     payload = '{"results": [{"title": "A", "url": "https://example.com", "snippet": "ok"}]}'
     parsed = _extract_json_object(payload)
