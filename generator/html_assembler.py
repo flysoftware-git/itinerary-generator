@@ -33,37 +33,6 @@ def _portable_image_href(path_str: str) -> str:
     name = Path(path_str).name
     return f"./images/{quote(name)}"
 
-def sanitize_dest_id(name: str) -> str:
-    """
-    Convert destination names into validator-friendly IDs.
-    Examples:
-      'Zion National Park' → 'zion'
-      'Bryce Canyon National Park' → 'bryce'
-      'Capitol Reef National Park' → 'capitolreef'
-      'Pagosa Springs' → 'pagosa'
-      'Santa Fe' → 'santafe'
-    """
-    name = name.lower()
-    for remove in ["national park", "state park", "park", ","]:
-        name = name.replace(remove, "")
-    name = name.replace("-", " ")
-    name = "".join(ch for ch in name if ch.isalnum() or ch == " ")
-    return "".join(name.split())
-    
-
-def sanitize_drive_key(title: str) -> str:
-    """
-    Convert scenic drive titles into validator-friendly keys.
-    Examples:
-      'Zion Canyon Scenic Drive' → 'zion_canyon_scenic_drive'
-      'Free Gondola to Mountain Village' → 'free_gondola_to_mountain_village'
-    """
-    title = title.lower()
-    title = title.replace("/", " ")
-    title = "".join(ch for ch in title if ch.isalnum() or ch == " ")
-    return "_".join(title.split())
-
-
 def _verify_checksum(template_text: str) -> None:
     """Hard fail if template SHA-256 doesn't match stored value."""
     if not CHECKSUM_PATH.exists():
@@ -80,35 +49,6 @@ def _verify_checksum(template_text: str) -> None:
 
 
 class HTMLAssembler:
-    def sanitize_dest_id(self, name: str) -> str:
-        """
-        Convert destination names into validator-friendly IDs.
-        Examples:
-          'Zion National Park' → 'zion'
-          'Bryce Canyon National Park' → 'bryce'
-          'Capitol Reef National Park' → 'capitolreef'
-          'Pagosa Springs' → 'pagosa'
-          'Santa Fe' → 'santafe'
-        """
-        name = name.lower()
-        for remove in ["national park", "state park", "park", ","]:
-            name = name.replace(remove, "")
-        name = name.replace("-", " ")
-        name = "".join(ch for ch in name if ch.isalnum() or ch == " ")
-        return "".join(name.split())
-
-    def sanitize_drive_key(self, title: str) -> str:
-        """
-        Convert scenic drive titles into validator-friendly keys.
-        Examples:
-          'Zion Canyon Scenic Drive' → 'zion_canyon_scenic_drive'
-          'Free Gondola to Mountain Village' → 'free_gondola_to_mountain_village'
-        """
-        title = title.lower()
-        title = title.replace("/", " ")
-        title = "".join(ch for ch in title if ch.isalnum() or ch == " ")
-        return "_".join(title.split())
-
     def __init__(self, config_path: Path | str = "config.yaml") -> None:
         import yaml
         with Path(config_path).open() as f:
@@ -1232,21 +1172,6 @@ class HTMLAssembler:
         html += '</div>\n'
         return html
 
-    def _build_drive_buttons(self, drives: list) -> str:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.debug(f"_build_drive_buttons called with {len(drives)} drives")
-        if not drives:
-            return ""
-        html = '<div class="card drives-card">\n<h3>Scenic Drives &amp; Viewpoints</h3>\n<div class="drive-buttons">\n'
-        for drive in drives:
-            title = drive.get("title", "")
-            safe = title.replace('"', '&quot;').replace("'", "&#39;")
-            html += f'  <button class="drive-link" data-drive-title="{safe}">{title}</button>\n'
-        html += '</div>\n</div>\n'
-        logger.debug(f"  Generated {len(drives)} drive buttons")
-        return html
-
     def _build_events(self, events: dict, dest_name: str) -> str:
         import logging
         logger = logging.getLogger(__name__)
@@ -1587,32 +1512,6 @@ class HTMLAssembler:
         if desc and desc.lower() not in {"source", "maps", "source maps", "links"}:
             return desc
         return ""
-
-    @staticmethod
-    def _restaurant_name_tickler(name: str) -> str:
-        lowered = str(name or "").strip().lower()
-        if not lowered:
-            return ""
-
-        cue_map: list[tuple[tuple[str, ...], str]] = [
-            (("wood fired pizza", "wood-fired pizza"), "Wood-fired pizza spot"),
-            (("pizza", "pizzeria"), "Pizza stop"),
-            (("sushi", "izakaya", "omakase"), "Sushi-focused dinner spot"),
-            (("ramen",), "Ramen-focused dinner spot"),
-            (("bbq", "barbecue", "smokehouse"), "Barbecue dinner spot"),
-            (("american", "american-style", "steakhouse", "steak"), "American-style dinner spot"),
-            (("taqueria", "taco", "mexican"), "Mexican-leaning dinner spot"),
-            (("burger", "burgers"), "Burger-focused dinner spot"),
-            (("seafood", "oyster"), "Seafood-forward dinner spot"),
-            (("cafe", "café", "coffee", "bakery"), "Cafe-style dinner spot"),
-            (("bistro", "brasserie"), "Bistro-style dinner spot"),
-            (("grill",), "Grill-style dinner spot"),
-        ]
-
-        for needles, label in cue_map:
-            if any(needle in lowered for needle in needles):
-                return label
-        return "Local dinner spot"
 
     @staticmethod
     def _first_sentence(text: str) -> str:

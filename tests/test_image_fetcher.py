@@ -1,8 +1,6 @@
 """Tests for generator.image_fetcher"""
-import pytest
 import threading
 import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 from generator.image_fetcher import ImageFetcher, REQUEST_DELAY
 
@@ -95,7 +93,6 @@ def test_build_thumb_url_md5(tmp_path):
     url = "https://upload.wikimedia.org/wikipedia/commons/5/5b/Zion_Canyon.jpg"
     filename = url.split("/")[-1]
     h = hashlib.md5(filename.encode()).hexdigest()
-    expected_path_prefix = f"thumb/{h[:1]}/{h[:2]}/{filename}/{960}px-{filename}"
     # Just verify the hash logic is consistent
     assert h == hashlib.md5(b"Zion_Canyon.jpg").hexdigest()
 

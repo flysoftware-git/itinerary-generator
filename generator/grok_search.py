@@ -39,7 +39,6 @@ GROK_ENDPOINT = "https://api.x.ai/v1/chat/completions"
 # -- see _post_responses_streaming_with_retries). See the call sites in
 # chat_completion(live_search=True) / _grok_search.
 GROK_RESPONSES_ENDPOINT = "https://api.x.ai/v1/responses"
-_DEFAULT_DELAY = 0.05
 # Raised from 25s and retries cut from 2->1 (2026-08-15): the 2026-08-14
 # /v1/responses migration replaced fast training-data-only "search" with real
 # agentic web search, which is inherently slower -- the old 25s/2-retries
@@ -182,7 +181,6 @@ class GrokSearch:
         api_key: str | None = None,
         model: str | None = None,
         timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
-        request_delay_seconds: float = _DEFAULT_DELAY,
         network_retries: int = _DEFAULT_NETWORK_RETRIES,
         usage_tracker: Any | None = None,
         usage_operation_prefix: str = "grok_search",
@@ -190,7 +188,6 @@ class GrokSearch:
         self._api_key = api_key or os.environ["XAI_API_KEY"]
         self._model = model or os.environ.get("XAI_MODEL", "grok-latest")
         self._timeout = int(os.environ.get("XAI_TIMEOUT_SECONDS", str(timeout_seconds)))
-        self._delay = request_delay_seconds
         self._network_retries = max(0, int(os.environ.get("XAI_NETWORK_RETRIES", str(network_retries))))
         self._stream_read_timeout = int(
             os.environ.get("XAI_STREAM_READ_TIMEOUT_SECONDS", str(_DEFAULT_STREAM_READ_TIMEOUT_SECONDS))
@@ -735,7 +732,6 @@ class GrokSearch:
                         stream=True,
                     )
                 resp.raise_for_status()
-                completed = False
                 for line in resp.iter_lines(decode_unicode=True):
                     if time.monotonic() > deadline:
                         raise requests.exceptions.ReadTimeout(
@@ -752,7 +748,6 @@ class GrokSearch:
                         text_parts.append(str(evt.get("delta", "") or ""))
                     elif etype == "response.completed":
                         usage = (evt.get("response", {}) or {}).get("usage", {}) or {}
-                        completed = True
                         break
                     elif etype in ("response.failed", "response.incomplete"):
                         err = (evt.get("response", {}) or {}).get("error") or etype
@@ -783,48 +778,3 @@ class GrokSearch:
         if last_exc:
             raise last_exc
         raise requests.RequestException("Unknown Grok streaming POST failure")
-
-    # ── URL-resolution helper ────────────────────────────────────────────────
-
-    def search_first_url(
-        self,
-        query_variants: list[str],
-        site_filter: str | None = None,
-        site_hint: str | None = None,
-        max_attempts: int = 4,
-    ) -> str | None:
-        """
-        Try each query variant in order and return the first live URL found.
-
-        *site_filter*  — only accept URLs whose string contains this value
-                         (e.g. ``"alltrails.com"``).
-        *site_hint*    — prepend a ``site:`` operator string verbatim
-                         (e.g. ``"site:nps.gov/zion"``).
-        *max_attempts* — cap on how many variants are tried.
-
-        URL liveness is verified via :class:`~generator.url_validator.URLValidator`.
-        Returns ``None`` when no valid URL is found across all variants.
-        """
-        from generator.url_validator import URLValidator
-        uv = URLValidator()
-
-        for query in query_variants[:max_attempts]:
-            if site_hint:
-                full_query = f"{site_hint} {query}"
-            elif site_filter:
-                full_query = f"site:{site_filter} {query}"
-            else:
-                full_query = query
-
-            for item in self.search(full_query, count=10):
-                url = item.get("url", "")
-                if not url:
-                    continue
-                if site_filter and site_filter not in url:
-                    continue
-                ok, _ = uv.verify_url(url)
-                if ok:
-                    logger.debug("  URL: %s → %s", full_query[:60], url[:80])
-                    return url
-
-        return None

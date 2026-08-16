@@ -1,7 +1,4 @@
-import pytest
-
 from generator.ai_content import AIContentGenerator
-from generator.url_discovery import URLDiscoverer
 
 
 def _gen() -> AIContentGenerator:

@@ -12,20 +12,16 @@ relative paths in output/images/ depending on config.
 """
 from __future__ import annotations
 import html as html_lib
-import hashlib, json, logging, mimetypes, os, threading, time
+import hashlib, json, logging, os, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from io import BytesIO
 from pathlib import Path
 import re
 from typing import Any
-from openai import images
 import requests
-import urllib.parse
 
 logger = logging.getLogger(__name__)
 NPS_API_BASE = "https://developer.nps.gov/api/v1"
 WIKIMEDIA_SEARCH = "https://commons.wikimedia.org/w/api.php"
-WIKIMEDIA_INFO = "https://commons.wikimedia.org/w/api.php"
 THUMB_WIDTH = 960
 MAX_FALLBACK_ATTEMPTS = 4
 # Brief pacing delay after each downloaded image file. This is NOT a

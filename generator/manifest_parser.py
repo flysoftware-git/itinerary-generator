@@ -167,7 +167,7 @@ MANIFEST_SCHEMA: dict[str, Any] = {
 
 class ManifestParser:
     def __init__(self, config_path: Path | str = "config.yaml") -> None:
-        self.config_path = Path(config_path)
+        pass
 
     def parse(self, manifest_path: Path | str) -> dict[str, Any]:
         manifest_path = Path(manifest_path)
