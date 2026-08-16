@@ -50,9 +50,6 @@ class CulturalEventsDiscoverer:
         *,
         search_provider_override: str | None = None,
     ) -> None:
-        import yaml
-        with Path(config_path).open() as f:
-            self._config = yaml.safe_load(f)
         self._llm = llm_client or MultiLLMClient(config_path)
         # cultural_events.search_provider (config.yaml) selects grok or
         # claude independently of ai.provider/url_discovery.search_provider,
