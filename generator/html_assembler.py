@@ -1323,9 +1323,25 @@ class HTMLAssembler:
             # produced a clean name, leave it alone: e.g. "Wild Rabbit Cafe"
             # with cuisine="Cafe" must not have "Cafe" stripped just because
             # it happens to match the (already-past) cuisine badge value.
-            cleaned = re.sub(
-                rf"\s*{re.escape(cuisine)}\s*$", "", cleaned, flags=re.IGNORECASE
+            #
+            # That protection only works when rating/price truncation actually
+            # ran, though. A name that never had rating/price glued onto it in
+            # the first place (already-clean harvested names, e.g. "Book Club
+            # Bistro" with cuisine="Bistro") leaves `truncated` False too, so
+            # without further guarding this would still wrongly chop the real
+            # trailing word off the name (dipstick58: "Book Club Bistro" ->
+            # "Book Club"). Require independent evidence that *something*
+            # decoration-shaped (a rating pattern or a price-symbol run) is
+            # still glued into the name before trusting the cuisine match at
+            # the tail is decoration rather than the restaurant's own name.
+            has_glued_decoration = bool(
+                re.search(r"\d+(?:\.\d+)?\s*(?:/\s*5\b|out\s+of\s+5\b|stars?\b)", cleaned, flags=re.IGNORECASE)
+                or re.search(r"[\$#]{1,4}", cleaned)
             )
+            if has_glued_decoration:
+                cleaned = re.sub(
+                    rf"\s*{re.escape(cuisine)}\s*$", "", cleaned, flags=re.IGNORECASE
+                )
 
         cleaned = re.sub(
             r"\s*(?:[-–—]\s*)?(?:\d+(?:\.\d+)?\s*(?:/\s*5|stars?)\s*(?:[\$#]{1,4})?|[\$#]{1,4}|(?:[\$#]{1,4})\s*\d+(?:\.\d+)?\s*(?:/\s*5|stars?)|[-–—]\s*\d+(?:\.\d+)?\s*(?:/\s*5|stars?))\s*$",

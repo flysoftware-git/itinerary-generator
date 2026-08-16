@@ -5084,6 +5084,7 @@ class URLDiscoverer:
             "korean": "Korean",
             "pizza": "Pizza",
             "burger": "American",
+            "bistro": "Bistro",
         }
         for key, label in cuisine_keywords.items():
             if re.search(rf"\b{re.escape(key)}\b", lowered):
