@@ -1932,6 +1932,34 @@ class HTMLAssembler:
                     return True
         return False
 
+    # Packing-summary items are short, free-text AI phrasings generated
+    # independently per destination (e.g. "layered clothing" vs "layers for
+    # fluctuating temperatures" vs "warm layers" all mean the exact same
+    # actionable advice). Unlike _attraction_names_are_duplicates (built for
+    # real-world place names, matched by shared name tokens), these often
+    # share zero tokens, so a small curated canonicalization is used
+    # instead. Kept conservative: only merges phrasings that are genuinely
+    # the same advice, not ones that are merely similar-sounding but
+    # usefully distinct -- "comfortable walking shoes" (a plaza-walking
+    # city) stays separate from "hiking boots" (a trail-heavy park), since
+    # that's different real advice, not different wording of the same
+    # advice; "waterproof jacket" stays separate from generic layers/light-
+    # jacket advice since it signals expected rain, a materially different
+    # packing reason than temperature swings.
+    _PACKING_ITEM_CANONICAL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("Camera", ("camera",)),
+        ("Layers / light jacket (temperature swings)", ("layer", "light jacket")),
+        ("Hiking boots/shoes", ("hiking boot", "hiking shoe")),
+    )
+
+    @classmethod
+    def _canonicalize_packing_item(cls, item: str) -> str:
+        lowered = item.lower()
+        for canonical, triggers in cls._PACKING_ITEM_CANONICAL_GROUPS:
+            if any(trigger in lowered for trigger in triggers):
+                return canonical
+        return item
+
     def _build_packing_summary(self, destinations: list[dict[str, Any]]) -> str:
         by_item: dict[str, set[str]] = {}
         for dest in destinations:
@@ -1942,6 +1970,7 @@ class HTMLAssembler:
                 item = str(raw_item).strip()
                 if not item:
                     continue
+                item = self._canonicalize_packing_item(item)
                 by_item.setdefault(item, set()).add(dest.get("name", ""))
 
         if not by_item:

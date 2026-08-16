@@ -2547,3 +2547,78 @@ def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_cluster
     assert "Grand View Point" in html
     # Day-trip framing for both grouped entries
     assert html.count("Day Trip") == 2
+
+def test_build_packing_summary_consolidates_differently_worded_same_advice() -> None:
+    """dipstick58: 'layered clothing', 'layers for fluctuating temperatures',
+    'layers for warmth', and 'light jacket' are the same actionable advice
+    worded four different ways across independent per-destination AI
+    generation -- the exact-string grouping this list previously used never
+    caught it, so the packing summary listed four near-identical bullets
+    instead of one consolidated one."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [
+        {"name": "Moab", "ai_content": {"expected_environment": {"what_to_pack": ["layered clothing"]}}},
+        {"name": "Telluride", "ai_content": {"expected_environment": {"what_to_pack": ["layers for fluctuating temperatures"]}}},
+        {"name": "Bryce Canyon National Park", "ai_content": {"expected_environment": {"what_to_pack": ["layers for warmth"]}}},
+        {"name": "Santa Fe", "ai_content": {"expected_environment": {"what_to_pack": ["light jacket"]}}},
+    ]
+
+    html = assembler._build_packing_summary(destinations)
+
+    assert html.count("<li>") == 1
+    assert "Layers / light jacket (temperature swings)" in html
+    for name in ("Moab", "Telluride", "Bryce Canyon National Park", "Santa Fe"):
+        assert name in html
+
+
+def test_build_packing_summary_consolidates_camera_dropping_qualifier() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [
+        {"name": "Zion National Park", "ai_content": {"expected_environment": {"what_to_pack": ["camera"]}}},
+        {"name": "Telluride", "ai_content": {"expected_environment": {"what_to_pack": ["camera for fall foliage"]}}},
+    ]
+
+    html = assembler._build_packing_summary(destinations)
+
+    assert html.count("<li>") == 1
+    assert "<strong>Camera</strong>" in html
+    assert "Zion National Park" in html and "Telluride" in html
+
+
+def test_build_packing_summary_consolidates_hiking_footwear_but_keeps_walking_shoes_distinct() -> None:
+    """Hiking boots/hiking shoes/sturdy hiking shoes are the same advice and
+    should merge. 'Comfortable walking shoes' (a plaza-walking city) is
+    genuinely different advice and must NOT merge into the hiking bucket --
+    over-merging would misrepresent Santa Fe as needing trail-rated boots."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [
+        {"name": "Bryce Canyon National Park", "ai_content": {"expected_environment": {"what_to_pack": ["hiking boots"]}}},
+        {"name": "St. George, Utah", "ai_content": {"expected_environment": {"what_to_pack": ["hiking shoes"]}}},
+        {"name": "Zion National Park", "ai_content": {"expected_environment": {"what_to_pack": ["sturdy hiking shoes"]}}},
+        {"name": "Santa Fe", "ai_content": {"expected_environment": {"what_to_pack": ["comfortable walking shoes"]}}},
+    ]
+
+    html = assembler._build_packing_summary(destinations)
+
+    assert html.count("<li>") == 2
+    assert "Hiking boots/shoes" in html
+    assert "comfortable walking shoes" in html
+    hiking_row = html.split("Hiking boots/shoes")[1].split("</li>")[0]
+    assert "Santa Fe" not in hiking_row
+
+
+def test_build_packing_summary_keeps_waterproof_jacket_distinct_from_generic_layers() -> None:
+    """Waterproof jacket signals expected rain -- materially different
+    packing reason than generic temperature-swing layers advice, so it must
+    not collapse into the same bucket even though both mention 'jacket'."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [
+        {"name": "Pagosa Springs", "ai_content": {"expected_environment": {"what_to_pack": ["waterproof jacket"]}}},
+        {"name": "Santa Fe", "ai_content": {"expected_environment": {"what_to_pack": ["light jacket"]}}},
+    ]
+
+    html = assembler._build_packing_summary(destinations)
+
+    assert html.count("<li>") == 2
+    assert "waterproof jacket" in html
+    assert "Layers / light jacket (temperature swings)" in html
