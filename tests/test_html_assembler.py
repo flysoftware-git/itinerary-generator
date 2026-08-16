@@ -1730,33 +1730,6 @@ def test_build_getting_here_renders_caution_badge_for_en_route_stop_promoted_wit
     assert '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>' in html
 
 
-def test_build_getting_here_falls_back_to_maps_url_when_canonical_missing() -> None:
-    assembler = HTMLAssembler.__new__(HTMLAssembler)
-    ai = {
-        "getting_here": {
-            "route_summary": "Drive to Santa Fe.",
-            "distance_miles": "60",
-            "drive_time": "1h 15m",
-            "en_route_stops": [
-                {
-                    "name": "El Rito",
-                    "description": "Historic stop option.",
-                    "url": "",
-                    "maps_url": "https://www.google.com/maps/search/?api=1&query=El+Rito+near+Santa+Fe+route+from+Albuquerque",
-                }
-            ],
-        }
-    }
-    dest = {"name": "Santa Fe"}
-
-    html = assembler._build_getting_here(ai, dest, previous_name="Albuquerque")
-
-    assert "google.com/maps/search/?api=1&amp;query=El%20Rito" in html
-    assert "route+from+Albuquerque" not in html
-    assert ">El Rito</a>" in html
-    assert "El Rito" in html
-
-
 def test_build_getting_here_maps_fallback_does_not_append_map_suffix() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {
@@ -1780,34 +1753,6 @@ def test_build_getting_here_maps_fallback_does_not_append_map_suffix() -> None:
 
     assert "El Rito (map)" not in html
     assert ">El Rito</a>" in html
-
-
-def test_build_getting_here_renders_detour_and_practical_note() -> None:
-    assembler = HTMLAssembler.__new__(HTMLAssembler)
-    ai = {
-        "getting_here": {
-            "route_summary": "Drive with one worthwhile stop.",
-            "distance_miles": "120",
-            "drive_time": "2h 30m",
-            "en_route_stops": [
-                {
-                    "name": "Wilson Arch",
-                    "description": "Short roadside stop.",
-                    "practical_note": "Pullout is on the right when driving north.",
-                    "detour_distance_miles": 3,
-                    "detour_time_minutes": 8,
-                    "maps_url": "https://www.google.com/maps/search/?api=1&query=Wilson+Arch+Moab+UT",
-                }
-            ],
-        }
-    }
-    dest = {"name": "Moab"}
-
-    html = assembler._build_getting_here(ai, dest, previous_name="Capitol Reef National Park")
-
-    assert "3 mi detour" in html
-    assert "8 min" in html
-    assert "Pullout is on the right when driving north." in html
 
 
 def test_build_getting_here_falls_back_to_maps_url_when_canonical_missing() -> None:
