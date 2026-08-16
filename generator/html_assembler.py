@@ -698,13 +698,26 @@ class HTMLAssembler:
     def _route_waypoint_sort_key(stop: Any) -> tuple[int, float]:
         if not isinstance(stop, dict):
             return (1, 0.0)
+        if stop.get("route_waypoint_eligible") is False:
+            return (1, 0.0)
         value = stop.get("route_progress_ratio")
         try:
             ratio = float(value)
         except (TypeError, ValueError):
-            ratio = 0.0
-        if stop.get("route_waypoint_eligible") is False:
-            return (1, 0.0)
+            # No confirmed position along the route (e.g. url_discovery's
+            # geocoder couldn't resolve this stop's coordinates) must not
+            # silently sort as "the very start of the route" -- that put
+            # destination-adjacent stops ahead of genuinely-earlier ones.
+            # See dipstick58 Bug 1: "Fremont Petroglyphs" and "Gifford
+            # Homestead" (both inside Capitol Reef, i.e. at/past the
+            # destination) rendered 1st/2nd on the Bryce -> Capitol Reef
+            # leg, ahead of real Highway 12 waypoints (Kodachrome Basin,
+            # Escalante Petrified Forest, Head of the Rocks Overlook, Lower
+            # Calf Creek Falls, Anasazi State Park Museum) that all had a
+            # verified, smaller route_progress_ratio. Sorting unknown-ratio
+            # stops after every stop with a confirmed ratio keeps the
+            # verified geographic order intact instead of corrupting it.
+            return (0, float("inf"))
         return (0, ratio)
 
     def _build_route_gmaps_url(

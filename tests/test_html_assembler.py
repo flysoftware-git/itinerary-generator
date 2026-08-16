@@ -418,6 +418,66 @@ def test_build_getting_here_orders_waypoints_by_route_progress() -> None:
     assert html.index("First Stop") < html.index("Mid Stop") < html.index("Last Stop")
 
 
+def test_build_getting_here_unresolved_progress_ratio_sorts_after_confirmed_stops() -> None:
+    """Regression for dipstick58 Bug 1 (real Bryce Canyon -> Capitol Reef leg).
+
+    Two en-route stops -- "Fremont Petroglyphs" and "Gifford Homestead" --
+    are both physically inside Capitol Reef National Park, i.e. at/past the
+    destination. url_discovery's Nominatim geocoder failed to resolve either
+    name to coordinates, so neither ever got a route_progress_ratio computed
+    (unlike the five Highway 12 stops below, which are well-known state
+    parks/overlooks that geocoded cleanly to real, verified ratios). Before
+    the fix, a missing ratio silently defaulted to 0.0 in the sort key --
+    tying with (and via stable sort, landing ahead of) "Kodachrome Basin
+    State Park" at ratio 0.05, the genuinely earliest real stop along the
+    route. The two unresolved, destination-adjacent stops rendered 1st and
+    2nd, backwards from reality. They must now sort after every stop with a
+    confirmed ratio instead.
+    """
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "getting_here": {
+            "route_summary": "Take US-89 S, then UT-12 E to UT-24 E.",
+            "en_route_stops": [
+                # Listed first in the AI-generated content, but never geocoded.
+                {"name": "Fremont Petroglyphs", "route_waypoint_eligible": True},
+                {"name": "Gifford Homestead", "route_waypoint_eligible": True},
+                # Real Highway 12 stops between Bryce and Torrey, in true
+                # geographic order, each with a verified route_progress_ratio.
+                {"name": "Kodachrome Basin State Park", "route_waypoint_eligible": True, "route_progress_ratio": 0.05},
+                {"name": "Escalante Petrified Forest State Park", "route_waypoint_eligible": True, "route_progress_ratio": 0.32},
+                {"name": "Head of the Rocks Overlook", "route_waypoint_eligible": True, "route_progress_ratio": 0.41},
+                {"name": "Lower Calf Creek Falls", "route_waypoint_eligible": True, "route_progress_ratio": 0.55},
+                {"name": "Anasazi State Park Museum", "route_waypoint_eligible": True, "route_progress_ratio": 0.58},
+            ],
+        }
+    }
+    dest = {"name": "Capitol Reef National Park"}
+
+    html = assembler._build_getting_here(
+        ai,
+        dest,
+        previous_name="Bryce Canyon City",
+        previous_route_target="Bryce Canyon City",
+        current_route_target="Capitol Reef National Park",
+    )
+
+    rendered_order = [
+        "Kodachrome Basin State Park",
+        "Escalante Petrified Forest State Park",
+        "Head of the Rocks Overlook",
+        "Lower Calf Creek Falls",
+        "Anasazi State Park Museum",
+        "Fremont Petroglyphs",
+        "Gifford Homestead",
+    ]
+    positions = [html.index(name) for name in rendered_order]
+    assert positions == sorted(positions), (
+        "Highway 12 stops with a confirmed route_progress_ratio must render "
+        "before destination-adjacent stops with no resolved ratio"
+    )
+
+
 def test_build_getting_here_uses_lodging_endpoint_but_destination_scoped_waypoints() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {
