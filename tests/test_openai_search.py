@@ -95,7 +95,12 @@ def test_search_uses_web_search_tool_and_normalizes_results():
     assert results == [{"name": "Real Place", "snippet": "s", "url": "https://example.com/real"}]
     sent = session.post.call_args.kwargs["json"]
     assert sent["tools"] == [{"type": "web_search"}]
-    assert sent["text"] == {"format": {"type": "json_object"}}
+    # OpenAI's /v1/responses rejects "text": {"format": {"type": "json_object"}}
+    # combined with the web_search tool (400: "Web Search cannot be used with
+    # JSON mode.") -- discovered via a real all-OpenAI validation run where
+    # this silently killed every _openai_search call. JSON-only output is
+    # enforced via the system prompt instead.
+    assert "text" not in sent
 
 
 def test_search_retries_with_stricter_prompt_on_malformed_json():

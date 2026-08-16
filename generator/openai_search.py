@@ -281,11 +281,21 @@ class OpenAiSearch:
             '{"results": [{"title": "...", "url": "...", "snippet": "..."}]}'
         )
         try:
+            # No "text": {"format": {"type": "json_object"}} here -- OpenAI's
+            # /v1/responses rejects that combination outright when the
+            # web_search tool is also requested ("Web Search cannot be used
+            # with JSON mode.", a hard 400 on every single call, discovered
+            # via dipstick57's all-OpenAI validation run: this was silently
+            # killing every _openai_search call, which is why so much
+            # attraction/restaurant/en-route content came back with no URL
+            # that run). The system prompt above already instructs JSON-only
+            # output, and _extract_json_object below already tolerates
+            # markdown-fenced or loosely-formatted JSON, so the strict mode
+            # constraint was both invalid and unnecessary.
             payload = {
                 "model": self._model,
                 "input": f"{system_prompt}\n\n{query}",
                 "tools": [{"type": "web_search"}],
-                "text": {"format": {"type": "json_object"}},
             }
             content, usage = self._post_responses_streaming_with_retries(payload, query)
             self._record_responses_usage(usage, operation_suffix="search")
