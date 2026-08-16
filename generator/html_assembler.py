@@ -1514,32 +1514,6 @@ class HTMLAssembler:
         return ""
 
     @staticmethod
-    def _restaurant_name_tickler(name: str) -> str:
-        lowered = str(name or "").strip().lower()
-        if not lowered:
-            return ""
-
-        cue_map: list[tuple[tuple[str, ...], str]] = [
-            (("wood fired pizza", "wood-fired pizza"), "Wood-fired pizza spot"),
-            (("pizza", "pizzeria"), "Pizza stop"),
-            (("sushi", "izakaya", "omakase"), "Sushi-focused dinner spot"),
-            (("ramen",), "Ramen-focused dinner spot"),
-            (("bbq", "barbecue", "smokehouse"), "Barbecue dinner spot"),
-            (("american", "american-style", "steakhouse", "steak"), "American-style dinner spot"),
-            (("taqueria", "taco", "mexican"), "Mexican-leaning dinner spot"),
-            (("burger", "burgers"), "Burger-focused dinner spot"),
-            (("seafood", "oyster"), "Seafood-forward dinner spot"),
-            (("cafe", "café", "coffee", "bakery"), "Cafe-style dinner spot"),
-            (("bistro", "brasserie"), "Bistro-style dinner spot"),
-            (("grill",), "Grill-style dinner spot"),
-        ]
-
-        for needles, label in cue_map:
-            if any(needle in lowered for needle in needles):
-                return label
-        return "Local dinner spot"
-
-    @staticmethod
     def _first_sentence(text: str) -> str:
         raw = str(text or "").strip()
         if not raw:

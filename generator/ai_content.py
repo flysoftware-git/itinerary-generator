@@ -563,53 +563,6 @@ class AIContentGenerator:
                         dest.get("name", ""),
                     )
 
-    @_retry_transient_llm_errors
-    def _generate_what_to_know(
-        self,
-        dest: dict[str, Any],
-        trip_meta: dict[str, Any],
-        previous_destination: str,
-        next_destination: str,
-    ) -> dict[str, str]:
-        season = self._season_from_dates(dest.get("dates", ""))
-        trip_type = str(trip_meta.get("subtitle", "") or trip_meta.get("title", "") or "road trip").strip()
-        nearby_days = self._nearby_day_window(dest.get("dates", ""))
-
-        prompt = self._render_prompt_template(
-            self._what_to_know_template,
-            destination_name=dest.get("name", ""),
-            dates=dest.get("dates", ""),
-            season=season,
-            nearby_days=nearby_days,
-            trip_type=trip_type,
-            previous_destination=previous_destination,
-            next_destination=next_destination or "none",
-            budget_guidance=self._build_budget_guidance(trip_meta),
-        )
-        timing_context = self._build_trip_timing_context(
-            trip_meta=trip_meta,
-            destination_name=str(dest.get("name", "") or ""),
-            destination=dest,
-            previous_destination=previous_destination,
-            next_destination=next_destination,
-        )
-        if timing_context:
-            prompt += "\n\nTrip timing anchors:\n" + timing_context
-
-        try:
-            payload = self._llm.generate_json(
-                system_prompt=self._system_prompt,
-                user_prompt=prompt,
-                operation=f"what_to_know:{dest['id']}",
-                temperature=0.4,
-                max_tokens=1400,
-            )
-        except Exception as exc:
-            logger.warning("What-to-Know generation failed for '%s': %s", dest.get("name", ""), exc)
-            payload = {}
-
-        return self._normalize_what_to_know(payload, dest)
-
     @staticmethod
     def _render_prompt_template(template: str, **values: Any) -> str:
         """Replace only known {placeholders} and leave literal JSON braces intact."""
@@ -822,13 +775,6 @@ class AIContentGenerator:
             )
 
         return "\n".join(lines)
-
-    @_retry_transient_llm_errors
-    def _generate_for_destination(
-        self, dest: dict[str, Any], trip_meta: dict[str, Any], prev: str, next_dest: str
-    ) -> dict[str, Any]:
-        bundle = self._generate_destination_bundle(dest, trip_meta, prev, next_dest)
-        return bundle["destination_content"]
 
     def _build_budget_guidance(self, trip_meta: dict[str, Any]) -> str:
         budget = trip_meta.get("budget")
