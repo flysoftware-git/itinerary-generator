@@ -1,7 +1,5 @@
 """Tests for generator.html_validator"""
 import json
-import pytest
-from pathlib import Path
 from generator.html_validator import HTMLValidator
 
 

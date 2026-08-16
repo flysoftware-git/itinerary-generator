@@ -1,5 +1,5 @@
 """Tests for AIContentGenerator.normalize_trip_content (cross-section and cross-destination dedup)."""
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from generator.ai_content import AIContentGenerator
 
 

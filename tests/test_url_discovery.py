@@ -1206,7 +1206,6 @@ def test_get_direct_batch_html_rows_marks_persistent_cache_dirty_on_success(tmp_
     discoverer._persistent_cache_enabled = True
     discoverer._persistent_cache_path = str(tmp_path / "persistent_cache.json")
 
-    html = "<h2>Zion National Park</h2><ul><li>Angels Landing <a href='https://www.alltrails.com/x'>Source</a></li></ul>"
     with patch.object(discoverer, "_fetch_direct_batch_html_rows", return_value=[{"name": "Angels Landing", "url": "https://www.alltrails.com/x"}]):
         rows = discoverer._get_direct_batch_html_rows_for_destination(
             cache={}, destination="Zion National Park", dates="October 7-9, 2026", kind="trail",
@@ -8983,7 +8982,7 @@ def test_audit_removes_ineligible_restaurant_from_destination():
 
 def test_retain_url_rejects_destination_homepage_for_compound_named_attraction():
     """A city homepage is rejected for a specific landmark; relevance gate catches it via page text."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     with patch.object(
         discoverer, "_fetch_page_text",
