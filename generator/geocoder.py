@@ -4,7 +4,6 @@ geocoder.py — Geocode destination names to lat/lng using Nominatim.
 from __future__ import annotations
 import logging
 import time
-from typing import Any
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderRateLimited, GeocoderServiceError, GeocoderTimedOut
 
@@ -22,15 +21,6 @@ class Geocoder:
 
     def __init__(self, user_agent: str = "RoadTripItineraryGenerator/1.0", timeout: int = 5) -> None:
         self.geolocator = Nominatim(user_agent=user_agent, timeout=timeout)
-
-    def enrich(self, trip: dict[str, Any]) -> None:
-        """Geocode all destinations and attach lat/lng in-place."""
-        for dest in trip.get("destinations", []):
-            lat, lng = self._geocode(dest["name"])
-            dest["lat"] = lat
-            dest["lng"] = lng
-            logger.info("Geocoded '%s' → %.4f, %.4f", dest["name"], lat, lng)
-            time.sleep(1.1)  # Nominatim rate limit: 1 req/sec
 
     def _geocode(self, name: str, retries: int = 3) -> tuple[float, float]:
         hint = GEOCODE_COUNTRY_HINTS.get(name.lower())
