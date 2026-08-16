@@ -1217,3 +1217,73 @@ def test_render_prompt_template_replaces_known_tokens_only() -> None:
     assert "Destination: Zion National Park" in rendered
     assert "Dates: October 7-9, 2026" in rendered
     assert '{\n  "summary": "text"\n}' in rendered
+
+
+def test_split_sentences_keeps_st_abbreviation_attached_to_next_word() -> None:
+    r"""dipstick58 regression: naive `re.split(r"(?<=[.!?])\s+")` treats "St."
+    as its own one-word sentence, inflating the real sentence count for text
+    like "...St. George Dinosaur Discovery Site at Johnson Farm...". The
+    abbreviation-aware splitter must keep "St." attached to what follows."""
+    text = (
+        "Enjoy dinner at Painted Pony Restaurant. St. George Dinosaur Discovery "
+        "Site at Johnson Farm. Explore the interactive exhibits."
+    )
+
+    sentences = AIContentGenerator._split_sentences(text)
+
+    assert sentences == [
+        "Enjoy dinner at Painted Pony Restaurant.",
+        "St. George Dinosaur Discovery Site at Johnson Farm.",
+        "Explore the interactive exhibits.",
+    ]
+
+
+def test_split_sentences_handles_other_common_abbreviations() -> None:
+    text = "Meet Dr. Smith at the trailhead. Then drive to Mt. Rainier."
+    assert AIContentGenerator._split_sentences(text) == [
+        "Meet Dr. Smith at the trailhead.",
+        "Then drive to Mt. Rainier.",
+    ]
+
+
+def test_cap_period_sentences_does_not_truncate_when_abbreviation_inflates_count() -> None:
+    """Before the fix, this exact 3-sentence summary was miscounted as 4
+    "sentences" (because of the mid-string "St."), and the cap at
+    max_sentences=3 wrongly dropped the real third sentence."""
+    days = [
+        {
+            "periods": [
+                {
+                    "period": "Evening",
+                    "summary": (
+                        "Enjoy dinner at Painted Pony Restaurant. St. George Dinosaur "
+                        "Discovery Site at Johnson Farm. Explore the interactive exhibits."
+                    ),
+                }
+            ]
+        }
+    ]
+
+    out = AIContentGenerator._cap_period_sentences(days)
+
+    assert out[0]["periods"][0]["summary"] == (
+        "Enjoy dinner at Painted Pony Restaurant. St. George Dinosaur "
+        "Discovery Site at Johnson Farm. Explore the interactive exhibits."
+    )
+
+
+def test_cap_period_sentences_still_truncates_genuinely_long_summaries() -> None:
+    days = [
+        {
+            "periods": [
+                {
+                    "period": "Morning",
+                    "summary": "One sentence. Two sentence. Three sentence. Four sentence.",
+                }
+            ]
+        }
+    ]
+
+    out = AIContentGenerator._cap_period_sentences(days, max_sentences=3)
+
+    assert out[0]["periods"][0]["summary"] == "One sentence. Two sentence. Three sentence."

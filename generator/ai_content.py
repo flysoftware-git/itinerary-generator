@@ -70,6 +70,57 @@ class AIContentGenerator:
         "chain restaurant",
     }
 
+    # Mirrors HTMLAssembler._first_sentence's abbreviation list (html_assembler.py)
+    # so schedule-text sentence splitting doesn't mistake "St.", "Mt.", "Dr.",
+    # etc. for a sentence boundary the way a naive `re.split(r"(?<=[.!?])\s+")`
+    # does.
+    _SENTENCE_BOUNDARY_ABBREVIATIONS = {
+        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "ft", "vs",
+        "etc", "e.g", "i.e", "am", "pm", "us", "uk", "no", "fig",
+    }
+
+    @staticmethod
+    def _split_sentences(text: str) -> list[str]:
+        """Split text into sentences without breaking on abbreviations.
+
+        A period only ends a sentence when the token immediately before it
+        is not a known abbreviation (e.g. "St." in "St. George Dinosaur
+        Discovery Site") -- otherwise "St." gets counted as its own
+        one-word "sentence", which throws off anything that counts or caps
+        sentences (see _cap_period_sentences).
+        """
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+
+        sentences: list[str] = []
+        start = 0
+        for index, ch in enumerate(raw):
+            if ch not in ".!?":
+                continue
+            prefix = raw[:index].rstrip()
+            last_token = (
+                prefix.rsplit(" ", 1)[-1].lower().strip(" ").strip(".,;:!?()[]{}\"'")
+                if prefix
+                else ""
+            )
+            if last_token in AIContentGenerator._SENTENCE_BOUNDARY_ABBREVIATIONS:
+                continue
+            # A real sentence boundary is followed by whitespace or the end
+            # of the string (matches the legacy regex's behavior for the
+            # non-abbreviation case).
+            if index + 1 < len(raw) and not raw[index + 1].isspace():
+                continue
+            sentence = raw[start : index + 1].strip()
+            if sentence:
+                sentences.append(sentence)
+            start = index + 1
+
+        remainder = raw[start:].strip()
+        if remainder:
+            sentences.append(remainder)
+        return sentences
+
     def __init__(
         self,
         config_path: Path | str = "config.yaml",
@@ -441,11 +492,15 @@ class AIContentGenerator:
         days: list[dict[str, Any]],
         max_sentences: int = 3,
     ) -> list[dict[str, Any]]:
-        """Truncate each schedule period to at most max_sentences sentences (PR-005).
+        r"""Truncate each schedule period to at most max_sentences sentences (PR-005).
 
         Prevents over-packed AI periods from surfacing as unrealistic activity lists.
+
+        Uses the abbreviation-aware _split_sentences so a mid-summary "St.",
+        "Mt.", "Dr.", etc. isn't miscounted as its own sentence -- a naive
+        `re.split(r"(?<=[.!?])\s+")` would inflate the sentence count and
+        wrongly truncate real trailing content that was well within the cap.
         """
-        import re as _re
         if max_sentences <= 0:
             return days
         for day in days:
@@ -453,7 +508,7 @@ class AIContentGenerator:
                 summary = str(period.get("summary", "") or "").strip()
                 if not summary:
                     continue
-                sentences = _re.split(r"(?<=[.!?])\s+", summary)
+                sentences = AIContentGenerator._split_sentences(summary)
                 if len(sentences) > max_sentences:
                     period["summary"] = " ".join(sentences[:max_sentences]).strip()
         return days
