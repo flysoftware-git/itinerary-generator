@@ -40,7 +40,6 @@ CLAUDE_ENDPOINT_DEFAULT = "https://api.anthropic.com/v1/messages"
 # drifting back up, once there's real evidence 1 round is insufficient
 # coverage rather than just cheaper.
 CLAUDE_SEARCH_TOOL = {"type": "web_search_20260318", "name": "web_search", "max_uses": 1}
-_DEFAULT_DELAY = 0.05
 # Originally 150s: the 90s probe timeout was too short for CLAUDE_SEARCH_TOOL's
 # old max_uses=5 (up to 5 agentic search rounds compounding per call), so this
 # was raised to 150s to cover that worst case (search-provider-capability-
@@ -165,7 +164,6 @@ class ClaudeSearch:
         api_key: str | None = None,
         model: str | None = None,
         timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
-        request_delay_seconds: float = _DEFAULT_DELAY,
         network_retries: int = _DEFAULT_NETWORK_RETRIES,
         usage_tracker: Any | None = None,
         usage_operation_prefix: str = "claude_search",
@@ -175,7 +173,6 @@ class ClaudeSearch:
         self._api_version = os.environ.get("ANTHROPIC_API_VERSION", "2023-06-01")
         self._endpoint = os.environ.get("ANTHROPIC_API_BASE", CLAUDE_ENDPOINT_DEFAULT)
         self._timeout = int(os.environ.get("ANTHROPIC_SEARCH_TIMEOUT_SECONDS", str(timeout_seconds)))
-        self._delay = request_delay_seconds
         self._network_retries = max(
             0, int(os.environ.get("ANTHROPIC_SEARCH_NETWORK_RETRIES", str(network_retries)))
         )

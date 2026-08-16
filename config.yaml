@@ -50,7 +50,6 @@ grok_search:
   endpoint: "https://api.x.ai/v1/chat/completions"
   model: "grok-latest"
   timeout_seconds: 15
-  request_delay_seconds: 0.05
 
 # ── NPS API ──────────────────────────────────────────────────────────────────
 nps:
