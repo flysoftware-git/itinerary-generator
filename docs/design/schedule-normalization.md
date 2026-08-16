@@ -358,6 +358,32 @@ resolving here:
   and this section's model doesn't exist in code yet either — sequencing
   which lands first affects how much rework the second one needs.
 
+### Relationship to Side Trips (GH #3)
+
+Added 2026-08-16, following a design discussion with the project owner
+that also produced `docs/design/side-trip-exploration.md` and §8 of
+`docs/design/multi-site-destination-grouping.md`. Full discussion lives
+in that new doc; the piece specific to scheduling is captured here.
+
+GH #3's side trips are explicitly **not** scheduled — no `dates`, no day
+assignment, rendered as a static suggestion card. That means none of the
+Case 1-6 machinery above applies to them directly; they never enter
+`_normalize_schedule` at all under the current spec. But the owner
+identified a real gap this section doesn't cover for either feature: for
+a long stay (7+ days at one base), the exact day a side-trip option gets
+visited mostly doesn't matter, but which options get **combined into one
+outing** matters a lot — two options that are each ~45 minutes out but in
+the same direction from base should be recommended together, not as two
+separate one-hour-each-way trips on different days. Neither this design
+nor GH #3's original spec has a mechanism for that today (see
+`side-trip-exploration.md` §3 for the full gap analysis and three
+candidate approaches — not resolved here).
+
+This reinforces the hub-and-spoke framing above: a `group_with` sibling
+is dated but order-flexible relative to other siblings; a side trip is
+undated and order-irrelevant, but *pairing*-relevant once (if) clustering
+is implemented. Three distinct scheduling looseness levels, not two.
+
 ### Schema gaps requiring a product decision (summary)
 
 | Gap | Exists today? | Needed for | Notes |
@@ -370,6 +396,7 @@ resolving here:
 | `trip.return_datetime` semantics | Ambiguous | Case 2 | Flight time vs. must-be-home time vs. already-buffered — undefined today |
 | Onward-drive duration threaded to current destination | **No** (data exists one destination later, not passed back) | Case 4 | Plumbing gap, not a schema gap |
 | Grouped-entry lodging resolution (base vs. child) | N/A (GH #68 not merged) | Cases 1/3/4/6 × GH #68 | See interaction section above |
+| Side-trip option-to-option geographic relationship | **No** (GH #3 not implemented; spec only carries base→option distance) | Clustering (GH #3 §3) | See "Relationship to Side Trips" above and `side-trip-exploration.md` §3 |
 
 ### Open questions for the owner
 
@@ -392,6 +419,11 @@ resolving here:
    overwriting each other) be fixed as a standalone bug ahead of the rest
    of this section's implementation, given it's a straightforward guard
    rather than a design decision?
+7. Which side-trip clustering approach (see `side-trip-exploration.md`
+   §3 — LLM-suggested groups, lightweight geocode-and-compute, or leave
+   pairing to the traveler) matches the intended product experience, and
+   should it block GH #3's initial implementation or land as a follow-up
+   once the basic suggestion card ships?
 
 ## Entry Point
 `AIContentGenerator._normalize_schedule(...)` in `generator/ai_content.py`.

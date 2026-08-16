@@ -248,7 +248,42 @@ lodging-dedup treatment in §2 — e.g., "Dining: see Moab").
    still matches the intended UX, since it's not exactly what was
    originally speced.
 
-## 8. Rough scope estimate
+## 8. Relationship to Side Trips (GH #3)
+
+Added 2026-08-16, following a design discussion with the project owner.
+GH #3 ("Side trips") describes a superficially similar shape — a
+destination near enough to a base that the traveler explores it and
+returns — and the owner asked whether the two features overlap enough to
+need a holistic view. Full discussion lives in
+`docs/design/side-trip-exploration.md`; summary here:
+
+- **Distance does not distinguish them.** GH #3's spec says "within a one
+  hour day trip"; this doc's own Moab example puts Arches/Canyonlands at
+  "~30-40 min from base." Same range.
+- **The real test is commitment status.** A `group_with` entry is a
+  planned visit: real geocoding, real NPS resolution, verified attraction/
+  trail content, its own `dates` and nav-tab. A side trip (GH #3) is
+  advisory: AI-only inference, no verification, no schedule slot, rendered
+  as a single card on the base destination's existing page. Same physical
+  shape, different planning-maturity stage — not two disjoint concepts.
+- **Practical implication for this design**: keep the two mechanisms
+  separate (don't route GH #3's lightweight suggestions through this
+  document's full per-site pipeline — that would multiply cost for content
+  nobody has committed to visiting). But `side_trip_discovery.py`'s
+  eventual `options[].name` output should be exact enough to become a
+  `group_with` child destination's `name` verbatim if the traveler later
+  commits to it, so a future "promote this side trip" step doesn't need a
+  schema rewrite on either side.
+- **Ordering nuance this doc already implies but is worth stating
+  explicitly**: `group_with` siblings are dated (each has its own `dates`
+  sub-range) but not strictly chained to each other — since every sibling
+  is a day-trip from the same base, their *mutual* order is usually
+  flexible even though each still occupies a real day in the itinerary.
+  Side trips go further and drop the schedule slot entirely. See
+  `docs/design/schedule-normalization.md`'s "Interaction with GH #68"
+  section for how this plays into day-by-day schedule normalization.
+
+## 9. Rough scope estimate
 
 - `manifest_parser.py`: `group_with` + `base_owned_categories` schema
   fields, validation — small.
