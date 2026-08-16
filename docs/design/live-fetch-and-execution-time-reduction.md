@@ -18,14 +18,17 @@ run, independent of live-fetch changes.
 Two very different regimes are visible in run history, and they call for
 different fixes:
 
-- **Healthy-provider baseline** (`v2-1-performance-acceptance-gate.md`, Gate
-  B/C): a controlled single-destination run measured **408s** total pipeline
-  (median of 3), and a batching candidate got that to **254s** (37.7%
-  reduction). Under normal conditions the architecture is not catastrophic.
-- **Provider-outage regime** (same doc, Gate A evidence): one real run
-  recorded `stage_4_5_parallel` = **29714.926s** (~8.25 hours), 99.72% of a
-  ~8.28-hour total pipeline. This matches the live incident from today's
-  session (70+ minutes of near-total Grok timeout rate). Several fixes
+- **Healthy-provider baseline** (pre-session historical measurement, since
+  superseded by this session's cost/runtime work — see
+  `docs/reports/dipstick55_bug_triage.md` and later dipstick runs for
+  current figures): a controlled single-destination run measured **408s**
+  total pipeline (median of 3), and a batching candidate got that to
+  **254s** (37.7% reduction). Under normal conditions the architecture is
+  not catastrophic.
+- **Provider-outage regime** (same historical measurement window): one
+  real run recorded `stage_4_5_parallel` = **29714.926s** (~8.25 hours),
+  99.72% of a ~8.28-hour total pipeline. This matches the live incident
+  from today's session (70+ minutes of near-total Grok timeout rate). Several fixes
   already landed today that directly target this regime: circuit breaker,
   narrowed tenacity predicates, per-key negative-result cooldown + in-flight
   coalescing for harvest calls, AllTrails block-cooldown short-circuit.
@@ -225,11 +228,19 @@ item, not just a "some page might block us" risk item.
    fetches to other URLs on that domain. Tests:
    `test_fetch_page_text_*` in `tests/test_url_discovery.py`.
 3. **Not started — needs live validation.** Raising
-   `grok_max_concurrent_destinations` (2.1) under controlled measurement
-   (reuse the Gate B/C protocol from `v2-1-performance-acceptance-gate.md`).
-   Highest potential payoff, but an empirical tradeoff (today's resilience
-   fixes are unproven at real-world scale) that can't be validated without a
-   run against the live provider. Left at its current default (`1`).
+   `grok_max_concurrent_destinations` (2.1) under controlled measurement.
+   Reuse this protocol (originally from a since-removed, now-stale
+   acceptance-gate doc — the method still holds even though its specific
+   numbers don't): fixed manifest/config/env, 3 full runs, median cost and
+   runtime as baseline (target CoV <= 10% cost / <= 15% runtime to call the
+   baseline stable); a candidate change passes if it clears at least 3 of 4
+   thresholds relative to that baseline (cost reduction >= 20%, total
+   runtime reduction >= 25%, stage 4-5 runtime reduction >= 30%, provider
+   work-unit reduction >= 25% in at least two expensive stages), with the
+   cost threshold mandatory among the three. Highest potential payoff, but
+   an empirical tradeoff (today's resilience fixes are unproven at
+   real-world scale) that can't be validated without a run against the
+   live provider. Left at its current default (`1`).
 4. **Done.** Gated the harvest "insufficient rows" retry-prompt off
    `GrokSearch.is_circuit_open()` (2.3) — no second expensive harvest call
    fires while the breaker is open. Tests:
