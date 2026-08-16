@@ -1605,7 +1605,7 @@ def _write_development_build_info(output_dir: Path, build_info: dict[str, Any]) 
 )
 @click.option(
     "--search-provider",
-    type=click.Choice(["grok", "claude"], case_sensitive=False),
+    type=click.Choice(["grok", "claude", "openai"], case_sensitive=False),
     default=None,
     help="Force a single search/harvest provider for this run (url_discovery batch + non-batch, cultural_events), disabling cross-provider fallback entirely -- for a clean, uncontaminated per-provider cost/behavior comparison run.",
 )
