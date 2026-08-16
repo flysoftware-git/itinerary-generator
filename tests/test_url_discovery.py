@@ -4508,6 +4508,49 @@ def test_build_primary_items_from_direct_batch_carries_rating_fields() -> None:
     assert merged[0].get("rating") == 4.7
 
 
+def test_build_primary_items_from_direct_batch_does_not_synthesize_description_from_name_and_metadata() -> None:
+    """Dipstick58 bug 1: when a harvested row has no real description/
+    practical_note (just the item's own name plus rating/price/cuisine
+    metadata -- e.g. "Book Club Bistro 4.9/5 $$ Bistro"), the row-merge
+    logic used to fall back to the row's raw "snippet" field as the
+    description. That snippet is just the name plus the same metadata
+    already rendered as badges, so once html_assembler's rating/price
+    stripping ran on it, "Book Club Bistro 4.9/5 $$ Bistro" collapsed into
+    "Book Club Bistro Bistro" -- the cuisine word duplicated onto the end
+    of the name. The merge must recognize that snippet as metadata-only and
+    fall back to the generic fallback_description instead."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    rows = [
+        {
+            "name": "Book Club Bistro",
+            "title": "Book Club Bistro",
+            "url": "https://www.opentable.com/r/book-club-bistro-saint-george",
+            "snippet": (
+                "Book Club Bistro 4.9/5 $$ Bistro Source Maps "
+                "Links: https://www.opentable.com/r/book-club-bistro-saint-george "
+                "https://www.google.com/maps/search/?api=1&query=Book+Club+Bistro+St.+George+UT"
+            ),
+            "description": "",
+            "practical_note": "",
+            "cuisine": "Bistro",
+            "price_range": "$$",
+            "rating": 4.9,
+            "raw_rating": "4.9/5",
+        }
+    ]
+
+    merged = discoverer._build_primary_items_from_direct_batch(
+        rows=rows,
+        existing_items=[],
+        target_count=1,
+        fallback_description="Locally surfaced dinner option.",
+    )
+
+    assert merged
+    assert merged[0]["description"] == "Locally surfaced dinner option."
+    assert "Bistro" not in merged[0]["description"]
+
+
 def test_build_primary_items_from_direct_batch_rejects_generic_listing_row() -> None:
     """Reproduces the Dipstick48 bug: a harvested row whose only "name" is a
     TripAdvisor/Yelp listicle title (and whose url is the listing page itself)
