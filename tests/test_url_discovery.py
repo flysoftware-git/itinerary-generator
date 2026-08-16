@@ -4913,6 +4913,80 @@ def test_audit_demotes_long_trail_when_over_miles_threshold() -> None:
     assert "3-mile threshold" in str(attractions[0].get("practical_note", "") or "")
 
 
+def test_audit_demotion_strips_hike_badge_fields_not_just_type_and_url() -> None:
+    """Regression for dipstick58: "Peek-a-boo Loop" and "Fairyland Loop" (Bryce
+    Canyon, real run data) were correctly demoted -- url stripped, type flipped
+    to "attraction", threshold note attached -- yet still rendered with a
+    badge-hike-strenuous "Strenuous" badge in html_assembler, because that
+    badge is driven purely by the item's "difficulty" field (see
+    html_assembler.py's diff_class = difficulty_colors.get(diff, "")), which
+    is independent of "type" and was never cleared during demotion. A demoted
+    trail must present as a genuinely plain attraction, not a hike whose link
+    happened to be removed.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 3.0
+
+    trip = {
+        "destinations": [
+            {
+                "id": "bryce",
+                "name": "Bryce Canyon National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Peek-a-boo Loop",
+                            "type": "hike",
+                            "difficulty": "Strenuous",
+                            "duration": "3-4 hrs round-trip",
+                            "elevation_gain_feet": 1500,
+                            "description": (
+                                "This 5.5-mile trail winds through the heart of the "
+                                "hoodoos, offering unique perspectives. Expect steep "
+                                "sections and views."
+                            ),
+                            "practical_note": "Best to start early to avoid midday heat.",
+                            "rating": 4.9,
+                        },
+                        {
+                            "name": "Fairyland Loop",
+                            "type": "hike",
+                            "difficulty": "Strenuous",
+                            "duration": "4-5 hrs round-trip",
+                            "elevation_gain_feet": 1700,
+                            "description": (
+                                "A 8-mile loop that showcases less-visited hoodoos and "
+                                "rock formations. The trail offers views and fewer crowds."
+                            ),
+                            "practical_note": "Bring plenty of water as there are no water sources along the trail.",
+                            "rating": 4.5,
+                        },
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 2
+    for attr in attractions:
+        assert attr.get("type") == "attraction"
+        assert str(attr.get("url", "")) == ""
+        assert "threshold" in str(attr.get("practical_note", "") or "").lower()
+        # The real bug: these hike-specific fields survived demotion and kept
+        # rendering badge-hike-strenuous/badge-elevation despite the item no
+        # longer being presented as a hike.
+        assert "difficulty" not in attr
+        assert "elevation_gain_feet" not in attr
+
+
 def test_audit_demotes_alltrails_linked_attraction_when_description_lacks_trail_keywords() -> None:
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._max_trail_miles = 3.0

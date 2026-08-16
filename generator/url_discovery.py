@@ -2043,6 +2043,13 @@ class URLDiscoverer:
                         )
                         attr.pop("url", None)
                         attr["type"] = "attraction"
+                        # A demoted trail should present as a plain attraction, not
+                        # a hike whose link happened to be stripped -- clear the
+                        # hike-specific fields (difficulty/elevation) that would
+                        # otherwise still render hike badges (e.g. badge-hike-*)
+                        # in html_assembler despite the type change above.
+                        attr.pop("difficulty", None)
+                        attr.pop("elevation_gain_feet", None)
                         threshold_note = self._build_trail_threshold_note(
                             miles=threshold_miles,
                             max_miles=max_trail_miles,
