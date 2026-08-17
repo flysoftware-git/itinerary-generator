@@ -8713,6 +8713,64 @@ class URLDiscoverer:
             return False
         return stop_tokens == dest_tokens
 
+    @classmethod
+    def _en_route_stop_duplicates_destination_own_list(
+        cls, stop_name: str, dest: dict[str, Any] | None
+    ) -> str | None:
+        """True (returning the matching entry's own name) when an en-route
+        stop is the same real place as something the destination already
+        lists among its own scenic drives or top attractions.
+
+        Real dipstick63 example: Zion's "Getting Here" en-route stops
+        included "Kolob Canyons Scenic Drive" while Zion's own scenic-drives
+        list (generated independently by ai_content.py's destination-content
+        call, which always runs before URL discovery -- see
+        generate_destination_content / _discover_scenic_drives's own
+        multi-site-grouping comment for the same ordering fact) separately
+        included "Kolob Canyons Road" for the exact same real place. Two
+        subsystems (en-route-stop discovery here vs. destination
+        scenic-drive/attraction content generation in ai_content.py) proposed
+        the same real place under two different names and never cross-checked
+        each other.
+
+        The destination's own entry wins on a match: it's the fuller,
+        more-authoritative treatment (a real duration/description tailored to
+        being explored, not just passed by), so the en-route-stop duplicate
+        is dropped in favor of it. Uses the same full-significant-token-set
+        equality as _en_route_stop_name_duplicates_destination just above
+        (not substring/overlap) so a single shared generic word can't cause a
+        false-positive match -- and _significant_tokens already strips
+        generic route/drive suffix words ("drive", "road", "scenic", "byway",
+        "trail", "point", ...), which is exactly what lets "Kolob Canyons
+        Scenic Drive" and "Kolob Canyons Road" reduce to the same token set.
+        """
+        stop_tokens = frozenset(cls._significant_tokens(stop_name))
+        if not stop_tokens or not isinstance(dest, dict):
+            return None
+
+        candidate_names: list[str] = []
+        scenic_drives = dest.get("scenic_drives", [])
+        if isinstance(scenic_drives, list):
+            for drive in scenic_drives:
+                if isinstance(drive, dict):
+                    candidate_names.append(str(drive.get("title", "") or drive.get("name", "") or ""))
+        ai_content = dest.get("ai_content", {})
+        if isinstance(ai_content, dict):
+            top_attractions = ai_content.get("top_attractions", [])
+            if isinstance(top_attractions, list):
+                for attraction in top_attractions:
+                    if isinstance(attraction, dict):
+                        candidate_names.append(str(attraction.get("name", "") or ""))
+
+        for candidate_name in candidate_names:
+            candidate_name = candidate_name.strip()
+            if not candidate_name:
+                continue
+            candidate_tokens = frozenset(cls._significant_tokens(candidate_name))
+            if candidate_tokens and candidate_tokens == stop_tokens:
+                return candidate_name
+        return None
+
     @staticmethod
     def _extract_named_stops_from_description(description: str) -> list[str]:
         """Extract specific named place candidates from a list-style en-route description."""
@@ -8814,6 +8872,182 @@ class URLDiscoverer:
                 emitted_name_keys.add(name_key)
 
         return result
+
+    @staticmethod
+    def _en_route_stop_name_is_bare_street_address(name: str) -> bool:
+        """True when a stop's whole label is essentially just a street
+        address (e.g. "118 E Center St, Moab, UT 84532") rather than a real
+        place name -- a harvested-from-Maps-pin row with no venue name
+        attached. The distinguishing signal is simple and robust: a real
+        place name doesn't start with a number, a street address does."""
+        return bool(re.match(r"^\d", str(name or "").strip()))
+
+    @staticmethod
+    def _en_route_stop_address_key(name: str) -> str:
+        """Extract a normalized '<street number> <street words>' key from a
+        stop's name/label, for matching two en-route-stop candidates that
+        name the same real place by address rather than by identical text.
+
+        Real example (Moab -> Arches leg, from a Google Maps waypoint
+        screenshot): the harvested list included both a bare address
+        ("118 E Center St, Moab, UT 84532") and a named entry for the exact
+        same address ("Moab Museum, 118 E Center St, Moab, UT") as two
+        separate candidates -- same real place, one captured as a pin
+        address, the other as a venue name plus its address. Stripping
+        directional words, street-type suffixes, and everything after the
+        street segment (city/state/zip, or a leading venue-name prefix
+        before the address starts) reduces both forms to the same
+        "118 center" key.
+        """
+        text = str(name or "").lower()
+        # A street number followed by street-name words, up to the next
+        # comma (or end of string) -- text before the match (a venue-name
+        # prefix like "moab museum, ") isn't part of the address itself.
+        m = re.search(r"(\d{1,6})\s+([a-z][a-z0-9\s]*?)(?:,|$)", text)
+        if not m:
+            return ""
+        number = m.group(1)
+        street = m.group(2)
+        street = re.sub(
+            r"\b(n|s|e|w|ne|nw|se|sw|north|south|east|west)\b", " ", street
+        )
+        street = re.sub(
+            r"\b(st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|ln|lane|"
+            r"way|hwy|highway|ct|court|pl|place)\b",
+            " ",
+            street,
+        )
+        street = re.sub(r"\s+", " ", street).strip()
+        if not street:
+            return ""
+        return f"{number} {street}"
+
+    @classmethod
+    def _en_route_stop_place_identity_score(cls, item: dict[str, Any]) -> tuple[int, int, int, int]:
+        """Preference score for picking which of two same-place en-route-stop
+        entries to keep: a real named entry always beats a bare-address one,
+        then prefer whichever has real descriptive content, then fall back to
+        the existing specificity tiebreakers (more tokens, longer text)."""
+        name = str(item.get("name", "") or "")
+        not_bare_address = 0 if cls._en_route_stop_name_is_bare_street_address(name) else 1
+        has_description = 1 if str(item.get("description", "") or item.get("practical_note", "") or "").strip() else 0
+        token_count = len(re.findall(r"[a-z0-9]+", name.lower()))
+        char_count = len(name.strip())
+        return (not_bare_address, has_description, token_count, char_count)
+
+    def _dedupe_en_route_stops_same_leg_by_shared_address(
+        self, stops: list[dict[str, Any]], dest_name: str
+    ) -> list[dict[str, Any]]:
+        """Collapse two-or-more entries in the SAME leg's en_route_stops list
+        that name the same real place by street address, keeping the more
+        informative (named) entry over a bare-address one -- see
+        _en_route_stop_address_key's docstring for the real Moab Museum
+        example this fixes. This is a same-leg duplicate, distinct from
+        _en_route_stop_duplicates_destination_own_list above (which catches
+        the same real place under two different names across TWO different
+        lists -- en_route_stops vs. the destination's own scenic-drives/
+        attractions -- for the Kolob Canyons case)."""
+        if not stops:
+            return stops
+
+        groups: dict[str, list[dict[str, Any]]] = {}
+        ungrouped: list[dict[str, Any]] = []
+        for stop in stops:
+            if not isinstance(stop, dict):
+                ungrouped.append(stop)
+                continue
+            key = self._en_route_stop_address_key(str(stop.get("name", "") or ""))
+            if not key:
+                ungrouped.append(stop)
+                continue
+            groups.setdefault(key, []).append(stop)
+
+        result: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        for stop in stops:
+            if not isinstance(stop, dict) or id(stop) in seen_ids:
+                continue
+            key = self._en_route_stop_address_key(str(stop.get("name", "") or ""))
+            group = groups.get(key, [stop]) if key else [stop]
+            if len(group) < 2:
+                result.append(stop)
+                seen_ids.add(id(stop))
+                continue
+            best = max(group, key=self._en_route_stop_place_identity_score)
+            for candidate in group:
+                seen_ids.add(id(candidate))
+            result.append(best)
+            for candidate in group:
+                if candidate is best:
+                    continue
+                self._log_decision(
+                    kind="en_route_stop",
+                    dest_name=dest_name,
+                    item_name=str(candidate.get("name", "") or ""),
+                    reason="en_route_duplicate_same_place_in_leg",
+                    message=(
+                        "en-route stop removed: shares a street address with another "
+                        f"entry on the same leg ('{best.get('name', '')}'), same real place"
+                    ),
+                )
+        return result
+
+    def _dedupe_en_route_stops_same_leg_by_geocode_proximity(
+        self, stops: list[dict[str, Any]], dest_name: str
+    ) -> list[dict[str, Any]]:
+        """Same-leg same-place collapse as
+        _dedupe_en_route_stops_same_leg_by_shared_address above, but for
+        stops that don't share a parseable street address yet DO already
+        carry a verified geocode (set by _prune_en_route_stops_by_geometry,
+        which runs before this) landing within a couple hundred feet of each
+        other -- close enough that they can only be the same real point of
+        interest, not two distinct nearby places."""
+        if not stops or len(stops) < 2:
+            return stops
+
+        same_place_radius_miles = 0.05  # ~260 feet
+        drop_ids: set[int] = set()
+        n = len(stops)
+        for i in range(n):
+            stop_a = stops[i]
+            if not isinstance(stop_a, dict) or id(stop_a) in drop_ids:
+                continue
+            coords_a = self._parse_lat_lng(stop_a.get("geocode_lat"), stop_a.get("geocode_lng"))
+            if coords_a is None:
+                continue
+            for j in range(i + 1, n):
+                stop_b = stops[j]
+                if not isinstance(stop_b, dict) or id(stop_b) in drop_ids:
+                    continue
+                coords_b = self._parse_lat_lng(stop_b.get("geocode_lat"), stop_b.get("geocode_lng"))
+                if coords_b is None:
+                    continue
+                if self._haversine_miles(coords_a, coords_b) > same_place_radius_miles:
+                    continue
+                keep, drop = (
+                    (stop_a, stop_b)
+                    if self._en_route_stop_place_identity_score(stop_a)
+                    >= self._en_route_stop_place_identity_score(stop_b)
+                    else (stop_b, stop_a)
+                )
+                drop_ids.add(id(drop))
+                self._log_decision(
+                    kind="en_route_stop",
+                    dest_name=dest_name,
+                    item_name=str(drop.get("name", "") or ""),
+                    reason="en_route_duplicate_same_place_in_leg",
+                    message=(
+                        "en-route stop removed: geocodes within "
+                        f"{same_place_radius_miles} mi of another entry on the same leg "
+                        f"('{keep.get('name', '')}'), same real place"
+                    ),
+                )
+                if drop is stop_a:
+                    break
+
+        if not drop_ids:
+            return stops
+        return [stop for stop in stops if not (isinstance(stop, dict) and id(stop) in drop_ids)]
 
     # NOTE on detour semantics (investigated for dipstick59 Bug 2 -- "are
     # distances for detour one way or two way or loop that connects
@@ -9043,6 +9277,13 @@ class URLDiscoverer:
                 ai["getting_here"] = getting_here
 
         if stops:
+            address_deduped_stops = self._dedupe_en_route_stops_same_leg_by_shared_address(stops, dest_name)
+            if len(address_deduped_stops) != len(stops):
+                stops = address_deduped_stops
+                getting_here["en_route_stops"] = stops
+                ai["getting_here"] = getting_here
+
+        if stops:
             non_duplicate_stops: list[dict[str, Any]] = []
             for stop in stops:
                 stop_name = str((stop or {}).get("name", "") or "").strip()
@@ -9053,6 +9294,21 @@ class URLDiscoverer:
                         item_name=stop_name,
                         reason="en_route_duplicate_of_destination",
                         message="en-route stop removed: resolved name duplicates the arrival destination itself",
+                    )
+                    continue
+                matched_own_entry = (
+                    self._en_route_stop_duplicates_destination_own_list(stop_name, dest) if stop_name else None
+                )
+                if matched_own_entry:
+                    self._log_decision(
+                        kind="en_route_stop",
+                        dest_name=dest_name,
+                        item_name=stop_name,
+                        reason="en_route_duplicate_of_destination_own_list",
+                        message=(
+                            "en-route stop removed: duplicates the destination's own "
+                            f"scenic-drive/attraction entry '{matched_own_entry}'"
+                        ),
                     )
                     continue
                 non_duplicate_stops.append(stop)
@@ -9150,6 +9406,20 @@ class URLDiscoverer:
             )
             if len(route_pruned_stops) != len(stops):
                 stops = route_pruned_stops
+                getting_here["en_route_stops"] = stops
+                ai["getting_here"] = getting_here
+
+        if stops:
+            # A second same-leg same-place pass, now that every surviving
+            # stop that resolved has a verified geocode_lat/geocode_lng
+            # (just persisted above by _prune_en_route_stops_by_geometry) --
+            # catches same-place duplicates the earlier address-key pass
+            # missed because neither name contained a parseable street
+            # address (e.g. two different free-text names that happen to
+            # geocode to the same point).
+            geocode_deduped_stops = self._dedupe_en_route_stops_same_leg_by_geocode_proximity(stops, dest_name)
+            if len(geocode_deduped_stops) != len(stops):
+                stops = geocode_deduped_stops
                 getting_here["en_route_stops"] = stops
                 ai["getting_here"] = getting_here
 

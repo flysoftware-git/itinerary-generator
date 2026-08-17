@@ -12569,6 +12569,157 @@ def test_discover_en_route_stops_preserves_mined_stop_metadata_from_generic_desc
     assert all(str(stop.get("detour_distance_miles", "") or "") != "None" for stop in stops), stops
 
 
+# ── Bug 1 (dipstick63): en-route stop vs. destination's own scenic-drive/  ──
+# attraction list cross-check dedup (Kolob Canyons Scenic Drive vs. Kolob
+# Canyons Road), and intra-leg same-place dedup (Moab Museum bare-address
+# vs. named entry).
+
+def test_en_route_stop_duplicates_destination_own_list_matches_scenic_drive() -> None:
+    """Direct unit test for the Kolob Canyons cross-list matcher: an
+    en-route stop and a destination's own scenic-drives entry that reduce to
+    the same significant-token set are recognized as the same real place."""
+    dest = {
+        "scenic_drives": [
+            {
+                "title": "Kolob Canyons Road",
+                "distance_or_duration": "5 miles",
+                "description": "A lesser-known but beautiful drive that leads to the Kolob Canyons section of Zion.",
+            },
+        ],
+    }
+    match = URLDiscoverer._en_route_stop_duplicates_destination_own_list("Kolob Canyons Scenic Drive", dest)
+    assert match == "Kolob Canyons Road"
+
+
+def test_en_route_stop_duplicates_destination_own_list_matches_top_attraction() -> None:
+    dest = {
+        "ai_content": {
+            "top_attractions": [{"name": "Kolob Canyons Trail"}],
+        },
+    }
+    match = URLDiscoverer._en_route_stop_duplicates_destination_own_list("Kolob Canyons Scenic Drive", dest)
+    assert match == "Kolob Canyons Trail"
+
+
+def test_en_route_stop_duplicates_destination_own_list_no_false_positive() -> None:
+    dest = {"scenic_drives": [{"title": "Zion Canyon Scenic Drive"}]}
+    assert URLDiscoverer._en_route_stop_duplicates_destination_own_list("Kolob Canyons Scenic Drive", dest) is None
+
+
+def test_discover_en_route_stops_drops_stop_duplicating_destination_scenic_drive() -> None:
+    """Regression for dipstick63 Bug 1: Zion's 'Getting Here' en-route stops
+    included 'Kolob Canyons Scenic Drive' (linked to zionnationalpark.com)
+    while Zion's own scenic_drives list -- populated by ai_content.py's
+    destination-content generation, which always runs before URL discovery
+    -- independently included 'Kolob Canyons Road' for the exact same real
+    place. The en-route-stop duplicate must be dropped in favor of the
+    destination's own (fuller, more authoritative) entry."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {
+                    "name": "Kolob Canyons Scenic Drive",
+                    "url": "https://zionnationalpark.com/getting-around/",
+                    "description": (
+                        "Kolob Canyons Scenic Drive runs for 5 miles from the Kolob Canyons "
+                        "Visitor Center along a ridge up to Kolob Canyons Viewpoint."
+                    ),
+                    "detour_distance_miles": 10,
+                    "detour_time_minutes": 15,
+                },
+            ],
+        }
+    }
+    dest = {
+        "name": "Zion National Park",
+        "scenic_drives": [
+            {
+                "title": "Kolob Canyons Road",
+                "distance_or_duration": "5 miles",
+                "description": "A lesser-known but beautiful drive that leads to the Kolob Canyons section of Zion.",
+            }
+        ],
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        discoverer._discover_en_route_stops(
+            ai,
+            "Zion National Park",
+            origin_name="St. George, Utah",
+            dest=dest,
+        )
+
+    assert ai["getting_here"]["en_route_stops"] == []
+
+
+def test_en_route_stop_address_key_matches_bare_address_and_named_variant() -> None:
+    """Direct unit test for the Moab Museum address-key matcher: a bare
+    street address and a venue name plus the same address reduce to the
+    same normalized key."""
+    bare = URLDiscoverer._en_route_stop_address_key("118 E Center St, Moab, UT 84532")
+    named = URLDiscoverer._en_route_stop_address_key("Moab Museum, 118 E Center St, Moab, UT")
+    assert bare and named
+    assert bare == named
+
+
+def test_en_route_stop_name_is_bare_street_address() -> None:
+    assert URLDiscoverer._en_route_stop_name_is_bare_street_address("118 E Center St, Moab, UT 84532") is True
+    assert URLDiscoverer._en_route_stop_name_is_bare_street_address("Moab Museum, 118 E Center St, Moab, UT") is False
+
+
+def test_discover_en_route_stops_dedupes_bare_address_against_named_entry_same_leg() -> None:
+    """Regression for a real Moab -> Arches leg Google Maps waypoint
+    screenshot: the harvested en_route_stops list for a single leg included
+    both a bare geocoded address ('118 E Center St, Moab, UT 84532') and a
+    named entry for the exact same address ('Moab Museum, 118 E Center St,
+    Moab, UT') as two separate candidates -- the same real place forced onto
+    the route as two waypoints, contributing to the observed route bouncing
+    between Moab town and inside Arches. The named entry (more informative)
+    must survive; the bare-address duplicate must be dropped."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {"name": "118 E Center St, Moab, UT 84532"},
+                {
+                    "name": "Moab Museum, 118 E Center St, Moab, UT",
+                    "description": "Local history museum in downtown Moab.",
+                },
+            ],
+        }
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        discoverer._discover_en_route_stops(
+            ai,
+            "Arches National Park",
+            origin_name="Moab, Utah",
+        )
+
+    names = [str(s.get("name", "") or "") for s in ai["getting_here"]["en_route_stops"]]
+    assert names == ["Moab Museum, 118 E Center St, Moab, UT"]
+
+
+def test_dedupe_en_route_stops_same_leg_by_geocode_proximity_keeps_named_entry() -> None:
+    """Same-place collapse for two stops that don't share a parseable street
+    address but geocode to essentially the same point -- the geocode-based
+    fallback for the address-key pass above."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    stops = [
+        {"name": "Moab Museum of Film and Western Heritage", "geocode_lat": 38.5733, "geocode_lng": -109.5498,
+         "description": "Museum near downtown Moab."},
+        {"name": "Downtown Moab Pin", "geocode_lat": 38.57335, "geocode_lng": -109.54985},
+    ]
+    result = discoverer._dedupe_en_route_stops_same_leg_by_geocode_proximity(stops, "Arches National Park")
+    names = [s["name"] for s in result]
+    assert names == ["Moab Museum of Film and Western Heritage"]
+
+
 def test_infer_destination_day_count_from_date_ranges() -> None:
     assert URLDiscoverer._infer_destination_day_count("October 17, 2026") == 1
     assert URLDiscoverer._infer_destination_day_count("October 19-21, 2026") == 3
