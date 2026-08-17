@@ -2107,56 +2107,31 @@ class HTMLAssembler:
 
     @staticmethod
     def _should_render_without_url(item: dict[str, Any], *, section: str) -> bool:
+        """Defense-in-depth safety net, not the primary enforcement point.
+
+        Policy (project owner decision, 2026-08-17): a non-seed item with no
+        real, verified, specific source URL is removed from the itinerary
+        entirely by url_discovery.py's audit_discovered_urls
+        (_keep_item_if_verified_or_seed) -- upstream of both schedule-text
+        generation and HTML rendering. This function only allows rendering
+        without a url when the item is a seed (the traveler's own explicit
+        request, which must still appear -- shown with the "Unverified"
+        caution badge -- even when the pipeline can't verify it). If a
+        non-seed, no-url item ever reaches this point despite the upstream
+        prune (a defensive scenario, not the expected path), it is dropped
+        here rather than rendered.
+
+        Restaurants have no seed concept anywhere in this codebase, so this
+        always returns False for section="restaurant" -- consistent with
+        "restaurants have no seed exception; all unverified restaurants are
+        removed."
+        """
         if not isinstance(item, dict):
             return False
         name = str(item.get("name", "") or "").strip()
-        description = str(item.get("description", "") or "").strip()
-        practical_note = str(item.get("practical_note", "") or "").strip()
-        text_blob = " ".join(part for part in (description, practical_note) if part).strip()
-        if not text_blob and not name:
+        if not name:
             return False
-
-        if section == "restaurant":
-            if not name:
-                return False
-            if item.get("maps_url") and HTMLAssembler._is_maps_search_url(str(item.get("maps_url", ""))):
-                return False
-            if description.lower() in {"source", "source maps", "maps", "locally surfaced dinner option", "locally surfaced dinner option."}:
-                return True
-            if any(marker in description.lower() for marker in ("missing links", "fallback map", "source maps", "google.com/maps/search", "no link")):
-                return False
-            return True
-
-        if section == "attraction":
-            # Seed attractions are user-requested anchors (requirements.md §3.4) and
-            # must never silently vanish just because they lack a rich enough
-            # description or metadata to clear the generic no-url render bar.
-            if item.get("is_seed") and name:
-                return True
-            metadata_fields = [
-                item.get("difficulty", ""),
-                item.get("distance_miles", ""),
-                item.get("elevation_gain_feet", ""),
-                item.get("duration", ""),
-                item.get("must_see", ""),
-                item.get("practical_note", ""),
-            ]
-            if any(str(value).strip() for value in metadata_fields if value not in (None, "", "N/A", "n/a", "NA", "na")):
-                return True
-            if not text_blob:
-                return False
-            lower = text_blob.lower()
-            if any(marker in lower for marker in ("source maps", "fallback map", "missing links", "google.com/maps/search", "maps search", "no link")):
-                return False
-            return len(re.findall(r"[A-Za-z0-9]+", text_blob)) >= 8
-
-        if section == "en_route_stop":
-            if not text_blob:
-                return bool(name)
-            token_count = len(re.findall(r"[A-Za-z0-9]+", text_blob))
-            return token_count >= 6
-
-        return bool(text_blob and len(re.findall(r"[A-Za-z0-9]+", text_blob)) >= 6)
+        return bool(item.get("is_seed"))
 
     def _build_restaurants(
         self,

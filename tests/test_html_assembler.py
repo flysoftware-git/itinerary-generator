@@ -365,7 +365,11 @@ def test_build_getting_here_uses_destination_name_not_lodging_for_route_target()
     ai = {
         "getting_here": {
             "route_summary": "Arrive via scenic corridor.",
-            "en_route_stops": [{"name": "Scenic Overlook"}],
+            # is_seed=True: this stop carries no url and no description, so
+            # under the verified-link-or-seed policy (2026-08-17) only a seed
+            # renders without a url -- unrelated to what this test actually
+            # verifies (waypoint URL construction).
+            "en_route_stops": [{"name": "Scenic Overlook", "is_seed": True}],
         }
     }
     dest = {
@@ -393,9 +397,13 @@ def test_build_getting_here_route_waypoints_are_destination_scoped_for_ambiguous
     ai = {
         "getting_here": {
             "route_summary": "Arrive via scenic corridor.",
+            # is_seed=True on both: no url/description on these bare-name
+            # fixtures, so seeding keeps them visible under the
+            # verified-link-or-seed policy (2026-08-17) for this test's real
+            # focus (destination-scoped waypoint qualification).
             "en_route_stops": [
-                {"name": "Red Cliffs Desert Reserve"},
-                {"name": "Leeds Historic District"},
+                {"name": "Red Cliffs Desert Reserve", "is_seed": True},
+                {"name": "Leeds Historic District", "is_seed": True},
             ],
         }
     }
@@ -426,7 +434,16 @@ def test_build_getting_here_route_waypoint_prefers_geocoded_coordinates() -> Non
         "getting_here": {
             "route_summary": "Drive to Bryce.",
             "en_route_stops": [
-                {"name": "Canyon Overlook Trail", "geocode_lat": 37.2136, "geocode_lng": -113.0064},
+                {
+                    "name": "Canyon Overlook Trail",
+                    "geocode_lat": 37.2136,
+                    "geocode_lng": -113.0064,
+                    # is_seed=True: no url/description on this bare fixture;
+                    # seeding keeps it visible under the verified-link-or-seed
+                    # policy (2026-08-17) for this test's real focus (geocode
+                    # preferred over name qualification).
+                    "is_seed": True,
+                },
             ],
         }
     }
@@ -453,7 +470,11 @@ def test_build_getting_here_route_waypoint_falls_back_to_qualified_name_without_
     ai = {
         "getting_here": {
             "route_summary": "Arrive via scenic corridor.",
-            "en_route_stops": [{"name": "Red Cliffs Desert Reserve"}],
+            # is_seed=True: bare-name fixture, no url/description; seeding
+            # keeps it visible under the verified-link-or-seed policy
+            # (2026-08-17) so this test can verify the no-geocode
+            # name-qualification fallback it's actually about.
+            "en_route_stops": [{"name": "Red Cliffs Desert Reserve", "is_seed": True}],
         }
     }
     dest = {"name": "St. George, Utah"}
@@ -474,9 +495,13 @@ def test_build_getting_here_route_skips_ineligible_waypoints() -> None:
     ai = {
         "getting_here": {
             "route_summary": "Drive north.",
+            # is_seed=True on both: bare-name fixtures with no url/
+            # description; seeding keeps the eligible one visible so this
+            # test can verify ineligible-waypoint skipping, which is what
+            # it's actually about.
             "en_route_stops": [
-                {"name": "Mesquite", "route_waypoint_eligible": True},
-                {"name": "Cedar City", "route_waypoint_eligible": False},
+                {"name": "Mesquite", "route_waypoint_eligible": True, "is_seed": True},
+                {"name": "Cedar City", "route_waypoint_eligible": False, "is_seed": True},
             ],
         }
     }
@@ -500,10 +525,15 @@ def test_build_getting_here_orders_waypoints_by_route_progress() -> None:
     ai = {
         "getting_here": {
             "route_summary": "Drive north.",
+            # is_seed=True throughout: bare-name fixtures with no url/
+            # description; seeding keeps them visible under the
+            # verified-link-or-seed policy (2026-08-17) so this test can
+            # verify route-progress ordering, which is what it's actually
+            # about.
             "en_route_stops": [
-                {"name": "Last Stop", "route_waypoint_eligible": True, "route_progress_ratio": 0.9},
-                {"name": "First Stop", "route_waypoint_eligible": True, "route_progress_ratio": 0.2},
-                {"name": "Mid Stop", "route_waypoint_eligible": True, "route_progress_ratio": 0.5},
+                {"name": "Last Stop", "route_waypoint_eligible": True, "route_progress_ratio": 0.9, "is_seed": True},
+                {"name": "First Stop", "route_waypoint_eligible": True, "route_progress_ratio": 0.2, "is_seed": True},
+                {"name": "Mid Stop", "route_waypoint_eligible": True, "route_progress_ratio": 0.5, "is_seed": True},
             ],
         }
     }
@@ -541,17 +571,22 @@ def test_build_getting_here_unresolved_progress_ratio_sorts_after_confirmed_stop
     ai = {
         "getting_here": {
             "route_summary": "Take US-89 S, then UT-12 E to UT-24 E.",
+            # is_seed=True throughout: bare-name fixtures with no url/
+            # description; seeding keeps them visible under the
+            # verified-link-or-seed policy (2026-08-17) so this test can
+            # verify route-progress-ratio sort ordering, which is what it's
+            # actually about.
             "en_route_stops": [
                 # Listed first in the AI-generated content, but never geocoded.
-                {"name": "Fremont Petroglyphs", "route_waypoint_eligible": True},
-                {"name": "Gifford Homestead", "route_waypoint_eligible": True},
+                {"name": "Fremont Petroglyphs", "route_waypoint_eligible": True, "is_seed": True},
+                {"name": "Gifford Homestead", "route_waypoint_eligible": True, "is_seed": True},
                 # Real Highway 12 stops between Bryce and Torrey, in true
                 # geographic order, each with a verified route_progress_ratio.
-                {"name": "Kodachrome Basin State Park", "route_waypoint_eligible": True, "route_progress_ratio": 0.05},
-                {"name": "Escalante Petrified Forest State Park", "route_waypoint_eligible": True, "route_progress_ratio": 0.32},
-                {"name": "Head of the Rocks Overlook", "route_waypoint_eligible": True, "route_progress_ratio": 0.41},
-                {"name": "Lower Calf Creek Falls", "route_waypoint_eligible": True, "route_progress_ratio": 0.55},
-                {"name": "Anasazi State Park Museum", "route_waypoint_eligible": True, "route_progress_ratio": 0.58},
+                {"name": "Kodachrome Basin State Park", "route_waypoint_eligible": True, "route_progress_ratio": 0.05, "is_seed": True},
+                {"name": "Escalante Petrified Forest State Park", "route_waypoint_eligible": True, "route_progress_ratio": 0.32, "is_seed": True},
+                {"name": "Head of the Rocks Overlook", "route_waypoint_eligible": True, "route_progress_ratio": 0.41, "is_seed": True},
+                {"name": "Lower Calf Creek Falls", "route_waypoint_eligible": True, "route_progress_ratio": 0.55, "is_seed": True},
+                {"name": "Anasazi State Park Museum", "route_waypoint_eligible": True, "route_progress_ratio": 0.58, "is_seed": True},
             ],
         }
     }
@@ -605,27 +640,35 @@ def test_build_getting_here_renders_geographic_order_when_all_stops_resolve() ->
     ai = {
         "getting_here": {
             "route_summary": "Take US-89 N to UT-12 E.",
+            # is_seed=True throughout: bare-name fixtures with no url/
+            # description; seeding keeps them visible under the
+            # verified-link-or-seed policy (2026-08-17) so this test can
+            # verify geographic route ordering, which is what it's actually
+            # about.
             "en_route_stops": [
                 # Original AI-harvest order exactly as it appeared in the
                 # dipstick59 output, each carrying its real, Nominatim-verified
                 # route_progress_ratio (computed from real coordinates for a
                 # Zion Canyon Visitor Center -> Bryce Canyon City leg).
-                {"name": "Parowan Gap Petroglyphs", "route_waypoint_eligible": True, "route_progress_ratio": 0.3224},
-                {"name": "Moqui Cave", "route_waypoint_eligible": True, "route_progress_ratio": 0.3664},
+                {"name": "Parowan Gap Petroglyphs", "route_waypoint_eligible": True, "route_progress_ratio": 0.3224, "is_seed": True},
+                {"name": "Moqui Cave", "route_waypoint_eligible": True, "route_progress_ratio": 0.3664, "is_seed": True},
                 {
                     "name": "Cedar Breaks National Monument Rim View",
                     "route_waypoint_eligible": True,
                     "route_progress_ratio": 0.3328,
+                    "is_seed": True,
                 },
                 {
                     "name": "Coral Pink Sand Dunes State Park Boardwalk",
                     "route_waypoint_eligible": True,
                     "route_progress_ratio": 0.1662,
+                    "is_seed": True,
                 },
                 {
                     "name": "Willis Creek Slot Canyon Trailhead",
                     "route_waypoint_eligible": True,
                     "route_progress_ratio": 0.9959,
+                    "is_seed": True,
                 },
             ],
         }
@@ -664,8 +707,12 @@ def test_build_getting_here_uses_lodging_endpoint_but_destination_scoped_waypoin
     ai = {
         "getting_here": {
             "route_summary": "Arrive via I-15.",
+            # is_seed=True: bare-name fixture with no url/description; seeding
+            # keeps it visible under the verified-link-or-seed policy
+            # (2026-08-17) so this test can verify the lodging-endpoint /
+            # destination-scoped-waypoint distinction it's actually about.
             "en_route_stops": [
-                {"name": "Red Cliffs Desert Reserve", "route_waypoint_eligible": True},
+                {"name": "Red Cliffs Desert Reserve", "route_waypoint_eligible": True, "is_seed": True},
             ],
         }
     }
@@ -1045,11 +1092,12 @@ def test_build_restaurants_omits_items_when_only_maps_search_fallback_exists() -
     assert "google.com/search?q=Fallback%20Grill" not in html
 
 
-def test_build_restaurants_renders_caution_badge_when_promoted_without_url() -> None:
-    """A restaurant with no direct URL and no maps fallback can still be
-    promoted (_should_render_without_url) on description strength alone, but
-    must be visually flagged as unverified rather than shown like a
-    source-linked entry."""
+def test_build_restaurants_with_no_url_are_absent_no_seed_exception() -> None:
+    """Policy (2026-08-17): restaurants have no seed concept anywhere in this
+    codebase (no manifest field, no is_seed tracking), so a restaurant with no
+    direct URL and no maps fallback is never promoted -- unlike attractions
+    and en-route stops, there is no exception that would keep it visible with
+    an "Unverified" caution badge. It must not render at all."""
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     html = assembler._build_restaurants(
         {
@@ -1064,8 +1112,8 @@ def test_build_restaurants_renders_caution_badge_when_promoted_without_url() -> 
         "St. George",
     )
 
-    assert "Cozy Corner Cafe" in html
-    assert '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>' in html
+    assert "Cozy Corner Cafe" not in html
+    assert "badge-caution" not in html
 
 
 def test_assembled_html_preserves_marker_date_context_alongside_stop_indices() -> None:
@@ -1567,8 +1615,25 @@ def test_build_restaurants_uses_cuisine_tickler_for_american_and_cafe() -> None:
     html = assembler._build_restaurants(
         {
             "dinner_recommendations": [
-                {"name": "Allred's Restaurant", "description": "Source", "cuisine": "American", "price_range": "$$"},
-                {"name": "Wild Rabbit Cafe", "description": "Source", "cuisine": "Cafe", "price_range": "$"},
+                # A real url on each: restaurants have no seed exception under
+                # the verified-link-or-seed policy (2026-08-17), so a
+                # no-url restaurant would no longer render at all -- these
+                # fixtures need a real link to exercise the cuisine-tickler
+                # rendering logic this test is actually about.
+                {
+                    "name": "Allred's Restaurant",
+                    "description": "Source",
+                    "cuisine": "American",
+                    "price_range": "$$",
+                    "url": "https://allredsrestaurant.com/",
+                },
+                {
+                    "name": "Wild Rabbit Cafe",
+                    "description": "Source",
+                    "cuisine": "Cafe",
+                    "price_range": "$",
+                    "url": "https://wildrabbitcafe.com/",
+                },
             ]
         },
         "Telluride",
@@ -1579,8 +1644,10 @@ def test_build_restaurants_uses_cuisine_tickler_for_american_and_cafe() -> None:
     assert "verify current hours before you go" not in html
     # The names are already clean (no rating/price glued on) -- the cuisine
     # badge matching the name's own trailing word must not cause the
-    # sanitizer to chop it off (see the dedicated regression below).
-    assert "Wild Rabbit Cafe</span>" in html
+    # sanitizer to chop it off (see the dedicated regression below). Now
+    # rendered as a link (real url present), so the name is followed by the
+    # anchor close tag rather than the bare-name span close tag.
+    assert "Wild Rabbit Cafe</a>" in html
 
 
 def test_sanitize_restaurant_display_name_leaves_clean_name_alone_when_cuisine_matches_tail() -> None:
@@ -1620,6 +1687,12 @@ def test_build_restaurants_rewrites_generic_locally_surfaced_description() -> No
                 {
                     "name": "Cliffside Restaurant",
                     "description": "Locally surfaced dinner option.",
+                    # A real url: restaurants have no seed exception under the
+                    # verified-link-or-seed policy (2026-08-17), so a no-url
+                    # restaurant wouldn't render at all -- this fixture needs
+                    # a real link to actually exercise the generic-description
+                    # rewrite this test is about.
+                    "url": "https://cliffsiderestaurant.example.com/",
                 },
             ]
         },
@@ -1644,6 +1717,12 @@ def test_build_attractions_renders_distance_and_elevation_badges() -> None:
                     "elevation_gain_feet": 450,
                     "duration": "1–2 hrs round-trip",
                     "description": "A scenic family-friendly trail with a waterfall and pools.",
+                    # A real url: under the verified-link-or-seed policy
+                    # (2026-08-17), a non-seed no-url item no longer renders
+                    # at all -- this fixture needs a real link to exercise
+                    # the distance/elevation badge rendering this test is
+                    # actually about.
+                    "url": "https://www.nps.gov/zion/planyourvisit/emerald-pools.htm",
                 }
             ]
         },
@@ -1690,6 +1769,12 @@ def test_build_attractions_awards_must_see_badge_from_verified_rating() -> None:
                     "rating": 4.8,
                     "votes": 4200,
                     "description": "A strenuous chain-assisted climb to a narrow summit ridge.",
+                    # A real url: under the verified-link-or-seed policy
+                    # (2026-08-17), a non-seed no-url item no longer renders
+                    # at all -- this fixture needs a real link to exercise
+                    # the must-see/rating badge rendering this test is
+                    # actually about.
+                    "url": "https://www.nps.gov/zion/angels-landing.htm",
                 }
             ]
         },
@@ -1754,6 +1839,12 @@ def test_build_attractions_renders_seed_badge_for_user_requested_anchor() -> Non
                 {
                     "name": "Kolob Canyons Viewpoint",
                     "description": "A pull-off overlook of the red-rock Kolob Canyons formations.",
+                    # A real url: under the verified-link-or-seed policy
+                    # (2026-08-17), a non-seed no-url item no longer renders
+                    # at all -- this fixture needs a real link so this
+                    # non-seed item still renders, to prove it does NOT also
+                    # get the seed badge (what this test is actually about).
+                    "url": "https://www.nps.gov/zion/planyourvisit/kolobcanyonsroad.htm",
                 },
             ]
         },
@@ -1768,11 +1859,13 @@ def test_build_attractions_renders_seed_badge_for_user_requested_anchor() -> Non
     assert "badge-seed" not in kolob_row
 
 
-def test_build_attractions_renders_caution_badge_when_promoted_without_url() -> None:
-    """An attraction with no URL can still be promoted (_should_render_without_url)
-    when it carries enough metadata/description to be useful, but must be
-    visually flagged as unverified rather than rendered indistinguishably from
-    a source-linked entry."""
+def test_build_attractions_non_seed_no_url_attraction_is_absent() -> None:
+    """Policy (2026-08-17): a non-seed attraction with no URL used to still be
+    promoted (_should_render_without_url) when it carried enough metadata/
+    description to be useful, shown with the "Unverified" caution badge.
+    Under the verified-link-or-seed policy that promotion path is gone for
+    non-seed items -- rich metadata/description no longer earns a card, only
+    a real verified url or seed status does. It must not render at all."""
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     html = assembler._build_attractions(
         {
@@ -1789,6 +1882,33 @@ def test_build_attractions_renders_caution_badge_when_promoted_without_url() -> 
         dest_name="Zion National Park",
     )
 
+    assert "Quiet Overlook" not in html
+    assert "badge-caution" not in html
+
+
+def test_build_attractions_seed_no_url_attraction_renders_caution_badge() -> None:
+    """A seed attraction with no URL must still render, with the "Unverified"
+    caution badge, per the verified-link-or-seed policy (2026-08-17) --
+    unlike the non-seed case in
+    test_build_attractions_non_seed_no_url_attraction_is_absent."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_attractions(
+        {
+            "top_attractions": [
+                {
+                    "name": "Quiet Overlook",
+                    "difficulty": "Easy",
+                    "duration": "30 min",
+                    "description": "A short pull-off with sweeping canyon views.",
+                    "is_seed": True,
+                }
+            ]
+        },
+        drives=[],
+        dest_name="Zion National Park",
+    )
+
+    assert "Quiet Overlook" in html
     assert '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>' in html
 
 
@@ -2332,7 +2452,16 @@ def test_build_attractions_dedup_never_discards_a_url_the_attraction_side_alread
     silently dropped) and the duplicate drive is still suppressed -- even
     when the drive side *does* carry the real URL. The intended behavior is
     "the attraction renders with whatever URL IT already had", not
-    "borrow the dropped drive's URL"."""
+    "borrow the dropped drive's URL".
+
+    Seeded here (is_seed=True): under the verified-link-or-seed policy
+    (2026-08-17), a non-seed attraction with no url would now be removed
+    from the itinerary entirely rather than rendered unverified -- this
+    real dipstick60 harvest-miss scenario is exactly the kind of case the
+    new policy targets for removal. Seeding keeps the item visible so this
+    test can still verify the URL-borrowing-ordering guarantee it's really
+    about.
+    """
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {
         "top_attractions": [
@@ -2342,6 +2471,7 @@ def test_build_attractions_dedup_never_discards_a_url_the_attraction_side_alread
                 "description": "Free gondola connecting Telluride and Mountain Village.",
                 "rating": 4.5,
                 "duration": "20-min round-trip",
+                "is_seed": True,
                 # No url/url_candidates -- mirrors this run's harvest miss.
             }
         ]
@@ -2533,10 +2663,16 @@ def test_build_getting_here_renders_en_route_stop_maps_search_fallback_link() ->
     assert "Snow Canyon" in html
 
 
-def test_build_getting_here_renders_caution_badge_for_en_route_stop_promoted_without_any_url() -> None:
-    """An en-route stop with no direct URL and no maps fallback can still be
-    promoted on description strength alone (_should_render_without_url), but
-    must carry the same unverified-caution flag as attractions/restaurants."""
+def test_build_getting_here_non_seed_stop_with_no_url_is_absent() -> None:
+    """Policy (2026-08-17): a non-seed en-route stop with no direct URL and no
+    maps fallback is no longer promoted on description strength alone -- a
+    rich description used to be enough to render it with the "Unverified"
+    caution badge, but under the verified-link-or-seed policy a maps-search
+    fallback or bare-description promotion doesn't count as verified, and
+    this stop isn't a seed, so it must not render at all. (In the real
+    pipeline this stop would already have been pruned by url_discovery.py's
+    audit pass before reaching HTML assembly -- this exercises
+    _should_render_without_url's own defense-in-depth behavior directly.)"""
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {
         "getting_here": {
@@ -2547,6 +2683,35 @@ def test_build_getting_here_renders_caution_badge_for_en_route_stop_promoted_wit
                 {
                     "name": "Adobe Plaza",
                     "description": "A quiet detour through an old adobe plaza with local artisan shops.",
+                }
+            ],
+        }
+    }
+    dest = {"name": "Santa Fe"}
+
+    html = assembler._build_getting_here(ai, dest, previous_name="Albuquerque")
+
+    assert "Adobe Plaza" not in html
+    assert "badge-caution" not in html
+
+
+def test_build_getting_here_seed_stop_with_no_url_renders_caution_badge() -> None:
+    """A seed en-route stop (the traveler's own explicit `en_route_seeds`
+    request) with no direct URL and no maps fallback must still render, with
+    the "Unverified" caution badge, per the verified-link-or-seed policy
+    (2026-08-17) -- unlike the non-seed case in
+    test_build_getting_here_non_seed_stop_with_no_url_is_absent."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "getting_here": {
+            "route_summary": "Drive to Santa Fe.",
+            "distance_miles": "60",
+            "drive_time": "1h 15m",
+            "en_route_stops": [
+                {
+                    "name": "Adobe Plaza",
+                    "description": "A quiet detour through an old adobe plaza with local artisan shops.",
+                    "is_seed": True,
                 }
             ],
         }
@@ -2951,11 +3116,16 @@ def test_build_getting_here_does_not_duplicate_stop_note_when_same_as_descriptio
             "route_summary": "Drive with one worthwhile stop.",
             "distance_miles": "120",
             "drive_time": "2h 30m",
+            # is_seed=True: no url on this fixture; seeding keeps it visible
+            # under the verified-link-or-seed policy (2026-08-17) so this test
+            # can verify note/description dedup, which is what it's actually
+            # about.
             "en_route_stops": [
                 {
                     "name": "Silver Reef Museum",
                     "description": "Preserved 1870s silver mining town with original buildings and exhibits",
                     "practical_note": "Preserved 1870s silver mining town with original buildings and exhibits",
+                    "is_seed": True,
                 }
             ],
         }
@@ -3816,11 +3986,14 @@ def test_build_attractions_renders_maps_corner_link_when_distinct_from_primary_u
     assert "maps/place/The+Narrows" in html
 
 
-def test_build_attractions_renders_maps_corner_link_when_no_primary_url() -> None:
-    """An item with no verified source at all (the 'Unverified' caution
-    badge case) is exactly where a map icon is most useful, not least --
-    it must not be suppressed just because there's no primary link to
-    compare it against."""
+def test_build_attractions_non_seed_with_only_maps_fallback_is_absent() -> None:
+    """Real example from a validation run (Bryce Canyon): "Sunrise Point" and
+    "Inspiration Point" are non-seed viewpoints with only a Google Maps
+    search-by-name fallback, never a real verified source URL. Under the
+    verified-link-or-seed policy (2026-08-17), a maps-search fallback is
+    explicitly not "verified" -- this item is removed from the itinerary
+    entirely, not rendered with the caution badge and map icon it used to
+    get."""
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {
         "top_attractions": [
@@ -3829,6 +4002,33 @@ def test_build_attractions_renders_maps_corner_link_when_no_primary_url() -> Non
                 "type": "attraction",
                 "description": "A viewpoint offering sweeping views of the amphitheater and hoodoos below.",
                 "maps_url": "https://www.google.com/maps/search/?api=1&query=Sunrise+Point+Bryce+Canyon",
+            }
+        ]
+    }
+
+    html = assembler._build_attractions(ai, drives=[], dest_name="Bryce Canyon National Park")
+
+    assert "Sunrise Point" not in html
+    assert "badge-caution" not in html
+
+
+def test_build_attractions_renders_maps_corner_link_when_no_primary_url() -> None:
+    """A seed item with no verified source at all (the 'Unverified' caution
+    badge case) is exactly where a map icon is most useful, not least --
+    it must not be suppressed just because there's no primary link to
+    compare it against. Seeded here (is_seed=True) since, per the
+    verified-link-or-seed policy (2026-08-17), a non-seed item in this
+    situation is now removed entirely rather than rendered (see
+    test_build_attractions_non_seed_with_only_maps_fallback_is_absent)."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Sunrise Point",
+                "type": "attraction",
+                "description": "A viewpoint offering sweeping views of the amphitheater and hoodoos below.",
+                "maps_url": "https://www.google.com/maps/search/?api=1&query=Sunrise+Point+Bryce+Canyon",
+                "is_seed": True,
             }
         ]
     }
@@ -3934,14 +4134,13 @@ def test_maps_corner_link_html_omits_when_no_maps_url_and_no_primary() -> None:
     assert assembler._maps_corner_link_html(item, "https://example.com") == ""
 
 
-def test_build_restaurants_renders_maps_corner_link_when_no_primary_url() -> None:
-    """A restaurant with no verified source (the 'Unverified' caution badge
-    case) but a real, non-search, non-redundant maps_url must still get the
-    map icon -- there's no primary link for it to be redundant with. A
-    directions-style maps_url is used here specifically because
-    _select_preferred_external_link never promotes it to be the primary
-    link for restaurants (unlike a plain place-style maps_url, which would
-    become the primary link itself and make a second icon redundant)."""
+def test_build_restaurants_with_only_maps_fallback_no_seed_exception_is_absent() -> None:
+    """A restaurant with no verified primary source and only a maps_url
+    fallback used to still render with the "Unverified" caution badge and a
+    map icon. Under the verified-link-or-seed policy (2026-08-17), restaurants
+    have no seed concept anywhere in this codebase, so there is no exception
+    that keeps an unverified restaurant visible -- it must be absent
+    entirely, map icon included."""
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {
         "dinner_recommendations": [
@@ -3956,9 +4155,9 @@ def test_build_restaurants_renders_maps_corner_link_when_no_primary_url() -> Non
 
     html = assembler._build_restaurants(ai, dest_name="St. George, Utah")
 
-    assert "badge-caution" in html
-    assert 'class="badge badge-map"' in html
-    assert "maps/dir" in html
+    assert "Painted Pony" not in html
+    assert "badge-caution" not in html
+    assert "badge-map" not in html
 
 
 def test_build_restaurants_renders_maps_corner_link_when_distinct_from_primary_url() -> None:
