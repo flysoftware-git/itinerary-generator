@@ -149,7 +149,11 @@ def test_verify_event_urls_strips_generic_landing_page() -> None:
     generic /things-to-do listing page -- live, but not actually the event's
     own page -- would have sailed through unflagged. Verify the generic-URL
     check (reused from url_discovery.URLDiscoverer, the same detector
-    attractions/restaurants rely on) now strips those before they render."""
+    attractions/restaurants rely on) now strips those before they render.
+
+    dipstick62 follow-up: both events must still end up with SOME link --
+    a Google Maps search fallback, matching every other content type --
+    rather than rendering with no link at all."""
     d = _discoverer()
     result = {
         "has_events": True,
@@ -169,9 +173,14 @@ def test_verify_event_urls_strips_generic_landing_page() -> None:
         ],
     }
 
-    verified = d._verify_event_urls(result)
+    verified = d._verify_event_urls(result, "Moab")
 
-    assert all("url" not in e for e in verified["events"])
+    assert all(
+        e["url"].startswith("https://www.google.com/maps/search/?api=1&query=")
+        for e in verified["events"]
+    )
+    assert "moab.org" not in verified["events"][0]["url"]
+    assert "moabultra.com" not in verified["events"][1]["url"]
 
 
 def test_verify_event_urls_keeps_live_specific_url() -> None:
@@ -198,7 +207,8 @@ def test_verify_event_urls_keeps_live_specific_url() -> None:
 def test_verify_event_urls_strips_dead_link() -> None:
     """A URL that isn't generic-looking but fails the live reachability check
     (dead link / real 404) must still be stripped -- the pre-existing behavior
-    this refactor must not regress."""
+    this refactor must not regress. It then gets a maps fallback like any
+    other verified-away event URL."""
     d = _discoverer()
     result = {
         "has_events": True,
@@ -213,9 +223,10 @@ def test_verify_event_urls_strips_dead_link() -> None:
     }
 
     with patch("generator.url_validator.URLValidator.verify_url", return_value=(False, 404)):
-        verified = d._verify_event_urls(result)
+        verified = d._verify_event_urls(result, "Moab")
 
-    assert "url" not in verified["events"][0]
+    assert "moabultra.com" not in verified["events"][0]["url"]
+    assert verified["events"][0]["url"].startswith("https://www.google.com/maps/search/?api=1&query=")
 
 
 def test_verify_event_urls_noop_when_no_events() -> None:
@@ -223,3 +234,68 @@ def test_verify_event_urls_noop_when_no_events() -> None:
     result = {"has_events": False, "honest_assessment": "No events found."}
 
     assert d._verify_event_urls(result) == result
+
+
+def test_verify_event_urls_assigns_maps_fallback_when_no_url_present() -> None:
+    """dipstick62 real gap: Moab's "Canyonlands Ultra" cultural event never
+    had a url field at all -- confirmed via live reproduction that the only
+    search result available was a single bundled Moab-wide events-calendar
+    page covering a dozen unrelated events, not a per-event page, so the
+    synthesis prompt correctly omitted the url field rather than fabricating
+    one. Every other content type (attractions, restaurants, en-route stops)
+    falls back to a Google Maps search link when no real URL survives; events
+    previously had no equivalent and rendered with no link at all."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {
+                "name": "Canyonlands Ultra",
+                "venue": "Moab",
+                "dates_in_range": "October 24, 2026",
+                "admission": "Varies",
+            },
+        ],
+    }
+
+    verified = d._verify_event_urls(result, "Moab")
+
+    assert verified["events"][0]["url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Canyonlands%20Ultra%20Moab"
+    )
+
+
+def test_verify_event_urls_fallback_omits_redundant_destination_scope() -> None:
+    """When the event name already contains the destination/venue name,
+    don't pad the maps query with a redundant repeat."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {
+                "name": "Moab Music Festival",
+                "venue": "Moab",
+                "dates_in_range": "September 2-18, 2026",
+            },
+        ],
+    }
+
+    verified = d._verify_event_urls(result, "Moab")
+
+    assert verified["events"][0]["url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Moab%20Music%20Festival"
+    )
+
+
+def test_verify_event_urls_fallback_skipped_without_event_name() -> None:
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {"venue": "Moab", "dates_in_range": "October 24, 2026"},
+        ],
+    }
+
+    verified = d._verify_event_urls(result, "Moab")
+
+    assert "url" not in verified["events"][0]

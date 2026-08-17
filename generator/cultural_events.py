@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient
 from generator.search_provider import build_search_client
@@ -103,7 +104,7 @@ class CulturalEventsDiscoverer:
                 return {"has_events": False, "honest_assessment": "Unable to parse events."}
             
             # Verify any event URLs that came back
-            result = self._verify_event_urls(result)
+            result = self._verify_event_urls(result, dest["name"])
 
             result = self._drop_events_before_arrival(result, dest.get("dates", ""))
             result = self._sanitize_local_tip_by_itinerary_days(result, dest.get("dates", ""))
@@ -112,8 +113,9 @@ class CulturalEventsDiscoverer:
             logger.error("Exception in _discover_for_dest for '%s': %s", dest["name"], e, exc_info=True)
             return {"has_events": False, "honest_assessment": "Event discovery encountered an error."}
 
-    def _verify_event_urls(self, result: dict[str, Any]) -> dict[str, Any]:
-        """Strip event URLs that are dead OR merely a generic/fallback page.
+    def _verify_event_urls(self, result: dict[str, Any], dest_name: str = "") -> dict[str, Any]:
+        """Strip event URLs that are dead OR merely a generic/fallback page,
+        then give any event left without a link a Google Maps search fallback.
 
         Previously this only checked HTTP reachability (URLValidator.verify_url),
         which passes plenty of URLs that are "live" but useless -- e.g. a
@@ -123,6 +125,19 @@ class CulturalEventsDiscoverer:
         "Canyonlands Ultra" cultural events. Reuses URLDiscoverer's generic-URL
         detector (the same one attractions/restaurants rely on) instead of
         duplicating that pattern list here.
+
+        dipstick62 follow-up: verification stripping (or the synthesis prompt
+        never receiving) an event-specific URL left the event rendering with
+        no link at all -- unlike every other content type (attractions,
+        restaurants, en-route stops), which always falls back to a Google
+        Maps search link when no real URL survives (see url_discovery.py's
+        "*_maps_fallback_assigned" decisions). Real confirmed cause for
+        Canyonlands Ultra: the search results only ever contained one bundled
+        Moab-wide events-calendar URL covering a dozen unrelated events, not
+        a per-event page, so the synthesis prompt correctly omitted the url
+        field per its own "omit if no URL appears in results" instruction.
+        Mirrors that same maps-fallback pattern here instead of leaving
+        real, dated events with no way to look them up.
         """
         if not isinstance(result, dict) or not result.get("has_events") or not result.get("events"):
             return result
@@ -133,16 +148,40 @@ class CulturalEventsDiscoverer:
         uv = URLValidator()
         for event in result["events"]:
             url = event.get("url")
-            if not url:
-                continue
-            if URLDiscoverer._is_obviously_generic_url(str(url).lower()):
-                event.pop("url", None)
-                continue
-            ok, _ = uv.verify_url(url)
-            if not ok:
-                event.pop("url", None)
+            if url:
+                if URLDiscoverer._is_obviously_generic_url(str(url).lower()):
+                    event.pop("url", None)
+                else:
+                    ok, _ = uv.verify_url(url)
+                    if not ok:
+                        event.pop("url", None)
+
+            if not event.get("url"):
+                fallback = self._event_maps_fallback_url(event, dest_name)
+                if fallback:
+                    event["url"] = fallback
 
         return result
+
+    @staticmethod
+    def _event_maps_fallback_url(event: dict[str, Any], dest_name: str) -> str:
+        """Build a Google Maps search link scoped to the event/venue name.
+
+        Matches the fallback already given to attractions, restaurants, and
+        en-route stops when no real URL survives verification (see
+        url_discovery.py's "trail_maps_fallback_assigned" and sibling
+        decisions) -- cultural events had no equivalent, so a verified-away
+        or never-found event URL previously left the event with no link at
+        all instead of at least a map lookup.
+        """
+        name = str(event.get("name", "") or "").strip()
+        if not name:
+            return ""
+        venue = str(event.get("venue", "") or "").strip()
+        dest = str(dest_name or "").strip()
+        scope = venue or dest
+        query = f"{name} {scope}".strip() if scope and scope.lower() not in name.lower() else name
+        return f"https://www.google.com/maps/search/?api=1&query={quote(query)}"
 
     def _grok_search(self, destination: str, dates: str) -> list[dict[str, Any]]:
         month = dates.split()[0] if dates else "October"
