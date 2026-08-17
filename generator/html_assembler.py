@@ -2089,6 +2089,7 @@ class HTMLAssembler:
             )
 
             desc_html = f'    <span class="rest-desc">{html_escape.escape(desc)}</span>\n' if desc else ""
+            maps_corner_html = self._maps_corner_link_html(rest, url) if url else ""
             rows.append(
                 f'  <div class="rest-item">\n'
                 f'    <div class="rest-header rest-header-inline">\n'
@@ -2102,6 +2103,7 @@ class HTMLAssembler:
                 f'      </div>\n'
                 f'    </div>\n'
                 f'{desc_html}'
+                f'{maps_corner_html}'
                 f'  </div>\n'
             )
 
