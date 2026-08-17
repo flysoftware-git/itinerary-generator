@@ -758,6 +758,7 @@ class HTMLAssembler:
                     f'<a href="{self._safe_href(url)}">{html_escape.escape(title)}</a>'
                     f' <span class="attr-external-link" title="link source">{source_icon}</span>'
                 )
+                maps_corner_html = self._maps_corner_link_html(opt, url)
                 dist = str(opt.get("distance_or_duration", "") or "").strip()
                 detour_html = f' <span class="stop-detour">({html_escape.escape(dist)})</span>' if dist else ""
                 description = html_escape.escape(str(opt.get("description", "") or "").strip())
@@ -766,6 +767,7 @@ class HTMLAssembler:
                     '<span class="stop-icon">🚗</span>'
                     f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}'
                     f'<div class="stop-desc">{description}</div></div>'
+                    f'{maps_corner_html}'
                     '</div>\n'
                 )
             html += '  </div>\n'
@@ -1346,8 +1348,10 @@ class HTMLAssembler:
                         f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{stop_name}</a>'
                         f' <span class="attr-external-link" title="link source">{source_icon}</span>'
                     )
+                    maps_corner_html = self._maps_corner_link_html(stop, url)
                 else:
                     name_html = stop_name
+                    maps_corner_html = ""
                 # These two values are rendered exactly as extracted, with no
                 # normalization of one-way vs. round-trip vs. loop-back
                 # semantics -- see the detour-semantics note above
@@ -1396,6 +1400,7 @@ class HTMLAssembler:
                     f'<span class="stop-icon">{icon}</span>'
                     f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}{rating_badge_html}{caution_html}'
                     f'<div class="stop-desc">{description}</div>{note_html}</div>'
+                    f'{maps_corner_html}'
                     f'</div>\n'
                 )
             html += '  </div>\n'
