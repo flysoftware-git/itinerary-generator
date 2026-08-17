@@ -989,7 +989,21 @@ class HTMLAssembler:
             else:
                 waypoint_names.append(stop_name)
         if waypoint_names:
-            params.append("waypoints=" + quote("|".join(waypoint_names), safe="|"))
+            # Our own waypoint ordering (_route_waypoint_sort_key /
+            # route_progress_ratio) is a straight-line projection onto the
+            # origin->destination line -- it has no notion of which real
+            # roads exist. That breaks down for a stop that's a genuine
+            # detour off the direct highway (e.g. dipstick63: Kolob Canyons
+            # Visitor Center sits ~20 mi north of the St. George->Springdale
+            # line, but its projection lands *ahead of* Virgin, UT, which is
+            # only ~3 mi off that line and genuinely closer to the
+            # destination -- verified with real geocoded coordinates from
+            # that run). With 2+ waypoints, let Google's own road-network
+            # routing reorder them instead of trusting our approximation.
+            if len(waypoint_names) > 1:
+                params.append("waypoints=" + quote("optimize:true|" + "|".join(waypoint_names), safe="|"))
+            else:
+                params.append("waypoints=" + quote("|".join(waypoint_names), safe="|"))
         return "https://www.google.com/maps/dir/?" + "&".join(params)
 
     def _build_destination_scope_maps_url(self, destination_name: str = "", source_url: str = "") -> str:

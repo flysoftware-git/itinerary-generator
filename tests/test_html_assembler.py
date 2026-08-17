@@ -363,7 +363,7 @@ def test_build_getting_here_route_waypoints_are_destination_scoped_for_ambiguous
         current_route_target="St. George, Utah",
     )
 
-    assert "waypoints=Red%20Cliffs%20Desert%20Reserve%20St.%20George%2C%20Utah|Leeds%20Historic%20District%20St.%20George%2C%20Utah" in html
+    assert "waypoints=optimize%3Atrue|Red%20Cliffs%20Desert%20Reserve%20St.%20George%2C%20Utah|Leeds%20Historic%20District%20St.%20George%2C%20Utah" in html
 
 
 def test_build_getting_here_route_waypoint_prefers_geocoded_coordinates() -> None:
@@ -471,7 +471,7 @@ def test_build_getting_here_orders_waypoints_by_route_progress() -> None:
         current_route_target="St. George, Utah",
     )
 
-    assert "waypoints=First%20Stop%20St.%20George%2C%20Utah|Mid%20Stop%20St.%20George%2C%20Utah|Last%20Stop%20St.%20George%2C%20Utah" in html
+    assert "waypoints=optimize%3Atrue|First%20Stop%20St.%20George%2C%20Utah|Mid%20Stop%20St.%20George%2C%20Utah|Last%20Stop%20St.%20George%2C%20Utah" in html
     assert html.index("First Stop") < html.index("Mid Stop") < html.index("Last Stop")
 
 
