@@ -5244,6 +5244,107 @@ def test_direct_batch_rows_from_html_recognizes_bistro_as_cuisine() -> None:
     assert rows[0]["cuisine"] == "Bistro"
 
 
+def test_direct_batch_rows_from_html_recognizes_poke_pies_cafe_as_cuisine() -> None:
+    """Dipstick60: real validation run + project owner manual review found
+    "Wood Ash Rye", "Hawaiian Poke Bowl", "Croshaw's Gourmet Pies Inc", and
+    "MeMe's Cafe" (all St. George/Zion, all NEW discoveries surfaced as a
+    side effect of the same-night restaurant-description-quality fix)
+    rendering with no cuisine badge. The real captured harvest HTML (St.
+    George / Zion direct-batch restaurant captures) showed three of the four
+    genuinely had a cuisine signal that
+    `_infer_restaurant_metadata_from_text_and_url`'s keyword map just didn't
+    recognize yet: "poke bowls" (Hawaiian Poke Bowl), "pies" (Croshaw's
+    Gourmet Pies Inc., both in its name and its description "handmade pies
+    and baked goods"), and "cafe" (MeMe's Cafe, both in its name and its
+    description "Cozy cafe known for..."). The fourth, Wood Ash Rye, is a
+    separate harvest-prompt-gap bug -- see
+    test_restaurant_direct_batch_prompts_request_cuisine_field below; its
+    real captured text has zero cuisine-indicating word anywhere, so no
+    keyword-map addition could ever recover it."""
+    html = (
+        '<li>Hawaiian Poke Bowl <a href="https://www.tripadvisor.com/Restaurant_Review-g57119-d4226440-Reviews-Hawaiian_Poke_Bowl-St_George_Utah.html">Source</a> '
+        '<a href="https://www.google.com/maps/search/?api=1&query=Hawaiian+Poke+Bowl+St+George+UT">Maps</a> 4.8/5 $ Fresh, customizable poke bowls in a casual setting.</li>'
+        "<li>Croshaw's Gourmet Pies Inc. "
+        '<a href="https://www.tripadvisor.com/Restaurant_Review-g57119-d420070-Reviews-Croshaw_s_Gourmet_Pies_Inc-St_George_Utah.html">Source</a> '
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Croshaw's+Gourmet+Pies+Inc+St+George+UT\">Maps</a> 4.6/5 $ Exceptional handmade pies and baked goods with flaky crusts.</li>"
+        "<li>MeMe's Cafe "
+        '<a href="https://www.tripadvisor.com/Restaurant_Review-g61001-d10086610-Reviews-MeMe_s_Cafe-Springdale_Utah.html">Source</a> '
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=MeMe's+Cafe+Springdale+UT\">Maps</a> 4.5/5 $$ Cozy cafe known for inventive breakfast crepes and fresh local salads.</li>"
+    )
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    by_name = {row["name"]: row for row in rows}
+    assert by_name["Hawaiian Poke Bowl"]["cuisine"] == "Hawaiian"
+    assert by_name["Croshaw's Gourmet Pies Inc."]["cuisine"] == "Bakery"
+    assert by_name["MeMe's Cafe"]["cuisine"] == "Cafe"
+
+
+def test_memes_cafe_direct_batch_html_renders_clean_name_cuisine_badge() -> None:
+    """Full-pipeline regression for dipstick60: the real captured Zion
+    direct-batch restaurant HTML row for "MeMe's Cafe" must render with its
+    full name intact and a populated "Cafe" cuisine badge. This is exactly
+    the "Wild Rabbit Cafe" scenario _sanitize_restaurant_display_name's own
+    docstring already calls out as needing protection -- a clean harvested
+    name whose own last word happens to equal the cuisine badge value must
+    not be truncated just because there's no glued-on rating/price
+    decoration to signal a truncation boundary."""
+    from generator.html_assembler import HTMLAssembler
+
+    html = (
+        "<li>MeMe's Cafe "
+        '<a href="https://www.tripadvisor.com/Restaurant_Review-g61001-d10086610-Reviews-MeMe_s_Cafe-Springdale_Utah.html">Source</a> '
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=MeMe's+Cafe+Springdale+UT\">Maps</a> 4.5/5 $$ Cozy cafe known for inventive breakfast crepes and fresh local salads.</li>"
+    )
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    merged = discoverer._build_primary_items_from_direct_batch(
+        rows=rows,
+        existing_items=[],
+        target_count=1,
+        fallback_description="Locally surfaced dinner option.",
+    )
+
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    out = assembler._build_restaurants({"dinner_recommendations": merged}, "Zion National Park")
+
+    assert "MeMe&#x27;s Cafe" in out
+    assert '<span class="badge cuisine-badge">Cafe</span>' in out
+
+
+def test_restaurant_direct_batch_prompts_request_cuisine_field() -> None:
+    """Dipstick60 harvest-prompt-gap root cause for "Wood Ash Rye": the
+    dipstick59 fix (commit 0600cd5) added "then a short descriptive note
+    ... -- real prose, not just a repeat of the cuisine or price" to the
+    restaurant harvest prompt, to stop cuisine words leaking verbatim into
+    descriptions. Side effect: it stopped asking the model for a cuisine
+    field at all. Real captured harvest HTML proves this directly for the
+    same restaurant, before and after: the pre-fix dipstick55 capture reads
+    "Wood Ash Rye 4.5/5 $$$ New American ..." (an explicit cuisine field),
+    while the post-fix dipstick60 capture for the identical restaurant reads
+    "Wood Ash Rye ... 4.7/5 $$$ Refined seasonal dishes in elegant hotel
+    setting with craft cocktails." -- zero cuisine-indicating word anywhere.
+    No keyword-map addition can recover a cuisine that was never harvested,
+    so both the single- and multi-destination restaurant prompts must
+    explicitly ask for the cuisine/restaurant type again, alongside (not
+    instead of) the descriptive note."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._restaurant_direct_batch_item_count = 6
+
+    single = discoverer._direct_batch_html_prompt(kind="restaurant", dest_name="Moab", dates="October 18, 2026")
+    assert single is not None
+    single_system, single_user = single
+    assert "cuisine or restaurant type" in single_system
+    assert "cuisine or restaurant type" in single_user
+
+    multi = discoverer._direct_batch_html_prompt_multi(
+        kind="restaurant",
+        destinations=[("Moab", "October 18, 2026"), ("Zion National Park", "October 19, 2026")],
+    )
+    assert multi is not None
+    multi_system, multi_user = multi
+    assert "cuisine or restaurant type" in multi_system
+    assert "cuisine or restaurant type" in multi_user
+
+
 def test_build_primary_items_from_direct_batch_does_not_synthesize_description_from_name_and_metadata() -> None:
     """Dipstick58 bug 1: when a harvested row has no real description/
     practical_note (just the item's own name plus rating/price/cuisine
@@ -5554,7 +5655,7 @@ def test_get_restaurant_direct_batch_rows_persists_html_capture_artifacts(tmp_pa
     assert meta["html_file"] == html_files[0].name
     assert meta["query"] == (
         "Generate a list of local restaurants near Moab (October 18, 2026) with clickable links to source material and corresponding Google Maps content. "
-        "Include a rating and price indicator for each item when available, using a clear numeric or price format, and a short descriptive note about the food, atmosphere, or signature dishes for each item when available. "
+        "Include a rating, price indicator, and the cuisine or restaurant type for each item when available, using a clear numeric or price format, and a short descriptive note about the food, atmosphere, or signature dishes for each item when available. "
         "Keep only highly rated items (>4.3), include cuisine variety, and keep only places likely open on the indicated dates. "
         "Include only suggestions with reliable clickable links."
     )
