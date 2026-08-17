@@ -1775,7 +1775,30 @@ def test_header_links_omit_invalid_urls() -> None:
     assert "Valid Plan" in html
     assert "Bad Link" not in html
     assert "Bad Link 2" not in html
-    assert 'target="_blank" rel="noopener"' not in html
+    assert 'target="_blank" rel="noopener"' in html
+
+
+def test_header_links_all_four_types_open_in_new_tab() -> None:
+    """Every notion-header-btn anchor (Current Weather, Attractions Map,
+    NPS, and custom manifest-provided links) must carry
+    target="_blank" rel="noopener" so it doesn't navigate away from the
+    generated page -- see dipstick63 bug report."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {"name": "St. George", "lat": 37.2982, "lng": -113.0263}
+    links = [{"label": "Trip Plan", "url": "https://example.com/plan"}]
+    attractions = [
+        {"name": "Pioneer Park"},
+        {"name": "Snow Canyon State Park"},
+    ]
+
+    html = assembler._build_header_links(links, nps_code="zion", dest=dest, attractions=attractions)
+
+    assert html.count('class="notion-header-btn"') == 4
+    assert html.count('target="_blank" rel="noopener"') == 4
+    assert ">Current Weather<" in html
+    assert ">Attractions Map<" in html
+    assert ">NPS<" in html
+    assert ">Trip Plan<" in html
 
 
 def test_build_attractions_drops_scenic_drive_duplicating_a_rendered_attraction() -> None:
@@ -2415,21 +2438,46 @@ def test_build_getting_here_prefers_structured_rating_field_over_text_extraction
     assert '<span class="badge badge-rating">★ 4.6/5</span>' in html
 
 
-def test_destination_attractions_map_url_uses_local_search_not_route() -> None:
+def test_destination_attractions_map_url_uses_multi_waypoint_directions() -> None:
+    """Multiple attractions must render as real named map pins via a
+    /maps/dir/ URL, not collapse to a generic destination-only search."""
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     url = assembler._build_destination_attractions_map_url(
         "St. George, Utah",
         [
             {"name": "Pioneer Park"},
             {"name": "St. George Dinosaur Discovery Site"},
+            {"name": "Red Cliffs Desert Reserve"},
             {"name": "Snow Canyon State Park"},
         ],
     )
 
-    assert url.startswith("https://www.google.com/maps/search/?api=1&query=")
-    assert "St.%20George%2C%20Utah" in url
-    assert "maps/dir/" not in url
-    assert "waypoints=" not in url
+    assert url.startswith("https://www.google.com/maps/dir/?")
+    assert "origin=Pioneer%20Park%20St.%20George%2C%20Utah" in url
+    assert "destination=Snow%20Canyon%20State%20Park" in url
+    assert "waypoints=" in url
+    # 2+ waypoints: mirrors _build_route_gmaps_url's optimize:true convention.
+    assert "optimize%3Atrue" in url or "optimize:true" in url
+    assert "St.%20George%20Dinosaur%20Discovery%20Site" in url
+    assert "Red%20Cliffs%20Desert%20Reserve" in url
+
+
+def test_destination_attractions_map_url_prefers_geocoded_coordinates() -> None:
+    """When an attraction has real geocoded coordinates, use them instead of
+    a name-based text query -- mirrors _build_route_gmaps_url's preference,
+    since a coordinate resolves to exactly one point."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    url = assembler._build_destination_attractions_map_url(
+        "Moab, Utah",
+        [
+            {"name": "Delicate Arch", "geocode_lat": 38.7436, "geocode_lng": -109.4993},
+            {"name": "Dead Horse Point", "geocode_lat": 38.4802, "geocode_lng": -109.7404},
+        ],
+    )
+
+    assert url.startswith("https://www.google.com/maps/dir/?")
+    assert "origin=38.7436%2C-109.4993" in url
+    assert "destination=38.4802%2C-109.7404" in url
 
 
 def test_destination_attractions_map_url_single_item_remains_focused_search() -> None:
