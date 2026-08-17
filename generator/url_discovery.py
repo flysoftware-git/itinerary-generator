@@ -10358,7 +10358,10 @@ class URLDiscoverer:
         dest_name: str = "",
     ) -> int:
         """0 = no match, 1 = weak (single short-name anchor token only), 2 = strong
-        (full required token overlap, or an AllTrails slug match).
+        (full required token overlap via description/snippet/URL text, or an
+        AllTrails slug match), 3 = exact (every word of the item's name --
+        minus generic descriptive suffixes -- appears in the row's own
+        declared name).
 
         Corroboration signal: when a batch has multiple ambiguously-matching rows
         for the same item name (e.g. two different "* Temple" entries in a
@@ -10366,7 +10369,8 @@ class URLDiscoverer:
         excluded), the row reached only through the lenient single-anchor-token
         fallback must not out-rank -- or get pooled equally with -- a row that
         actually satisfies the full token-overlap bar. Selection logic should
-        prefer strength-2 rows over strength-1 rows when disambiguating.
+        prefer strength-3 rows over strength-2 rows, and strength-2 rows over
+        strength-1 rows, when disambiguating.
         """
         if not row:
             return 0
@@ -10379,28 +10383,44 @@ class URLDiscoverer:
         if raw_url and cls._is_alltrails_trail_url(raw_url):
             return 2 if cls._alltrails_slug_matches_item(raw_url, item_name) else 0
 
-        if cls._candidate_text_matches_item_tokens(row, item_tokens):
-            return 2
-
-        # The row's own declared name (unlike the full blob, which includes
-        # address/URL text prone to destination-name pollution -- see below) is
-        # a deliberate, low-risk identifier. If *every* word of the item's name
-        # (minus generic descriptive suffixes like "Overlook"/"View") is
-        # present in the row's own name, that is a real match even when one of
-        # those words happens to coincide with the destination's own name --
-        # e.g. "Bryce Point" genuinely starting with "Bryce" for a "Bryce
-        # Canyon" destination; excluding "bryce" below (as a destination-name
-        # token) would otherwise leave no way to match "Bryce Point Overlook"
-        # at all. This uses raw words (not _significant_tokens, which drops
-        # "Point") and requires the *whole* remaining phrase, not a single
-        # token, precisely so a single shared word like "bryce" alone can't
-        # match an unrelated row such as "Bryce Canyon Lodge".
+        # The row's own declared name (unlike the full blob below, which
+        # includes snippet/URL text prone to incidental substring pollution --
+        # e.g. a "Links: https://www.nps.gov/zion/..." trailer makes "zion"
+        # match essentially any row for a "Zion National Park" destination,
+        # and "canyon" is a substring of "canyons" -- regardless of what the
+        # row actually is) is a deliberate, low-risk identifier. If *every*
+        # word of the item's name (minus generic descriptive suffixes like
+        # "Overlook"/"View") is present in the row's own name, that is a real
+        # match even when one of those words happens to coincide with the
+        # destination's own name -- e.g. "Bryce Point" genuinely starting with
+        # "Bryce" for a "Bryce Canyon" destination; excluding "bryce" below
+        # (as a destination-name token) would otherwise leave no way to match
+        # "Bryce Point Overlook" at all. This uses raw words (not
+        # _significant_tokens, which drops "Point") and requires the *whole*
+        # remaining phrase, not a single token, precisely so a single shared
+        # word like "bryce" alone can't match an unrelated row such as "Bryce
+        # Canyon Lodge".
+        #
+        # This exact/full-name match is checked -- and ranked -- ahead of the
+        # generic blob-overlap check just below because two rows can each
+        # satisfy that check's lower bar by sharing only a couple of
+        # generic, non-distinctive words with the item (dipstick59: real
+        # Zion National Park attraction-batch rows "Zion Canyon Visitor
+        # Center" and even "Kolob Canyons Visitor Center" both matched
+        # "Zion Canyon Scenic Drive" at the old single "strong" tier purely
+        # via shared "Zion"/"Canyon" text, tying with -- and in the final
+        # ranking beating -- the row that is actually an exact title match).
+        # A same-destination row that only shares generic words must not
+        # tie with the row that is the item, word for word.
         row_name_only = str(row.get("name") or row.get("title") or "").strip()
         if row_name_only:
             item_raw_words = set(re.findall(r"[a-z]+", item_name.lower())) - GENERIC_VIEWPOINT_SUFFIX_TOKENS - _MATCH_STOPWORDS
             row_name_raw_words = set(re.findall(r"[a-z]+", row_name_only.lower()))
             if len(item_raw_words) >= 2 and item_raw_words <= row_name_raw_words:
-                return 2
+                return 3
+
+        if cls._candidate_text_matches_item_tokens(row, item_tokens):
+            return 2
 
         # Destination-name tokens are not distinctive of a specific item -- e.g.
         # for a "St. George, Utah" destination, "george" trivially appears in

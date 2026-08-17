@@ -1598,6 +1598,97 @@ def test_search_attraction_authoritative_prefers_strong_match_over_weak_anchor_m
     assert out == "https://www.churchofjesuschrist.org/temples/details/st-george-temple"
 
 
+def test_search_attraction_authoritative_prefers_exact_name_over_shared_prefix_row() -> None:
+    """Regression for dipstick59: real Zion National Park attraction-batch rows
+    (parsed from the actual harvested HTML for this run) included both
+    "Zion Canyon Scenic Drive" (nps.gov/zion/planyourvisit/scenicdrive.htm,
+    the correct answer) and "Zion Canyon Visitor Center" (a different,
+    unrelated page). Both share the words "Zion" and "Canyon" with the
+    requested item, and the old single "strong" match tier (2) let a
+    same-destination row that merely overlaps on those two generic,
+    non-distinctive words tie with -- and, via a Google Maps candidate,
+    beat -- the row that is an exact, word-for-word title match. The
+    rendered trip literally linked "Zion Canyon Scenic Drive" to a Google
+    Maps search for "Zion Canyon Visitor Center Springdale UT 84767"
+    instead of its own real, harvested, item-specific NPS scenic-drive page.
+
+    A third real row in the same batch ("Kolob Canyons Visitor Center")
+    compounded the problem: its snippet embeds
+    "Links: https://www.nps.gov/zion/planyourvisit/visitorcenters.htm ...",
+    and that embedded URL text alone contains "zion" as a substring (every
+    NPS Zion page's URL does), which combined with "canyon" being a
+    substring of its own title's "Canyons" was enough to also reach the old
+    "strong" match tier despite the row having nothing to do with the
+    requested item.
+
+    Fix: an exact/full row-name match (every word of the item's name --
+    minus generic suffixes -- present in the row's own declared name) is
+    now its own, higher match-strength tier (3) that outranks the generic
+    blob/URL-text overlap tier (2), so a same-destination row sharing only
+    generic words can no longer tie with -- or beat -- the row that
+    actually is the requested item.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "title": "Zion Canyon Visitor Center",
+            "name": "Zion Canyon Visitor Center",
+            "url": "https://www.nps.gov/zion/planyourvisit/visitorcenters.htm",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Zion+Canyon+Visitor+Center+Springdale+UT+84767",
+            "snippet": (
+                "Zion Canyon Visitor Center Source Maps 4.6/5 Gateway for maps, "
+                "shuttles, and park orientation. Links: "
+                "https://www.nps.gov/zion/planyourvisit/visitorcenters.htm "
+                "https://www.google.com/maps/search/?api=1&query=Zion+Canyon+Visitor+Center+Springdale+UT+84767"
+            ),
+        },
+        {
+            "title": "Kolob Canyons Visitor Center",
+            "name": "Kolob Canyons Visitor Center",
+            "url": "https://www.nps.gov/zion/planyourvisit/visitorcenters.htm",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Kolob+Canyons+Visitor+Center+UT",
+            "snippet": (
+                "Kolob Canyons Visitor Center Source Maps 4.5/5 Hub for the "
+                "quieter northwest park section. Links: "
+                "https://www.nps.gov/zion/planyourvisit/visitorcenters.htm "
+                "https://www.google.com/maps/search/?api=1&query=Kolob+Canyons+Visitor+Center+UT"
+            ),
+        },
+        {
+            "title": "Zion Canyon Scenic Drive",
+            "name": "Zion Canyon Scenic Drive",
+            "url": "https://www.nps.gov/zion/planyourvisit/scenicdrive.htm",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Zion+Canyon+Scenic+Drive+Springdale+UT",
+            "snippet": (
+                "Zion Canyon Scenic Drive Source Maps 4.8/5 Relaxed drive with "
+                "stunning canyon vistas and pullouts. Links: "
+                "https://www.nps.gov/zion/planyourvisit/scenicdrive.htm "
+                "https://www.google.com/maps/search/?api=1&query=Zion+Canyon+Scenic+Drive+Springdale+UT"
+            ),
+        },
+    ]
+
+    strengths = {
+        row["title"]: URLDiscoverer._direct_batch_row_match_strength(
+            row, "Zion Canyon Scenic Drive", "Zion National Park"
+        )
+        for row in rows
+    }
+    assert strengths["Zion Canyon Scenic Drive"] == 3
+    assert strengths["Zion Canyon Visitor Center"] == 2
+    assert strengths["Kolob Canyons Visitor Center"] == 2
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *a, **k: url):
+            out = discoverer._search_attraction_from_direct_batch(
+                "Zion Canyon Scenic Drive", "Zion National Park", "October 18, 2026"
+            )
+
+    assert out == "https://www.nps.gov/zion/planyourvisit/scenicdrive.htm"
+
+
 def test_search_attraction_authoritative_does_not_fabricate_match_from_unrelated_row() -> None:
     """When no row in the destination batch actually matches the requested item,
     an unrelated attraction's specific URL must not be selected. Direct-batch
