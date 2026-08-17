@@ -124,11 +124,9 @@ class HTMLAssembler:
         # falls in the destinations list (mirrors the same base-id grouping
         # _build_nav_tabs already does for the nav-tab pill clustering).
         children_by_base: dict[str, list[dict[str, Any]]] = {}
-        index_by_id: dict[str, int] = {}
-        for i, d in enumerate(destinations):
+        for d in destinations:
             if not isinstance(d, dict) or not d.get("id"):
                 continue
-            index_by_id[d["id"]] = i
             base_id = group_base_id(d)
             if base_id:
                 children_by_base.setdefault(base_id, []).append(d)
@@ -169,14 +167,24 @@ class HTMLAssembler:
             group_children = children_by_base.get(dest_id, [])
             group_children_html = ""
             for child in group_children:
-                child_index = index_by_id.get(child.get("id"), 0)
-                child_previous_name, child_previous_route_target = _previous_context(child_index)
+                # GH #68 design doc §4: a grouped child's "Getting Here"
+                # must always compute base->child, never
+                # previous-in-list->child -- the previous entry in manifest
+                # order could itself be another grouped sibling (e.g.
+                # Arches rendering just before Canyonlands under the same
+                # Moab base), which would wrongly source the route/distance
+                # from that sibling instead of from the shared lodging base
+                # both day-trip from. Every grouped child's day trip
+                # originates from its own base, regardless of manifest
+                # position, so the base's own name/route target (already
+                # computed above as `dest`/`current_route_target`) is
+                # always the right "previous" context here.
                 child_current_route_target = self._destination_route_target(child)
                 group_children_html += self._build_group_child_card(
                     child,
                     meta,
-                    child_previous_name,
-                    child_previous_route_target,
+                    dest["name"],
+                    current_route_target,
                     child_current_route_target,
                     dest_by_id,
                 )

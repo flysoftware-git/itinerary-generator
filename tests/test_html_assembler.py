@@ -2936,6 +2936,86 @@ def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_cluster
     assert moab_start < canyonlands_pos < moab_end
 
 
+def test_assemble_grouped_child_getting_here_uses_base_not_preceding_sibling() -> None:
+    """GH #68 design doc §4 (Route/distance handling for grouped hops):
+    'route/distance calculation for B should compute base->B (not
+    previous-in-list->B, which could itself be another grouped sibling)'.
+
+    Real dipstick62 output showed this still broken: Canyonlands (which
+    renders after Arches in manifest order, both group_with: moab) had its
+    'Getting Here' route computed as Arches -> Canyonlands instead of the
+    correct Moab -> Canyonlands, because the previous-in-manifest-list
+    destination was used instead of the group's shared lodging base."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {
+        "trip": {"title": "Moab Group Trip", "subtitle": "Test", "theme_color": "#C0623E"},
+        "destinations": [
+            {
+                "id": "moab",
+                "name": "Moab",
+                "dates": "August 1-4, 2026",
+                "lodging": {"name": "Moab Springs Ranch", "location": "Moab Springs Ranch, Moab, UT", "checkin_time": "4:00 PM"},
+                "planning_links": [],
+                "ai_content": {
+                    "top_attractions": [],
+                    "dinner_recommendations": [],
+                    "getting_here": {"en_route_stops": []},
+                },
+                "scenic_drives": [],
+                "images": [],
+                "cultural_events": {},
+            },
+            {
+                "id": "arches",
+                "name": "Arches National Park",
+                "dates": "August 2, 2026",
+                "group_with": "moab",
+                "planning_links": [],
+                "ai_content": {
+                    "top_attractions": [
+                        {"name": "Delicate Arch", "type": "hike", "description": "Iconic hike.", "url": "https://www.nps.gov/arch/delicate"},
+                    ],
+                    "dinner_recommendations": [],
+                    "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+                },
+                "scenic_drives": [],
+                "images": [],
+                "cultural_events": {},
+            },
+            {
+                "id": "canyonlands",
+                "name": "Canyonlands National Park",
+                "dates": "August 3, 2026",
+                "group_with": "moab",
+                "planning_links": [],
+                "ai_content": {
+                    "top_attractions": [
+                        {"name": "Grand View Point", "type": "viewpoint", "description": "Sweeping canyon views.", "url": "https://www.nps.gov/cany/grandview"},
+                    ],
+                    "dinner_recommendations": [],
+                    "getting_here": {"distance_miles": "32", "drive_time": "40 min", "en_route_stops": []},
+                },
+                "scenic_drives": [],
+                "images": [],
+                "cultural_events": {},
+            },
+        ],
+    }
+
+    html = assembler.assemble(trip)
+
+    # Canyonlands' route headline must originate from Moab (the shared
+    # base), never from Arches (the sibling that happens to render first).
+    # _short_place_name abbreviates "National Park" to "NP" in the
+    # route-headline label.
+    assert "Moab → Canyonlands NP" in html
+    assert "Arches NP → Canyonlands NP" not in html
+
+    # Arches, the first-rendered child, is also base->child (unchanged from
+    # before, but confirms the fix didn't regress the already-correct case).
+    assert "Moab → Arches NP" in html
+
+
 def test_assemble_moab_group_suppresses_schedule_card_for_grouped_children() -> None:
     """Problem 1 (dipstick59, owner's words: 'I don't think the daily
     schedule makes sense for day trips, as Moab already dictates') -- a
