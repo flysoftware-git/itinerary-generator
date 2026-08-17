@@ -8603,6 +8603,38 @@ def test_prune_en_route_stops_drops_stop_confirmed_out_of_region() -> None:
     assert "Mesquite" in names
 
 
+def test_prune_en_route_stops_by_geometry_drops_stop_coincident_with_destination_coordinates() -> None:
+    """Defense-in-depth regression for the Bryce -> Capitol Reef 'Capitol
+    Reef National Park appears twice, right before the real destination'
+    bug from the project owner's Google Maps screenshot: even when the
+    progress-ratio math doesn't flag a stop as 'at destination' (e.g. a
+    non-straight-line route bends the origin->destination projection), a
+    stop that geocodes to essentially the same point as the destination
+    itself is never a genuine en-route detour and must be dropped outright,
+    not merely deprioritized in waypoint ordering."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    origin = (37.5707948, -112.1855939)  # Bryce Canyon National Park
+    dest = (38.0670286, -111.1552562)  # Capitol Reef National Park
+    stop_coords = (38.0665, -111.1560)  # effectively the same point as dest
+
+    stops = [{"name": "Red Canyon"}]
+
+    with patch.object(discoverer, "_geocode_en_route_stop_for_route", return_value=stop_coords):
+        with patch.object(discoverer, "_route_progress_ratio", return_value=0.5):
+            result = discoverer._prune_en_route_stops_by_geometry(
+                stops=stops,
+                origin_name="Bryce Canyon National Park",
+                dest_name="Capitol Reef National Park",
+                origin_lat=origin[0],
+                origin_lng=origin[1],
+                dest_lat=dest[0],
+                dest_lng=dest[1],
+            )
+
+    assert result == []
+
+
 def test_en_route_stop_name_truncations_drops_one_word_at_a_time() -> None:
     """Unit coverage for the progressive-truncation helper itself: it must
     drop exactly one trailing word per step, cap at max_variants, and never
@@ -10928,6 +10960,44 @@ def test_discover_en_route_stops_prunes_waypoints_beyond_destination_leg() -> No
 
     names = [str(stop.get("name", "") or "") for stop in ai["getting_here"]["en_route_stops"]]
     assert names == ["Mesquite"]
+
+
+def test_discover_en_route_stops_removes_stop_that_duplicates_destination_name() -> None:
+    """Regression for the project owner's Google Maps screenshot of the
+    Bryce -> Capitol Reef leg: 'Capitol Reef National Park' appeared as its
+    own waypoint entry immediately before the real destination pin --
+    '... -> Lower Calf Creek Falls -> Capitol Reef National Park -> Capitol
+    Reef National Park -> 2600 UT-24, Torrey UT'. An en-route stop whose
+    name IS the destination itself is never a real detour and must be
+    dropped entirely (not just excluded from waypoint ordering), so it also
+    stops showing up as a redundant 'can't-miss enroute' card."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {"name": "Mossy Cave"},
+                {"name": "Capitol Reef National Park"},
+            ],
+        }
+    }
+
+    with patch.object(discoverer, "_search_first", return_value="https://example.com/mossy-cave"):
+        with patch.object(discoverer, "_geocode_en_route_stop_for_route", return_value=None):
+            discoverer._discover_en_route_stops(
+                ai,
+                "Capitol Reef National Park",
+                origin_name="Bryce Canyon National Park",
+                origin_lat=37.5707948,
+                origin_lng=-112.1855939,
+                dest_lat=38.0670286,
+                dest_lng=-111.1552562,
+            )
+
+    names = [str(stop.get("name", "") or "") for stop in ai["getting_here"]["en_route_stops"]]
+    assert "Capitol Reef National Park" not in names
+    assert "Mossy Cave" in names
 
 
 def test_discover_en_route_stops_uses_geocoded_coordinates_for_maps_url() -> None:

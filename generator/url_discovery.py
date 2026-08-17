@@ -8256,6 +8256,33 @@ class URLDiscoverer:
         )
         return any(re.search(pattern, text) for pattern in generic_patterns)
 
+    @classmethod
+    def _en_route_stop_name_duplicates_destination(cls, stop_name: str, dest_name: str) -> bool:
+        """True when an en-route stop's own name is (or reduces to) the
+        arrival destination itself -- e.g. a candidate literally titled
+        "Capitol Reef National Park" surfacing as an en-route stop on the
+        Bryce -> Capitol Reef leg. Comparing full significant-token sets
+        (not substring/overlap) avoids false positives from a single shared
+        word (see the "Canyon Overlook Trail" / "Bryce Canyon National Park"
+        false-qualification failure mode already documented on
+        _build_route_gmaps_url) while still catching exact-name and
+        trivial-suffix duplicates ("Capitol Reef", "Capitol Reef NP").
+
+        This is a real symptom the project owner's own Google Maps
+        screenshot of the Bryce -> Capitol Reef leg surfaced: "Capitol Reef
+        National Park" appearing as its own waypoint entry immediately
+        before the actual destination. An en-route stop whose resolved name
+        IS the destination isn't a real detour -- it belongs nowhere in the
+        waypoint list (or the "can't-miss enroute" card), since recommending
+        a detour to the destination itself, right before arriving, is
+        never a sensible suggestion.
+        """
+        stop_tokens = frozenset(cls._significant_tokens(stop_name))
+        dest_tokens = frozenset(cls._significant_tokens(dest_name))
+        if not stop_tokens or not dest_tokens:
+            return False
+        return stop_tokens == dest_tokens
+
     @staticmethod
     def _extract_named_stops_from_description(description: str) -> list[str]:
         """Extract specific named place candidates from a list-style en-route description."""
@@ -8562,6 +8589,25 @@ class URLDiscoverer:
             seeded_stops = self._ensure_en_route_seed_candidates(stops, dest, dest_name)
             if seeded_stops is not stops:
                 stops = seeded_stops
+                getting_here["en_route_stops"] = stops
+                ai["getting_here"] = getting_here
+
+        if stops:
+            non_duplicate_stops: list[dict[str, Any]] = []
+            for stop in stops:
+                stop_name = str((stop or {}).get("name", "") or "").strip()
+                if stop_name and self._en_route_stop_name_duplicates_destination(stop_name, dest_name):
+                    self._log_decision(
+                        kind="en_route_stop",
+                        dest_name=dest_name,
+                        item_name=stop_name,
+                        reason="en_route_duplicate_of_destination",
+                        message="en-route stop removed: resolved name duplicates the arrival destination itself",
+                    )
+                    continue
+                non_duplicate_stops.append(stop)
+            if len(non_duplicate_stops) != len(stops):
+                stops = non_duplicate_stops
                 getting_here["en_route_stops"] = stops
                 ai["getting_here"] = getting_here
 
@@ -9199,6 +9245,18 @@ class URLDiscoverer:
             # Remove stops that are at or past the destination: these belong as
             # destination attractions, not as route waypoints.
             at_destination = progress >= 0.93 and origin_to_stop >= leg_miles * 0.88
+            # Defense-in-depth against the progress-ratio test above missing a
+            # stop that geocodes essentially on top of the destination itself
+            # (e.g. a same-named feature inside the destination park, or a
+            # geocoder match that snaps to the destination when the specific
+            # POI isn't in its index): a stop within a couple of miles of the
+            # destination's own coordinates is never a genuine en-route
+            # detour, regardless of where the ratio math places it along the
+            # origin->destination line. See the Bryce -> Capitol Reef "Capitol
+            # Reef National Park" appearing as its own waypoint entry right
+            # before the real destination pin.
+            dest_to_stop = self._haversine_miles(dest, stop_coords)
+            at_destination = at_destination or dest_to_stop <= 2.0
             if at_destination or (progress > 1.06 and origin_to_stop > leg_miles + beyond_buffer):
                 self._log_decision(
                     kind="en_route_stop",
