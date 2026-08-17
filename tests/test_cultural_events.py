@@ -299,3 +299,101 @@ def test_verify_event_urls_fallback_skipped_without_event_name() -> None:
     verified = d._verify_event_urls(result, "Moab")
 
     assert "url" not in verified["events"][0]
+
+
+def test_verify_local_tip_url_assigns_maps_fallback_when_no_url_present() -> None:
+    """Project owner's concrete example: "Check out Moab Farmers Market" names
+    a real, findable place but local_tip is plain prose with no way to link
+    it. When the synthesis prompt names the specific place (local_tip_name)
+    but the search results didn't surface a per-place URL, mirror
+    _verify_event_urls' exact discipline and fall back to a Google Maps
+    search scoped to that place -- same as ticketed events already get."""
+    d = _discoverer()
+    result = {
+        "has_events": False,
+        "honest_assessment": "Moab has a reliable weekly market scene.",
+        "local_tip": "Check out Moab Farmers Market on Thursday evenings for fresh produce and live music.",
+        "local_tip_name": "Moab Farmers Market",
+    }
+
+    verified = d._verify_local_tip_url(result, "Moab")
+
+    assert verified["local_tip_url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Moab%20Farmers%20Market"
+    )
+
+
+def test_verify_local_tip_url_keeps_live_specific_url() -> None:
+    """A specific, reachable, non-generic URL supplied by synthesis for the
+    named place must survive verification unstripped."""
+    d = _discoverer()
+    result = {
+        "has_events": False,
+        "honest_assessment": "Moab has a reliable weekly market scene.",
+        "local_tip": "Check out Moab Farmers Market on Thursday evenings.",
+        "local_tip_name": "Moab Farmers Market",
+        "local_tip_url": "https://moabfarmersmarket.org/",
+    }
+
+    with patch("generator.url_validator.URLValidator.verify_url", return_value=(True, 200)):
+        verified = d._verify_local_tip_url(result, "Moab")
+
+    assert verified["local_tip_url"] == "https://moabfarmersmarket.org/"
+
+
+def test_verify_local_tip_url_strips_dead_link_then_falls_back() -> None:
+    d = _discoverer()
+    result = {
+        "has_events": False,
+        "honest_assessment": "Moab has a reliable weekly market scene.",
+        "local_tip": "Check out Moab Farmers Market on Thursday evenings.",
+        "local_tip_name": "Moab Farmers Market",
+        "local_tip_url": "https://moabfarmersmarket.org/dead-page",
+    }
+
+    with patch("generator.url_validator.URLValidator.verify_url", return_value=(False, 404)):
+        verified = d._verify_local_tip_url(result, "Moab")
+
+    assert "moabfarmersmarket.org" not in verified["local_tip_url"]
+    assert verified["local_tip_url"].startswith("https://www.google.com/maps/search/?api=1&query=")
+
+
+def test_verify_local_tip_url_strips_generic_landing_page() -> None:
+    d = _discoverer()
+    result = {
+        "has_events": False,
+        "honest_assessment": "Moab has a reliable weekly market scene.",
+        "local_tip": "Check out Moab Farmers Market on Thursday evenings.",
+        "local_tip_name": "Moab Farmers Market",
+        "local_tip_url": "https://www.moab.org/things-to-do",
+    }
+
+    verified = d._verify_local_tip_url(result, "Moab")
+
+    assert "moab.org" not in verified["local_tip_url"]
+    assert verified["local_tip_url"].startswith("https://www.google.com/maps/search/?api=1&query=")
+
+
+def test_verify_local_tip_url_stays_empty_for_generic_tip_without_named_place() -> None:
+    """A generic tip with nothing specific to link (no local_tip_name) must
+    NOT be forced onto a maps fallback -- there's nothing real to link to."""
+    d = _discoverer()
+    result = {
+        "has_events": False,
+        "honest_assessment": "Moab has a reliable weekly market scene.",
+        "local_tip": "Check ranger talks posted at the visitor center desk.",
+    }
+
+    verified = d._verify_local_tip_url(result, "Moab")
+
+    assert "local_tip_url" not in verified
+    assert "local_tip_name" not in verified
+
+
+def test_verify_local_tip_url_noop_when_has_events_or_no_tip() -> None:
+    d = _discoverer()
+    result_has_events = {"has_events": True, "events": []}
+    assert d._verify_local_tip_url(result_has_events, "Moab") == result_has_events
+
+    result_no_tip = {"has_events": False, "honest_assessment": "Quiet scene."}
+    assert d._verify_local_tip_url(result_no_tip, "Moab") == result_no_tip

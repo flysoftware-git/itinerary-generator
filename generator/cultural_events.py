@@ -108,6 +108,7 @@ class CulturalEventsDiscoverer:
 
             result = self._drop_events_before_arrival(result, dest.get("dates", ""))
             result = self._sanitize_local_tip_by_itinerary_days(result, dest.get("dates", ""))
+            result = self._verify_local_tip_url(result, dest["name"])
             return result
         except Exception as e:
             logger.error("Exception in _discover_for_dest for '%s': %s", dest["name"], e, exc_info=True)
@@ -183,6 +184,52 @@ class CulturalEventsDiscoverer:
         query = f"{name} {scope}".strip() if scope and scope.lower() not in name.lower() else name
         return f"https://www.google.com/maps/search/?api=1&query={quote(query)}"
 
+    def _verify_local_tip_url(self, result: dict[str, Any], dest_name: str = "") -> dict[str, Any]:
+        """Verify (or maps-fallback) the local_tip's link, mirroring _verify_event_urls.
+
+        Format B's local_tip is free-text prose with zero link capability by
+        default -- the project owner flagged this twice (e.g. "Check out Moab
+        Farmers Market" naming a real, findable place with no way to click
+        through). The synthesis prompt now asks for an optional
+        local_tip_name (the specific place the tip names) and local_tip_url
+        (verbatim from search results, same discipline as Format A's event
+        url field). This mirrors _verify_event_urls' exact behavior for that
+        pair: strip a synthesis-supplied URL that is dead or merely a
+        generic/fallback page, then fall back to a Google Maps search scoped
+        to the named place -- reusing _event_maps_fallback_url exactly as
+        events do -- rather than leaving a real, nameable place with no link.
+        If local_tip doesn't clearly name one specific place, local_tip_name
+        is omitted and no link is forced onto generic advice.
+        """
+        if not isinstance(result, dict) or result.get("has_events") or not result.get("local_tip"):
+            return result
+
+        tip_name = str(result.get("local_tip_name", "") or "").strip()
+        if not tip_name:
+            result.pop("local_tip_url", None)
+            result.pop("local_tip_name", None)
+            return result
+
+        from generator.url_discovery import URLDiscoverer
+        from generator.url_validator import URLValidator
+
+        url = result.get("local_tip_url")
+        if url:
+            if URLDiscoverer._is_obviously_generic_url(str(url).lower()):
+                result.pop("local_tip_url", None)
+            else:
+                uv = URLValidator()
+                ok, _ = uv.verify_url(url)
+                if not ok:
+                    result.pop("local_tip_url", None)
+
+        if not result.get("local_tip_url"):
+            fallback = self._event_maps_fallback_url({"name": tip_name}, dest_name)
+            if fallback:
+                result["local_tip_url"] = fallback
+
+        return result
+
     def _grok_search(self, destination: str, dates: str) -> list[dict[str, Any]]:
         month = dates.split()[0] if dates else "October"
         # Collapsed from 3 separate live-search queries (festivals / cultural
@@ -220,11 +267,15 @@ class CulturalEventsDiscoverer:
         # If we cannot determine trip weekdays with confidence, omit weekday-specific tips.
         if not trip_days:
             result.pop("local_tip", None)
+            result.pop("local_tip_name", None)
+            result.pop("local_tip_url", None)
             return result
 
         # Omit tips that reference any weekday not present in the itinerary window.
         if not mentioned_days.issubset(trip_days):
             result.pop("local_tip", None)
+            result.pop("local_tip_name", None)
+            result.pop("local_tip_url", None)
         return result
 
     def _extract_mentioned_weekdays(self, text: str) -> set[str]:

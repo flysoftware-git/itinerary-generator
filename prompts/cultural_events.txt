@@ -95,7 +95,17 @@ FORMAT B — Honest fallback (count < 2)
     Saturday market. Give name and a brief access note. If the tip references
     a specific weekday (e.g., Friday, Saturday), that weekday MUST be within
     the itinerary date range for this destination. Omit this field if nothing
-    can be stated with confidence."
+    can be stated with confidence.",
+
+  "local_tip_name": "The specific place/venue named in local_tip above,
+    exactly as it should be searched for (e.g. 'Moab Farmers Market').
+    Omit this field if local_tip does not name one specific, findable
+    place -- generic advice with nothing to link gets no name.",
+
+  "local_tip_url": "URL verbatim from search results only, for the specific
+    place named in local_tip_name -- same rule as the events url field
+    above. Do NOT construct, modify, or guess URLs. Omit this field
+    entirely if no URL for that place appears in the results."
 }}
 
 ════════════════════════════════════════════════════════
