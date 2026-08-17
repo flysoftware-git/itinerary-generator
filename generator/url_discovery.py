@@ -9247,6 +9247,48 @@ class URLDiscoverer:
         apy = py - oy
         return ((apx * abx) + (apy * aby)) / denom
 
+    @staticmethod
+    def _route_perpendicular_distance_miles(
+        *,
+        origin: tuple[float, float],
+        dest: tuple[float, float],
+        point: tuple[float, float],
+    ) -> float | None:
+        """How far `point` sits off to the side of the straight origin->dest
+        line, in miles -- the check _route_progress_ratio's callers were
+        missing entirely. Progress ratio alone only says "this point's
+        projection falls between the two endpoints along the route's
+        general direction" -- it says nothing about lateral distance, so a
+        point 50+ miles off the actual corridor (e.g. Lake Powell/Hite
+        Crossing sitting well south of a Torrey->Moab leg, while Sego Canyon
+        sits well northeast near the Colorado line) can still pass with a
+        "reasonable" progress value despite being geographically
+        incompatible with any single sane route through the other stops.
+        Same equirectangular-ish scaling as _route_progress_ratio (consistent
+        distortion for both, cancels out at the latitudes this app operates
+        at) so a mile figure stays roughly proportionate; converted to real
+        miles via a local degrees-latitude-to-miles constant (69.0) applied
+        after the perpendicular offset is computed in scaled-degree space.
+        """
+        mid_lat = radians((origin[0] + dest[0]) / 2.0)
+        scale = cos(mid_lat)
+        ox, oy = origin[1] * scale, origin[0]
+        dx, dy = dest[1] * scale, dest[0]
+        px, py = point[1] * scale, point[0]
+        abx = dx - ox
+        aby = dy - oy
+        ab_len = sqrt((abx * abx) + (aby * aby))
+        if ab_len <= 1e-9:
+            return None
+        apx = px - ox
+        apy = py - oy
+        # Magnitude of the cross product / |AB| = perpendicular distance from
+        # point to the infinite line through A and B, in the same scaled
+        # degree units _route_progress_ratio's dot product uses.
+        cross = (apx * aby) - (apy * abx)
+        perpendicular_degrees = abs(cross) / ab_len
+        return perpendicular_degrees * 69.0
+
     def _geocode_en_route_stop_for_route(
         self,
         stop_name: str,
@@ -9573,6 +9615,50 @@ class URLDiscoverer:
                     message="en-route stop filtered as beyond destination leg",
                 )
                 continue
+
+            # Lateral (perpendicular-to-the-route) distance -- diagnostic only,
+            # NOT an auto-reject filter. Progress ratio alone only says the
+            # stop's projection falls between the two endpoints along the
+            # route's general direction; it says nothing about how far off
+            # to the side the stop actually is, which is how a real
+            # dipstick62 case slipped through: on a single Torrey->Moab leg,
+            # "Lake Powell / Hite Crossing" (37.9 mi off the straight line)
+            # and "Sego Canyon" (progress ~0.98, essentially at Moab itself
+            # -- already caught by the at-destination check above once real
+            # coordinates resolve, a separate mechanism from this one) both
+            # rendered as waypoints on the same leg, and Google Maps'
+            # resulting directions came out to 706 miles / 13h50m for what
+            # should be roughly 140 miles / 2.5-3 hours.
+            #
+            # A hard distance cutoff was tried and reverted: the real,
+            # commonly-used I-70 route from this same Capitol Reef/Torrey
+            # area through Green River to Moab -- an established-legitimate
+            # stop covered by test_discover_en_route_stops_uses_geocoded_
+            # coordinates_for_maps_url ("Swasey's Beach", dipstick55 Theme E
+            # precedent) -- sits 35.4 mi off the same straight line, only
+            # 2.5 mi closer than Lake Powell. Real Utah highways bend that
+            # far around terrain; no straight-line distance threshold can
+            # separate "genuinely off-corridor" from "the real road just
+            # isn't straight" without actual road-network routing data,
+            # which this codebase does not have (Nominatim gives point
+            # geocodes, not routes). Logging the figure here (not acting on
+            # it) so real distribution data can accumulate across runs
+            # before anyone tries to pick a safe threshold again.
+            perpendicular_miles = self._route_perpendicular_distance_miles(
+                origin=origin, dest=dest, point=stop_coords
+            )
+            if perpendicular_miles is not None and perpendicular_miles > 25.0:
+                self._log_decision(
+                    kind="en_route_stop",
+                    dest_name=dest_name,
+                    item_name=stop_name,
+                    reason="en_route_far_off_straight_line_kept",
+                    message=(
+                        f"en-route stop is {perpendicular_miles:.0f} mi off the straight "
+                        "origin->destination line -- kept (diagnostic only, see code comment "
+                        "on why this isn't auto-rejected)"
+                    ),
+                )
 
             if isinstance(stop, dict):
                 stop["route_waypoint_eligible"] = True

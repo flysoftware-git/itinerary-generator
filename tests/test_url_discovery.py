@@ -9031,6 +9031,119 @@ def test_prune_en_route_stops_drops_stop_confirmed_out_of_region() -> None:
     assert "Mesquite" in names
 
 
+def test_prune_en_route_stops_by_geometry_logs_far_off_corridor_stops_without_dropping_them() -> None:
+    """dipstick62: on a single real Torrey->Moab leg, "Lake Powell / Hite
+    Crossing" (37.9 mi off the straight origin->destination line) and
+    "Sego Canyon" (progress ~0.98, essentially at Moab itself) both
+    rendered as waypoints on the same leg -- Google Maps' resulting
+    directions came out to 706 miles / 13h50m for what should be roughly
+    140 miles / 2.5-3 hours.
+
+    A hard perpendicular-distance cutoff was tried and reverted: the real,
+    commonly-used I-70 route through Green River to Moab (an established-
+    legitimate stop -- see test_discover_en_route_stops_uses_geocoded_
+    coordinates_for_maps_url, "Swasey's Beach", dipstick55 Theme E) sits
+    35.4 mi off the same straight line -- only 2.5 mi closer than Lake
+    Powell. Real highways bend that far around terrain; no straight-line
+    threshold can safely separate the two without actual road-network
+    routing data. So: Lake Powell stays kept (an outlier this codebase
+    can't yet safely auto-reject) but is logged for visibility. Sego
+    Canyon is dropped by the *pre-existing* at-destination check (progress
+    ~0.98, ~98% of the leg's own distance from origin) -- a different,
+    unrelated mechanism, not the new diagnostic logging."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._decision_threads_by_destination = {}
+    discoverer._decision_stats_by_destination = {}
+    discoverer._decision_source_stats_by_destination = {}
+    discoverer._decision_event_sequence = 0
+    discoverer._request_cache_lock = Lock()
+
+    origin = (38.3021, -111.4188)  # Torrey (Capitol Reef)
+    dest = (38.5733, -109.5498)  # Moab
+
+    stops = [
+        {"name": "Lake Powell / Hite Crossing"},
+        {"name": "Sego Canyon"},
+        {"name": "Close Highway Overlook"},
+    ]
+    geocodes = {
+        "Lake Powell / Hite Crossing": (37.8721, -110.3822),
+        "Sego Canyon": (38.9800, -109.6800),
+        "Close Highway Overlook": (38.35, -111.20),
+    }
+
+    def fake_geocode(stop_name, **_kwargs):
+        return geocodes.get(stop_name)
+
+    with patch.object(discoverer, "_geocode_en_route_stop_for_route", side_effect=fake_geocode):
+        result = discoverer._prune_en_route_stops_by_geometry(
+            stops=stops,
+            origin_name="Capitol Reef National Park",
+            dest_name="Moab",
+            origin_lat=origin[0],
+            origin_lng=origin[1],
+            dest_lat=dest[0],
+            dest_lng=dest[1],
+        )
+
+    names = [str(stop.get("name", "") or "") for stop in result]
+    assert "Lake Powell / Hite Crossing" in names
+    assert "Sego Canyon" not in names
+    assert "Close Highway Overlook" in names
+
+
+def test_prune_en_route_stops_by_geometry_logs_diagnostic_for_far_off_corridor_stop() -> None:
+    """Direct unit check that the far-off-corridor diagnostic logging call
+    actually fires with the expected reason code, without depending on the
+    internal disposition-thread storage structure."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    origin = (38.3021, -111.4188)
+    dest = (38.5733, -109.5498)
+    stops = [{"name": "Lake Powell / Hite Crossing"}]
+
+    with patch.object(
+        discoverer, "_geocode_en_route_stop_for_route", return_value=(37.8721, -110.3822)
+    ):
+        with patch.object(discoverer, "_log_decision") as mock_log:
+            discoverer._prune_en_route_stops_by_geometry(
+                stops=stops,
+                origin_name="Capitol Reef National Park",
+                dest_name="Moab",
+                origin_lat=origin[0],
+                origin_lng=origin[1],
+                dest_lat=dest[0],
+                dest_lng=dest[1],
+            )
+
+    reasons = [call.kwargs.get("reason") for call in mock_log.call_args_list]
+    assert "en_route_far_off_straight_line_kept" in reasons
+
+
+def test_route_perpendicular_distance_miles_matches_expected_offsets() -> None:
+    """Direct unit test of the new lateral-distance helper against the same
+    real coordinates as the pruning test above, pinning the approximate
+    mile values so a future change to the scaling can't silently regress
+    without a visible assertion failure."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    origin = (38.3021, -111.4188)
+    dest = (38.5733, -109.5498)
+
+    lake_powell = discoverer._route_perpendicular_distance_miles(
+        origin=origin, dest=dest, point=(37.8721, -110.3822)
+    )
+    sego = discoverer._route_perpendicular_distance_miles(
+        origin=origin, dest=dest, point=(38.9800, -109.6800)
+    )
+    close = discoverer._route_perpendicular_distance_miles(
+        origin=origin, dest=dest, point=(38.35, -111.20)
+    )
+
+    assert 35.0 < lake_powell < 45.0
+    assert 25.0 < sego < 33.0
+    assert close < 3.0
+
+
 def test_prune_en_route_stops_by_geometry_drops_stop_coincident_with_destination_coordinates() -> None:
     """Defense-in-depth regression for the Bryce -> Capitol Reef 'Capitol
     Reef National Park appears twice, right before the real destination'
