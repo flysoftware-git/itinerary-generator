@@ -4387,6 +4387,95 @@ def test_discover_attractions_inspiration_point_resolves_directly_without_alltra
     assert stats.get("trail_like_misclassified_attraction_batch_recovered", 0) == 0
 
 
+def test_paria_view_no_hiking_required_note_is_not_trail_like() -> None:
+    """Regression for dipstick59: real Bryce Canyon "Paria View" (type
+    "viewpoint") published a real 404 AllTrails URL
+    (https://www.alltrails.com/trail/us/utah/paria-view-trail) instead of
+    its own correct, harvested NPS page
+    (https://www.nps.gov/brca/planyourvisit/paria.htm).
+
+    Root cause: _attraction_trail_context() folds the item's practical_note
+    into the text _is_trail_like_attraction scans, and Paria View's real
+    practical note is "Accessible with no hiking required; parking is
+    limited." -- the bare substring "hiking" tripped the trail-keyword
+    catch-all even though the note explicitly says hiking is NOT required.
+    That misclassification routed this plain viewpoint down the
+    AllTrails-only path, where a same-name-but-different "Paria View
+    Trail" AllTrails candidate (present in this run's separate trail-kind
+    harvest) got selected in place of the viewpoint's own correct
+    attraction-batch row.
+
+    Fixes negated hiking/walking/trail phrasing ("no hiking required",
+    "without a hike", "doesn't require any walking") so it's no longer
+    counted as a positive trail signal.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    assert discoverer._is_trail_like_attraction(
+        "Paria View",
+        "viewpoint",
+        (
+            "A less crowded viewpoint offering views of the canyon and "
+            "surrounding landscape. It's a perfect spot for a quiet moment "
+            "away from the busier areas. Accessible with no hiking "
+            "required; parking is limited."
+        ),
+    ) is False
+
+
+def test_discover_attractions_paria_view_resolves_to_nps_page_not_alltrails() -> None:
+    """End-to-end companion to test_paria_view_no_hiking_required_note_is_not_trail_like:
+    with trail_like correctly False, the item should resolve straight
+    through the general attraction direct-batch path to its real harvested
+    NPS URL, and must never touch the AllTrails-only trail path -- which is
+    exactly how the real 404 "paria-view-trail" AllTrails URL got published
+    in the dipstick59 run.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Paria View",
+                "type": "viewpoint",
+                "description": (
+                    "A less crowded viewpoint offering views of the canyon "
+                    "and surrounding landscape. It's a perfect spot for a "
+                    "quiet moment away from the busier areas."
+                ),
+                "practical_note": "Accessible with no hiking required; parking is limited.",
+            }
+        ]
+    }
+
+    attraction_rows = [
+        {
+            "title": "Paria View",
+            "name": "Paria View",
+            "url": "https://www.nps.gov/brca/planyourvisit/paria.htm",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Paria+View+Bryce+Canyon+National+Park+UT",
+            "snippet": "Paria View Source Maps 4.5/5 Quiet sunset location with fewer visitors.",
+        }
+    ]
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("AllTrails-only trail path should not run for a non-trail viewpoint")
+
+    with patch.object(discoverer, "_search_alltrails_for_trail_from_direct_batch", side_effect=fail_if_called):
+        with patch.object(discoverer, "_search_alltrails_for_trail", side_effect=fail_if_called):
+            with patch.object(
+                discoverer,
+                "_get_attraction_direct_batch_rows_for_destination",
+                return_value=attraction_rows,
+            ):
+                discoverer._discover_attractions(ai, "Bryce Canyon National Park", "brca", "October 19-21, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == "https://www.nps.gov/brca/planyourvisit/paria.htm"
+
+
 def test_discover_attractions_direct_batch_authoritative_uses_item_fanout_when_batch_has_no_match() -> None:
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True

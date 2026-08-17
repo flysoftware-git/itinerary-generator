@@ -11057,6 +11057,37 @@ class URLDiscoverer:
         haystack = f"{name} {description}".lower()
         normalized = re.sub(r"[^a-z0-9\s]", "", haystack)
 
+        # Explicit negations of hiking/walking access ("no hiking required",
+        # "without a hike", "doesn't require any walking") describe a place
+        # that does NOT require trail activity -- the opposite of a trail
+        # signal -- so the negated word must not be counted as one below.
+        # Real Bryce Canyon "Paria View" (a plain viewpoint, correctly
+        # harvested with its own NPS page nps.gov/brca/planyourvisit/
+        # paria.htm) carries the practical note "Accessible with no hiking
+        # required; parking is limited." -- "hiking" as a bare substring
+        # would otherwise misclassify it as trail-like, sending it down the
+        # AllTrails-only path where a same-named-but-different "Paria View
+        # Trail" AllTrails candidate could be picked up instead of its own
+        # correct attraction link (dipstick59: this is exactly how the
+        # published "paria-view-trail" AllTrails URL, a real 404, got
+        # selected in place of the viewpoint's real NPS page).
+        normalized = re.sub(
+            r"\bno\s+(hiking|hikes?|walking|walks?|trails?|trekking|treks?)\b"
+            r"(\s+(required|needed|necessary|involved))?",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(
+            r"\bwithout\s+(a\s+|any\s+)?(hiking|hikes?|walking|walks?|trails?|trekking|treks?)\b",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(
+            r"\b(doesnt|does not|dont|do not)\s+require\s+(a\s+|any\s+)?(hiking|hikes?|walking|walks?|trails?)\b",
+            " ",
+            normalized,
+        )
+
         non_trail_place_cues = (
             "museum",
             "history museum",
