@@ -640,6 +640,215 @@ def test_build_getting_here_uses_lodging_endpoint_but_destination_scoped_waypoin
     assert "waypoints=Red%20Cliffs%20Desert%20Reserve%20St.%20George%2C%20Utah" in html
 
 
+def test_build_getting_here_gmaps_waypoints_match_rendered_cards_zion_bryce() -> None:
+    """Regression for a real dipstick63 run (Zion -> Bryce Canyon leg).
+
+    The rendered "CAN'T-MISS ENROUTE" cards showed "Moqui Caverns" and "Best
+    Friends Animal Sanctuary" (both with real discovered links), but the
+    "Open in Google Maps" URL's waypoints were two bare coordinates that
+    Google's own UI resolves to unrelated places -- because
+    _build_route_gmaps_url used to pick its (up to 8) waypoints from the
+    raw, unfiltered en_route_stops list purely by route-progress order, with
+    no regard for which stops actually had a usable link and would render as
+    a card. Here, 8 route-eligible-but-linkless/nameless candidate pins sort
+    ahead (by route_progress_ratio) of the two real, linked stops -- under
+    the old behavior they alone would fill the [:8] cap and the two real
+    stops would never appear in the Maps URL at all, exactly reproducing
+    "zero overlap" between cards and waypoints. The fix must ensure every
+    waypoint corresponds to a stop actually rendered as a card.
+    """
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    filler_candidates = [
+        {
+            "name": "",
+            "route_waypoint_eligible": True,
+            "route_progress_ratio": ratio,
+            "geocode_lat": 37.0 + idx * 0.01,
+            "geocode_lng": -112.5 - idx * 0.01,
+        }
+        for idx, ratio in enumerate([0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40])
+    ]
+    ai = {
+        "getting_here": {
+            "route_summary": "Take US-89 N to UT-12 E.",
+            "en_route_stops": filler_candidates
+            + [
+                {
+                    "name": "Moqui Caverns",
+                    "url": "https://example.com/moqui-caverns",
+                    "route_waypoint_eligible": True,
+                    "route_progress_ratio": 0.85,
+                },
+                {
+                    "name": "Best Friends Animal Sanctuary",
+                    "url": "https://example.com/best-friends-animal-sanctuary",
+                    "route_waypoint_eligible": True,
+                    "route_progress_ratio": 0.95,
+                },
+            ],
+        }
+    }
+    dest = {"name": "Bryce Canyon National Park"}
+
+    html = assembler._build_getting_here(
+        ai,
+        dest,
+        previous_name="Zion National Park",
+        previous_route_target="Zion National Park",
+        current_route_target="Bryce Canyon National Park",
+    )
+
+    # Both real, linked stops render as cards.
+    assert "Moqui Caverns" in html
+    assert "Best Friends Animal Sanctuary" in html
+
+    # The Google Maps URL's waypoints section must contain exactly the two
+    # rendered card names (qualified with the destination) and none of the
+    # nameless filler candidates that never rendered as cards.
+    gmaps_start = html.index("https://www.google.com/maps/dir/")
+    gmaps_end = html.index('"', gmaps_start)
+    gmaps_url = html[gmaps_start:gmaps_end]
+    assert "Moqui%20Caverns" in gmaps_url
+    assert "Best%20Friends%20Animal%20Sanctuary" in gmaps_url
+    # None of the filler candidates' coordinates leaked into the URL.
+    for idx in range(8):
+        assert f"{37.0 + idx * 0.01}" not in gmaps_url
+
+
+def test_build_getting_here_gmaps_waypoints_match_rendered_cards_canyonlands_telluride() -> None:
+    """Regression for a real dipstick63 run (Canyonlands -> Telluride leg).
+
+    The rendered cards showed 4 named stops (Castle Valley Overlook, Fisher
+    Towers, Gateway Colorado Historic Site, Paradox Valley Scenic Pullout),
+    but the Maps URL had 8 waypoints -- all bare coordinates or names of
+    OTHER en-route candidates that never rendered as cards (no verified
+    link) -- with zero overlap with the 4 rendered names. This test uses 4
+    real named+linked stops plus more than 8 linkless filler candidates
+    sorted ahead of them by route position, matching the real leg's shape
+    (a long ~150+ mile drive with many discovered-but-unverified candidate
+    pins).
+    """
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    filler_candidates = [
+        {
+            "name": f"Unverified Pin {idx}",
+            "description": "x",
+            "route_waypoint_eligible": True,
+            "route_progress_ratio": ratio,
+        }
+        for idx, ratio in enumerate([0.05, 0.08, 0.11, 0.14, 0.17, 0.20, 0.23, 0.26, 0.29])
+    ]
+    real_stops = [
+        {
+            "name": "Castle Valley Overlook",
+            "url": "https://example.com/castle-valley-overlook",
+            "route_waypoint_eligible": True,
+            "route_progress_ratio": 0.55,
+        },
+        {
+            "name": "Fisher Towers",
+            "url": "https://example.com/fisher-towers",
+            "route_waypoint_eligible": True,
+            "route_progress_ratio": 0.60,
+        },
+        {
+            "name": "Gateway Colorado Historic Site",
+            "url": "https://example.com/gateway-colorado-historic-site",
+            "route_waypoint_eligible": True,
+            "route_progress_ratio": 0.70,
+        },
+        {
+            "name": "Paradox Valley Scenic Pullout",
+            "url": "https://example.com/paradox-valley-scenic-pullout",
+            "route_waypoint_eligible": True,
+            "route_progress_ratio": 0.80,
+        },
+    ]
+    ai = {
+        "getting_here": {
+            "route_summary": "Take CO-141 through the valley.",
+            "en_route_stops": filler_candidates + real_stops,
+        }
+    }
+    dest = {"name": "Telluride, Colorado"}
+
+    html = assembler._build_getting_here(
+        ai,
+        dest,
+        previous_name="Canyonlands National Park",
+        previous_route_target="Canyonlands National Park",
+        current_route_target="Telluride, Colorado",
+    )
+
+    for stop in real_stops:
+        assert stop["name"] in html
+
+    gmaps_start = html.index("https://www.google.com/maps/dir/")
+    gmaps_end = html.index('"', gmaps_start)
+    gmaps_url = html[gmaps_start:gmaps_end]
+    for stop in real_stops:
+        # Waypoint text is the stop name qualified with the destination
+        # (no geocode present here), space-encoded as %20.
+        qualified = stop["name"].replace(" ", "%20")
+        assert qualified in gmaps_url, f"expected {stop['name']} waypoint in {gmaps_url}"
+    for filler in filler_candidates:
+        assert filler["name"] not in html
+        assert filler["name"].replace(" ", "%20") not in gmaps_url
+
+
+def test_build_getting_here_gmaps_url_caps_at_eight_visible_cards() -> None:
+    """More than 8 real, linked stops render as cards on a long leg (no cap
+    on the cards themselves), but _build_route_gmaps_url still caps its
+    waypoints at 8 -- now operating on the already-link-filtered visible
+    list, so the cap can only ever drop trailing cards, never substitute in
+    a stop that isn't rendered. This documents that deliberate, retained
+    design decision (Google's own interactive directions UI does not
+    reliably support arbitrarily many waypoints) rather than silently
+    losing coverage."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    real_stops = [
+        {
+            "name": f"Real Stop {idx}",
+            "url": f"https://example.com/real-stop-{idx}",
+            "route_waypoint_eligible": True,
+            "route_progress_ratio": ratio,
+        }
+        for idx, ratio in enumerate([0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95])
+    ]
+    ai = {
+        "getting_here": {
+            "route_summary": "Long scenic drive.",
+            "en_route_stops": real_stops,
+        }
+    }
+    dest = {"name": "Telluride, Colorado"}
+
+    html = assembler._build_getting_here(
+        ai,
+        dest,
+        previous_name="Canyonlands National Park",
+        previous_route_target="Canyonlands National Park",
+        current_route_target="Telluride, Colorado",
+    )
+
+    # All 10 render as cards -- no cap on the visible list.
+    for stop in real_stops:
+        assert stop["name"] in html
+
+    gmaps_start = html.index("https://www.google.com/maps/dir/")
+    gmaps_end = html.index('"', gmaps_start)
+    gmaps_url = html[gmaps_start:gmaps_end]
+    waypoint_count = gmaps_url.count("Real%20Stop")
+    assert waypoint_count == 8, f"expected the Maps URL capped at 8 waypoints, got {waypoint_count}"
+    # The 8 kept are the first 8 by route progress, not an arbitrary subset.
+    for stop in real_stops[:8]:
+        qualified = stop["name"].replace(" ", "%20")
+        assert qualified in gmaps_url
+    for stop in real_stops[8:]:
+        qualified = stop["name"].replace(" ", "%20")
+        assert qualified not in gmaps_url
+
+
 def test_build_attractions_links_open_in_new_tab_and_keep_destination_scope() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {

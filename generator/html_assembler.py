@@ -745,6 +745,18 @@ class HTMLAssembler:
         if return_name:
             route_label = f'{self._short_place_name(departure_origin_name)} → {self._short_place_name(return_name)}'
 
+        # Note: this call passes the raw `route_options` (before the
+        # `renderable_route_options` title+url filter below is applied), the
+        # same shape as the cards/Maps-URL mismatch fixed in
+        # _build_getting_here for en-route stops. It's NOT the same bug here:
+        # _build_route_gmaps_url only turns a stop into a waypoint via its
+        # "name" key (or geocode_lat/lng), but route_options entries are
+        # keyed by "title" (see the `opt.get("title", "")` read a few lines
+        # below), never "name" -- so `stop.get("name", "")` is always empty
+        # for every route option and no waypoints are ever added. This call
+        # only ever contributes the bare destination (and origin, when
+        # given), never a waypoint list, so there's nothing here that could
+        # diverge from the rendered "DEPARTURE ROUTE OPTIONS" cards.
         gmaps_url = ""
         if return_name:
             pseudo_dest = {"name": return_name}
@@ -1313,14 +1325,50 @@ class HTMLAssembler:
         # read as a new place to check into.
         is_group_day_trip = is_grouped(dest)
 
+        # Compute the stops that will actually render as "CAN'T-MISS ENROUTE"
+        # cards FIRST, then build the Google Maps URL from that exact list.
+        # Bug this fixes: the Maps URL used to be built (below) from the raw,
+        # unfiltered `stops` list capped at the first 8 by route-progress
+        # order, while the cards below applied a DIFFERENT selection (a real
+        # link, or an explicit no-url allowance) with NO cap. On a short leg
+        # with only a handful of eligible stops these two selections usually
+        # coincided, hiding the bug -- but on a long leg with more than 8
+        # candidate stops, the "first 8 by route position" and "the ones with
+        # real links" sets can be completely disjoint. Confirmed on a real
+        # run (dipstick63): Zion->Bryce cards showed "Moqui Caverns" and
+        # "Best Friends Animal Sanctuary" while the Maps URL waypoints were
+        # two bare coordinates resolving to unrelated places, and
+        # Canyonlands->Telluride cards showed 4 named stops while the Maps
+        # URL's 8 waypoints matched none of them. Deriving the Maps URL from
+        # `visible_stops` guarantees every waypoint corresponds to a stop the
+        # user actually sees rendered as a card.
+        visible_stops: list[tuple[dict[str, Any], str, bool]] = []
+        if stops:
+            ordered_stops = sorted(
+                [stop for stop in stops if not (isinstance(stop, dict) and stop.get("route_waypoint_eligible") is False)],
+                key=self._route_waypoint_sort_key,
+            )
+            for stop in ordered_stops:
+                preferred_url, is_map_fallback = self._select_preferred_external_link(stop, section="en_route_stop")
+                if preferred_url:
+                    visible_stops.append((stop, preferred_url, is_map_fallback))
+                elif self._should_render_without_url(stop, section="en_route_stop"):
+                    visible_stops.append((stop, "", is_map_fallback))
+
         route_destination = {"name": current_route_target or dest.get("name", "")}
+        # _build_route_gmaps_url applies its own [:8] cap (Google's own
+        # interactive directions UI is documented to support only a limited
+        # number of waypoints reliably) -- now that it's capping the already
+        # link-filtered `visible_stops` list instead of the raw `stops` list,
+        # that cap can only ever drop trailing cards on a leg with more than
+        # 8 rendered stops, never substitute in a stop that isn't a card.
         gmaps_url = self._build_route_gmaps_url(
             previous_route_target or previous_name,
             route_destination,
-            stops,
+            [stop for stop, _url, _fallback in visible_stops],
             waypoint_scope_name=str(dest.get("name", "") or ""),
         )
-        
+
         # Icon map for stop types
         stop_icons = {
             "viewpoint": "🏜️",
@@ -1375,19 +1423,8 @@ class HTMLAssembler:
         if not stops and self._category_deferred_for_render(dest, "en_route_stop"):
             html += self._group_base_pointer_html(dest, dest_by_id, "En-route stops", icon="\U0001f9ed")
 
-        if stops:
-            visible_stops: list[tuple[dict[str, Any], str, bool]] = []
-            ordered_stops = sorted(
-                [stop for stop in stops if not (isinstance(stop, dict) and stop.get("route_waypoint_eligible") is False)],
-                key=self._route_waypoint_sort_key,
-            )
-            for stop in ordered_stops:
-                preferred_url, is_map_fallback = self._select_preferred_external_link(stop, section="en_route_stop")
-                if preferred_url:
-                    visible_stops.append((stop, preferred_url, is_map_fallback))
-                elif self._should_render_without_url(stop, section="en_route_stop"):
-                    visible_stops.append((stop, "", is_map_fallback))
-
+        # `visible_stops` was already computed above (before the Maps URL
+        # build) so the two stay in sync -- see the comment there.
         if stops and visible_stops:
             html += '  <div class="can-miss-header">🧭 CAN\'T-MISS ENROUTE</div>\n'
             html += '  <div class="en-route-stops">\n'
