@@ -275,7 +275,7 @@ def _run_quality_gate(trip: dict[str, Any], html_path: "Path | None" = None) -> 
             desc = str(rest.get("description", "") or "").strip().lower()
             if not desc or any(p in desc for p in synthetic_phrases):
                 synthetic_count += 1
-            if not str(rest.get("url", "") or "").strip():
+            if not str(rest.get("url", "") or rest.get("maps_url", "") or "").strip():
                 no_url_restaurants += 1
 
         for attr in ai.get("top_attractions", []) or []:
@@ -284,17 +284,17 @@ def _run_quality_gate(trip: dict[str, Any], html_path: "Path | None" = None) -> 
 
         getting_here = ai.get("getting_here", {}) if isinstance(ai.get("getting_here"), dict) else {}
         for stop in getting_here.get("en_route_stops", []) or []:
-            if not str(stop.get("url", "") or "").strip():
+            if not str(stop.get("url", "") or stop.get("maps_url", "") or "").strip():
                 no_url_stops += 1
 
     if synthetic_count:
         warnings.append(f"restaurants with synthetic description: {synthetic_count}")
     if no_url_restaurants:
-        warnings.append(f"restaurants with no URL: {no_url_restaurants}")
+        warnings.append(f"restaurants with no URL or maps fallback: {no_url_restaurants}")
     if no_url_attractions > 3:
         warnings.append(f"attractions with no URL or maps fallback: {no_url_attractions}")
     if no_url_stops > 2:
-        warnings.append(f"en-route stops with no URL: {no_url_stops}")
+        warnings.append(f"en-route stops with no URL or maps fallback: {no_url_stops}")
 
     if html_path:
         try:
