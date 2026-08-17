@@ -3794,14 +3794,32 @@ class URLDiscoverer:
                     )
                     continue
                 if self._direct_batch_is_authoritative():
-                    attr["url"] = ""
-                    attr.pop("maps_url", None)
+                    # The direct-link-batch harvest didn't find a matching row
+                    # for this item, and authoritative mode means we must not
+                    # trust a fresh live web/AI-candidate search to attach a
+                    # *specific* source URL (that's the confidently-wrong-link
+                    # risk this mode exists to block). But a real, harvested
+                    # attraction name still deserves the same safe
+                    # Google-Maps-search fallback every other "no URL found"
+                    # attraction gets below -- it's a name+destination search
+                    # link, not a claim of a specific correct source page, so
+                    # it doesn't carry that fabrication risk. Apply the same
+                    # fail-closed exceptions (category-style activity,
+                    # ambiguous geographic name, enforce-policy block) that
+                    # already guard that fallback elsewhere in this function.
+                    self._assign_attraction_maps_fallback_or_fail_closed(
+                        attr,
+                        attr_name=attr_name,
+                        dest_name=dest_name,
+                        maps_fallback_url=maps_fallback_url,
+                    )
                     self._log_decision(
                         kind="attraction",
                         dest_name=dest_name,
                         item_name=attr_name,
-                        reason="direct_batch_source_locked_no_match",
-                        message="attraction link omitted; authoritative direct-link batch had no usable result",
+                        reason="discovery_completed",
+                        message="attraction link",
+                        url=str(attr.get("url", "") or ""),
                     )
                     continue
 
@@ -3958,6 +3976,76 @@ class URLDiscoverer:
                     reason="closure_removed",
                     message="attraction page is closed and was removed",
                 )
+
+    def _assign_attraction_maps_fallback_or_fail_closed(
+        self,
+        attr: dict,
+        *,
+        attr_name: str,
+        dest_name: str,
+        maps_fallback_url: str,
+    ) -> None:
+        """Assign the safe Google-Maps-search fallback link for an attraction
+        with no discovered canonical URL, unless one of the existing
+        fail-closed exceptions applies (category-style activity, ambiguous
+        geographic feature name, or enforce-mode policy blocking the
+        google_maps_search URL class).
+
+        This is the same "no URL found" disposition logic historically inline
+        at the bottom of the general (non-direct-batch, non-trail) attraction
+        loop body. It is factored out so the authoritative direct-link-batch
+        "no match" branch (attraction_source_mode == "direct_link_batch" with
+        self._direct_batch_is_authoritative() and no batch row match) can
+        reuse it verbatim instead of unconditionally leaving the attraction
+        with no link at all. A maps-search-query fallback is not a claim that
+        a specific page is the correct source for this item -- it is a
+        deterministic search-by-name link, categorically safer than trusting
+        an unverified direct hyperlink or AI-suggested candidate URL, which is
+        the actual fabrication risk authoritative mode exists to block.
+        """
+        if self._is_category_style_activity(attr_name):
+            attr["url"] = ""
+            self._log_decision(
+                kind="attraction",
+                dest_name=dest_name,
+                item_name=attr_name,
+                reason="category_activity_fail_closed",
+                message="attraction maps fallback omitted for category-style activity",
+            )
+            return
+        if self._is_ambiguous_geographic_feature_name(attr_name):
+            attr["url"] = ""
+            self._log_decision(
+                kind="attraction",
+                dest_name=dest_name,
+                item_name=attr_name,
+                reason="maps_fallback_omitted_ambiguous_geography",
+                message="attraction maps fallback omitted for ambiguous geographic feature",
+            )
+            return
+        policy_mode = str(getattr(self, "_url_policy_mode", DEFAULT_URL_POLICY_MODE) or DEFAULT_URL_POLICY_MODE)
+        blocked_classes = set(getattr(self, "_url_policy_blocked_classes", set(DEFAULT_URL_POLICY_BLOCKED_CLASSES)) or set())
+        if policy_mode == "enforce" and "google_maps_search" in blocked_classes:
+            attr["url"] = ""
+            attr.pop("maps_url", None)
+            self._log_decision(
+                kind="attraction",
+                dest_name=dest_name,
+                item_name=attr_name,
+                reason="maps_fallback_omitted_policy_enforce",
+                message="attraction maps fallback omitted by enforce policy",
+            )
+            return
+        attr["url"] = maps_fallback_url
+        attr["maps_url"] = attr["url"]
+        self._log_decision(
+            kind="attraction",
+            dest_name=dest_name,
+            item_name=attr_name,
+            reason="maps_fallback_assigned",
+            message="attraction maps fallback assigned",
+            url=attr["url"],
+        )
 
     @staticmethod
     def _infer_item_nps_code(item_name: str) -> str | None:

@@ -4796,7 +4796,18 @@ def test_search_attraction_direct_batch_authoritative_accepts_valid_feature_name
     assert out == "https://www.nps.gov/care/learn/historyculture/petroglyphs.htm"
 
 
-def test_discover_attractions_direct_batch_authoritative_omits_link_when_batch_has_no_match():
+def test_discover_attractions_direct_batch_authoritative_no_match_assigns_maps_fallback():
+    """Regression for the SW2026-dipstick63 "no URL or maps fallback" quality
+    gate spike (13-14 unverified attractions in one real run). Previously,
+    when authoritative direct-link-batch mode found no matching harvest row
+    for a real, non-ambiguous attraction name, the code cleared url/maps_url
+    and gave up entirely -- leaving the card with literally no link, not even
+    the safe Google-Maps-search-by-name fallback every other "no URL found"
+    attraction gets. A maps-search-query link doesn't assert "this is
+    definitely the correct source page" the way a direct hyperlink does, so
+    it doesn't carry the fabrication risk authoritative mode exists to
+    guard against; it should still be assigned here.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
     discoverer._attraction_source = "direct_link_batch"
@@ -4816,41 +4827,21 @@ def test_discover_attractions_direct_batch_authoritative_omits_link_when_batch_h
             discoverer._discover_attractions(ai, "St. George, Utah", None, "October 18, 2026")
 
     out = ai["top_attractions"][0]
-    assert out["url"] == ""
+    assert out["url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Snow%20Canyon%20State%20Park"
+    )
+    assert out["maps_url"] == out["url"]
     stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("St. George, Utah", {})
-    assert stats.get("direct_batch_source_locked_no_match", 0) == 1
+    assert stats.get("maps_fallback_assigned", 0) == 1
+    assert stats.get("direct_batch_source_locked_no_match", 0) == 0
     source_stats = getattr(discoverer, "_decision_source_stats_by_destination", {}).get("St. George, Utah", {})
-    assert source_stats.get("direct_batch", 0) >= 1
-    fanout_search.assert_not_called()
-
-
-
-
-def test_discover_attractions_direct_batch_authoritative_no_match_does_not_assign_maps_fallback():
-    discoverer = URLDiscoverer.__new__(URLDiscoverer)
-    discoverer._direct_batch_authoritative = True
-    discoverer._attraction_source = "direct_link_batch"
-
-    ai = {
-        "top_attractions": [
-            {
-                "name": "Snow Canyon State Park",
-                "type": "attraction",
-                "description": "Red rock landscape with overlooks and short walks.",
-            }
-        ]
-    }
-
-    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
-        with patch.object(discoverer, "_search_attraction_from_item_query_fanout") as fanout_search:
-            discoverer._discover_attractions(ai, "St. George, Utah", None, "October 18, 2026")
-
-    out = ai["top_attractions"][0]
-    assert out["url"] == ""
-    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("St. George, Utah", {})
-    assert stats.get("direct_batch_source_locked_no_match", 0) == 1
-    source_stats = getattr(discoverer, "_decision_source_stats_by_destination", {}).get("St. George, Utah", {})
-    assert source_stats.get("direct_batch", 0) == 1
+    # The final decision recorded is the maps fallback, not the direct-batch
+    # miss that preceded it -- _search_attraction_from_direct_batch was still
+    # called (see fanout_search.assert_not_called() below confirming no other
+    # source was tried), it just didn't produce a loggable candidate.
+    assert source_stats.get("maps", 0) == 1
+    # Authoritative mode must still not fall back to a live fanout search --
+    # only the deterministic, name-based maps-search fallback is safe here.
     fanout_search.assert_not_called()
 
 
@@ -5143,8 +5134,12 @@ def test_discover_attractions_direct_batch_authoritative_uses_item_fanout_when_b
         ) as fanout_search:
             discoverer._discover_attractions(ai, "St. George, Utah", None, "October 18, 2026")
 
+    # Even with a would-be fanout match available, authoritative mode must not
+    # call the live fanout search -- it gets the safe maps fallback instead.
     out = ai["top_attractions"][0]
-    assert out["url"] == ""
+    assert out["url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Snow%20Canyon%20State%20Park"
+    )
     fanout_search.assert_not_called()
 
 
@@ -5266,9 +5261,12 @@ def test_discover_attractions_direct_batch_authoritative_ignores_maps_area_fanou
             discoverer._discover_attractions(ai, "St. George, Utah", None, "October 18, 2026")
 
     out = ai["top_attractions"][0]
-    assert out["url"] == ""
+    assert out["url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Snow%20Canyon%20State%20Park"
+    )
     stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("St. George, Utah", {})
-    assert stats.get("direct_batch_source_locked_no_match", 0) == 1
+    assert stats.get("maps_fallback_assigned", 0) == 1
+    assert stats.get("direct_batch_source_locked_no_match", 0) == 0
     fanout_search.assert_not_called()
 
 
@@ -5299,7 +5297,184 @@ def test_trail_like_direct_batch_authoritative_no_match_does_not_assign_maps_fal
     fanout_search.assert_not_called()
 
 
+def test_discover_attractions_direct_batch_authoritative_no_match_real_bryce_attraction_gets_maps_fallback() -> None:
+    """Regression using a real affected name from the SW2026-dipstick63 run:
+    Bryce Canyon "Sunrise Point" rendered unverified (no url, no maps_url)
+    because authoritative direct-batch mode found no harvest row and, before
+    this fix, gave up instead of assigning the same safe maps-search
+    fallback every other attraction with no discovered URL gets.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Sunrise Point",
+                "type": "viewpoint",
+                "description": "Popular sunrise viewing spot along the amphitheater rim.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+        discoverer._discover_attractions(ai, "Bryce Canyon National Park", "brca", "October 19-21, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Sunrise%20Point%20Bryce%20Canyon%20National%20Park"
+    )
+    assert out["maps_url"] == out["url"]
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("Bryce Canyon National Park", {})
+    assert stats.get("maps_fallback_assigned", 0) == 1
+
+
+def test_discover_attractions_direct_batch_authoritative_no_match_real_stgeorge_attraction_gets_maps_fallback() -> None:
+    """Second real dipstick63-affected name: St. George Dinosaur Discovery
+    Site at Johnson Farm. Confirms the fix isn't specific to one name shape --
+    a multi-word, already location-qualified attraction name also recovers a
+    usable link instead of being left blank.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "St. George Dinosaur Discovery Site at Johnson Farm",
+                "type": "attraction",
+                "description": "Museum showcasing preserved dinosaur tracks and fossils.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+        discoverer._discover_attractions(ai, "St. George, Utah", None, "October 18, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == (
+        "https://www.google.com/maps/search/?api=1&query="
+        "St.%20George%20Dinosaur%20Discovery%20Site%20at%20Johnson%20Farm"
+    )
+    assert out["maps_url"] == out["url"]
+
+
+def test_discover_attractions_direct_batch_authoritative_no_match_ambiguous_geography_still_fail_closed() -> None:
+    """The three pre-existing fail-closed exceptions must still apply
+    uniformly when they're reached via the authoritative-no-match path, not
+    just via the general no-URL path. An ambiguous, generic geographic name
+    ("Echo Canyon" -- a name that recurs at many unrelated parks) must still
+    get no link at all, not a maps fallback, even now that authoritative mode
+    falls through to the shared fallback-or-fail-closed logic.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Echo Canyon",
+                "type": "attraction",
+                "description": "A scenic canyon area near the park entrance.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+        discoverer._discover_attractions(ai, "Some National Park", None, "October 18, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == ""
+    assert "maps_url" not in out or not out["maps_url"]
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("Some National Park", {})
+    assert stats.get("maps_fallback_omitted_ambiguous_geography", 0) == 1
+    assert stats.get("maps_fallback_assigned", 0) == 0
+
+
+def test_discover_attractions_direct_batch_authoritative_no_match_category_activity_still_fail_closed() -> None:
+    """Same uniformity check for the category-style-activity fail-closed
+    exception (e.g. "stargazing" -- an activity, not a specific named place
+    a maps search can meaningfully target).
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Bryce Canyon Stargazing",
+                "type": "attraction",
+                "description": "Ranger-led evening stargazing program.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+        discoverer._discover_attractions(ai, "Bryce Canyon National Park", "brca", "October 19-21, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == ""
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("Bryce Canyon National Park", {})
+    assert stats.get("category_activity_fail_closed", 0) == 1
+    assert stats.get("maps_fallback_assigned", 0) == 0
+
+
+def test_discover_attractions_direct_batch_authoritative_no_match_policy_enforce_still_fail_closed() -> None:
+    """Same uniformity check for the enforce-mode URL-policy exception: when
+    the google_maps_search URL class is blocked by policy, the authoritative-
+    no-match path must respect that too, not just the general no-URL path.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_search"}
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Sunrise Point",
+                "type": "viewpoint",
+                "description": "Popular sunrise viewing spot along the amphitheater rim.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+        discoverer._discover_attractions(ai, "Bryce Canyon National Park", "brca", "October 19-21, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == ""
+    assert "maps_url" not in out or not out["maps_url"]
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("Bryce Canyon National Park", {})
+    assert stats.get("maps_fallback_omitted_policy_enforce", 0) == 1
+    assert stats.get("maps_fallback_assigned", 0) == 0
+
+
 def test_discover_attractions_direct_batch_authoritative_recovers_seed_from_ai_candidate() -> None:
+    """Fabrication-guard tripwire: even for a seed item with an AI-suggested
+    url_candidate on hand, authoritative direct-batch mode must NOT resolve
+    that candidate when the batch harvest itself found no match -- an
+    AI-suggested URL claims to *be* the correct source page for this specific
+    item, and that claim is exactly the unverified/potentially-wrong-link risk
+    authoritative mode exists to block (see the Tier-1 URL-fabrication-
+    prevention work this test was added for).
+
+    This must stay true regardless of whether the item afterward gets a
+    maps-search fallback. A maps-search-query URL is a different risk class:
+    it's a deterministic "search this name near this destination" link, not
+    an assertion that any particular page is the right one, so it doesn't
+    carry the same fabrication risk -- which is why, after the
+    attractions-no-link-fallback fix, this real non-ambiguous museum name now
+    gets that fallback instead of being left with no link at all. The
+    load-bearing assertion here is `ai_candidate_mock.assert_not_called()`;
+    the exact fallback URL below only confirms the fallback path taken did
+    not go through the AI-candidate resolver.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
     discoverer._attraction_source = "direct_link_batch"
@@ -5330,7 +5505,11 @@ def test_discover_attractions_direct_batch_authoritative_recovers_seed_from_ai_c
             )
 
     out = ai["top_attractions"][0]
-    assert out["url"] == ""
+    # Not the AI-suggested Wikipedia URL, and not empty either -- the safe
+    # name+destination maps-search fallback.
+    assert out["url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Georgia%20O%27Keeffe%20Museum%20Santa%20Fe"
+    )
     ai_candidate_mock.assert_not_called()
 
 
