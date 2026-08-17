@@ -1972,6 +1972,63 @@ def test_build_attractions_drops_scenic_drive_describing_same_place_different_wo
     assert "telluride.com/activities/gondola" in html
 
 
+def test_build_attractions_dedup_never_discards_a_url_the_attraction_side_already_had() -> None:
+    """dipstick60 Bug 1 investigation (real Telluride data): the owner
+    reported that after the dipstick58 dedup fix above correctly merged the
+    duplicate gondola cards, the surviving card had no link at all. Traced
+    against the actual dipstick60 run (destination_status_report.json):
+    this run's URL-discovery harvest never resolved a real gondola URL for
+    either the top_attractions or scenic_drives entry that run (repeated
+    "direct_batch_no_match", one wrong-domain candidate that didn't survive
+    to render) -- a harvest-recall variance, not something this rendering
+    code did.
+
+    Structurally, `_build_attractions` determines the attraction's own URL
+    (via `_select_preferred_external_link`) and renders its row *before*
+    the scenic-drives dedup loop runs, so dropping a duplicate drive can
+    never retroactively clear a URL the attraction row already resolved.
+    This test locks in that ordering: when the attraction side has no URL
+    of its own, it still renders (with the "Unverified" caution badge, not
+    silently dropped) and the duplicate drive is still suppressed -- even
+    when the drive side *does* carry the real URL. The intended behavior is
+    "the attraction renders with whatever URL IT already had", not
+    "borrow the dropped drive's URL"."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Telluride Mountain Village Gondola",
+                "type": "attraction",
+                "description": "Free gondola connecting Telluride and Mountain Village.",
+                "rating": 4.5,
+                "duration": "20-min round-trip",
+                # No url/url_candidates -- mirrors this run's harvest miss.
+            }
+        ]
+    }
+    drives = [
+        {
+            "title": "Free Gondola to Mountain Village",
+            "category": "scenic",
+            "description": (
+                "The gondola ride connects Telluride and Mountain Village, "
+                "offering aerial views of the mountains and valleys below."
+            ),
+            "distance_or_duration": "13 min",
+            # Even if a URL had been found for the drive-side duplicate, it
+            # must not be borrowed onto the attraction card.
+            "url": "https://example.com/should-not-be-borrowed",
+        }
+    ]
+
+    html = assembler._build_attractions(ai, drives=drives, dest_name="Telluride")
+
+    assert "Telluride Mountain Village Gondola" in html
+    assert "attr-drive-item" not in html  # duplicate drive still suppressed
+    assert "should-not-be-borrowed" not in html  # no URL-borrowing from the drive
+    assert "⚠ Unverified" in html  # renders without a link, flagged, not blank
+
+
 def test_build_attractions_keeps_distinct_attractions_sharing_directional_qualifier() -> None:
     """Guard against over-matching: two real, genuinely distinct places (e.g.
     Bryce Canyon's actual Sunrise Point and Sunset Point viewpoints) can
