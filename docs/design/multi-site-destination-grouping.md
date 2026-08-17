@@ -341,3 +341,57 @@ Overall: a moderate, mostly-additive change concentrated in manifest
 validation, a config-driven category-ownership gate, and rendering, with
 one real cross-entry logic change (route/distance base-tracking, §4) —
 not a rewrite of any core discovery/content subsystem.
+
+## 10. Card-within-card hierarchy restructuring (2026-08-16)
+
+A real validation run (dipstick59) surfaced two problems with §3's
+original nav-tab-clustering-only treatment: a grouped entry (Arches,
+Canyonlands) still rendered as a full independent destination page —
+including its own "Possible Daily Schedule" card, styled with equal
+visual weight to a genuine multi-day stop like Bryce Canyon — and Moab's
+own AI-generated `top_attractions` had no awareness that a grouped child
+now separately covers some of the same landmarks (e.g. "Delicate Arch"
+rendering under both Moab's own list and Arches' section). Confirmed
+against real dipstick59 output before fixing: Moab's own schedule text
+does *not* reliably reference the grouped child's day trip on the
+matching date (evening prose mentioned "onward drive to Arches" on the
+wrong day relative to Arches' actual `dates`) — a real, separate gap in
+schedule-content generation, left alone here; this restructuring only
+changes whether a grouped child's own schedule card renders, not what
+the base's schedule text says.
+
+Fix, in `html_assembler.py` (rendering-layer only, no manifest/data-model
+change):
+
+- A grouped entry no longer gets its own top-level `<section>`. Its
+  content (header, intro, gallery, environment, getting-here, attractions,
+  events, restaurants — the existing §2/§5 pointers included, unchanged)
+  renders as a nested `<div class="group-child-card" id="section-{id}">`
+  *inside* its group base's `<section>`, appended after the base's own
+  content (`_build_group_child_card`, called from `assemble()` instead of
+  `_build_single_section` for any destination with `group_with` set).
+- No `_build_schedule` call for a grouped child, ever — the base's own
+  multi-day schedule is the day-trip's only schedule representation now.
+  `ai_content.py`/`_normalize_schedule` untouched; this is purely whether
+  the rendered card appears.
+- The base's own `top_attractions` list is filtered at render time against
+  every name its grouped children's own sections cover (child's own
+  `name`, its `top_attractions` names, its `scenic_drives` titles), reusing
+  the existing fuzzy name-match helper (`_attraction_names_are_duplicates`,
+  originally built for the scenic-drive/attraction dedup case) rather than
+  requiring an exact string match. `ai_content.py` generation itself is
+  untouched — the base still independently generates the same list it
+  always did; only whether a given item renders is new.
+- The trailing "Departure Route Options" card (previously rendered inside
+  whichever destination was last in the manifest) now renders inside the
+  group base's section whenever the manifest's actual last destination is
+  a grouped child — its content still comes from that child's own
+  `ai_content.getting_there` (unchanged), only *where* it renders moved.
+- Nav tabs (§3) are unchanged — the indent/pill clustering already read
+  correctly and a grouped child's nested `id="section-{id}"` still
+  satisfies the existing click-to-scroll JS (`getElementById`-based, nesting-
+  agnostic). One small JS addition in the frozen template (checksum
+  regenerated): the scroll-position "active tab" tracker now also considers
+  `.group-child-card` elements, not just `.dest-section`, so a nested
+  child's nav tab highlights correctly while scrolled into its own nested
+  content, not just while scrolled anywhere in the base's section.

@@ -549,7 +549,12 @@
         // ── TAB NAVIGATION ─────────────────────────────────────────────────────
         try {
           var navEl = document.getElementById('tab-nav-e5f6');
-          var sections = document.querySelectorAll('.dest-section');
+          // .group-child-card: GH #68 card-within-card hierarchy -- a grouped
+          // (day-trip) entry's content nests inside its base's .dest-section
+          // rather than getting its own top-level section, but it still needs
+          // to be considered here so its nav tab highlights correctly while
+          // scrolled into view.
+          var sections = document.querySelectorAll('.dest-section, .group-child-card');
           var tabBtns  = document.querySelectorAll('.tab-btn[data-tab]');
           function setActiveTab(sectionId) {
             if (!sectionId) return;

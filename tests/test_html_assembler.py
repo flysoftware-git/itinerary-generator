@@ -2648,6 +2648,257 @@ def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_cluster
     # Day-trip framing for both grouped entries
     assert html.count("Day Trip") == 2
 
+    # GH #68 card-within-card hierarchy: Arches and Canyonlands no longer
+    # get their own top-level <section> -- only Moab does. Their content
+    # renders as nested .group-child-card blocks inside Moab's section.
+    assert html.count('<section id="section-') == 1
+    assert 'id="section-moab" class="dest-section"' in html
+    assert html.count('id="section-arches" class="group-child-card"') == 1
+    assert html.count('id="section-canyonlands" class="group-child-card"') == 1
+    moab_start = html.index('id="section-moab"')
+    moab_end = html.index("</section>", moab_start)
+    arches_pos = html.index('id="section-arches"')
+    canyonlands_pos = html.index('id="section-canyonlands"')
+    assert moab_start < arches_pos < moab_end
+    assert moab_start < canyonlands_pos < moab_end
+
+
+def test_assemble_moab_group_suppresses_schedule_card_for_grouped_children() -> None:
+    """Problem 1 (dipstick59, owner's words: 'I don't think the daily
+    schedule makes sense for day trips, as Moab already dictates') -- a
+    grouped entry must not render its own 'Possible Daily Schedule' card
+    at all, even when its own ai_content has one; only the base's own
+    schedule should render."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {
+        "trip": {"title": "Moab Group Trip", "subtitle": "Test", "theme_color": "#C0623E"},
+        "destinations": [
+            {
+                "id": "moab",
+                "name": "Moab",
+                "dates": "August 1-4, 2026",
+                "lodging": {"name": "Moab Springs Ranch", "location": "Moab Springs Ranch, Moab, UT", "checkin_time": "4:00 PM"},
+                "planning_links": [],
+                "ai_content": {
+                    "top_attractions": [],
+                    "dinner_recommendations": [],
+                    "possible_daily_schedule": [
+                        {"day_label": "Day 1", "periods": [{"period": "morning", "summary": "Arrive in Moab."}]},
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                },
+                "scenic_drives": [],
+                "images": [],
+                "cultural_events": {},
+            },
+            {
+                "id": "arches",
+                "name": "Arches National Park",
+                "dates": "August 2, 2026",
+                "group_with": "moab",
+                "planning_links": [],
+                "ai_content": {
+                    "top_attractions": [
+                        {"name": "Delicate Arch", "type": "hike", "description": "Iconic hike.", "url": "https://www.nps.gov/arch/delicate"},
+                    ],
+                    "dinner_recommendations": [],
+                    "possible_daily_schedule": [
+                        {"day_label": "Day 1", "periods": [{"period": "morning", "summary": "Hike to Delicate Arch."}]},
+                    ],
+                    "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+                },
+                "scenic_drives": [],
+                "images": [],
+                "cultural_events": {},
+            },
+        ],
+    }
+
+    html = assembler.assemble(trip)
+
+    # Exactly one schedule card in the whole document -- Moab's own.
+    assert html.count('class="card schedule-card"') == 1
+    assert "Arrive in Moab." in html
+    # Arches' own schedule content must not render anywhere.
+    assert "Hike to Delicate Arch." not in html
+
+
+def test_assemble_moab_group_dedupes_base_attractions_against_grouped_child() -> None:
+    """Problem 2 (dipstick59, owner's words: 'The big thing for the Moab
+    situation is to avoid duplication') -- Moab's own AI-generated
+    top_attractions must not re-list a landmark a grouped child already
+    covers in its own nested card, even when worded identically."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {
+        "trip": {"title": "Moab Group Trip", "subtitle": "Test", "theme_color": "#C0623E"},
+        "destinations": [
+            {
+                "id": "moab",
+                "name": "Moab",
+                "dates": "August 1-4, 2026",
+                "lodging": {"name": "Moab Springs Ranch", "location": "Moab Springs Ranch, Moab, UT", "checkin_time": "4:00 PM"},
+                "planning_links": [],
+                "ai_content": {
+                    "top_attractions": [
+                        {"name": "Delicate Arch", "type": "hike", "description": "Moab own suggestion duplicate.", "url": "https://x/delicate-moab"},
+                        {"name": "Moab Giants Dinosaur Park", "type": "attraction", "description": "Genuinely Moab-only.", "url": "https://x/giants"},
+                    ],
+                    "dinner_recommendations": [],
+                    "getting_here": {"en_route_stops": []},
+                },
+                "scenic_drives": [],
+                "images": [],
+                "cultural_events": {},
+            },
+            {
+                "id": "arches",
+                "name": "Arches National Park",
+                "dates": "August 2, 2026",
+                "group_with": "moab",
+                "planning_links": [],
+                "ai_content": {
+                    "top_attractions": [
+                        {"name": "Delicate Arch", "type": "hike", "description": "Arches own coverage of the arch.", "url": "https://www.nps.gov/arch/delicate"},
+                    ],
+                    "dinner_recommendations": [],
+                    "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+                },
+                "scenic_drives": [],
+                "images": [],
+                "cultural_events": {},
+            },
+        ],
+    }
+
+    html = assembler.assemble(trip)
+
+    # "Delicate Arch" renders exactly once -- from Arches' own nested card,
+    # not duplicated in Moab's own attraction list.
+    assert html.count("Delicate Arch") == 1
+    assert "Arches own coverage of the arch." in html
+    assert "Moab own suggestion duplicate." not in html
+    # Moab's genuinely distinct attraction is untouched by the filter.
+    assert "Moab Giants Dinosaur Park" in html
+
+
+def test_assemble_departure_card_renders_on_base_when_last_destination_is_grouped() -> None:
+    """When the trip's final destination is itself a grouped (day-trip)
+    entry, the trailing 'Departure Route Options' card must render on the
+    group base's section (where the traveler actually overnights), not on
+    the grouped child's now-nested card -- generalizing the existing
+    base-tracking route-label fix (§4 open question #3) to *where the
+    card renders*, now that grouped entries no longer have their own
+    section to render it in."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {
+        "trip": {"title": "Moab Group Trip", "subtitle": "Test", "theme_color": "#C0623E"},
+        "destinations": [
+            {
+                "id": "moab",
+                "name": "Moab",
+                "dates": "August 1-4, 2026",
+                "lodging": {"name": "Moab Springs Ranch", "location": "Moab Springs Ranch, Moab, UT", "checkin_time": "4:00 PM"},
+                "planning_links": [],
+                "ai_content": {
+                    "top_attractions": [],
+                    "dinner_recommendations": [],
+                    "getting_here": {"en_route_stops": []},
+                },
+                "scenic_drives": [],
+                "images": [],
+                "cultural_events": {},
+            },
+            {
+                "id": "canyonlands",
+                "name": "Canyonlands National Park",
+                "dates": "August 3, 2026",
+                "group_with": "moab",
+                "planning_links": [],
+                "ai_content": {
+                    "top_attractions": [],
+                    "dinner_recommendations": [],
+                    "getting_here": {"distance_miles": "32", "drive_time": "40 min", "en_route_stops": []},
+                    "getting_there": {"route_summary": "Head toward Grand Junction for departure.", "route_options": []},
+                },
+                "scenic_drives": [],
+                "images": [],
+                "cultural_events": {},
+            },
+        ],
+    }
+
+    html = assembler.assemble(trip)
+
+    assert "Departure Route Options" in html
+    departure_pos = html.index("Departure Route Options")
+    moab_start = html.index('id="section-moab"')
+    moab_end = html.index("</section>", moab_start)
+    # The departure card must land inside Moab's own <section>, after the
+    # nested Canyonlands child card that Moab's section also contains.
+    assert moab_start < departure_pos < moab_end
+    canyonlands_pos = html.index('id="section-canyonlands"')
+    assert canyonlands_pos < departure_pos
+
+
+def test_build_group_child_card_omits_schedule_and_renders_nested_div() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._config = {}
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    arches = dict(dest_by_id["arches"])
+    arches["ai_content"] = {
+        "top_attractions": [{"name": "Delicate Arch", "type": "hike", "description": "Iconic hike.", "url": "https://www.nps.gov/arch/delicate"}],
+        "possible_daily_schedule": [{"day_label": "Day 1", "periods": [{"period": "morning", "summary": "Should never render."}]}],
+        "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+    }
+
+    html = assembler._build_group_child_card(arches, {}, "Moab", "Moab Springs Ranch, Moab, UT", "Arches National Park", dest_by_id)
+
+    assert html.startswith('<div id="section-arches" class="group-child-card"')
+    assert html.rstrip().endswith("</div>")
+    assert "<section" not in html
+    assert "Should never render." not in html
+    assert "schedule-card" not in html
+    assert "Delicate Arch" in html
+    assert "Day trip from Moab" in html
+
+
+def test_group_child_covered_names_collects_child_name_attractions_and_drives() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    children = [
+        {
+            "name": "Arches National Park",
+            "ai_content": {"top_attractions": [{"name": "Delicate Arch"}, {"name": "Landscape Arch"}]},
+            "scenic_drives": [{"title": "Arches Scenic Drive"}],
+        },
+    ]
+
+    covered = assembler._group_child_covered_names(children)
+
+    assert "Arches National Park" in covered
+    assert "Delicate Arch" in covered
+    assert "Landscape Arch" in covered
+    assert "Arches Scenic Drive" in covered
+
+
+def test_dedupe_attractions_against_names_uses_fuzzy_match_and_preserves_order() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    attractions = [
+        {"name": "Delicate Arch Trail"},  # fuzzy-duplicates "Delicate Arch"
+        {"name": "Moab Giants Dinosaur Park"},
+    ]
+
+    kept = assembler._dedupe_attractions_against_names(attractions, ["Delicate Arch"])
+
+    assert kept == [{"name": "Moab Giants Dinosaur Park"}]
+
+
+def test_dedupe_attractions_against_names_no_covered_names_is_noop() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    attractions = [{"name": "Delicate Arch"}]
+
+    assert assembler._dedupe_attractions_against_names(attractions, []) == attractions
+
 def test_build_packing_summary_consolidates_differently_worded_same_advice() -> None:
     """dipstick58: 'layered clothing', 'layers for fluctuating temperatures',
     'layers for warmth', and 'light jacket' are the same actionable advice
