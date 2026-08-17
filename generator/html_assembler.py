@@ -766,6 +766,7 @@ class HTMLAssembler:
                     f'<a href="{self._safe_href(url)}">{html_escape.escape(title)}</a>'
                     f' <span class="attr-external-link" title="link source">{source_icon}</span>'
                 )
+                maps_corner_html = self._maps_corner_link_html(opt, url)
                 dist = str(opt.get("distance_or_duration", "") or "").strip()
                 detour_html = f' <span class="stop-detour">({html_escape.escape(dist)})</span>' if dist else ""
                 description = html_escape.escape(str(opt.get("description", "") or "").strip())
@@ -774,6 +775,7 @@ class HTMLAssembler:
                     '<span class="stop-icon">🚗</span>'
                     f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}'
                     f'<div class="stop-desc">{description}</div></div>'
+                    f'{maps_corner_html}'
                     '</div>\n'
                 )
             html += '  </div>\n'
@@ -1354,8 +1356,10 @@ class HTMLAssembler:
                         f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{stop_name}</a>'
                         f' <span class="attr-external-link" title="link source">{source_icon}</span>'
                     )
+                    maps_corner_html = self._maps_corner_link_html(stop, url)
                 else:
                     name_html = stop_name
+                    maps_corner_html = ""
                 # These two values are rendered exactly as extracted, with no
                 # normalization of one-way vs. round-trip vs. loop-back
                 # semantics -- see the detour-semantics note above
@@ -1404,6 +1408,7 @@ class HTMLAssembler:
                     f'<span class="stop-icon">{icon}</span>'
                     f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}{rating_badge_html}{caution_html}'
                     f'<div class="stop-desc">{description}</div>{note_html}</div>'
+                    f'{maps_corner_html}'
                     f'</div>\n'
                 )
             html += '  </div>\n'
@@ -1605,8 +1610,10 @@ class HTMLAssembler:
                     f'<a href="{self._safe_href(url)}" class="attr-link" target="_blank" rel="noopener">{attr_name}</a>'
                     f'<span class="attr-external-link" title="link source">{source_icon}</span>'
                 )
+                maps_corner_html = self._maps_corner_link_html(attr, url)
             else:
                 name_html = attr_name
+                maps_corner_html = ""
             
             diff = attr.get("difficulty", "")
             dur_raw = str(attr.get("duration", "") or "").strip()
@@ -1678,6 +1685,7 @@ class HTMLAssembler:
                 f'</div>'
                 f'<span class="attr-desc">{html_escape.escape(str(attr.get("description", "") or ""))}</span>'
                 f'{note_html}'
+                f'{maps_corner_html}'
                 f'</div>\n'
             )
 
@@ -2089,6 +2097,7 @@ class HTMLAssembler:
             )
 
             desc_html = f'    <span class="rest-desc">{html_escape.escape(desc)}</span>\n' if desc else ""
+            maps_corner_html = self._maps_corner_link_html(rest, url) if url else ""
             rows.append(
                 f'  <div class="rest-item">\n'
                 f'    <div class="rest-header rest-header-inline">\n'
@@ -2102,6 +2111,7 @@ class HTMLAssembler:
                 f'      </div>\n'
                 f'    </div>\n'
                 f'{desc_html}'
+                f'{maps_corner_html}'
                 f'  </div>\n'
             )
 
@@ -2245,6 +2255,49 @@ class HTMLAssembler:
         if "google.com/maps" in lower or "maps.google.com" in lower or "maps.app.goo.gl" in lower:
             return "🗺️"
         return "🔗"
+
+    @staticmethod
+    def _looks_like_maps_url(url: str) -> bool:
+        lower = str(url or "").lower()
+        return "google.com/maps" in lower or "maps.google.com" in lower or "maps.app.goo.gl" in lower
+
+    def _maps_corner_link_html(self, item: dict[str, Any], primary_url: str) -> str:
+        """Small map-icon link to `item["maps_url"]`, rendered in the card's
+        lower-right corner (see `.map-corner-link` in v2.5_template.html).
+
+        Project owner's ask: when an item carries BOTH a real primary source
+        URL (e.g. an NPS/official page, chosen by `_select_preferred_external_link`
+        as the card's main link) AND a separate `maps_url`, the maps_url was
+        previously discarded entirely -- there was no way to reach it from the
+        card. This surfaces it, but only when it's a genuinely distinct,
+        useful destination: skipped when there's no maps_url, when the primary
+        link IS already that maps_url (the `_select_preferred_external_link`
+        maps-fallback case), when the primary link is itself already some
+        other Google Maps URL, or when maps_url is only a generic text-query
+        search link (`_is_maps_search_url`) -- ambiguous and not guaranteed to
+        land on the right place, so `_select_preferred_external_link` already
+        keeps it out of the primary-link decision for these sections and this
+        icon respects the same call (see e.g.
+        test_build_restaurants_prefers_discovered_url_over_maps_query, which
+        asserts a maps/search fallback stays out of the HTML entirely once a
+        real URL is already showing).
+        """
+        maps_url = self._normalize_external_url(item.get("maps_url", ""))
+        if not maps_url:
+            return ""
+        if self._is_maps_search_url(maps_url):
+            return ""
+        normalized_primary = self._normalize_external_url(primary_url)
+        if not normalized_primary:
+            return ""
+        if maps_url == normalized_primary:
+            return ""
+        if self._looks_like_maps_url(normalized_primary):
+            return ""
+        return (
+            f'<a href="{self._safe_href(maps_url)}" class="map-corner-link" target="_blank" '
+            f'rel="noopener" title="Open in Google Maps" aria-label="Open in Google Maps">🗺️</a>'
+        )
 
     @staticmethod
     def _is_maps_directions_url(url: str) -> bool:

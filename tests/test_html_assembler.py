@@ -3326,3 +3326,204 @@ def test_build_packing_summary_keeps_waterproof_jacket_distinct_from_generic_lay
     assert html.count("<li>") == 2
     assert "waterproof jacket" in html
     assert "Layers / light jacket (temperature swings)" in html
+
+
+# ── Maps-corner-link icon (project owner ask: when an item has BOTH a real
+# primary source URL and a separate maps_url, the maps_url was previously
+# discarded entirely -- there was no way to reach it from the card). See
+# HTMLAssembler._maps_corner_link_html and the `.map-corner-link` CSS rule
+# in templates/v2.5_template.html. ─────────────────────────────────────────
+
+
+def test_build_attractions_renders_maps_corner_link_when_distinct_from_primary_url() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Zion Narrows",
+                "type": "hike",
+                "description": "Iconic slot canyon hike.",
+                "url": "https://www.nps.gov/zion/planyourvisit/narrows.htm",
+                "maps_url": "https://www.google.com/maps/place/The+Narrows/@37.2982,-112.9481,15z",
+            }
+        ]
+    }
+
+    html = assembler._build_attractions(ai, drives=[], dest_name="Zion National Park")
+
+    assert "nps.gov" in html
+    assert 'class="map-corner-link"' in html
+    assert "maps/place/The+Narrows" in html
+
+
+def test_build_attractions_omits_maps_corner_link_when_no_maps_url() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Zion Narrows",
+                "type": "hike",
+                "description": "Iconic slot canyon hike.",
+                "url": "https://www.nps.gov/zion/planyourvisit/narrows.htm",
+            }
+        ]
+    }
+
+    html = assembler._build_attractions(ai, drives=[], dest_name="Zion National Park")
+
+    assert "nps.gov" in html
+    assert "map-corner-link" not in html
+
+
+def test_build_attractions_omits_maps_corner_link_when_redundant_with_primary_url() -> None:
+    """The primary URL already IS the maps_url (or another Maps URL) --
+    a second map icon pointing at essentially the same place is redundant."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Same Place",
+                "type": "attraction",
+                "description": "desc",
+                "url": "https://www.google.com/maps/place/Same/@1,2,3z",
+                "maps_url": "https://www.google.com/maps/place/Same/@1,2,3z",
+            }
+        ]
+    }
+
+    html = assembler._build_attractions(ai, drives=[], dest_name="Anywhere")
+
+    assert "map-corner-link" not in html
+
+
+def test_build_attractions_omits_maps_corner_link_for_ambiguous_maps_search_fallback() -> None:
+    """A generic text-query google.com/maps/search fallback is ambiguous --
+    not guaranteed to land on the right place -- so it's excluded from the
+    corner icon just like it's excluded from being a primary link
+    (see test_build_restaurants_prefers_discovered_url_over_maps_query)."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Weeping Rock",
+                "type": "hike",
+                "description": "Short trail to a shaded alcove.",
+                "url": "https://www.nps.gov/zion/planyourvisit/weeping-rock.htm",
+                "maps_url": "https://www.google.com/maps/search/?api=1&query=Weeping+Rock+Zion+National+Park",
+            }
+        ]
+    }
+
+    html = assembler._build_attractions(ai, drives=[], dest_name="Zion National Park")
+
+    assert "nps.gov" in html
+    assert "map-corner-link" not in html
+
+
+def test_build_restaurants_renders_maps_corner_link_when_distinct_from_primary_url() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "dinner_recommendations": [
+            {
+                "name": "Painted Pony",
+                "url": "https://paintedponyrestaurant.com/",
+                "maps_url": "https://www.google.com/maps/place/Painted+Pony/@37.09,-113.58,15z",
+                "cuisine": "American",
+                "description": "Fine dining.",
+            }
+        ]
+    }
+
+    html = assembler._build_restaurants(ai, dest_name="St. George, Utah")
+
+    assert "paintedponyrestaurant.com" in html
+    assert 'class="map-corner-link"' in html
+    assert "maps/place/Painted+Pony" in html
+
+
+def test_build_restaurants_omits_maps_corner_link_when_no_maps_url() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "dinner_recommendations": [
+            {
+                "name": "Painted Pony",
+                "url": "https://paintedponyrestaurant.com/",
+                "cuisine": "American",
+                "description": "Fine dining.",
+            }
+        ]
+    }
+
+    html = assembler._build_restaurants(ai, dest_name="St. George, Utah")
+
+    assert "paintedponyrestaurant.com" in html
+    assert "map-corner-link" not in html
+
+
+def test_build_getting_here_renders_maps_corner_link_when_distinct_from_primary_url() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "getting_here": {
+            "route_summary": "Drive to Santa Fe.",
+            "distance_miles": "60",
+            "drive_time": "1h 15m",
+            "en_route_stops": [
+                {
+                    "name": "El Rito",
+                    "description": "Historic stop option.",
+                    "url": "https://example.com/el-rito-visitor-info",
+                    "maps_url": "https://www.google.com/maps/place/El+Rito/@36.35,-106.19,15z",
+                }
+            ],
+        }
+    }
+    dest = {"name": "Santa Fe"}
+
+    html = assembler._build_getting_here(ai, dest, previous_name="Albuquerque")
+
+    assert "example.com/el-rito-visitor-info" in html
+    assert 'class="map-corner-link"' in html
+    assert "maps/place/El+Rito" in html
+
+
+def test_build_getting_here_omits_maps_corner_link_when_redundant_with_primary_url() -> None:
+    """No distinct maps_url here -- the primary link IS the maps fallback
+    (_select_preferred_external_link's maps-fallback case), so a second map
+    icon would point at the same place. Mirrors
+    test_build_getting_here_falls_back_to_maps_url_when_canonical_missing."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "getting_here": {
+            "route_summary": "Drive to Santa Fe.",
+            "distance_miles": "60",
+            "drive_time": "1h 15m",
+            "en_route_stops": [
+                {
+                    "name": "El Rito",
+                    "description": "Historic stop option.",
+                    "url": "",
+                    "maps_url": "https://www.google.com/maps/place/El+Rito/@36.35,-106.19,15z",
+                }
+            ],
+        }
+    }
+    dest = {"name": "Santa Fe"}
+
+    html = assembler._build_getting_here(ai, dest, previous_name="Albuquerque")
+
+    assert "El Rito" in html
+    assert "map-corner-link" not in html
+
+
+def test_template_drive_popup_offers_distinct_route_map_icon() -> None:
+    """Project owner separately called out 'No maps offered on Scenic Drive
+    popups' -- the popup already had a plain 'Route Map' text link
+    (desc.route_map_url) but no map-icon convention matching the rest of the
+    UI, and no guard against duplicating an identical 'More Info' link. This
+    checks both: the 🗺️ icon convention is present, and it's gated on the
+    route map genuinely differing from the info link (see openDriveInfo in
+    v2.5_template.html)."""
+    template_text = TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert "desc.route_map_url && desc.route_map_url !== desc.url" in template_text
+    assert "🗺️ Route Map" in template_text
