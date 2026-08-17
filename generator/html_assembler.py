@@ -115,22 +115,95 @@ class HTMLAssembler:
         # entry's section can render "see base" pointers (lodging, deferred
         # categories) that name and link to its group base.
         dest_by_id = {d["id"]: d for d in destinations if isinstance(d, dict) and d.get("id")}
+
+        # GH #68 card-within-card hierarchy: a grouped entry (group_with set)
+        # never gets its own top-level <section> -- its content renders
+        # nested inside its group base's section instead (see
+        # _build_group_child_card). children_by_base maps a base's id -> its
+        # grouped children in trip order, regardless of where each child
+        # falls in the destinations list (mirrors the same base-id grouping
+        # _build_nav_tabs already does for the nav-tab pill clustering).
+        children_by_base: dict[str, list[dict[str, Any]]] = {}
+        index_by_id: dict[str, int] = {}
+        for i, d in enumerate(destinations):
+            if not isinstance(d, dict) or not d.get("id"):
+                continue
+            index_by_id[d["id"]] = i
+            base_id = group_base_id(d)
+            if base_id:
+                children_by_base.setdefault(base_id, []).append(d)
+        grouped_ids = {
+            child["id"] for children in children_by_base.values() for child in children if child.get("id")
+        }
+
+        # The trailing "Departure Route Options" card belongs wherever the
+        # traveler is actually spending the trip's last night. If the last
+        # destination in the manifest is itself a grouped (day-trip) entry,
+        # that is the group's base, not the day-trip location -- already
+        # true for how _build_getting_there labels the leg (§4 open
+        # question #3); this generalizes it to *where the card renders*,
+        # now that day-trip entries no longer get their own section to
+        # render it in.
+        last_dest = destinations[-1] if destinations else None
+        effective_last_id = ""
+        if isinstance(last_dest, dict):
+            effective_last_id = group_base_id(last_dest) or str(last_dest.get("id", "") or "")
+
         departure_name = meta.get("departure", "")
-        for index, dest in enumerate(destinations):
-            previous_name = destinations[index - 1]["name"] if index > 0 else departure_name
+
+        def _previous_context(index: int) -> tuple[str, str]:
             if index > 0:
-                previous_route_target = self._destination_route_target(destinations[index - 1])
-            else:
-                previous_route_target = str(departure_name or "").strip()
+                return destinations[index - 1]["name"], self._destination_route_target(destinations[index - 1])
+            return departure_name, str(departure_name or "").strip()
+
+        for index, dest in enumerate(destinations):
+            if not isinstance(dest, dict):
+                continue
+            dest_id = dest.get("id")
+            if dest_id in grouped_ids:
+                continue  # rendered nested inside its group base's section below
+
+            previous_name, previous_route_target = _previous_context(index)
             current_route_target = self._destination_route_target(dest)
+
+            group_children = children_by_base.get(dest_id, [])
+            group_children_html = ""
+            for child in group_children:
+                child_index = index_by_id.get(child.get("id"), 0)
+                child_previous_name, child_previous_route_target = _previous_context(child_index)
+                child_current_route_target = self._destination_route_target(child)
+                group_children_html += self._build_group_child_card(
+                    child,
+                    meta,
+                    child_previous_name,
+                    child_previous_route_target,
+                    child_current_route_target,
+                    dest_by_id,
+                )
+
             sections_html += self._build_single_section(
                 dest,
                 meta,
                 previous_name,
                 previous_route_target,
                 current_route_target,
-                is_last=(index == len(destinations) - 1),
+                is_last=(dest_id == effective_last_id),
                 dest_by_id=dest_by_id,
+                group_children=group_children,
+                group_children_html=group_children_html,
+                # The departure card's actual route content (distance,
+                # route_summary, route_options) must still come from
+                # whichever destination is truly last in the manifest --
+                # its own ai_content.getting_there, exactly as before this
+                # restructuring -- even though it now renders inside the
+                # group base's section when that last destination is
+                # grouped. _build_getting_there itself already knows how
+                # to relabel the origin as the group base's name when
+                # `departure_source` is a grouped entry (§4 open question
+                # #3); passing the base's own ai here instead would be
+                # wrong -- the base's ai_content.getting_there describes
+                # a different (or absent) leg entirely.
+                departure_source=last_dest,
             )
         sections_html += self._build_packing_summary(destinations)
         html = html.replace("<!--DESTINATION_SECTIONS-->", sections_html)
@@ -353,6 +426,9 @@ class HTMLAssembler:
         *,
         is_last: bool = False,
         dest_by_id: dict[str, dict[str, Any]] | None = None,
+        group_children: list[dict[str, Any]] | None = None,
+        group_children_html: str = "",
+        departure_source: dict[str, Any] | None = None,
     ) -> str:
         import logging
         logger = logging.getLogger(__name__)
@@ -365,17 +441,35 @@ class HTMLAssembler:
         section_id = dest["id"]  # use manifest id directly
         section = f'<section id="section-{section_id}" class="dest-section">\n'
 
+        # GH #68 card-within-card hierarchy, problem 2 ("avoid duplication"
+        # -- dipstick59): a group base's own AI-generated top_attractions
+        # has no awareness that a grouped child now independently covers
+        # some of the same landmarks (e.g. Moab's own list suggesting
+        # "Delicate Arch" when Arches -- now a nested child card -- already
+        # covers it). Filter the base's own attraction list against
+        # whatever its grouped children actually cover before rendering,
+        # reusing the existing fuzzy name-match helper rather than
+        # requiring an exact string match.
+        attractions_for_render = ai.get("top_attractions", [])
+        if group_children:
+            covered_names = self._group_child_covered_names(group_children)
+            attractions_for_render = self._dedupe_attractions_against_names(attractions_for_render, covered_names)
+
         # Header
         section += self._build_header(
             dest,
             images,
             dest.get("planning_links", []),
             dest.get("nps_park_code"),
-            ai.get("top_attractions", []),
+            attractions_for_render,
         )
 
         # GH #68 multi-site grouping §2: grouped entry with no own lodging
         # gets a compact "Based from X (see Y)" pointer instead of nothing.
+        # (No-op here in practice: manifest validation forbids a base from
+        # itself having group_with, so this always returns "" for the
+        # destination reaching this method -- kept for parity/safety since
+        # a grouped child's own pointer is built by _build_group_child_card.)
         section += self._build_group_lodging_pointer(dest, dest_by_id)
 
         # Intro note or cultural event summary belongs directly under hero
@@ -397,8 +491,13 @@ class HTMLAssembler:
             dest_by_id=dest_by_id,
         )
 
-        # Attractions + scenic drives/viewpoints
-        section += self._build_attractions(ai, drives, dest.get("name", ""), dest=dest, dest_by_id=dest_by_id)
+        # Attractions + scenic drives/viewpoints (deduped against group
+        # children's own content, see attractions_for_render above)
+        attractions_ai = ai
+        if group_children:
+            attractions_ai = dict(ai)
+            attractions_ai["top_attractions"] = attractions_for_render
+        section += self._build_attractions(attractions_ai, drives, dest.get("name", ""), dest=dest, dest_by_id=dest_by_id)
 
         # Daily schedule
         section += self._build_schedule(ai, drives, dest["name"])
@@ -409,10 +508,32 @@ class HTMLAssembler:
         # Dinner recommendations
         section += self._build_restaurants(ai, dest["name"], dest=dest, dest_by_id=dest_by_id)
 
+        # GH #68 card-within-card hierarchy: this base's grouped children
+        # (day trips) render as nested cards here, after the base's own
+        # full content, so the page reads as "Moab, plus its day trips" --
+        # not as unrelated equal-weight stops. See _build_group_child_card.
+        section += group_children_html
+
         # Final leg departure guidance for the last destination is rendered as a
         # separate trailing card so it does not displace inbound route context.
+        # GH #68: `departure_source` is whichever destination is truly last in
+        # the manifest -- itself, when this section's own dest is the last
+        # destination and it's ungrouped, or a grouped child whose base is
+        # this dest. Its own ai_content.getting_there supplies the actual
+        # route content; _build_getting_there separately relabels the origin
+        # as the group base's name when departure_source is grouped (§4 open
+        # question #3) -- using this dest's own `ai` here instead would be
+        # wrong, since a group base's ai_content.getting_there describes a
+        # different (or absent) leg.
         if is_last:
-            section += self._build_getting_there(ai, dest, trip_meta, dest_by_id=dest_by_id)
+            # Default to this dest's own ai/content when the caller doesn't
+            # pass an explicit departure_source (e.g. a direct unit-level
+            # call, or the ungrouped case where the last destination is its
+            # own departure source anyway) -- matches pre-restructuring
+            # behavior exactly.
+            source = departure_source if departure_source is not None else dest
+            departure_ai = source.get("ai_content", {})
+            section += self._build_getting_there(departure_ai, source, trip_meta, dest_by_id=dest_by_id)
 
         # Collapsible debug block (opt-in only)
         if self._config.get("render", {}).get("show_debug_block", False):
@@ -949,6 +1070,150 @@ class HTMLAssembler:
             '<p class="group-lodging-pointer">'
             f'<a href="#section-{base_id}">\U0001f3e8 {html_escape.escape(text)}</a></p>\n'
         )
+
+    # ── GH #68 card-within-card hierarchy ────────────────────────────────
+    # See docs/design/multi-site-destination-grouping.md §8 and the
+    # dipstick59 triage notes: a grouped entry's own "Possible Daily
+    # Schedule" card falsely implied parity with a genuine multi-day
+    # destination (the base's own schedule already places the day trip on
+    # a specific day), and the base's own AI-generated top_attractions had
+    # no awareness that a grouped child now separately covers some of the
+    # same landmarks. _build_group_child_card nests a grouped entry's
+    # content inside its base's <section> instead of a sibling <section>,
+    # omitting the schedule card entirely; _group_child_covered_names /
+    # _dedupe_attractions_against_names let the base's own attractions
+    # card filter out anything a grouped child already covers.
+
+    def _group_child_covered_names(self, children: list[dict[str, Any]]) -> list[str]:
+        """Names already rendered inside a group base's own nested child
+        cards -- the child destination's own name plus every name in its
+        top_attractions and scenic_drives. Used so the base's own
+        attractions card doesn't re-suggest a landmark a grouped child
+        already covers (e.g. Moab independently suggesting "Delicate Arch"
+        when Arches -- now a nested child card -- already covers it)."""
+        covered: list[str] = []
+        for child in children or []:
+            if not isinstance(child, dict):
+                continue
+            child_name = str(child.get("name", "") or "").strip()
+            if child_name:
+                covered.append(child_name)
+            child_ai = child.get("ai_content", {})
+            if isinstance(child_ai, dict):
+                for attr in child_ai.get("top_attractions", []) or []:
+                    if isinstance(attr, dict):
+                        name = str(attr.get("name", "") or "").strip()
+                        if name:
+                            covered.append(name)
+            for drive in child.get("scenic_drives", []) or []:
+                if isinstance(drive, dict):
+                    title = str(drive.get("title", "") or "").strip()
+                    if title:
+                        covered.append(title)
+        return covered
+
+    def _dedupe_attractions_against_names(
+        self, attractions: list[dict[str, Any]], covered_names: list[str]
+    ) -> list[dict[str, Any]]:
+        """Drop any attraction whose name plausibly describes the same
+        real place as something in `covered_names`, reusing the same
+        fuzzy name-match rule as the existing scenic-drive/attraction
+        dedup (_attraction_names_are_duplicates) rather than requiring an
+        exact string match."""
+        if not covered_names or not attractions:
+            return attractions
+        kept: list[dict[str, Any]] = []
+        for attr in attractions:
+            name = str(attr.get("name", "") or "") if isinstance(attr, dict) else ""
+            if name and any(
+                self._attraction_names_are_duplicates(name, covered) for covered in covered_names
+            ):
+                continue
+            kept.append(attr)
+        return kept
+
+    def _build_group_child_card(
+        self,
+        dest: dict[str, Any],
+        trip_meta: dict[str, Any],
+        previous_name: str,
+        previous_route_target: str,
+        current_route_target: str,
+        dest_by_id: dict[str, dict[str, Any]] | None,
+    ) -> str:
+        """Render a grouped (day-trip) entry's own content nested inside
+        its group base's <section>, instead of as an independent sibling
+        <section> carrying equal visual weight to a genuine multi-day
+        destination.
+
+        Reuses the same per-destination card builders _build_single_section
+        uses (header, intro note, gallery, environment, getting-here,
+        attractions, events, restaurants -- including the existing §2
+        lodging pointer and §5 "see base" category pointers, which keep
+        working unchanged here). Two things intentionally differ from a
+        top-level section:
+
+        1. No _build_schedule call, ever. A grouped entry's day-trip plan
+           is already covered by the base's own multi-day schedule (see
+           module-level GH #68 comment block above) -- rendering its own
+           "Possible Daily Schedule" card here would re-introduce the
+           false-parity problem this restructuring exists to fix.
+        2. No _build_getting_there call. The trailing departure-route card
+           belongs to wherever the traveler actually spends the trip's
+           last night -- the group base -- handled by assemble()'s
+           effective_last_id computation, not here.
+        """
+        ai = dest.get("ai_content", {})
+        images = dest.get("images", [])
+        events = dest.get("cultural_events", {})
+        drives = dest.get("scenic_drives", [])
+
+        child_id = dest["id"]
+        base_id = group_base_id(dest)
+        base = (dest_by_id or {}).get(base_id) or {}
+        base_name = str(base.get("name", "") or base_id).strip()
+
+        html = (
+            f'<div id="section-{child_id}" class="group-child-card" '
+            'style="margin:0 1.5rem 1.25rem;border:2px solid var(--sandstone);'
+            'border-radius:14px;overflow:hidden;background:#faf7f2;">\n'
+        )
+        html += (
+            '  <div class="group-child-banner" style="padding:0.5rem 1.25rem;'
+            'background:var(--sandstone);font-size:0.8rem;font-weight:700;'
+            'letter-spacing:0.03em;color:var(--canyon);text-transform:uppercase;">'
+            f'\U0001f9ed Day trip from {html_escape.escape(base_name)}</div>\n'
+        )
+
+        html += self._build_header(
+            dest,
+            images,
+            dest.get("planning_links", []),
+            dest.get("nps_park_code"),
+            ai.get("top_attractions", []),
+        )
+        html += self._build_group_lodging_pointer(dest, dest_by_id)
+        html += self._build_intro_note(dest, events)
+        html += self._build_image_gallery(images, dest["name"])
+        html += self._build_environment_card(ai, dest)
+        html += self._build_getting_here(
+            ai,
+            dest,
+            previous_name,
+            previous_route_target=previous_route_target,
+            current_route_target=current_route_target,
+            dest_by_id=dest_by_id,
+        )
+        html += self._build_attractions(ai, drives, dest.get("name", ""), dest=dest, dest_by_id=dest_by_id)
+        # No _build_schedule call -- see docstring above.
+        html += self._build_events(events, dest["name"])
+        html += self._build_restaurants(ai, dest["name"], dest=dest, dest_by_id=dest_by_id)
+
+        if self._config.get("render", {}).get("show_debug_block", False):
+            html += self._build_debug_block(dest, trip_meta)
+
+        html += '</div>\n'
+        return html
 
     def _build_getting_here(
         self,
