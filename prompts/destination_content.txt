@@ -49,7 +49,7 @@ All string values follow the voice and style rules in the system prompt.
         "detour_time_minutes": "numeric extra drive minutes (0 if directly on route)"
       }}
     ]
-          "summary": "Sunset viewpoint, stargazing, or dinner transition. If you mention dinner, name one restaurant from dinner_recommendations exactly. No vague 'enjoy dinner nearby' phrasing. On the final day, account for preparing for onward drive to next stop."
+  }},
 
   "top_attractions": [
     {{
@@ -86,7 +86,7 @@ All string values follow the voice and style rules in the system prompt.
         }},
         {{
           "period": "Evening",
-          "summary": "Sunset viewpoint, stargazing, or dinner transition. If you mention dinner, name one restaurant from dinner_recommendations exactly. No vague 'enjoy dinner nearby' phrasing."
+          "summary": "Sunset viewpoint, stargazing, or dinner transition. If you mention dinner, name one restaurant from dinner_recommendations exactly. No vague 'enjoy dinner nearby' phrasing. Do NOT mention departing, packing up, or driving to the next stop -- the app adds onward-travel framing separately. This applies to every day of the stay, including the last: keep it a normal, relaxed local evening here."
         }}
       ]
     }}
@@ -154,3 +154,9 @@ STRICT PROHIBITIONS
   see, hear, do, and need to know logistically
 - DO NOT lead schedule summaries with clock times like '7:00am —'
 - DO NOT mention towns or dinner venues in the schedule unless they appear in dinner_recommendations
+- DO NOT mention departing, checking out, packing up, or driving toward {next_destination}
+  in possible_daily_schedule, on any day — not even the last. The app appends onward-travel
+  and departure framing separately once every destination is generated; a schedule day that
+  pre-empts it (especially in the Evening period) reads as a multi-hour after-dinner drive,
+  which never happens. Every day here, including the stay's last day, should read as a normal
+  local day at {destination_name}.
