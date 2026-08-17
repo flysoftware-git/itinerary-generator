@@ -432,6 +432,36 @@ def test_inject_travel_realism_does_not_duplicate_existing_dinner_phrase():
     assert "Plan dinner at Painted Pony Restaurant" not in evening
 
 
+def test_inject_travel_realism_does_not_duplicate_restaurant_name_around_dinner_word():
+    """dipstick59: 'Head to Red Fort Cuisine for dinner and enjoy...' already
+    names the restaurant before the word 'dinner' -- the rotation logic's
+    'dinner' branch blindly appended 'at {restaurant_name}' regardless,
+    producing 'Head to Red Fort Cuisine for dinner at Red Fort Cuisine'."""
+    gen = _make_gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Explore downtown."},
+                {"period": "Afternoon", "summary": "Visit a local park."},
+                {"period": "Evening", "summary": "Head to Red Fort Cuisine for dinner and enjoy flavorful Indian dishes."},
+            ],
+        }
+    ]
+
+    out = gen._inject_travel_realism(
+        days,
+        {"drive_time": "2 hours"},
+        "Las Vegas Airport",
+        "St. George",
+        restaurants=[{"name": "Red Fort Cuisine"}],
+    )
+
+    evening = out[0]["periods"][2]["summary"]
+    assert evening == "Head to Red Fort Cuisine for dinner and enjoy flavorful Indian dishes."
+    assert evening.count("Red Fort Cuisine") == 1
+
+
 def test_inject_travel_realism_does_not_append_block_filler_phrases() -> None:
     gen = _make_gen()
     days = [

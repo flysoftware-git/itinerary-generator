@@ -1728,7 +1728,15 @@ class AIContentGenerator:
                 return text
             low = text.lower()
             if "dinner" in low:
-                # Normalize all dinner mentions to the day-assigned restaurant.
+                # Normalize all dinner mentions to the day-assigned restaurant --
+                # but skip if that name is already present anywhere in the
+                # sentence (e.g. "Head to Red Fort Cuisine for dinner...").
+                # Otherwise this duplicates the name ("Head to Red Fort Cuisine
+                # for dinner at Red Fort Cuisine"). If a DIFFERENT restaurant
+                # name is present (e.g. a stale/mismatched mention), the
+                # substitution below still corrects it as intended.
+                if restaurant_name.lower() in low:
+                    return text
                 return re.sub(
                     r"dinner(?:\s+at\s+[^.,;]+)?",
                     f"dinner at {restaurant_name}",
