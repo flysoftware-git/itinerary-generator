@@ -263,3 +263,81 @@ var DRIVE_DESCRIPTIONS = {json.dumps({drive_key: {"title": drive_key}})};
         v = _make_validator(tmp_path)
         report = v.validate(p, SAMPLE_TRIP)
         assert report["valid"] is True
+
+
+GROUP_CHILD_TRIP = {
+    "destinations": [
+        {
+            "id": "moab",
+            "name": "Moab",
+            "images": [
+                {"local_path": "output/images/a.jpg"},
+                {"local_path": "output/images/b.jpg"},
+            ],
+        },
+        {
+            "id": "arches",
+            "name": "Arches National Park",
+            "images": [
+                {"local_path": "output/images/c.jpg"},
+                {"local_path": "output/images/d.jpg"},
+            ],
+        },
+    ]
+}
+
+GROUP_CHILD_VALID_HTML = """<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body>
+<section id="section-moab" class="destination-section">
+  <div class="dest-header">
+    <div class="inner"></div>
+  </div>
+  <div id="section-arches" class="group-child-card">
+    <div class="dest-header">
+      <div class="inner"><div class="nested"></div></div>
+    </div>
+  </div>
+</section>
+</body>
+</html>"""
+
+
+def test_group_child_card_div_balance_passes(tmp_path):
+    """dipstick60: a GH#68 grouped child renders as a nested <div
+    class="group-child-card"> (see html_assembler.py's _build_group_child_card),
+    not its own <section> -- the div-balance locator must find it via depth-
+    aware matching, not the first </div> it happens to hit."""
+    p = _write_html(tmp_path, GROUP_CHILD_VALID_HTML)
+    v = _make_validator(tmp_path)
+    report = v.validate(p, GROUP_CHILD_TRIP)
+    assert not any("arches" in e.lower() and "locate" in e.lower() for e in report["errors"])
+    assert not any("div balance mismatch" in e.lower() for e in report["errors"])
+
+
+def test_group_child_card_div_imbalance_flagged(tmp_path):
+    """A dropped </div> inside the group-child-card means its true close can
+    never be depth-matched -- correctly surfaces as "could not locate" for
+    arches (rather than a false-balance reading), and as a real div-balance
+    mismatch for moab's own section, since arches is nested inside it."""
+    bad_html = GROUP_CHILD_VALID_HTML.replace(
+        '<div class="inner"><div class="nested"></div></div>',
+        '<div class="inner"><div class="nested"></div>',
+    )
+    p = _write_html(tmp_path, bad_html)
+    v = _make_validator(tmp_path)
+    report = v.validate(p, GROUP_CHILD_TRIP)
+    assert any("arches" in e.lower() for e in report["errors"])
+    assert any("moab" in e.lower() and "div balance mismatch" in e.lower() for e in report["errors"])
+
+
+def test_orphan_script_inside_group_child_card_warns(tmp_path):
+    bad_html = GROUP_CHILD_VALID_HTML.replace(
+        '<div id="section-arches" class="group-child-card">',
+        '<div id="section-arches" class="group-child-card"><script>alert(1)</script>',
+    )
+    p = _write_html(tmp_path, bad_html)
+    v = _make_validator(tmp_path)
+    report = v.validate(p, GROUP_CHILD_TRIP)
+    assert any("arches" in w.lower() and "script" in w.lower() for w in report["warnings"])

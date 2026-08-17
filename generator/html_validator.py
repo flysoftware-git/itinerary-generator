@@ -153,17 +153,47 @@ class HTMLValidator:
 
     # ── Check 3: Div balance per section ─────────────────────────────────────
 
+    @staticmethod
+    def _find_matching_div_close(html: str, search_from: int) -> int | None:
+        """Depth-aware match for the </div> that closes the <div> whose opening
+        tag ended at search_from. A GH#68 grouped-destination child renders as
+        <div id="section-{id}" class="group-child-card">...</div> instead of a
+        <section> -- it contains many of its own nested <div>s (attractions,
+        restaurants, etc.), so "the first </div> encountered" would truncate
+        way before the card's real end. Mirrors the JSON-brace depth counter
+        above (_extract_json_object-style), just for div tags instead of {}."""
+        depth = 1
+        for m in re.finditer(r"<div\b[^>]*>|</div>", html[search_from:], re.IGNORECASE):
+            if m.group(0).startswith("</div"):
+                depth -= 1
+                if depth == 0:
+                    return search_from + m.end()
+            else:
+                depth += 1
+        return None
+
     def _check_section_div_balance(self, html: str, trip: dict[str, Any], errors: list[str]) -> None:
         for dest in trip.get("destinations", []):
             dest_id = dest["id"]
-            # Find section start/end (template uses id="section-{dest_id}")
-            start_pat = re.compile(rf'<section[^>]+id="section-{re.escape(dest_id)}"[^>]*>', re.IGNORECASE)
+            # Template uses id="section-{dest_id}" on either a <section> (an
+            # ordinary or group-base destination) or a <div class="group-
+            # child-card"> (a GH#68 grouped child nested inside its base's
+            # section -- see html_assembler.py's _build_group_child_card).
+            start_pat = re.compile(
+                rf'<(section|div)[^>]+id="section-{re.escape(dest_id)}"[^>]*>', re.IGNORECASE
+            )
             start_m = start_pat.search(html)
-            end_m = re.search(r'</section>', html[start_m.end():]) if start_m else None
-            if not start_m or not end_m:
+            end_idx: int | None = None
+            if start_m:
+                if start_m.group(1).lower() == "section":
+                    end_m = re.search(r"</section>", html[start_m.end():])
+                    end_idx = start_m.end() + end_m.end() if end_m else None
+                else:
+                    end_idx = self._find_matching_div_close(html, start_m.end())
+            if not start_m or end_idx is None:
                 errors.append(f"Could not locate section for destination '{dest_id}'")
                 continue
-            section_html = html[start_m.start():start_m.end() + end_m.end()]
+            section_html = html[start_m.start():end_idx]
             opens = len(re.findall(r'<div\b', section_html, re.IGNORECASE))
             closes = len(re.findall(r'</div>', section_html, re.IGNORECASE))
             if opens != closes:
@@ -185,6 +215,21 @@ class HTMLValidator:
             if '<script' in section_content.lower():
                 # Extract section id for useful message
                 id_m = re.search(r'id="([^"]+)"', section_content)
+                section_id = id_m.group(1) if id_m else "unknown"
+                warnings.append(f"Orphan <script> tag found inside section '{section_id}'")
+
+        # A GH#68 grouped child renders as <div class="group-child-card"> nested
+        # inside its base's <section>, not its own <section> -- the pattern
+        # above never sees inside it, so it could hide a real orphan script.
+        for child_m in re.finditer(
+            r'<div[^>]+class="group-child-card"[^>]*>', html, re.IGNORECASE
+        ):
+            end_idx = self._find_matching_div_close(html, child_m.end())
+            if end_idx is None:
+                continue
+            child_content = html[child_m.start():end_idx]
+            if '<script' in child_content.lower():
+                id_m = re.search(r'id="([^"]+)"', child_content)
                 section_id = id_m.group(1) if id_m else "unknown"
                 warnings.append(f"Orphan <script> tag found inside section '{section_id}'")
 
