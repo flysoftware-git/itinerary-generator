@@ -8262,6 +8262,33 @@ class URLDiscoverer:
         )
         return any(re.search(pattern, text) for pattern in generic_patterns)
 
+    @classmethod
+    def _en_route_stop_name_duplicates_destination(cls, stop_name: str, dest_name: str) -> bool:
+        """True when an en-route stop's own name is (or reduces to) the
+        arrival destination itself -- e.g. a candidate literally titled
+        "Capitol Reef National Park" surfacing as an en-route stop on the
+        Bryce -> Capitol Reef leg. Comparing full significant-token sets
+        (not substring/overlap) avoids false positives from a single shared
+        word (see the "Canyon Overlook Trail" / "Bryce Canyon National Park"
+        false-qualification failure mode already documented on
+        _build_route_gmaps_url) while still catching exact-name and
+        trivial-suffix duplicates ("Capitol Reef", "Capitol Reef NP").
+
+        This is a real symptom the project owner's own Google Maps
+        screenshot of the Bryce -> Capitol Reef leg surfaced: "Capitol Reef
+        National Park" appearing as its own waypoint entry immediately
+        before the actual destination. An en-route stop whose resolved name
+        IS the destination isn't a real detour -- it belongs nowhere in the
+        waypoint list (or the "can't-miss enroute" card), since recommending
+        a detour to the destination itself, right before arriving, is
+        never a sensible suggestion.
+        """
+        stop_tokens = frozenset(cls._significant_tokens(stop_name))
+        dest_tokens = frozenset(cls._significant_tokens(dest_name))
+        if not stop_tokens or not dest_tokens:
+            return False
+        return stop_tokens == dest_tokens
+
     @staticmethod
     def _extract_named_stops_from_description(description: str) -> list[str]:
         """Extract specific named place candidates from a list-style en-route description."""
@@ -8453,9 +8480,22 @@ class URLDiscoverer:
         max_minutes = int(getattr(self, "_en_route_detour_max_minutes", DEFAULT_EN_ROUTE_DETOUR_MAX_MINUTES) or 0)
         max_miles = float(getattr(self, "_en_route_detour_max_miles", DEFAULT_EN_ROUTE_DETOUR_MAX_MILES) or 0)
         require_metadata = bool(getattr(self, "_en_route_require_detour_metadata", DEFAULT_EN_ROUTE_REQUIRE_DETOUR_METADATA))
+        is_seed = bool(isinstance(stop, dict) and stop.get("is_seed"))
 
         miles, minutes = self._en_route_stop_detour_metrics(stop)
         if require_metadata and miles is None and minutes is None:
+            if is_seed:
+                # A manifest en_route_seeds candidate is the traveler's own
+                # explicit pick, not an AI/harvest guess that merely lacks
+                # detour metadata by chance -- it shouldn't need pre-existing
+                # detour distance/time text to survive, mirroring how a
+                # seeded top_attraction already bypasses the max_trail_miles
+                # demotion above (see "seed_threshold_override" there). This
+                # does not skip real verification: the seed still has to
+                # clear _prune_en_route_stops_by_geometry's actual geocoding
+                # and route-proximity checks that run right after this
+                # filter, same as any other candidate.
+                return True, "seed_threshold_override"
             return False, "missing_detour_metadata"
         if max_minutes > 0 and minutes is not None and minutes > max_minutes:
             return False, "detour_minutes_exceeded"
@@ -8571,14 +8611,41 @@ class URLDiscoverer:
                 getting_here["en_route_stops"] = stops
                 ai["getting_here"] = getting_here
 
+        if stops:
+            non_duplicate_stops: list[dict[str, Any]] = []
+            for stop in stops:
+                stop_name = str((stop or {}).get("name", "") or "").strip()
+                if stop_name and self._en_route_stop_name_duplicates_destination(stop_name, dest_name):
+                    self._log_decision(
+                        kind="en_route_stop",
+                        dest_name=dest_name,
+                        item_name=stop_name,
+                        reason="en_route_duplicate_of_destination",
+                        message="en-route stop removed: resolved name duplicates the arrival destination itself",
+                    )
+                    continue
+                non_duplicate_stops.append(stop)
+            if len(non_duplicate_stops) != len(stops):
+                stops = non_duplicate_stops
+                getting_here["en_route_stops"] = stops
+                ai["getting_here"] = getting_here
+
         if stops and source_mode == "direct_link_batch":
             filtered_stops: list[dict[str, Any]] = []
             for stop in stops:
                 keep, reason = self._en_route_stop_within_threshold(stop if isinstance(stop, dict) else {})
+                stop_name = str((stop or {}).get("name", "") or "")
                 if keep:
                     filtered_stops.append(stop)
+                    if reason == "seed_threshold_override":
+                        self._log_decision(
+                            kind="en_route_stop",
+                            dest_name=dest_name,
+                            item_name=stop_name,
+                            reason="seed_threshold_override",
+                            message="seeded en-route stop missing detour metadata but retention allowed",
+                        )
                     continue
-                stop_name = str((stop or {}).get("name", "") or "")
                 self._log_decision(
                     kind="en_route_stop",
                     dest_name=dest_name,
@@ -9205,6 +9272,18 @@ class URLDiscoverer:
             # Remove stops that are at or past the destination: these belong as
             # destination attractions, not as route waypoints.
             at_destination = progress >= 0.93 and origin_to_stop >= leg_miles * 0.88
+            # Defense-in-depth against the progress-ratio test above missing a
+            # stop that geocodes essentially on top of the destination itself
+            # (e.g. a same-named feature inside the destination park, or a
+            # geocoder match that snaps to the destination when the specific
+            # POI isn't in its index): a stop within a couple of miles of the
+            # destination's own coordinates is never a genuine en-route
+            # detour, regardless of where the ratio math places it along the
+            # origin->destination line. See the Bryce -> Capitol Reef "Capitol
+            # Reef National Park" appearing as its own waypoint entry right
+            # before the real destination pin.
+            dest_to_stop = self._haversine_miles(dest, stop_coords)
+            at_destination = at_destination or dest_to_stop <= 2.0
             if at_destination or (progress > 1.06 and origin_to_stop > leg_miles + beyond_buffer):
                 self._log_decision(
                     kind="en_route_stop",
