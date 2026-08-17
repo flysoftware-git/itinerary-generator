@@ -2504,6 +2504,37 @@ def test_direct_batch_html_prompt_for_restaurants_requires_rating_and_price_indi
     assert "price indicator" in user_prompt.lower() or "price" in user_prompt.lower()
 
 
+def test_direct_batch_html_prompt_for_restaurants_requests_a_real_descriptive_note():
+    """Root-cause fix for the dipstick59 completeness regression: 38 of 62
+    restaurants rendered with no description/teaser at all. Real captured
+    harvest HTML (Bryce Canyon direct-batch restaurant rows) showed every
+    single row following the exact shape "Name - Rating/5, $Price Cuisine."
+    with zero real prose -- unlike the attraction/trail prompts, the
+    restaurant prompt never asked the model for a descriptive note at all,
+    only for rating and price. It must now ask as explicitly as the
+    attraction prompt does (both single- and multi-destination variants)."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    prompt = discoverer._direct_batch_html_prompt(
+        kind="restaurant",
+        dest_name="St. George, Utah",
+        dates="October 17, 2026",
+    )
+    assert prompt is not None
+    system_prompt, user_prompt = prompt
+    assert "descriptive note" in system_prompt.lower()
+    assert "descriptive note" in user_prompt.lower()
+
+    multi_prompt = discoverer._direct_batch_html_prompt_multi(
+        kind="restaurant",
+        destinations=[("St. George, Utah", "October 17, 2026")],
+    )
+    assert multi_prompt is not None
+    multi_system_prompt, multi_user_prompt = multi_prompt
+    assert "descriptive note" in multi_system_prompt.lower()
+    assert "descriptive note" in multi_user_prompt.lower()
+
+
 def test_direct_batch_html_prompt_for_en_route_stops_prefers_specific_stop_pages():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
 
@@ -4951,6 +4982,71 @@ def test_build_primary_items_from_direct_batch_rejects_generic_listing_row() -> 
     assert names == ["Painted Pony"]
 
 
+def test_is_metadata_only_residual_text_catches_review_volume_and_cuisine_junk():
+    """Root-cause fix for the dipstick59 restaurant-description completeness
+    regression: manual review of a real run (dipstick59) found 38 of 62
+    restaurants rendering with literally no description, and a further 8
+    rendering with decorative junk text that isn't a real description either
+    (e.g. "(high volume), American." or "(Contemporary American)"). Both
+    classes trace back to _is_metadata_only_residual_text under-counting
+    words like "American", "fine", "dining", or "volume" as substantive
+    content, when they're really just a restatement of the rating/price/
+    cuisine metadata that already has its own dedicated fields. These exact
+    fixtures were traced from the real dipstick59 harvest/render output for
+    Bryce Canyon, St. George, and Santa Fe restaurants."""
+    cases = [
+        ("(high volume), $$ American.", "The Lodge at Bryce Canyon Restaurant"),
+        ("American fast food/pizza.", "Canyon Diner"),
+        ("(French/Southwestern fine dining)", "Geronimo"),
+        ("(Contemporary American)", "The Compound"),
+        ("(New Mexican breakfast/lunch)", "Tia Sophia's"),
+    ]
+    for text, name in cases:
+        assert URLDiscoverer._is_metadata_only_residual_text(text, name=name) is True, (
+            f"expected {text!r} to be recognized as metadata-only for {name!r}"
+        )
+
+
+def test_is_metadata_only_residual_text_still_allows_real_prose_descriptions():
+    """Companion to the filler-word guard above: tightening the metadata-only
+    detection must not start rejecting genuine descriptive prose just because
+    it happens to contain a cuisine or meal-type word (e.g. "breakfast" or
+    "American") as part of a real sentence. These fixtures are real captured
+    descriptions from the dipstick59 run that must keep rendering."""
+    cases = [
+        ("Fresh market-driven breakfast and brunch.", "Cafe Soleil"),
+        ("Offers a diverse menu with homemade pies.", "Bryce Canyon Pines Restaurant"),
+        ("Local artisan goods and handmade items shop.", "Moab Made"),
+    ]
+    for text, name in cases:
+        assert URLDiscoverer._is_metadata_only_residual_text(text, name=name) is False, (
+            f"expected {text!r} to still be treated as real content for {name!r}"
+        )
+
+
+def test_direct_batch_rows_from_html_lodge_restaurant_review_volume_junk_suppressed():
+    """Full row-parse regression using the exact raw HTML captured for "The
+    Lodge at Bryce Canyon Restaurant" in the dipstick59 run: the harvested
+    row's description field is genuinely just "(high volume), $$ American."
+    (a review-volume qualifier plus price plus cuisine, with no real prose)
+    -- price and cuisine must still land in their own structured fields, but
+    the leftover metadata fragment must not leak into description/
+    practical_note now that the guard recognizes it as junk."""
+    html = (
+        "<li>The Lodge at Bryce Canyon Restaurant - 4.0/5 (high volume), $$ American. "
+        '<a href="https://www.visitbrycecanyon.com/dining/the-lodge-at-bryce-canyon-restaurant/">Source</a> '
+        '<a href="https://www.google.com/maps/search/?api=1&query=The+Lodge+at+Bryce+Canyon+Restaurant+Bryce+Canyon+National+Park+UT">Maps</a></li>'
+    )
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    row = rows[0]
+    assert row["name"] == "The Lodge at Bryce Canyon Restaurant"
+    assert row["cuisine"] == "American"
+    assert row["price_range"] == "$$"
+    assert row["description"] == ""
+    assert row["practical_note"] == ""
+
+
 def test_direct_batch_restaurant_rating_reaches_badge_not_title_end_to_end() -> None:
     """Full-pipeline regression: a direct-batch harvested restaurant row's rating
     must end up in the html_assembler rating badge, not stuck in (or duplicated
@@ -5084,7 +5180,7 @@ def test_get_restaurant_direct_batch_rows_persists_html_capture_artifacts(tmp_pa
     assert meta["html_file"] == html_files[0].name
     assert meta["query"] == (
         "Generate a list of local restaurants near Moab (October 18, 2026) with clickable links to source material and corresponding Google Maps content. "
-        "Include a rating and price indicator for each item when available, using a clear numeric or price format. "
+        "Include a rating and price indicator for each item when available, using a clear numeric or price format, and a short descriptive note about the food, atmosphere, or signature dishes for each item when available. "
         "Keep only highly rated items (>4.3), include cuisine variety, and keep only places likely open on the indicated dates. "
         "Include only suggestions with reliable clickable links."
     )
