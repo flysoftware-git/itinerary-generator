@@ -1680,6 +1680,97 @@ def test_search_attraction_authoritative_prefers_strong_match_over_weak_anchor_m
     assert out == "https://www.churchofjesuschrist.org/temples/details/st-george-temple"
 
 
+def test_search_attraction_authoritative_prefers_exact_name_over_shared_prefix_row() -> None:
+    """Regression for dipstick59: real Zion National Park attraction-batch rows
+    (parsed from the actual harvested HTML for this run) included both
+    "Zion Canyon Scenic Drive" (nps.gov/zion/planyourvisit/scenicdrive.htm,
+    the correct answer) and "Zion Canyon Visitor Center" (a different,
+    unrelated page). Both share the words "Zion" and "Canyon" with the
+    requested item, and the old single "strong" match tier (2) let a
+    same-destination row that merely overlaps on those two generic,
+    non-distinctive words tie with -- and, via a Google Maps candidate,
+    beat -- the row that is an exact, word-for-word title match. The
+    rendered trip literally linked "Zion Canyon Scenic Drive" to a Google
+    Maps search for "Zion Canyon Visitor Center Springdale UT 84767"
+    instead of its own real, harvested, item-specific NPS scenic-drive page.
+
+    A third real row in the same batch ("Kolob Canyons Visitor Center")
+    compounded the problem: its snippet embeds
+    "Links: https://www.nps.gov/zion/planyourvisit/visitorcenters.htm ...",
+    and that embedded URL text alone contains "zion" as a substring (every
+    NPS Zion page's URL does), which combined with "canyon" being a
+    substring of its own title's "Canyons" was enough to also reach the old
+    "strong" match tier despite the row having nothing to do with the
+    requested item.
+
+    Fix: an exact/full row-name match (every word of the item's name --
+    minus generic suffixes -- present in the row's own declared name) is
+    now its own, higher match-strength tier (3) that outranks the generic
+    blob/URL-text overlap tier (2), so a same-destination row sharing only
+    generic words can no longer tie with -- or beat -- the row that
+    actually is the requested item.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "title": "Zion Canyon Visitor Center",
+            "name": "Zion Canyon Visitor Center",
+            "url": "https://www.nps.gov/zion/planyourvisit/visitorcenters.htm",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Zion+Canyon+Visitor+Center+Springdale+UT+84767",
+            "snippet": (
+                "Zion Canyon Visitor Center Source Maps 4.6/5 Gateway for maps, "
+                "shuttles, and park orientation. Links: "
+                "https://www.nps.gov/zion/planyourvisit/visitorcenters.htm "
+                "https://www.google.com/maps/search/?api=1&query=Zion+Canyon+Visitor+Center+Springdale+UT+84767"
+            ),
+        },
+        {
+            "title": "Kolob Canyons Visitor Center",
+            "name": "Kolob Canyons Visitor Center",
+            "url": "https://www.nps.gov/zion/planyourvisit/visitorcenters.htm",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Kolob+Canyons+Visitor+Center+UT",
+            "snippet": (
+                "Kolob Canyons Visitor Center Source Maps 4.5/5 Hub for the "
+                "quieter northwest park section. Links: "
+                "https://www.nps.gov/zion/planyourvisit/visitorcenters.htm "
+                "https://www.google.com/maps/search/?api=1&query=Kolob+Canyons+Visitor+Center+UT"
+            ),
+        },
+        {
+            "title": "Zion Canyon Scenic Drive",
+            "name": "Zion Canyon Scenic Drive",
+            "url": "https://www.nps.gov/zion/planyourvisit/scenicdrive.htm",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Zion+Canyon+Scenic+Drive+Springdale+UT",
+            "snippet": (
+                "Zion Canyon Scenic Drive Source Maps 4.8/5 Relaxed drive with "
+                "stunning canyon vistas and pullouts. Links: "
+                "https://www.nps.gov/zion/planyourvisit/scenicdrive.htm "
+                "https://www.google.com/maps/search/?api=1&query=Zion+Canyon+Scenic+Drive+Springdale+UT"
+            ),
+        },
+    ]
+
+    strengths = {
+        row["title"]: URLDiscoverer._direct_batch_row_match_strength(
+            row, "Zion Canyon Scenic Drive", "Zion National Park"
+        )
+        for row in rows
+    }
+    assert strengths["Zion Canyon Scenic Drive"] == 3
+    assert strengths["Zion Canyon Visitor Center"] == 2
+    assert strengths["Kolob Canyons Visitor Center"] == 2
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *a, **k: url):
+            out = discoverer._search_attraction_from_direct_batch(
+                "Zion Canyon Scenic Drive", "Zion National Park", "October 18, 2026"
+            )
+
+    assert out == "https://www.nps.gov/zion/planyourvisit/scenicdrive.htm"
+
+
 def test_search_attraction_authoritative_does_not_fabricate_match_from_unrelated_row() -> None:
     """When no row in the destination batch actually matches the requested item,
     an unrelated attraction's specific URL must not be selected. Direct-batch
@@ -4295,6 +4386,207 @@ def test_discover_attractions_trail_like_misclassification_recovers_via_attracti
     stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("Bryce Canyon National Park", {})
     assert stats.get("trail_like_misclassified_attraction_batch_recovered", 0) == 1
     assert stats.get("direct_batch_source_locked_no_match", 0) == 0
+
+
+def test_inspiration_point_short_walk_description_is_not_trail_like() -> None:
+    """Regression for dipstick59: real Bryce Canyon "Inspiration Point" (type
+    "viewpoint") rendered unverified with no link ("badge-hike-easy", "⚠
+    Unverified") because its real harvested description ("Accessible via a
+    short walk from the parking lot, this viewpoint provides an elevated
+    look at Bryce Canyon's formations.") tripped the exact same "walk"
+    catch-all false positive already patched once for sibling item "Bryce
+    Point" (dipstick58, commit for
+    test_discover_attractions_trail_like_misclassification_recovers_via_attraction_batch
+    above). Unlike Bryce Point, Inspiration Point's attraction-batch row
+    wasn't picked up by that earlier fallback fix in this real run (the
+    fallback only helps when the item happens to already be present in the
+    harvested attraction-batch rows the fallback checks), so this fixes the
+    root cause directly in _is_trail_like_attraction: a bare "walk" mention
+    only counts as a trail signal when it's in the item's own name (e.g.
+    "Riverside Walk") or co-occurs with real trail-length/difficulty signals
+    -- not when it's a short/brief/easy walk mentioned alongside a parking
+    lot/pullout/overlook/viewpoint cue, which is a non-trail access note.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    assert discoverer._is_trail_like_attraction(
+        "Inspiration Point",
+        "viewpoint",
+        (
+            "Accessible via a short walk from the parking lot, this "
+            "viewpoint provides an elevated look at Bryce Canyon's "
+            "formations. It's a great location for photography."
+        ),
+    ) is False
+
+
+def test_bryce_point_short_walk_description_without_parking_cue_stays_trail_like() -> None:
+    """Companion to the Inspiration Point test above: the root-cause fix must
+    not regress the sibling "Bryce Point" case the earlier fallback fix
+    (dipstick58) was built around. Bryce Point's real description mentions a
+    "short walk" too, but with no parking-lot/pullout/overlook/viewpoint cue
+    alongside it, so it's ambiguous rather than a clear non-trail access
+    note -- it should stay trail_like=True and keep relying on the existing
+    attraction-batch fallback (exercised by
+    test_discover_attractions_trail_like_misclassification_recovers_via_attraction_batch
+    above) rather than being excluded here.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    assert discoverer._is_trail_like_attraction(
+        "Bryce Point",
+        "viewpoint",
+        (
+            "Offering one of the best panoramic views in the park, Bryce "
+            "Point overlooks the main amphitheater. It's accessible via a "
+            "short drive followed by a short walk."
+        ),
+    ) is True
+
+
+def test_discover_attractions_inspiration_point_resolves_directly_without_alltrails_detour() -> None:
+    """End-to-end companion to test_inspiration_point_short_walk_description_is_not_trail_like:
+    with trail_like correctly False, the item should resolve straight through
+    the general attraction direct-batch path to its real harvested NPS URL
+    (https://www.nps.gov/brca/planyourvisit/inspiration.htm, confirmed present
+    in the dipstick59 attraction-batch harvest for Bryce Canyon), without ever
+    touching the AllTrails-only trail path -- which would find nothing, since
+    Inspiration Point isn't a trail, and previously left the item unverified.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Inspiration Point",
+                "type": "viewpoint",
+                "description": (
+                    "Accessible via a short walk from the parking lot, this "
+                    "viewpoint provides an elevated look at Bryce Canyon's "
+                    "formations. It's a great location for photography."
+                ),
+            }
+        ]
+    }
+
+    attraction_rows = [
+        {
+            "title": "Inspiration Point",
+            "name": "Inspiration Point",
+            "url": "https://www.nps.gov/brca/planyourvisit/inspiration.htm",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Inspiration+Point+Bryce+Canyon+National+Park+UT",
+            "snippet": "Inspiration Point Source Maps 4.6/5",
+        }
+    ]
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("trail-only AllTrails path should not run for a non-trail viewpoint")
+
+    with patch.object(discoverer, "_search_alltrails_for_trail_from_direct_batch", side_effect=fail_if_called):
+        with patch.object(discoverer, "_search_alltrails_for_trail", side_effect=fail_if_called):
+            with patch.object(
+                discoverer,
+                "_get_attraction_direct_batch_rows_for_destination",
+                return_value=attraction_rows,
+            ):
+                discoverer._discover_attractions(ai, "Bryce Canyon National Park", "brca", "October 19-21, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == "https://www.nps.gov/brca/planyourvisit/inspiration.htm"
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("Bryce Canyon National Park", {})
+    assert stats.get("direct_batch_accepted", 0) == 1
+    assert stats.get("trail_like_misclassified_attraction_batch_recovered", 0) == 0
+
+
+def test_paria_view_no_hiking_required_note_is_not_trail_like() -> None:
+    """Regression for dipstick59: real Bryce Canyon "Paria View" (type
+    "viewpoint") published a real 404 AllTrails URL
+    (https://www.alltrails.com/trail/us/utah/paria-view-trail) instead of
+    its own correct, harvested NPS page
+    (https://www.nps.gov/brca/planyourvisit/paria.htm).
+
+    Root cause: _attraction_trail_context() folds the item's practical_note
+    into the text _is_trail_like_attraction scans, and Paria View's real
+    practical note is "Accessible with no hiking required; parking is
+    limited." -- the bare substring "hiking" tripped the trail-keyword
+    catch-all even though the note explicitly says hiking is NOT required.
+    That misclassification routed this plain viewpoint down the
+    AllTrails-only path, where a same-name-but-different "Paria View
+    Trail" AllTrails candidate (present in this run's separate trail-kind
+    harvest) got selected in place of the viewpoint's own correct
+    attraction-batch row.
+
+    Fixes negated hiking/walking/trail phrasing ("no hiking required",
+    "without a hike", "doesn't require any walking") so it's no longer
+    counted as a positive trail signal.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    assert discoverer._is_trail_like_attraction(
+        "Paria View",
+        "viewpoint",
+        (
+            "A less crowded viewpoint offering views of the canyon and "
+            "surrounding landscape. It's a perfect spot for a quiet moment "
+            "away from the busier areas. Accessible with no hiking "
+            "required; parking is limited."
+        ),
+    ) is False
+
+
+def test_discover_attractions_paria_view_resolves_to_nps_page_not_alltrails() -> None:
+    """End-to-end companion to test_paria_view_no_hiking_required_note_is_not_trail_like:
+    with trail_like correctly False, the item should resolve straight
+    through the general attraction direct-batch path to its real harvested
+    NPS URL, and must never touch the AllTrails-only trail path -- which is
+    exactly how the real 404 "paria-view-trail" AllTrails URL got published
+    in the dipstick59 run.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Paria View",
+                "type": "viewpoint",
+                "description": (
+                    "A less crowded viewpoint offering views of the canyon "
+                    "and surrounding landscape. It's a perfect spot for a "
+                    "quiet moment away from the busier areas."
+                ),
+                "practical_note": "Accessible with no hiking required; parking is limited.",
+            }
+        ]
+    }
+
+    attraction_rows = [
+        {
+            "title": "Paria View",
+            "name": "Paria View",
+            "url": "https://www.nps.gov/brca/planyourvisit/paria.htm",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Paria+View+Bryce+Canyon+National+Park+UT",
+            "snippet": "Paria View Source Maps 4.5/5 Quiet sunset location with fewer visitors.",
+        }
+    ]
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("AllTrails-only trail path should not run for a non-trail viewpoint")
+
+    with patch.object(discoverer, "_search_alltrails_for_trail_from_direct_batch", side_effect=fail_if_called):
+        with patch.object(discoverer, "_search_alltrails_for_trail", side_effect=fail_if_called):
+            with patch.object(
+                discoverer,
+                "_get_attraction_direct_batch_rows_for_destination",
+                return_value=attraction_rows,
+            ):
+                discoverer._discover_attractions(ai, "Bryce Canyon National Park", "brca", "October 19-21, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == "https://www.nps.gov/brca/planyourvisit/paria.htm"
 
 
 def test_discover_attractions_direct_batch_authoritative_uses_item_fanout_when_batch_has_no_match() -> None:

@@ -10522,7 +10522,10 @@ class URLDiscoverer:
         dest_name: str = "",
     ) -> int:
         """0 = no match, 1 = weak (single short-name anchor token only), 2 = strong
-        (full required token overlap, or an AllTrails slug match).
+        (full required token overlap via description/snippet/URL text, or an
+        AllTrails slug match), 3 = exact (every word of the item's name --
+        minus generic descriptive suffixes -- appears in the row's own
+        declared name).
 
         Corroboration signal: when a batch has multiple ambiguously-matching rows
         for the same item name (e.g. two different "* Temple" entries in a
@@ -10530,7 +10533,8 @@ class URLDiscoverer:
         excluded), the row reached only through the lenient single-anchor-token
         fallback must not out-rank -- or get pooled equally with -- a row that
         actually satisfies the full token-overlap bar. Selection logic should
-        prefer strength-2 rows over strength-1 rows when disambiguating.
+        prefer strength-3 rows over strength-2 rows, and strength-2 rows over
+        strength-1 rows, when disambiguating.
         """
         if not row:
             return 0
@@ -10543,28 +10547,44 @@ class URLDiscoverer:
         if raw_url and cls._is_alltrails_trail_url(raw_url):
             return 2 if cls._alltrails_slug_matches_item(raw_url, item_name) else 0
 
-        if cls._candidate_text_matches_item_tokens(row, item_tokens):
-            return 2
-
-        # The row's own declared name (unlike the full blob, which includes
-        # address/URL text prone to destination-name pollution -- see below) is
-        # a deliberate, low-risk identifier. If *every* word of the item's name
-        # (minus generic descriptive suffixes like "Overlook"/"View") is
-        # present in the row's own name, that is a real match even when one of
-        # those words happens to coincide with the destination's own name --
-        # e.g. "Bryce Point" genuinely starting with "Bryce" for a "Bryce
-        # Canyon" destination; excluding "bryce" below (as a destination-name
-        # token) would otherwise leave no way to match "Bryce Point Overlook"
-        # at all. This uses raw words (not _significant_tokens, which drops
-        # "Point") and requires the *whole* remaining phrase, not a single
-        # token, precisely so a single shared word like "bryce" alone can't
-        # match an unrelated row such as "Bryce Canyon Lodge".
+        # The row's own declared name (unlike the full blob below, which
+        # includes snippet/URL text prone to incidental substring pollution --
+        # e.g. a "Links: https://www.nps.gov/zion/..." trailer makes "zion"
+        # match essentially any row for a "Zion National Park" destination,
+        # and "canyon" is a substring of "canyons" -- regardless of what the
+        # row actually is) is a deliberate, low-risk identifier. If *every*
+        # word of the item's name (minus generic descriptive suffixes like
+        # "Overlook"/"View") is present in the row's own name, that is a real
+        # match even when one of those words happens to coincide with the
+        # destination's own name -- e.g. "Bryce Point" genuinely starting with
+        # "Bryce" for a "Bryce Canyon" destination; excluding "bryce" below
+        # (as a destination-name token) would otherwise leave no way to match
+        # "Bryce Point Overlook" at all. This uses raw words (not
+        # _significant_tokens, which drops "Point") and requires the *whole*
+        # remaining phrase, not a single token, precisely so a single shared
+        # word like "bryce" alone can't match an unrelated row such as "Bryce
+        # Canyon Lodge".
+        #
+        # This exact/full-name match is checked -- and ranked -- ahead of the
+        # generic blob-overlap check just below because two rows can each
+        # satisfy that check's lower bar by sharing only a couple of
+        # generic, non-distinctive words with the item (dipstick59: real
+        # Zion National Park attraction-batch rows "Zion Canyon Visitor
+        # Center" and even "Kolob Canyons Visitor Center" both matched
+        # "Zion Canyon Scenic Drive" at the old single "strong" tier purely
+        # via shared "Zion"/"Canyon" text, tying with -- and in the final
+        # ranking beating -- the row that is actually an exact title match).
+        # A same-destination row that only shares generic words must not
+        # tie with the row that is the item, word for word.
         row_name_only = str(row.get("name") or row.get("title") or "").strip()
         if row_name_only:
             item_raw_words = set(re.findall(r"[a-z]+", item_name.lower())) - GENERIC_VIEWPOINT_SUFFIX_TOKENS - _MATCH_STOPWORDS
             row_name_raw_words = set(re.findall(r"[a-z]+", row_name_only.lower()))
             if len(item_raw_words) >= 2 and item_raw_words <= row_name_raw_words:
-                return 2
+                return 3
+
+        if cls._candidate_text_matches_item_tokens(row, item_tokens):
+            return 2
 
         # Destination-name tokens are not distinctive of a specific item -- e.g.
         # for a "St. George, Utah" destination, "george" trivially appears in
@@ -11201,6 +11221,37 @@ class URLDiscoverer:
         haystack = f"{name} {description}".lower()
         normalized = re.sub(r"[^a-z0-9\s]", "", haystack)
 
+        # Explicit negations of hiking/walking access ("no hiking required",
+        # "without a hike", "doesn't require any walking") describe a place
+        # that does NOT require trail activity -- the opposite of a trail
+        # signal -- so the negated word must not be counted as one below.
+        # Real Bryce Canyon "Paria View" (a plain viewpoint, correctly
+        # harvested with its own NPS page nps.gov/brca/planyourvisit/
+        # paria.htm) carries the practical note "Accessible with no hiking
+        # required; parking is limited." -- "hiking" as a bare substring
+        # would otherwise misclassify it as trail-like, sending it down the
+        # AllTrails-only path where a same-named-but-different "Paria View
+        # Trail" AllTrails candidate could be picked up instead of its own
+        # correct attraction link (dipstick59: this is exactly how the
+        # published "paria-view-trail" AllTrails URL, a real 404, got
+        # selected in place of the viewpoint's real NPS page).
+        normalized = re.sub(
+            r"\bno\s+(hiking|hikes?|walking|walks?|trails?|trekking|treks?)\b"
+            r"(\s+(required|needed|necessary|involved))?",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(
+            r"\bwithout\s+(a\s+|any\s+)?(hiking|hikes?|walking|walks?|trails?|trekking|treks?)\b",
+            " ",
+            normalized,
+        )
+        normalized = re.sub(
+            r"\b(doesnt|does not|dont|do not)\s+require\s+(a\s+|any\s+)?(hiking|hikes?|walking|walks?|trails?)\b",
+            " ",
+            normalized,
+        )
+
         non_trail_place_cues = (
             "museum",
             "history museum",
@@ -11260,7 +11311,49 @@ class URLDiscoverer:
             return True
 
         # Catch common trail phrasing even when type is labeled as generic attraction.
-        return bool(re.search(r"\b(trail|hike|hiking|loop|walk|trek|path|summit)\b", normalized))
+        # "walk" alone is treated separately below: unlike "trail"/"hike"/"trek"/
+        # "path"/"summit"/"loop", it's also common in short access-instruction
+        # phrasing for viewpoints that aren't trails at all (e.g. "Accessible via
+        # a short walk from the parking lot, this viewpoint provides..." --
+        # Bryce Canyon's real "Inspiration Point"). A non-"walk" trail keyword
+        # anywhere in the name+description is still a reliable signal on its own.
+        if re.search(r"\b(trail|hike|hiking|loop|trek|path|summit)\b", normalized):
+            return True
+
+        if not re.search(r"\bwalk\b", normalized):
+            return False
+
+        # "walk" appearing in the item's own name (e.g. "Riverside Walk", "The
+        # Zion Narrows Riverside Walk") names the route itself and is a strong
+        # signal, unlike a description mentioning a walk only in passing.
+        if re.search(r"\bwalk\b", name_l):
+            return True
+
+        # From here, "walk" only appears in the description. That's still a
+        # useful signal for genuine short trails/walks, EXCEPT when it reads as
+        # a mere short access note to a non-trail viewpoint/pullout -- i.e. a
+        # short/brief/easy/quick "walk" or "stroll" mentioned together with a
+        # parking/pullout/overlook/viewpoint cue, and nothing else in the text
+        # (mileage, "trailhead", explicit difficulty language) corroborates an
+        # actual trail. That combination is exactly the false-positive pattern
+        # seen in real Bryce Canyon viewpoint descriptions ("Inspiration
+        # Point": "Accessible via a short walk from the parking lot, this
+        # viewpoint provides an elevated look...").
+        has_trail_corroboration = bool(
+            re.search(r"\d+(\.\d+)?\s*[- ]?\s*miles?\b", normalized)
+            or re.search(r"\b(round[- ]trip|elevation|switchback|difficulty|strenuous|moderate|steep)\b", normalized)
+        )
+        if has_trail_corroboration:
+            return True
+
+        short_walk_access_note = bool(
+            re.search(r"\b(short|brief|quick|easy)\s+(walk|stroll)\b", normalized)
+            and re.search(r"\b(parking (lot|area)|pullout|trailhead lot|overlook|viewpoint)\b", normalized)
+        )
+        if short_walk_access_note:
+            return False
+
+        return True
 
     @staticmethod
     def _attraction_trail_context(attr: dict[str, Any]) -> str:
