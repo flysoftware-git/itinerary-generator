@@ -5690,6 +5690,44 @@ class URLDiscoverer:
 
         return out
 
+    # A leading "- " / "* " / "• " marker at the start of a line, i.e. a
+    # Markdown bullet rather than an HTML <li>.
+    _MARKDOWN_BULLET_LINE_RE = re.compile(r"^\s*[-*•]\s+(\S.*)$")
+    _HREF_ATTR_RE = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+
+    @classmethod
+    def _direct_batch_records_from_markdown_bullets(cls, html_text: str) -> list[dict[str, Any]]:
+        """Fallback record extraction for direct-batch harvest replies that come
+        back as a Markdown "- Name - detail <a href=...>Source</a>" bullet list
+        instead of the requested <ul><li> markup.
+
+        Real evidence (dipstick63, Moab -> Canyonlands en-route-stop harvest):
+        Grok returned 8 genuine, well-formed candidates -- including "Dead
+        Horse Point State Park Overlook", the obvious real stop on that leg --
+        as a Markdown bullet list. _DirectBatchHTMLListParser only recognizes
+        <li> elements, so it silently produced zero records and every one of
+        those real candidates was discarded before reaching en_route_stops,
+        even though the exact same prompt against the exact same leg returned
+        proper <li> markup (and 8 parsed rows) on other runs. This is a
+        one-off provider formatting slip, not a discovery/verification
+        failure or a duplicate -- so recovering it here, rather than treating
+        the empty parse as final, is the correct fix.
+        """
+        records: list[dict[str, Any]] = []
+        for line in str(html_text or "").splitlines():
+            match = cls._MARKDOWN_BULLET_LINE_RE.match(line)
+            if not match:
+                continue
+            content = match.group(1)
+            urls = [html_lib.unescape(href.strip()) for href in cls._HREF_ATTR_RE.findall(content) if href.strip()]
+            raw_text = re.sub(r"<[^>]+>", " ", content)
+            raw_text = html_lib.unescape(raw_text)
+            raw_text = re.sub(r"\s+", " ", raw_text).strip()
+            if not raw_text and not urls:
+                continue
+            records.append({"name": "", "urls": urls, "raw_text": raw_text})
+        return records
+
     @classmethod
     def _direct_batch_rows_from_html(cls, html_text: str) -> list[dict[str, Any]]:
         parser = _DirectBatchHTMLListParser()
@@ -5698,8 +5736,12 @@ class URLDiscoverer:
         except Exception:
             return []
 
+        records = parser.records
+        if not records:
+            records = cls._direct_batch_records_from_markdown_bullets(str(html_text or ""))
+
         rows: list[dict[str, Any]] = []
-        for record in parser.records:
+        for record in records:
             raw_text = str(record.get("raw_text", "") or "").strip()
             # Strip anchor-label artifacts (Source/Maps/AllTrails) from anywhere
             # in the text, not just the tail end. A trailing-only strip was

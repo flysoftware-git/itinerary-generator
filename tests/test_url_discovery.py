@@ -5829,6 +5829,63 @@ def test_direct_batch_rows_from_html_strips_source_maps_before_rating_price_cuis
     assert rows[0]["cuisine"] == "American"
 
 
+def test_direct_batch_rows_from_html_recovers_markdown_bullet_list_fallback() -> None:
+    """Regression for the Moab -> Canyonlands en-route-stops anomaly: a real
+    dipstick63 harvest for that exact leg returned Grok's response as a
+    Markdown "- Name - detail <a href=...>Source</a> <a href=...>Maps</a>"
+    bullet list instead of the requested <ul><li> markup. The old parser only
+    recognized <li> elements, so it silently produced zero rows even though
+    the model proposed 8 real, well-formed candidates -- including "Dead
+    Horse Point State Park Overlook", the obvious real stop on that route --
+    which meant Moab->Canyonlands rendered with zero en-route stops while the
+    identical prompt against the identical leg on other runs (returned as
+    proper <li> markup) parsed fine. This is the actual harvested text
+    (trimmed to 3 of the 8 real items) that must now parse successfully."""
+    html = (
+        "<div class=\"direct_batch_query\"><strong>Query:</strong> "
+        "Generate en-route stopovers for the drive from Moab to Canyonlands "
+        "National Park (October 24, 2026)</div>\n\n"
+        "**En-Route Stopovers: Moab to Canyonlands National Park (Island in the Sky)**\n\n"
+        "- Moab Giants Dinosaur Museum - life-size dinos & tracks along the route - "
+        "detour 0 mi / 0 min <a href=\"https://moabgiants.com/\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Moab+Giants+Dinosaur+Museum+Moab+UT\">Maps</a>\n"
+        "- Gemini Bridges Trailhead View - dramatic twin arches overlook - detour 3 mi / 8 min "
+        "<a href=\"https://www.discovermoab.com/places-to-go/scenic-byways/scenic-byway-u-313/\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Gemini+Bridges+Trailhead+UT-313+Moab+UT\">Maps</a>\n"
+        "- Dead Horse Point State Park Overlook - sweeping canyon panorama - detour 5 mi / 12 min "
+        "<a href=\"https://www.discovermoab.com/places-to-go/state-parks/dead-horse-point-state-park/\">Source</a> "
+        "<a href=\"https://www.google.com/maps/search/?api=1&query=Dead+Horse+Point+State+Park+Overlook+Moab+UT\">Maps</a>\n"
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert len(rows) == 3
+    names = [row["title"] for row in rows]
+    assert "Dead Horse Point State Park Overlook" in names
+    dead_horse = next(row for row in rows if row["title"] == "Dead Horse Point State Park Overlook")
+    assert dead_horse["url"] == "https://www.discovermoab.com/places-to-go/state-parks/dead-horse-point-state-park/"
+    assert dead_horse["detour_distance_miles"] == 5.0
+    assert dead_horse["detour_time_minutes"] == 12
+    assert dead_horse["practical_note"] == "sweeping canyon panorama"
+
+
+def test_direct_batch_rows_from_html_markdown_bullet_fallback_only_used_when_no_li_found() -> None:
+    """The Markdown-bullet fallback must never fire when real <li> markup is
+    present -- it's a last-resort recovery for a fully <li>-less reply, not a
+    replacement for the primary parser. A stray leading '-' inside a normal
+    <li>-based list (e.g. a hyphenated name) must not get double-counted."""
+    html = (
+        "<ul>"
+        "<li>Wilson Arch - quick roadside arch stop "
+        "<a href=\"https://www.blm.gov/visit/wilson-arch\">Source</a></li>"
+        "</ul>"
+        "\n- This line looks like a bullet but must be ignored because real <li> rows were already found."
+    )
+
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert len(rows) == 1
+    assert rows[0]["title"] == "Wilson Arch"
+
+
 def test_direct_batch_rows_from_html_no_separator_name_metadata_yields_empty_description() -> None:
     """Some harvested rows have no ' - ' separator at all between the name and
     its links (e.g. 'Name <a>Source</a> <a>Maps</a> RATING PRICE CUISINE').
