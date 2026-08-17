@@ -1,0 +1,295 @@
+[
+  {
+    "strategy": "openai_search_retry",
+    "item": "Sunrise Point",
+    "query": "site:nps.gov/brca \"Sunrise Point\" Bryce Canyon National Park attraction landmark",
+    "citation_count": 12,
+    "candidates": [
+      {
+        "title": "Bryce Amphitheater Viewpoints - Bryce Canyon National Park (U.S. National Park Service)",
+        "url": "https://home.nps.gov/brca/planyourvisit/bryce-amphitheater-viewpoints.htm?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": false,
+        "accepted": false
+      },
+      {
+        "title": "Viewpoints - Bryce Canyon National Park (U.S. National Park Service)",
+        "url": "https://home.nps.gov/brca/planyourvisit/viewpoints.htm?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": false,
+        "accepted": false
+      },
+      {
+        "title": "Sunrise Point (U.S. National Park Service)",
+        "url": "https://www.nps.gov/places/sunrise-point.htm?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      },
+      {
+        "title": "Sunrise Point (U.S. National Park Service)",
+        "url": "https://www.nps.gov/places/sunrise-point.htm?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      },
+      {
+        "title": "Sunrise Point (U.S. National Park Service)",
+        "url": "https://www.nps.gov/places/sunrise-point.htm?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      },
+      {
+        "title": "Sunrise Point (U.S. National Park Service)",
+        "url": "https://www.nps.gov/places/sunrise-point.htm?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      }
+    ],
+    "chosen": {
+      "url": "https://www.nps.gov/places/sunrise-point.htm?utm_source=openai",
+      "title": "Sunrise Point (U.S. National Park Service)",
+      "accepted_by_policy_and_specificity": true,
+      "was_only_a_fallback_pick": false,
+      "policy_class": "general",
+      "alive": true,
+      "http_status": "200"
+    }
+  },
+  {
+    "strategy": "openai_search_retry",
+    "item": "Inspiration Point",
+    "query": "site:nps.gov/brca \"Inspiration Point\" Bryce Canyon National Park attraction landmark",
+    "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+    "candidates": [],
+    "chosen": null
+  },
+  {
+    "strategy": "openai_search_retry",
+    "item": "The Waterpocket Fold",
+    "query": "site:nps.gov/care \"The Waterpocket Fold\" Capitol Reef National Park attraction landmark",
+    "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+    "candidates": [],
+    "chosen": null
+  },
+  {
+    "strategy": "openai_search_retry",
+    "item": "Chimney Rock National Monument",
+    "query": "\"Chimney Rock National Monument\" Pagosa Springs, Colorado attraction landmark",
+    "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+    "candidates": [],
+    "chosen": null
+  },
+  {
+    "strategy": "openai_search_retry",
+    "item": "Museum of International Folk Art",
+    "query": "\"Museum of International Folk Art\" Santa Fe, New Mexico attraction landmark",
+    "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+    "candidates": [],
+    "chosen": null
+  },
+  {
+    "strategy": "openai_search_retry",
+    "item": "Queens Garden Trail",
+    "query": "site:nps.gov/brca \"Queens Garden Trail\" Bryce Canyon National Park trail hike",
+    "citation_count": 15,
+    "candidates": [
+      {
+        "title": "Queen's Garden Trail (U.S. National Park Service)",
+        "url": "https://www.nps.gov/thingstodo/queen-s-garden-trail.htm?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      },
+      {
+        "title": "Queens Garden Trailhead (U.S. National Park Service)",
+        "url": "https://www.nps.gov/places/000/queens-garden-trailhead.htm?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      },
+      {
+        "title": "Queen's Garden Trail (U.S. National Park Service)",
+        "url": "https://www.nps.gov/thingstodo/queen-s-garden-trail.htm?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      },
+      {
+        "title": "Queen's Garden Trail (U.S. National Park Service)",
+        "url": "https://www.nps.gov/thingstodo/queen-s-garden-trail.htm?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      },
+      {
+        "title": "Queen's Garden Trail (U.S. National Park Service)",
+        "url": "https://www.nps.gov/thingstodo/queen-s-garden-trail.htm?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      },
+      {
+        "title": "Hiking - Bryce Canyon National Park (U.S. National Park Service)",
+        "url": "https://www.nps.gov/brca/planyourvisit/day-hikes.htm?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": false,
+        "accepted": false
+      }
+    ],
+    "chosen": {
+      "url": "https://www.nps.gov/thingstodo/queen-s-garden-trail.htm?utm_source=openai",
+      "title": "Queen's Garden Trail (U.S. National Park Service)",
+      "accepted_by_policy_and_specificity": true,
+      "was_only_a_fallback_pick": false,
+      "policy_class": "general",
+      "alive": true,
+      "http_status": "200"
+    }
+  },
+  {
+    "strategy": "openai_search_retry",
+    "item": "Fins and Things Trail",
+    "query": "\"Fins and Things Trail\" Moab, Utah trail hike",
+    "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+    "candidates": [],
+    "chosen": null
+  },
+  {
+    "strategy": "openai_search_retry",
+    "item": "Park Avenue Trail",
+    "query": "site:nps.gov/arch \"Park Avenue Trail\" Arches National Park trail hike",
+    "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+    "candidates": [],
+    "chosen": null
+  },
+  {
+    "strategy": "openai_search_retry",
+    "item": "Jud Wiebe Trail",
+    "query": "\"Jud Wiebe Trail\" Telluride, Colorado trail hike",
+    "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+    "candidates": [],
+    "chosen": null
+  },
+  {
+    "strategy": "openai_search_retry",
+    "item": "Bear Creek Trail",
+    "query": "\"Bear Creek Trail\" Telluride, Colorado trail hike",
+    "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+    "candidates": [],
+    "chosen": null
+  },
+  {
+    "strategy": "openai_search_retry",
+    "item": "Piedra Falls",
+    "query": "\"Piedra Falls\" Pagosa Springs, Colorado trail hike",
+    "citation_count": 19,
+    "candidates": [
+      {
+        "title": "San Juan National Forest | Piedra Falls Trailhead | Forest Service",
+        "url": "https://www.fs.usda.gov/r02/sanjuan/recreation/piedra-falls-trailhead?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      },
+      {
+        "title": "Gallery 3 \u2014 Go Hike Colorado",
+        "url": "https://www.gohikecolorado.com/piedra-falls?itemId=8slt85tc6p7d1fh7cke9658a174tq7&utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      },
+      {
+        "title": "San Juan National Forest | Piedra Falls Trailhead | Forest Service",
+        "url": "https://www.fs.usda.gov/r02/sanjuan/recreation/piedra-falls-trailhead?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      },
+      {
+        "title": "Piedra Falls Trail No. 671 - Pagosa Springs Area Trails",
+        "url": "https://pagosatrails.org/portfolio/piedra-falls-trail-no-671/?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      },
+      {
+        "title": "Piedra Falls Trail No. 671 - Pagosa Springs Area Trails",
+        "url": "https://pagosatrails.org/portfolio/piedra-falls-trail-no-671/?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": true,
+        "accepted": true
+      },
+      {
+        "title": "Trails \u2013 Explore Pagosa",
+        "url": "https://www.explorepagosa.com/trails/?utm_source=openai",
+        "snippet": "",
+        "policy_class": "general",
+        "policy_blocked": false,
+        "is_specific": false,
+        "accepted": false
+      }
+    ],
+    "chosen": {
+      "url": "https://www.fs.usda.gov/r02/sanjuan/recreation/piedra-falls-trailhead?utm_source=openai",
+      "title": "San Juan National Forest | Piedra Falls Trailhead | Forest Service",
+      "accepted_by_policy_and_specificity": true,
+      "was_only_a_fallback_pick": false,
+      "policy_class": "general",
+      "alive": false,
+      "http_status": "404"
+    }
+  },
+  {
+    "strategy": "openai_search_retry",
+    "item": "Tent Rocks Cave Loop",
+    "query": "\"Tent Rocks Cave Loop\" Kasha-Katuwe Tent Rocks National Monument, New Mexico trail hike",
+    "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+    "candidates": [],
+    "chosen": null
+  },
+  {
+    "strategy": "openai_search_retry",
+    "item": "Lava Tubes via Lava Flow Trail",
+    "query": "\"Lava Tubes via Lava Flow Trail\" Snow Canyon State Park, Utah trail hike",
+    "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+    "candidates": [],
+    "chosen": null
+  }
+]

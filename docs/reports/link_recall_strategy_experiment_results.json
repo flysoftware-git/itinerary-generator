@@ -1,0 +1,3094 @@
+{
+  "run_stamp_utc": "20260817T213510Z",
+  "targets": [
+    "Sunrise Point",
+    "Inspiration Point",
+    "The Waterpocket Fold",
+    "Chimney Rock National Monument",
+    "Museum of International Folk Art",
+    "Queens Garden Trail",
+    "Fins and Things Trail",
+    "Park Avenue Trail",
+    "Jud Wiebe Trail",
+    "Bear Creek Trail",
+    "Piedra Falls",
+    "Tent Rocks Cave Loop",
+    "Lava Tubes via Lava Flow Trail"
+  ],
+  "strategies": {
+    "baseline_grok": [
+      {
+        "strategy": "baseline_grok",
+        "item": "Sunrise Point",
+        "query": "site:nps.gov/brca \"Sunrise Point\" Bryce Canyon National Park attraction landmark",
+        "citation_count": 9,
+        "candidates": [
+          {
+            "title": "Sunrise Point - Bryce Canyon National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/brca/planyourvisit/sunrise.htm",
+            "snippet": "The northernmost viewpoint in the amphitheater, this view is equally spectacular at daybreak and day's end. Sunrise Point offers vistas of hoodoos and the Bryce Amphitheater.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Viewpoints - Bryce Canyon National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/brca/planyourvisit/viewpoints.htm",
+            "snippet": "Bryce Amphitheater Viewpoints: Sunrise Point, Sunset Point, Inspiration Point, Bryce Point. The northernmost viewpoint in the amphitheater, this view is equally spectacular at daybreak and day's end.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Places To Go - Bryce Canyon National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/brca/planyourvisit/placestogo.htm",
+            "snippet": "Places To Go \u00b7 Bryce Amphitheater Viewpoints \u00b7 Sunrise Point \u00b7 Sunset Point \u00b7 Inspiration Point \u00b7 Bryce Point \u00b7 Southern Scenic Drive Viewpoints.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Bryce Canyon National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/brca/",
+            "snippet": "Places To Go \u00b7 Bryce Amphitheater Viewpoints \u00b7 Sunrise Point \u00b7 Sunset Point \u00b7 Inspiration Point \u00b7 Bryce Point \u00b7 Southern Scenic Drive Viewpoints. Viewpoints of the iconic Bryce Amphitheater are located along the first 3 miles of the park road and are a popular destination at sunrise.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Fairyland Point - Bryce Canyon National Park",
+            "url": "https://www.nps.gov/brca/planyourvisit/fairyland.htm",
+            "snippet": "Related. Viewpoints. 4+ Hour Hikes. Hiking at High Altitudes. Sunrise Point . Fairyland Point is the northernmost viewpoint along the rim of the Paunsagunt Plateau within the park.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/brca/planyourvisit/sunrise.htm",
+          "title": "Sunrise Point - Bryce Canyon National Park (U.S. National Park Service)",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "baseline_grok",
+        "item": "Inspiration Point",
+        "query": "site:nps.gov/brca \"Inspiration Point\" Bryce Canyon National Park attraction landmark",
+        "citation_count": 9,
+        "candidates": [
+          {
+            "title": "Inspiration Point - Bryce Canyon National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/brca/planyourvisit/inspiration.htm",
+            "snippet": "Inspiration Point provides a birds-eye view of the world's largest collection of \"hoodoos\" found within the Bryce Amphitheater. An aerial view of the amphitheater's colorful spires and fins.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Viewpoints - Bryce Canyon National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/brca/planyourvisit/viewpoints.htm",
+            "snippet": "Inspiration Point provides a birds-eye view of the world's largest collection of \"hoodoos\" found within the Bryce Amphitheater. Bryce Amphitheater Viewpoints include Sunrise Point, Sunset Point, Inspiration Point, Bryce Point.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Places To Go - Bryce Canyon National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/brca/planyourvisit/placestogo.htm",
+            "snippet": "Point Inspiration Point Bryce. A shorter visit should focus on the first 3 miles (4.8 km) of the park, known as the Bryce Amphitheater.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Bryce Canyon National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/brca/",
+            "snippet": "Bryce Amphitheater Viewpoints \u00b7 Sunrise Point \u00b7 Sunset Point \u00b7 Inspiration Point \u00b7 Bryce Point ; Southern Scenic Drive Viewpoints.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/brca/planyourvisit/inspiration.htm",
+          "title": "Inspiration Point - Bryce Canyon National Park (U.S. National Park Service)",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "baseline_grok",
+        "item": "The Waterpocket Fold",
+        "query": "site:nps.gov/care \"The Waterpocket Fold\" Capitol Reef National Park attraction landmark",
+        "citation_count": 8,
+        "candidates": [
+          {
+            "title": "Geology - Capitol Reef National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/care/learn/nature/geology.htm",
+            "snippet": "A nearly 100-mile long warp in the Earth's crust, the Waterpocket Fold is a classic monocline, a \"step-up\" in the rock layers. It formed between ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Capitol Reef National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/CARE",
+            "snippet": "Located in south-central Utah in the heart of red rock country, Capitol Reef National Park is a hidden treasure filled with cliffs, canyons, domes, and bridges in the Waterpocket Fold, a geologic monocline (a wrinkle on the earth) extending almost 100 miles. Learn about the geologic processes that created the Waterpocket Fold.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Things To Do - Capitol Reef National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/care/planyourvisit/things2do.htm",
+            "snippet": "Experience the less-visited, southern part of Capitol Reef, where the dramatic angle of the Waterpocket Fold is on display. Large red ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Upper Muley Twist Canyon - Capitol Reef National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/care/planyourvisit/upper-muley-twist-canyon.htm",
+            "snippet": "Upper Muley Twist Canyon cuts lengthwise along the spine of the Waterpocket Fold creating a colorful, meandering canyon. The Navajo and ... The 0.9-mile (1.4 km) round-trip hike to Strike Valley Overlook provides outstanding views of the Waterpocket Fold and the surrounding area.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Halls Creek Narrows - Capitol Reef National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/care/planyourvisit/hallscreek.htm",
+            "snippet": "the Waterpocket Fold on the west, the hike through the Halls Creek drainage (known as Grand Gulch) explores the park's southern reaches.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "50th Anniversary - Capitol Reef National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/care/learn/50th-anniversary.htm",
+            "snippet": "Photographs from the 1920s-2021 from Capitol Reef's archives. Travel through time as momentum grew for protecting the Waterpocket Fold in ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/care/learn/nature/geology.htm",
+          "title": "Geology - Capitol Reef National Park (U.S. National Park Service)",
+          "accepted_by_policy_and_specificity": false,
+          "was_only_a_fallback_pick": true,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "baseline_grok",
+        "item": "Chimney Rock National Monument",
+        "query": "\"Chimney Rock National Monument\" Pagosa Springs, Colorado attraction landmark",
+        "citation_count": 10,
+        "candidates": [
+          {
+            "title": "San Juan National Forest | Chimney Rock National Monument",
+            "url": "https://www.fs.usda.gov/r02/sanjuan/recreation/chimney-rock-national-monument",
+            "snippet": "The Chimney Rock National Monument encompasses 4,726 acres of the San Juan National Forest between Durango and Pagosa Springs, Colorado. At Chimney Rock National Monument, you can imagine the landscape as it was a thousand years ago with cultivated fields and settlements extending from the valley floors to the mesa tops. Chimney Rock represents one of the largest Pueblo II (900-1150 AD) communities in southwestern Colorado and is considered a Chacoan cultural \u201coutlier.\u201d",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Chimney Rock Interpretive Association",
+            "url": "https://www.chimneyrockco.org/",
+            "snippet": "Chimney Rock covers seven square miles and preserves 200 ancient homes and ceremonial buildings. This undiscovered gem is an intimate, off-the-beaten-path archaeological site located at the southern edge of the San Juan Mountains in Southwestern Colorado. You\u2019ll walk in the footsteps of the fascinating and enigmatic Ancestral Puebloans of the Chaco Canyon.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Chimney Rock National Monument - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Chimney_Rock_National_Monument",
+            "snippet": "Chimney Rock National Monument is a 4,726-acre (1,913 ha) U.S. National Monument in San Juan National Forest in southwestern Colorado which includes an archaeological site. This area is located in Archuleta County, Colorado, between Durango and Pagosa Springs, and is managed for archaeological protection, public interpretation, and education.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Chimney Rock National Monument | Colorado.com",
+            "url": "https://www.colorado.com/articles/chimney-rock-national-monument-view-ancient-world",
+            "snippet": "Chimney Rock is a sacred place with spiritual significance to two dozen modern-day Native American tribes, a celestial observatory and a natural, seasonal calendar that marked the equinox for the Ancestral Puebloans who lived here more than 1,000 years ago. Open May 15 through October 15, the monument covers 7 square miles and preserves 200 ancient homes and ceremonial buildings.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Chimney Rock National Monument Tours, San Juan National Forest",
+            "url": "https://www.recreation.gov/ticket/facility/234787",
+            "snippet": "Chimney Rock National Monument lies within the San Juan National Forest, between Durango and Pagosa Springs in southwestern Colorado. The Monument encompasses 4,726 acres, preserving hundreds of prehistoric sites that dot the landscape around the twin spires known as Chimney Rock and Companion Rock.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Chimney Rock National Monument - Tripadvisor",
+            "url": "https://www.tripadvisor.com/Attraction_Review-g33352-d102615-Reviews-Chimney_Rock_National_Monument-Chimney_Rock_Colorado.html",
+            "snippet": "An easy drive from Pagosa Springs to this amazing natural treasure. There is a small visitors center with a film. A nice picnic area at the gift shop area. #1 of 1 things to do in Chimney Rock. Address: 3179 Co-151, Chimney Rock, CO 81121.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.fs.usda.gov/r02/sanjuan/recreation/chimney-rock-national-monument",
+          "title": "San Juan National Forest | Chimney Rock National Monument",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "baseline_grok",
+        "item": "Museum of International Folk Art",
+        "query": "\"Museum of International Folk Art\" Santa Fe, New Mexico attraction landmark",
+        "citation_count": 9,
+        "candidates": [
+          {
+            "title": "Museum of International Folk Art | Home",
+            "url": "https://www.moifa.org/",
+            "snippet": "The museum's holdings represent diverse cultures and constitute the largest collection of international folk art in the world. The core collection, donated by museum founder Florence Dibell Bartlett, from 34 countries has grown to over 130,000 objects from more than 100 countries.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Museum of International Folk Art | New Mexico Department of Cultural Affairs",
+            "url": "https://www.newmexicoculture.org/museums/museum-of-international-folk-art",
+            "snippet": "Since its founding in 1953, Museum of International Folk Art has been a place to connect people through creative expression and cross-cultural understanding. Remaining one of New Mexico\u2019s most popular museums, the museum has gained national and international recognition as home to the world\u2019s largest collection of folk art. Location: On Museum Hill off Old Santa Fe Trail Santa Fe, NM. Phone: (505) 476-1204.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Museum of International Folk Art - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Museum_of_International_Folk_Art",
+            "snippet": "The Museum of International Folk Art (MOIFA) is a state-run institution in Santa Fe, New Mexico, United States. Established 1953. Its holdings exceed 130,000 objects from more than 100 countries and are widely described as the world's largest collection of international folk art. The museum is on Museum Hill in Santa Fe.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Museum of International Folk Art | Hours",
+            "url": "https://www.moifa.org/visit/hours-admission.html",
+            "snippet": "Museum of International Folk Art. 706 Camino Lejo, on Museum Hill \u2022 Santa Fe, New Mexico 87505 \u2022 (505) 476-1204. Open Daily 10:00 AM - 5:00 PM May-October.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Museum of International Folk Art - MNMF",
+            "url": "https://www.museumfoundation.org/museums/museum-international-folk-art/",
+            "snippet": "The Museum of International Folk Art, a division of the New Mexico Department of Cultural Affairs, offers visitors a space of common ground to discover, share and marvel at the diversity and artistry of the world\u2019s folk artists and cultures.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Museum of International Folk Art | Home",
+            "url": "https://www.moifa.org/",
+            "snippet": "MUSEUM OF INTERNATIONAL FOLK ART. 706 Camino Lejo, on Museum Hill Santa Fe, New Mexico 87505. Phone: (505) 476-1204. OPEN DAILY May through October. SUMMER/FALL hours 10:00 AM - 5:00 PM.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.newmexicoculture.org/museums/museum-of-international-folk-art",
+          "title": "Museum of International Folk Art | New Mexico Department of Cultural Affairs",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "baseline_grok",
+        "item": "Queens Garden Trail",
+        "query": "site:nps.gov/brca \"Queens Garden Trail\" Bryce Canyon National Park trail hike",
+        "citation_count": 5,
+        "candidates": [
+          {
+            "title": "Queens Garden Trail - Bryce Canyon National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/brca/planyourvisit/queensgarden.htm",
+            "snippet": "Queens Garden Trail ; Queen's Garden Trail \u00b7 1-2 Hours \u00b7 Queen's Garden Trail ; Queen's/Navajo Combination Loop \u00b7 2-3 Hours \u00b7 Queen's Garden Trailhead . Last updated: February 7, 2024. Related: Hiking in Bryce Canyon, Queen's Garden/Navajo Combination Loop, Moderate Hikes.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Kids & Youth - Bryce Canyon National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/brca/learn/kidsyouth/index.htm",
+            "snippet": "trails are the Queens Garden Trail , Mossy Cave Trail and Bristlecone Loop Trail . Shared-use Path \u2013 A 17 mile paved multi-use bike and walking ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Navajo Loop Trail Rock Fall Update - Bryce Canyon National Park",
+            "url": "https://www.nps.gov/brca/learn/news/navajoloopupdate.htm",
+            "snippet": "The Queens Garden Trail had extensive repair work on it over the summer and remains in good condition despite a wet October. Be prepared for hiking at Bryce ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Fee Free Week for National Park Week - Bryce Canyon National Park",
+            "url": "https://home.nps.gov/brca/learn/news/npw2011.htm",
+            "snippet": "Visitors can hike down into the hoodoos and canyon along the Queens Garden Trail . For more information, visit other parts of this website or call (435) 834 ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Hoodoo You Love? - Bryce Canyon National Park",
+            "url": "https://www.nps.gov/brca/getinvolved/hoodoo-you-love.htm",
+            "snippet": "My husband and I were engaged in Bryce off of Queens Garden trail . We were on a cross country road trip. He was so nervous the entire morning ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/brca/planyourvisit/queensgarden.htm",
+          "title": "Queens Garden Trail - Bryce Canyon National Park (U.S. National Park Service)",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "baseline_grok",
+        "item": "Fins and Things Trail",
+        "query": "\"Fins and Things Trail\" Moab, Utah trail hike",
+        "citation_count": 13,
+        "candidates": [
+          {
+            "title": "Fins & Things 4\u00d74 Trail | Grand County, UT",
+            "url": "https://www.grandcountyutah.net/647/Fins-Things-44-Trail",
+            "snippet": "Fins and Things is a ONE-WAY trail. It starts 1.8 miles from the Entrance Station on the right side of the road. Rated a 5 on a scale of 1-10, the trail is 9.4 miles in length. Due to hazardous terrain, it is recommended only for experienced drivers. Marked with metal signs and white symbols on slickrock.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Fins and Things Trailhead - BLM",
+            "url": "https://www.blm.gov/visit/fins-and-things-trailhead",
+            "snippet": "The Fins and Things 4x4 Trail offers spectacular views of the La Sal Mountains across the sandstone domes of Sand Flats Recreation Area. Drivers should allow 3-4 hours to complete the 10 miles of steep climbs and even steeper descents. Portions limited to daytime only. Stay on the marked route.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Fins & Things OHV Trail, Utah - AllTrails",
+            "url": "https://www.alltrails.com/trail/us/utah/fins-things-trail",
+            "snippet": "9.7mi Length, 1,089ft Elevation gain, Loop. Try this 9.7-mile loop trail near Moab, Utah. Generally considered a challenging route. The best times to visit this trail are...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Fins and Things | Off-Road Trail Maps - onX Offroad",
+            "url": "https://www.onxmaps.com/offroad/trails/us/utah/fins-and-things-39yz3w7lp6lk",
+            "snippet": "Total Miles 9.3. Technical Rating 4 Moderate. Fins & Things, located in the Sand Flats Recreation Area in Moab, is accessible from the Sand Flats road. A challenging trail with precarious terrain, recommended for experienced drivers. Features famous slickrock sandstone. One-way road only.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Fins & Things Jeep Trail - AllTrips Moab",
+            "url": "https://www.allmoab.com/trails/fins_things_jeep_trail.php",
+            "snippet": "Fins and Things Trail treats 4 wheel drive enthusiasts to a thrilling roller coaster ride complete with hair-raising ascents and thrilling white knuckle descents; all with the jaw dropping La Sal Mountains as a backdrop. Located in the Sand Flats recreation area.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Fins and Things - Red Rock Four-Wheelers",
+            "url": "https://www.rr4w.com/trail-details.cfm?trailid=9",
+            "snippet": "The trail is reached via the Sand Flats Road, and the territory it covers is the rolling country east of the Hell's Revenge trail and between Negro Bill Canyon...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.grandcountyutah.net/647/Fins-Things-44-Trail",
+          "title": "Fins & Things 4\u00d74 Trail | Grand County, UT",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "baseline_grok",
+        "item": "Park Avenue Trail",
+        "query": "site:nps.gov/arch \"Park Avenue Trail\" Arches National Park trail hike",
+        "citation_count": 0,
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "baseline_grok",
+        "item": "Jud Wiebe Trail",
+        "query": "\"Jud Wiebe Trail\" Telluride, Colorado trail hike",
+        "citation_count": 11,
+        "candidates": [
+          {
+            "title": "Jud Wiebe #432 - USDA Forest Service",
+            "url": "https://www.fs.usda.gov/r02/gmug/recreation/jud-wiebe-432",
+            "snippet": "The Jud Wiebe Trail #432 begins at the end of Aspen Street and ends at Tomboy Road. This popular loop route provides excellent views of Town, the Telluride Ski Area, Bear Creek, and several neighboring peaks. It ascends through aspen and spruce/fir forests with some wide open meadows as it climbs 1,300 feet in elevation.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Jud Wiebe Trail | Visit Telluride",
+            "url": "https://www.telluride.com/activity/jud-wiebe-trail/",
+            "snippet": "The Jud Wiebe Trail is a short, yet steep, trail that offers views of the Telluride Ski Resort and the entire valley. This is a loop that can be hiked in either direction from Aspen Street or Tomboy Road. Distance 3.1 Miles. Typically accessible year-round.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Jud Wiebe Memorial Trail, Colorado - AllTrails",
+            "url": "https://www.alltrails.com/trail/us/colorado/jud-wiebe-memorial-trail",
+            "snippet": "Explore this 3.5-mile loop trail near Telluride, Colorado. Generally considered a challenging route, it takes an average of 2 h 19 min to complete. Elevation gain of 1,233 ft. Hard hike.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Jud Wiebe Hiking Trail in Telluride, Colorado",
+            "url": "https://www.hikingwalking.com/destinations/co/co_sw/telluride/jud_wiebe",
+            "snippet": "Distance: 3.2 miles (Loop). Elevation: 8,900-ft. at Trailhead. Maximum elevation - 10,000-ft. Elevation Gain: 1,100-ft. Difficulty: moderate-strenuous. This short, steep hike features fine views of Telluride along with the ski slopes and peaks.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Jud Wiebe Trail - Telluride",
+            "url": "https://www.telluride.net/jud-wiebe-trail/",
+            "snippet": "It's a town hike. It's a quick hike. It's the best hike in Telluride. The top of Jud Wiebe affords one of the most picturesque views Telluride offers.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Guide to Hiking the Jud Wiebe Trail in Telluride, Colorado",
+            "url": "https://ihitthebutton.com/jud-wiebe-trail-telluride-colorado/",
+            "snippet": "Cost: free, no permit required. The Jud Wiebe is about a 3.1-mile loop (some maps list it up to 3.4 miles). Most hikers finish it in 2 to 3 hours.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.fs.usda.gov/r02/gmug/recreation/jud-wiebe-432",
+          "title": "Jud Wiebe #432 - USDA Forest Service",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "baseline_grok",
+        "item": "Bear Creek Trail",
+        "query": "\"Bear Creek Trail\" Telluride, Colorado trail hike",
+        "citation_count": 14,
+        "candidates": [
+          {
+            "title": "Bear Creek #635 - USDA Forest Service",
+            "url": "https://www.fs.usda.gov/r02/gmug/recreation/bear-creek-635",
+            "snippet": "The Bear Creek Trail #635 begins at the south end of Pine Street and is on the Town of Telluride\u2019s Bear Creek Preserve and it ends at Bear Creek Falls about 0.2 miles past the intersection with the Wasatch Trail #508. The trail follows a wide dirt track that heads up hill, climbing through an aspen and mixed conifer forest.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bear Creek Falls | Visit Telluride",
+            "url": "https://www.telluride.com/activity/bear-creek-falls-trail/",
+            "snippet": "A steady 2-mile climb leads to upper Bear Creek Falls. Duration 2.5 Hours Distance 4.5 Miles (Out and Back) Elevation Gain 1,092 ft. Popular Trail in the Town of Telluride.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bear Creek Falls via Bear Creek Trail, Colorado - AllTrails",
+            "url": "https://www.alltrails.com/trail/us/colorado/bear-creek-falls-via-bear-creek-trail",
+            "snippet": "Bear Creek Falls via Bear Creek Trail is considered a moderate hike that covers 4.7 mi, with an elevation gain of 1,095 ft. It takes about 2.5\u20133 hr to complete.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Details: Bear Creek Falls - Colorado - Hiking & Walking",
+            "url": "https://www.hikingwalking.com/destinations/co/co_sw/telluride/bear_creek_tel/bear_creek_tel_detail",
+            "snippet": "Hike Facts \u00b7 Distance: 4.6 miles (round trip) \u00b7 Elevation: 8,800-ft. - 9,940-ft. \u00b7 Elevation Gain: 1,140-ft. \u00b7 Difficulty: easy-moderate \u00b7 Trail Highlights: See Bear Creek Falls. The Bear Creek trail starts on the end of South Pine Street.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bear Creek Falls - A Scenic Waterfall Hike From Telluride",
+            "url": "https://www.world-of-waterfalls.com/waterfalls/american-southwest-bear-creek-falls/",
+            "snippet": "Bear Creek Falls is a 70ft waterfall easily accessed from Telluride on a popular 5-mile trail gaining 1100ft flanked by craggy mountains and mining relics.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bear Creek - gjhikes.com",
+            "url": "https://www.gjhikes.com/2018/09/bear-creek.html",
+            "snippet": "Round Trip Distance: 4.6 miles Difficulty: Moderate Elevation: 8171 - 9085 feet Time: 2 hrs. The Bear Creek trail is one of the most popular hiking trails in Telluride and tends to get very busy on weekends. Trailhead: Bear Creek Preserve.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.fs.usda.gov/r02/gmug/recreation/bear-creek-635",
+          "title": "Bear Creek #635 - USDA Forest Service",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "baseline_grok",
+        "item": "Piedra Falls",
+        "query": "\"Piedra Falls\" Pagosa Springs, Colorado trail hike",
+        "citation_count": 16,
+        "candidates": [
+          {
+            "title": "San Juan National Forest | Piedra Falls Trail",
+            "url": "https://www.fs.usda.gov/r02/sanjuan/recreation/trails/piedra-falls-trail",
+            "snippet": "Piedra Falls Trail (671) is a family-friendly hike. Distance (one-way): 1/2 mile. Minimum elevation: 8,400 feet. Maximum elevation: 8,430 feet. Walk upstream on the west side of the river to the falls. About 15 minutes from parking.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Piedra Falls Trail No. 671 - Pagosa Springs Area Trails",
+            "url": "https://pagosatrails.org/portfolio/piedra-falls-trail-no-671/",
+            "snippet": "Length: .5-mile (one way). Easy hike that is family friendly. About 15 minutes each way. Directions: Drive North on Piedra Road (CR 600/FS 631) 17.8-miles to Sportsman\u2019s Campground, then Middle Fork Rd and East Toner Rd to trailhead.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "See Four Amazing Waterfalls in Pagosa Springs, Colorado",
+            "url": "https://visitpagosasprings.com/pagosa-springs-waterfalls",
+            "snippet": "Piedra Falls tumbles down volcanic cliffs in two broad steps. Hike roughly 1/2 mile from trailhead, thirty-minute round-trip. Excellent for families. Drive north on Piedra Road 17.8 miles, then Middle Fork and East Toner roads.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Piedra Falls Trail, Colorado - AllTrails",
+            "url": "https://www.alltrails.com/trail/us/colorado/piedra-falls-trail",
+            "snippet": "Easy hike covering 1 mi with 114 ft elevation gain. Takes about 0.5\u20131 hr to complete. Popular trail to the waterfall near Pagosa Springs.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Piedra Falls - Atlas Obscura",
+            "url": "https://www.atlasobscura.com/places/piedra-falls",
+            "snippet": "Out-and-back hike meanders a quick half-mile along the East Fork of the Piedra River, gaining just 100 feet. Roundtrip about half an hour. Trailhead about an hour from downtown Pagosa Springs.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Piedra Falls Hike - My Pagosa Springs",
+            "url": "https://mypagosasprings.com/piedra-falls-hike/",
+            "snippet": "Easy half mile hike to the waterfall. Distance: 1 mile round trip, elevation gain 99 ft. Excellent for families and younger kids. Trailhead No. 671.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.fs.usda.gov/r02/sanjuan/recreation/trails/piedra-falls-trail",
+          "title": "San Juan National Forest | Piedra Falls Trail",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "baseline_grok",
+        "item": "Tent Rocks Cave Loop",
+        "query": "\"Tent Rocks Cave Loop\" Kasha-Katuwe Tent Rocks National Monument, New Mexico trail hike",
+        "citation_count": 24,
+        "candidates": [
+          {
+            "title": "Kasha-Katuwe Tent Rocks National Monument - New Mexico",
+            "url": "https://www.blm.gov/visit/kktr",
+            "snippet": "The Cave Loop Trail is 1.2 miles long, rated as easy. The more difficult Canyon Trail is a 1.5-mile, one-way trek into a narrow canyon with a steep (630-ft) climb to the mesa top. Both trails begin at the designated Monument parking area.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Tent Rocks Cave Loop, New Mexico - AllTrails",
+            "url": "https://www.alltrails.com/trail/us/new-mexico/tent-rocks-cave-loop",
+            "snippet": "Tent Rocks Cave Loop is considered an easy hike that covers 1.2 mi, with an elevation gain of 206 ft. It takes about 0.5\u20131 hr to complete. Dogs are not allowed.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Tent Rocks Slot Canyon and Cave Loop, New Mexico - AllTrails",
+            "url": "https://www.alltrails.com/trail/us/new-mexico/tent-rocks-slot-canyon-and-cave-loop",
+            "snippet": "This beautiful loop travels through a slot canyon with hoodoos and striated rock formations. 3.3-mile loop trail with 813 ft elevation gain, rated 4.9 stars.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Kasha-Katuwe Tent Rocks National Monument",
+            "url": "https://www.blm.gov/programs/national-conservation-lands/new-mexico/kasha-katuwe-tent-rocks-national-monument",
+            "snippet": "Cave Loop Trail: Enjoy an easy 1.2-mile loop with stunning views. The trail surface is gravel and sand, with relatively little elevation change.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Cave Loop and Slot Canyon Trail - Modern Hiker",
+            "url": "https://modernhiker.com/hike/cave-loop-and-slot-canyon-trail/",
+            "snippet": "Distance 3.1 mi, Time 1.5 hrs, Elevation Gain 690 ft. Cave Loop and Slot Trail in Kasha-Katuwe Tent Rocks National Monument. Look for the Cave Loop Trail heading north.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Hike Tent Rocks Slot Canyon and Cave Loop",
+            "url": "https://stavislost.com/hikes/trail/tent-rocks-slot-canyon-and-cave-loop/",
+            "snippet": "Hike Tent Rocks Slot Canyon and Cave Loop, Kasha-Katuwe Tent Rocks National Monument, NM. Class 1, 3.2 miles, 900 gain, 2-4 hrs Out + Back.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.alltrails.com/trail/us/new-mexico/tent-rocks-cave-loop",
+          "title": "Tent Rocks Cave Loop, New Mexico - AllTrails",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "alltrails",
+          "alive": false,
+          "http_status": "403"
+        }
+      },
+      {
+        "strategy": "baseline_grok",
+        "item": "Lava Tubes via Lava Flow Trail",
+        "query": "\"Lava Tubes via Lava Flow Trail\" Snow Canyon State Park, Utah trail hike",
+        "citation_count": 13,
+        "candidates": [
+          {
+            "title": "Lava Tubes via Lava Flow Trail, Utah - AllTrails",
+            "url": "https://www.alltrails.com/trail/us/utah/lava-tubes-via-lava-flow-trail",
+            "snippet": "Lava Tubes via Lava Flow Trail is a trail located in Snow Canyon State Park. Moderate 2.6 mi length, 413 ft elevation gain, out & back. Dog-friendly. Reviewers highlight the trail as featuring lava tubes.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Snow Canyon Lava Tubes | Lava Flow Trail - Utah's Adventure Family",
+            "url": "https://www.utahsadventurefamily.com/snow-canyon-lava-tubes/",
+            "snippet": "The Lava Flow Trail is a unique hike to two large lava tube caves in Snow Canyon State Park near St. George. Distance: 1.0 mile roundtrip to the second lava tube. Rating: Moderate due to climbing into lava tubes. Elevation Gain: 200 feet. Bring a flashlight.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Lava Flow - Visit Snow Canyon",
+            "url": "https://visitsnowcanyon.com/lava-flow/",
+            "snippet": "The Lava Flow Trail begins at its signed trailhead and follows a 27,000-year-old basalt flow. Hiking to the Lava Tubes (caves) is just ~1 mile roundtrip. Full trail 2.5 miles roundtrip. Moderate difficulty. Two signed lava-tube entrances. Dogs not allowed.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Hiking Lava Tubes - Snow Canyon State Park - Road Trip Ryan",
+            "url": "https://www.roadtripryan.com/go/t/utah/zion/lava-tubes-snow-canyon",
+            "snippet": "You can reach the lava tubes from the Lava Flow Trail or the Butterfly Trail. Easy hike, bring flashlights. South and north lava tubes with details on access and safety. From Lava Flow Trailhead less than 1/2 mile one way to the north lava tube.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Lava Flow Overlook \u2013 Snow Canyon State Park - Hike St George",
+            "url": "https://hikestgeorge.com/hiking-trails/lava-flow-overlook/",
+            "snippet": "Lava Flow Overlook Trail \u2013 also known as Lava Tubes \u2013 is a family friendly trail that takes you down past three lava tube/cave entrances. Difficulty: Moderate. Distance: 2.5 miles round trip. 1-2 hours. Bring a flashlight. Dogs not allowed.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Snow Canyon State Park - Utah State Parks",
+            "url": "https://stateparks.utah.gov/parks/snow-canyon/",
+            "snippet": "Explore the trails and dunes of beautiful Snow Canyon on foot, bike, and horseback. Camp in the peaceful campground surrounded by ancient lava flows and red Navajo sandstone. Official park information and fees.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.alltrails.com/trail/us/utah/lava-tubes-via-lava-flow-trail",
+          "title": "Lava Tubes via Lava Flow Trail, Utah - AllTrails",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "alltrails",
+          "alive": false,
+          "http_status": "403"
+        }
+      }
+    ],
+    "site_scoped_grok": [
+      {
+        "strategy": "site_scoped_grok",
+        "item": "Sunrise Point",
+        "query": "site:nps.gov Sunrise Point Bryce Canyon National Park",
+        "citation_count": 10,
+        "candidates": [
+          {
+            "title": "Sunrise Point - Bryce Canyon",
+            "url": "https://www.nps.gov/brca/planyourvisit/sunrise.htm",
+            "snippet": "Sunrise Point is the northernmost of the four major viewpoints that overlook the iconic Bryce Amphitheater.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Sunrise Point (U.S. National Park Service)",
+            "url": "https://www.nps.gov/places/sunrise-point.htm",
+            "snippet": "Sunrise Point is the northernmost of the four major viewpoints that overlook the iconic Bryce Amphitheater. At an elevation of 8,100 feet (2, ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Sunset Point to Sunrise Point Hike (U.S. National Park Service)",
+            "url": "https://www.nps.gov/thingstodo/sunset-point-to-sunrise-point-hike.htm",
+            "snippet": "Sunset Point to Sunrise Point Hike ; Distance: 1.0 mile (1.6 km) (half-mile one-way) ; Approximate Time: 1 hour ; Elevation Gain: 40 feet (12 meters) ; Difficulty: ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Rim Trail Sunrise Point Trailhead",
+            "url": "https://www.nps.gov/places/rim-trail-sunrise-point-trailhead.htm",
+            "snippet": "The 5.5 mile (8.9 km) Rim Trail begins in the south at Bryce Point and ends in the north at Fairyland Point. The trail connects all viewpoints ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "A Typical Summer Visit in 1-3 Hours",
+            "url": "https://www.nps.gov/tripideas/a-typical-summer-visit-in-1-3-hours.htm",
+            "snippet": "In addition to a beautiful view, visitors can enjoy a flat 1.0 mile (1.6 km) walk along the Rim Trail to Sunrise Point and back. If time allows, you can enjoy a ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Sunset Point (U.S. National Park Service)",
+            "url": "https://www.nps.gov/places/000/sunset-point.htm",
+            "snippet": "A 0.5 mile (0.8 km) walk away, Sunrise Point rises gently along the rim , and Boat Mesa extends beyond the ridgeline of the Queen's Garden Trail's gentle descent ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/brca/planyourvisit/sunrise.htm",
+          "title": "Sunrise Point - Bryce Canyon",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "site_scoped_grok",
+        "item": "Inspiration Point",
+        "query": "site:nps.gov Inspiration Point Bryce Canyon National Park",
+        "citation_count": 10,
+        "candidates": [
+          {
+            "title": "Inspiration Point - Bryce Canyon",
+            "url": "https://www.nps.gov/brca/planyourvisit/inspiration.htm",
+            "snippet": "Inspiration Point provides a birds-eye view of the world's largest collection of rock spires called \"hoodoos\" found within the Bryce ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Rim Trail Inspiration Point Trailhead (U.S. National Park Service)",
+            "url": "https://www.nps.gov/places/rim-trail-inspiration-point-trailhead.htm",
+            "snippet": "The 5.5 mile (8.9 km) Rim Trail begins in the south at Bryce Point and ends in the north at Fairyland Point. The trail connects all viewpoints ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Inspiration Point. (U.S. National Park Service)",
+            "url": "https://www.nps.gov/places/000/inspiration-point-viewpoint.htm",
+            "snippet": "Inspiration Point provides a birds-eye view of the world's largest collection of rock spires called \"hoodoos\" found within the Bryce ... Inspiration Point provides three levels of overlook into the Bryce Amphitheater area.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Viewpoints - Bryce Canyon",
+            "url": "https://www.nps.gov/brca/planyourvisit/viewpoints.htm",
+            "snippet": "Inspiration Point provides a birds-eye view of the world's largest collection of \"hoodoos \" found within the Bryce Amphitheater.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "A Typical Summer Visit in 1-3 Hours ...",
+            "url": "https://www.nps.gov/tripideas/a-typical-summer-visit-in-1-3-hours.htm",
+            "snippet": "Inspiration Point provides easy walks along the rim and a steeper walk south to a higher overlook. Continue on to the main road, and turn right back",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Walk the Rim Trail",
+            "url": "https://www.nps.gov/thingstodo/walk-the-rim-trail.htm",
+            "snippet": "Rim Trail from Bryce Point to Inspiration Point is regularly closed. Total Distance: 5.5 miles (8.9 km) Average time: 3-4 hours ) Inspiration ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/brca/planyourvisit/inspiration.htm",
+          "title": "Inspiration Point - Bryce Canyon",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "site_scoped_grok",
+        "item": "The Waterpocket Fold",
+        "query": "site:nps.gov The Waterpocket Fold Capitol Reef National Park",
+        "citation_count": 10,
+        "candidates": [
+          {
+            "title": "Waterpocket District - Capitol Reef",
+            "url": "https://www.nps.gov/care/planyourvisit/waterpocketdistrict.htm",
+            "snippet": "The Waterpocket Fold, the monocline protected within the park, is named for these eroded depressions in the sandstone.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Geology - Capitol Reef National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/care/learn/nature/geology.htm",
+            "snippet": "A nearly 100-mile long warp in the Earth's crust, the Waterpocket Fold is a classic monocline, a \"step-up\" in the rock layers. It formed between ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Capitol Reef National Park",
+            "url": "https://www.nps.gov/CARE",
+            "snippet": "Capitol Reef National Park is a hidden treasure filled with cliffs, canyons, domes, and bridges in the Waterpocket Fold, a geologic monocline",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Hiking Routes in the Waterpocket District - Capitol Reef",
+            "url": "https://www.nps.gov/care/planyourvisit/hiking-routes-in-the-waterpocket-district.htm",
+            "snippet": "Follow this drainage west into the Waterpocket Fold. Less than one mile (1.6 km) from the start, the deep gorge constricts to a narrow slot ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Biophysical Description of Capitol Reef",
+            "url": "https://www.nps.gov/im/ncpn/bpd-care.htm",
+            "snippet": "The Waterpocket Fold formed 65\u201380 million years ago and consists of a geological uplift that stretches from Thousand Lake Mountain in the north ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "NPS Geodiversity Atlas\u2014Capitol Reef National Park, Utah",
+            "url": "https://www.nps.gov/articles/nps-geodiversity-atlas-capitol-reef-national-park-utah.htm",
+            "snippet": "The Waterpocket Fold monocline stretches for almost 161 km (100 mi), from the Colorado River south of the Henry Mountains, along the east side ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/care/planyourvisit/waterpocketdistrict.htm",
+          "title": "Waterpocket District - Capitol Reef",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "site_scoped_grok",
+        "item": "Chimney Rock National Monument",
+        "query": "site:fs.usda.gov Chimney Rock National Monument Pagosa Springs, Colorado",
+        "citation_count": 10,
+        "candidates": [
+          {
+            "title": "Chimney Rock National Monument",
+            "url": "https://www.fs.usda.gov/r02/sanjuan/recreation/chimney-rock-national-monument",
+            "snippet": "The Chimney Rock National Monument encompasses 4,726 acres of the San Juan National Forest between Durango and Pagosa Springs, Colorado. At Chimney Rock National Monument, you can imagine the landscape as it was a thousand years ago with cultivated fields and settlements extending from the valley floors to the mesa tops. Chimney Rock National Monument was designated on September 21, 2012 by President Barack Obama, making it the seventh national monument managed by the USDA Forest Service.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Chimney Rock National Monument | US Forest Service",
+            "url": "https://www.fs.usda.gov/visit/national-monuments/chimney-rock-national-monument",
+            "snippet": "Covering 4,726 acres of the San Juan National Forest between Pagosa Springs and Durango, Colo., the Chimney Rock National Monument is a significant archaeological, cultural, geological and biological site. On Sept. 21, 2012, President Barack Obama designated the Chimney Rock Archaeological Area as America\u2019s 103rd national monument\u2014the seventh to be managed by the U.S. Forest Service. Located one-half mile from the entrance off Highway 151, the Visitor Center Cabin is open daily from 9 a.m. to 4:30 p.m. from May 15 to Sept. 30.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Chimney Rock National Monument Visitor Center",
+            "url": "https://www.fs.usda.gov/r02/sanjuan/offices/chimney-rock-national-monument-visitor-center",
+            "snippet": "Address: 30841 STATE HWY 151 Pagosa Springs, CO 81147 ; Hours of Operation: May 15 - October 15, 9:00am-4:30pm ; Office Phone: (970)883-2496",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Chimney Rock National Monument opens May 15",
+            "url": "https://www.fs.usda.gov/r02/sanjuan/newsroom/releases/chimney-rock-national-monument-opens-may-15",
+            "snippet": "The monument is open 7 days a week from 9:00 a.m. to 4:30 p.m . Entrance Fees: $20 per vehicle $10 per motorcycle Free entry. The monument encompasses 4,726 acres of the San Juan National Forest between Durango and Pagosa Springs, Colorado and is managed by the U.S. Forest Service in partnership with the Chimney Rock Interpretive Association.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Chimney Rock National Monument designated as International Dark Sky Park",
+            "url": "https://www.fs.usda.gov/r02/sanjuan/newsroom/releases/chimney-rock-national-monument-designated-international-dark-sky-park",
+            "snippet": "Situated between Pagosa Springs and Durango in a minimally developed valley near the Colorado-New Mexico border, the monument's remote location offers some of the darkest night skies in the San Juan National Forest. Chimney Rock National Monument has been designated an International Dark Sky Park by DarkSky International.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Welcome to San Juan National Forest",
+            "url": "https://www.fs.usda.gov/r02/sanjuan",
+            "snippet": "Chimney Rock represents one of the largest Pueblo II (900-1150 AD) communities in southwestern Colorado and is considered a Chacoan cultural \u201coutlier.\u201d At Chimney Rock National Monument, you can imagine the landscape as it was a thousand years ago with cultivated fields and settlements extending from the valley floors to the mesa tops.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.fs.usda.gov/r02/sanjuan/recreation/chimney-rock-national-monument",
+          "title": "Chimney Rock National Monument",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "site_scoped_grok",
+        "item": "Museum of International Folk Art",
+        "query": "site:internationalfolkart.org Museum of International Folk Art Santa Fe, New Mexico",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "Museum of International Folk Art | Santa Fe, New Mexico",
+            "url": "https://www.internationalfolkart.org/",
+            "snippet": "The Museum of International Folk Art in Santa Fe, New Mexico, holds the largest collection of international folk art in the world. Explore exhibitions, events, and more.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Visit | Museum of International Folk Art",
+            "url": "https://www.internationalfolkart.org/visit/",
+            "snippet": "Plan your visit to the Museum of International Folk Art in Santa Fe. Hours, tickets, directions, and visitor information.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Exhibitions | Museum of International Folk Art",
+            "url": "https://www.internationalfolkart.org/exhibitions/",
+            "snippet": "Current and upcoming exhibitions at the Museum of International Folk Art featuring global folk art traditions.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "About | Museum of International Folk Art",
+            "url": "https://www.internationalfolkart.org/about/",
+            "snippet": "Learn about the history, mission, and collections of the Museum of International Folk Art in Santa Fe, New Mexico.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Collections | Museum of International Folk Art",
+            "url": "https://www.internationalfolkart.org/collections/",
+            "snippet": "Explore the vast collections of folk art from around the world at the Museum of International Folk Art.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.internationalfolkart.org/exhibitions/",
+          "title": "Exhibitions | Museum of International Folk Art",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": false,
+          "http_status": "404"
+        }
+      },
+      {
+        "strategy": "site_scoped_grok",
+        "item": "Queens Garden Trail",
+        "query": "site:alltrails.com Queens Garden Trail Bryce Canyon National Park",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "Queen's Garden Trail - Bryce Canyon National Park | AllTrails",
+            "url": "https://www.alltrails.com/trail/us/utah/queens-garden-trail",
+            "snippet": "Enjoy this 1.9-mile out-and-back trail near Bryce, Utah. Generally considered a moderately challenging route, it takes an average of 1 h 3 min to complete.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Queens Garden / Navajo Combination Loop - Bryce Canyon National Park",
+            "url": "https://www.alltrails.com/trail/us/utah/queens-garden-navajo-combination-loop",
+            "snippet": "Experience this 3.1-mile loop trail near Bryce Canyon, Utah. Generally considered a moderately challenging route, it takes an average of 1 h 41 min to complete.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Navajo Loop and Queen's Garden Trail - Bryce Canyon National Park",
+            "url": "https://www.alltrails.com/trail/us/utah/navajo-loop-and-queens-garden-trail",
+            "snippet": "Try this 2.9-mile loop trail near Bryce, Utah. Generally considered a moderately challenging route, it takes an average of 1 h 35 min to complete.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Queens Garden Trail to Navajo Loop via Peekaboo Loop - Bryce Canyon",
+            "url": "https://www.alltrails.com/trail/us/utah/queens-garden-trail-to-navajo-loop-via-peekaboo-loop",
+            "snippet": "Check out this 5.3-mile loop trail near Bryce Canyon, Utah. Generally considered a challenging route, it takes an average of 2 h 59 min to complete.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Sunset Point to Sunrise Point via Queens Garden Trail",
+            "url": "https://www.alltrails.com/trail/us/utah/sunset-point-to-sunrise-point-via-queens-garden-trail",
+            "snippet": "Explore this 2.6-mile point-to-point trail near Bryce, Utah. Generally considered a moderately challenging route.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bryce Canyon National Park Trails | AllTrails",
+            "url": "https://www.alltrails.com/parks/us/utah/bryce-canyon-national-park",
+            "snippet": "Ready to check out the best trails in Bryce Canyon National Park? AllTrails has 48 great trails for hiking and more.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.alltrails.com/trail/us/utah/queens-garden-trail",
+          "title": "Queen's Garden Trail - Bryce Canyon National Park | AllTrails",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "alltrails",
+          "alive": false,
+          "http_status": "403"
+        }
+      },
+      {
+        "strategy": "site_scoped_grok",
+        "item": "Fins and Things Trail",
+        "query": "site:alltrails.com Fins and Things Trail Moab, Utah",
+        "citation_count": 10,
+        "candidates": [
+          {
+            "title": "Fins & Things OHV Trail, Utah - AllTrails",
+            "url": "https://www.alltrails.com/trail/us/utah/fins-things-trail",
+            "snippet": "Try this 9.7-mile loop trail near Moab, Utah. Generally considered a challenging route. This is a very popular area for camping and off-road driving, so you'll ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "10 Best hikes and trails in Sand Flats Recreation Area | AllTrails",
+            "url": "https://www.alltrails.com/parks/us/utah/sand-flats-recreation-area",
+            "snippet": "According to AllTrails.com, there are 8 camping trails in Sand Flats Recreation Area and the most popular is Fins & Things OHV Trail with an average 4.8 star ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Best off-road-driving trails in Moab - AllTrails",
+            "url": "https://www.alltrails.com/us/utah/moab/off-road-driving",
+            "snippet": "The most popular and difficult off-road driving trail in Moab is Fins & Things OHV Trail with a 4.8-star rating from 1,608 reviews. Top parks around Moab.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.alltrails.com/trail/us/utah/fins-things-trail",
+          "title": "Fins & Things OHV Trail, Utah - AllTrails",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "alltrails",
+          "alive": false,
+          "http_status": "403"
+        }
+      },
+      {
+        "strategy": "site_scoped_grok",
+        "item": "Park Avenue Trail",
+        "query": "site:alltrails.com Park Avenue Trail Arches National Park",
+        "error": "ReadTimeout: HTTPSConnectionPool(host='api.x.ai', port=443): Read timed out. (read timeout=60)",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "site_scoped_grok",
+        "item": "Jud Wiebe Trail",
+        "query": "site:alltrails.com Jud Wiebe Trail Telluride, Colorado",
+        "error": "ReadTimeout: HTTPSConnectionPool(host='api.x.ai', port=443): Read timed out. (read timeout=60)",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "site_scoped_grok",
+        "item": "Bear Creek Trail",
+        "query": "site:alltrails.com Bear Creek Trail Telluride, Colorado",
+        "citation_count": 10,
+        "candidates": [
+          {
+            "title": "Bear Creek Falls via Bear Creek Trail, Colorado - AllTrails",
+            "url": "https://www.alltrails.com/trail/us/colorado/bear-creek-falls-via-bear-creek-trail",
+            "snippet": "Check out this 4.7-mile out-and-back trail near Telluride, Colorado. Generally considered a moderately challenging route, it takes an average of 2 h 29 min to ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bear Creek - hikes and trails to get you there | AllTrails",
+            "url": "https://www.alltrails.com/poi/us/colorado/telluride/bear-creek",
+            "snippet": "The mellow mountain trail winds its way between the Uncompahgre National Forest that the the 325 acre Bear Creek Preserve, which is full of aspen and pine ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bear Creek and Wasatch, Colorado - 89 Reviews, Map | AllTrails",
+            "url": "https://www.alltrails.com/trail/us/colorado/bear-creek-and-wasatch",
+            "snippet": "Enjoy this 12.0-mile out-and-back trail near Telluride, Colorado. Generally considered a challenging route, it takes an average of 8 h 1 min to complete. This ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bear Creek Trail, Colorado - 87 Reviews, Map | AllTrails",
+            "url": "https://www.alltrails.com/trail/us/colorado/bear-creek-trail--8",
+            "snippet": "Bear Creek Trail is considered a hard hike that covers 15.2 mi, with an elevation gain of 1,916 ft. It takes about 6.5\u20137 hr to complete. Hard trails usually ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bear Creek to Gold Hill, Colorado - 58 Reviews, Map | AllTrails",
+            "url": "https://www.alltrails.com/trail/us/colorado/bear-creek-to-gold-hill",
+            "snippet": "Experience this 12.6-mile out-and-back trail near Telluride, Colorado. Generally considered a challenging route, it takes an average of 7 h 55 min to complete.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bear Creek and Town Park Loop, Colorado - 621 Reviews, Map",
+            "url": "https://www.alltrails.com/trail/us/colorado/bear-creek-and-town-park-loop",
+            "snippet": "Bear Creek and Town Park Loop is considered a moderate hike that covers 1.9 mi, with an elevation gain of 416 ft. It takes about 1\u20131.5 hr to complete. Moderate ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.alltrails.com/trail/us/colorado/bear-creek-falls-via-bear-creek-trail",
+          "title": "Bear Creek Falls via Bear Creek Trail, Colorado - AllTrails",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "alltrails",
+          "alive": false,
+          "http_status": "403"
+        }
+      },
+      {
+        "strategy": "site_scoped_grok",
+        "item": "Piedra Falls",
+        "query": "site:alltrails.com Piedra Falls Pagosa Springs, Colorado",
+        "citation_count": 10,
+        "candidates": [
+          {
+            "title": "Piedra Falls Trail, Colorado - 844 Reviews, Map",
+            "url": "https://www.alltrails.com/trail/us/colorado/piedra-falls-trail",
+            "snippet": "Piedra Falls Trail is considered an easy hike that covers 1 mi , with an elevation gain of 114 ft. It takes about 0.5\u20131 hr to complete. Easy trails are typically ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Piedra River Trail, Colorado",
+            "url": "https://www.alltrails.com/trail/us/colorado/piedra-river-trail",
+            "snippet": "7.6-mile out-and-back trail near Pagosa Springs, Colorado . Generally considered a moderately challenging route, it takes an average of 3 h 4 min to complete.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Best waterfall trails in Pagosa Springs",
+            "url": "https://www.alltrails.com/us/colorado/pagosa-springs/waterfall",
+            "snippet": "This is a fantastic hike to Piedra Falls in San Juan National Forest . The hike begins from Piedra Falls Trailhead, accessed via a scenic drive through the ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Best trails near Piedra Falls",
+            "url": "https://www.alltrails.com/poi/us/colorado/piedra-falls",
+            "snippet": "Beautiful Fall hike to stunning Piedra Falls . The hike is easy and only about 1 mile round trip. The Piedra River is beautiful among the Fall leaves! The road ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "10 Best trails and hikes in Pagosa Springs",
+            "url": "https://www.alltrails.com/us/colorado/pagosa-springs",
+            "snippet": "Some popular fall hiking trails in Pagosa Springs are Treasure Falls Trail, Piedra River Trail , Fourmile Falls via Fourmile Stock Drive Trail, Coyote Hill Loop ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Treasure Falls Trail, Colorado",
+            "url": "https://www.alltrails.com/trail/us/colorado/treasure-falls-trail",
+            "snippet": "This route to Treasure Falls is a popular family-friendly adventure. Some scrambling is involved to make the steep trip up to the falls and viewpoints.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.alltrails.com/trail/us/colorado/piedra-falls-trail",
+          "title": "Piedra Falls Trail, Colorado - 844 Reviews, Map",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "alltrails",
+          "alive": false,
+          "http_status": "403"
+        }
+      },
+      {
+        "strategy": "site_scoped_grok",
+        "item": "Tent Rocks Cave Loop",
+        "query": "site:blm.gov Tent Rocks Cave Loop Kasha-Katuwe Tent Rocks National Monument, New Mexico",
+        "error": "ReadTimeout: HTTPSConnectionPool(host='api.x.ai', port=443): Read timed out. (read timeout=60)",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "site_scoped_grok",
+        "item": "Lava Tubes via Lava Flow Trail",
+        "query": "site:alltrails.com Lava Tubes via Lava Flow Trail Snow Canyon State Park, Utah",
+        "citation_count": 10,
+        "candidates": [
+          {
+            "title": "Lava Tubes via Lava Flow Trail, Utah",
+            "url": "https://www.alltrails.com/trail/us/utah/lava-tubes-via-lava-flow-trail",
+            "snippet": "Lava Tubes via Lava Flow Trail offers a unique hiking experience characterized by spectacular scenic views and opportunities for exploration. Reviewers ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "10 Best hikes and trails in Snow Canyon State Park",
+            "url": "https://www.alltrails.com/parks/us/utah/snow-canyon-state-park",
+            "snippet": "Lava Tubes via Lava Flow Trail 4.6\u00b7 Moderate\u00b72.6 mi ... primitive trail guides you straight to ancient volcanic tunnels that you can drop inside to explore.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Best cave trails in Snow Canyon State Park",
+            "url": "https://www.alltrails.com/parks/us/utah/snow-canyon-state-park/cave",
+            "snippet": "Lava Tubes via Lava Flow Trail 4.6\u00b7 Moderate\u00b72.6 mi ... primitive trail guides you straight to ancient volcanic tunnels that you can drop inside to explore. ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Best short trails in Snow Canyon State Park",
+            "url": "https://www.alltrails.com/parks/us/utah/snow-canyon-state-park/short",
+            "snippet": "#1 - Lava Tubes via Lava Flow Trail ... This rugged backcountry corridor offers a fascinating glimpse into the geological history of southwestern Utah. Moving ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Lava Tube and Butterfly Trail Loop, Utah - 636 Reviews, Map",
+            "url": "https://www.alltrails.com/trail/us/utah/lava-tube-and-butterfly-trail-loop",
+            "snippet": "Discover this 1.7-mile loop trail near Ivins, Utah . Generally considered an easy route, it takes an average of 42 min to complete. This is a popular trail ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Lava Tube #2 via Butterfly Trail, Utah - 795 Reviews, Map",
+            "url": "https://www.alltrails.com/trail/us/utah/butterfly-trail",
+            "snippet": "Enjoy this 1.2-mile out-and-back trail near Dammeron Valley, Utah. Generally considered a moderately challenging route, it takes an average of 28 min to ...",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.alltrails.com/trail/us/utah/lava-tubes-via-lava-flow-trail",
+          "title": "Lava Tubes via Lava Flow Trail, Utah",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "alltrails",
+          "alive": false,
+          "http_status": "403"
+        }
+      }
+    ],
+    "alt_phrasing_grok": [
+      {
+        "strategy": "alt_phrasing_grok",
+        "item": "Sunrise Point",
+        "query": "Sunrise Point Bryce Canyon National Park official page",
+        "citation_count": 10,
+        "candidates": [
+          {
+            "title": "Sunrise Point (U.S. National Park Service)",
+            "url": "https://www.nps.gov/places/sunrise-point.htm",
+            "snippet": "Sunrise Point is the northernmost of the four major viewpoints that overlook the iconic Bryce Amphitheater. Though this point along with ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bryce Canyon - National Park Service",
+            "url": "https://www.nps.gov/brca/",
+            "snippet": "Viewpoints of the iconic Bryce Amphitheater are located along the first 3 miles of the park road and are a popular destination at sunrise.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Sunrise Point, Bryce Canyon National Park - AllTrips",
+            "url": "https://www.allbryce.com/viewpoints/sunrise_point.php",
+            "snippet": "Sunrise Point offers one of the first breathtaking vistas of Bryce Canyon \u2026 open April to October. Website: http://www.nps.gov/brca/planyourvisit/sunrise.htm",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/places/sunrise-point.htm",
+          "title": "Sunrise Point (U.S. National Park Service)",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "alt_phrasing_grok",
+        "item": "Inspiration Point",
+        "query": "Inspiration Point Bryce Canyon National Park official page",
+        "error": "ReadTimeout: HTTPSConnectionPool(host='api.x.ai', port=443): Read timed out. (read timeout=60)",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "alt_phrasing_grok",
+        "item": "The Waterpocket Fold",
+        "query": "The Waterpocket Fold Capitol Reef National Park official page",
+        "citation_count": 10,
+        "candidates": [
+          {
+            "title": "Capitol Reef National Park (NPS Official)",
+            "url": "https://www.nps.gov/CARE",
+            "snippet": "Capitol Reef National Park is a hidden treasure filled with cliffs, canyons, domes, and bridges in the Waterpocket Fold, a geologic monocline (a wrinkle on the earth) extending almost 100 miles.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Geology - Capitol Reef National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/care/learn/nature/geology.htm",
+            "snippet": "Learn about the geologic processes that created the Waterpocket Fold.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Geology of Capitol Reef National Park - USGS",
+            "url": "https://www.usgs.gov/geology-and-ecology-of-national-parks/geology-capitol-reef-national-park",
+            "snippet": "The park lies on some 377 square miles and showcases the Waterpocket Fold, a dramatic wrinkle in the Earth that extends over 100 miles.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Waterpocket Fold - Capitol Reef | Utah.com",
+            "url": "https://www.utah.com/destinations/national-parks/capitol-reef-national-park/places-to-see/waterpocket-fold/",
+            "snippet": "The Waterpocket Fold is the major geologic feature that defines Capitol Reef National Park. It is a buckle in the earth's surface, almost 100 miles long.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Capitol Reef National Park - National Parks Conservation Association",
+            "url": "https://www.nationalparks.org/explore/parks/capitol-reef-national-park",
+            "snippet": "A nearly 100-mile long warp in the Earth's crust, the Waterpocket Fold is a classic monocline: a regional fold with one very steep side in an area of otherwise ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.utah.com/destinations/national-parks/capitol-reef-national-park/places-to-see/waterpocket-fold/",
+          "title": "Waterpocket Fold - Capitol Reef | Utah.com",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "alt_phrasing_grok",
+        "item": "Chimney Rock National Monument",
+        "query": "Chimney Rock National Monument Pagosa Springs, Colorado official page",
+        "citation_count": 0,
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "alt_phrasing_grok",
+        "item": "Museum of International Folk Art",
+        "query": "Museum of International Folk Art Santa Fe, New Mexico official page",
+        "error": "ReadTimeout: HTTPSConnectionPool(host='api.x.ai', port=443): Read timed out. (read timeout=60)",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "alt_phrasing_grok",
+        "item": "Queens Garden Trail",
+        "query": "Queens Garden Trail Bryce Canyon National Park official page",
+        "error": "ReadTimeout: HTTPSConnectionPool(host='api.x.ai', port=443): Read timed out. (read timeout=60)",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "alt_phrasing_grok",
+        "item": "Fins and Things Trail",
+        "query": "Fins and Things Trail Moab, Utah official page",
+        "citation_count": 9,
+        "candidates": [
+          {
+            "title": "Fins & Things 4\u00d74 Trail | Grand County, UT - Official Website",
+            "url": "https://www.grandcountyutah.net/647/Fins-Things-44-Trail",
+            "snippet": "Fins and Things is a ONE-WAY trail. It starts 1.8 miles from the Entrance Station on the right side of the road. For trailer parking, please park prior to this on the south side of Sand Flats Road 1.4 miles from Entrance Station. OHV\u2019s are permitted on the Sand Flats Road. The trail is marked with metal signs and white symbols painted on the slick rock surface. Due to hazardous terrain, it is recommended only for experienced drivers.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Fins and Things Trailhead - Bureau of Land Management",
+            "url": "https://www.blm.gov/visit/fins-and-things-trailhead",
+            "snippet": "The Fins and Things 4x4 Trail offers spectacular views of the La Sal Mountains across the sandstone domes of Sand Flats Recreation Area. Motorized travel is only allowed on designated routes. Additional information can be found on the Fins and Things 4x4 website.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Moab 4-Wheeling Trails Guide - Discover Moab",
+            "url": "https://www.discovermoab.com/attractions/off-roading/4-wheeling/",
+            "snippet": "Fins and Things is located in the Sand Flats Recreation Area. Fins and Things is a one-way trail. It starts 2 miles from the Sand Flats Entrance Station. Round Trip from Moab: 20 miles. 4-Wheel Drive Road: 9.4 miles. Minimum Time: 3 hours. Difficulty: Difficult. The Sand Flats Recreation Area is managed through a unique partnership between Grand County and the Bureau of Land Management.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Fins and Things | Off-Road Trail Maps, Difficulty, Trail Status - onX Offroad",
+            "url": "https://www.onxmaps.com/offroad/trails/us/utah/fins-and-things-39yz3w7lp6lk",
+            "snippet": "Fins & Things, located in the Sand Flats Recreation Area in Moab, is accessible from the Sand Flats road. A one-day pass for private vehicles is $5. Total Miles 9.3. Technical Rating 4 Moderate.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Fins & Things OHV Trail, Utah - AllTrails",
+            "url": "https://www.alltrails.com/trail/us/utah/fins-things-trail",
+            "snippet": "Try this 9.7-mile loop trail near Moab, Utah. Generally considered a challenging route. The best times to visit this trail are February through November.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.grandcountyutah.net/647/Fins-Things-44-Trail",
+          "title": "Fins & Things 4\u00d74 Trail | Grand County, UT - Official Website",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "alt_phrasing_grok",
+        "item": "Park Avenue Trail",
+        "query": "Park Avenue Trail Arches National Park official page",
+        "citation_count": 8,
+        "candidates": [
+          {
+            "title": "Park Avenue Viewpoint and Trail (U.S. National Park Service)",
+            "url": "https://www.nps.gov/places/park-avenue-viewpoint-and-trailhead.htm",
+            "snippet": "Just 3.6 miles (5.8 km) after Arches National Park Visitor Center, this is many visitors' first scenic stop. At Park Avenue, you can gaze down a corridor of towering rock walls and curiously carved spires. A paved sidewalk leads to a viewpoint.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Park Avenue and Courthouse Towers - Arches (U.S. National Park Service)",
+            "url": "https://www.nps.gov/arch/planyourvisit/courthouse-towers.htm",
+            "snippet": "Park Avenue. The beginning of the Park Avenue trail is paved and ends at a viewpoint of Park Avenue. Signs are available along the trail.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Arches National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/ARCH",
+            "snippet": "The Park Avenue trail is one of many hiking trails at Arches, ranging from easy to strenuous.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Park Avenue Trail, Utah - AllTrails",
+            "url": "https://www.alltrails.com/trail/us/utah/park-avenue",
+            "snippet": "Park Avenue Trail is considered an easy hike that covers 1.8 mi, with an elevation gain of 308 ft. It takes about 0.5\u20131 hr to complete.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Park Avenue Trail - Utah.com",
+            "url": "https://www.utah.com/destinations/national-parks/arches-national-park/things-to-do/hiking/park-avenue-trail/",
+            "snippet": "The Park Avenue Trail is one of the first major attractions within Arches National Park. It is a one-mile trail that follows the bottom of a canyon.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/places/park-avenue-viewpoint-and-trailhead.htm",
+          "title": "Park Avenue Viewpoint and Trail (U.S. National Park Service)",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "alt_phrasing_grok",
+        "item": "Jud Wiebe Trail",
+        "query": "Jud Wiebe Trail Telluride, Colorado official page",
+        "citation_count": 10,
+        "candidates": [
+          {
+            "title": "Jud Wiebe #432 - USDA Forest Service",
+            "url": "https://www.fs.usda.gov/r02/gmug/recreation/jud-wiebe-432",
+            "snippet": "The Jud Wiebe Trail #432 begins at the end of Aspen Street and ends at Tomboy Road. This popular loop route provides excellent views of Town, the Telluride Ski Area, Bear Creek, and several neighboring peaks.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Jud Wiebe Trail | Visit Telluride",
+            "url": "https://www.telluride.com/activity/jud-wiebe-trail/",
+            "snippet": "The Jud Wiebe Trail is a short, yet steep, trail that offers views of the Telluride Ski Resort and the entire valley. typically accessible year-round. This is a loop that can be hiked in either direction from Aspen Street or Tomboy Road.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Jud Wiebe Memorial Trail, Colorado - AllTrails",
+            "url": "https://www.alltrails.com/trail/us/colorado/jud-wiebe-memorial-trail",
+            "snippet": "Jud Wiebe Memorial Trail is a loop trail that covers 3.5 mi, with an elevation gain of 1,233 ft. It takes about 2.5\u20133 hr to complete.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Jud Wiebe Hiking Trail in Telluride, Colorado",
+            "url": "https://www.hikingwalking.com/destinations/co/co_sw/telluride/jud_wiebe",
+            "snippet": "This short, steep hike features fine views of Telluride. Distance: 3.2 miles (Loop) Elevation: 8,900-ft. Gain: 1,100-ft.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Jud Wiebe Trail - TripAdvisor",
+            "url": "https://www.tripadvisor.com/Attraction_Review-g33667-d273841-Reviews-Jud_Wiebe_Trail-Telluride_Colorado.html",
+            "snippet": "This hike is a great way to start your time in Telluride. Though it is only a 3 mile hike, you climb 1300 feet.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.fs.usda.gov/r02/gmug/recreation/jud-wiebe-432",
+          "title": "Jud Wiebe #432 - USDA Forest Service",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "alt_phrasing_grok",
+        "item": "Bear Creek Trail",
+        "query": "Bear Creek Trail Telluride, Colorado official page",
+        "citation_count": 9,
+        "candidates": [
+          {
+            "title": "Bear Creek #635",
+            "url": "https://www.fs.usda.gov/r02/gmug/recreation/bear-creek-635",
+            "snippet": "The Bear Creek Trail #635 begins at the south end of Pine Street and is on the Town of Telluride\u2019s Bear Creek Preserve and it ends at Bear Creek Falls about 0.2 miles past the intersection with the Wasatch Trail #508. The trail follows a wide dirt track that heads up hill, climbing through an aspen and mixed conifer forest.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bear Creek Falls | Visit Telluride",
+            "url": "https://www.telluride.com/activity/bear-creek-falls-trail/",
+            "snippet": "Popular Trail in the Town of Telluride ... A steady 2-mile climb leads to upper Bear Creek Falls and connects to the Wasatch Trail and Bridal Veil Basin.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Trails | San Miguel County, CO - Official Website",
+            "url": "https://www.sanmiguelcountyco.gov/293/Trails",
+            "snippet": "This trail is open to hikers, bikers, Class I eBikes, horses, cross-country skiers (groomed track when conditions allow), fishermen, and boaters. No motorized ... The Parks & Open Space Department maintains several county trails. The regional trail maps on telluride.com depict the locations of all local trails and helpful tips.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Bear Creek Falls via Bear Creek Trail, Colorado",
+            "url": "https://www.alltrails.com/trail/us/colorado/bear-creek-falls-via-bear-creek-trail",
+            "snippet": "Bear Creek Falls via Bear Creek Trail is considered a moderate hike that covers 4.7 mi, with an elevation gain of 1,095 ft. It takes about 2.5\u20133 hr to complete.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Details: Bear Creek Falls - Colorado",
+            "url": "https://www.hikingwalking.com/destinations/co/co_sw/telluride/bear_creek_tel/bear_creek_tel_detail",
+            "snippet": "The Bear Creek trail starts on the end of South Pine Street (see driving directions) on a wide dirt track shared with bikers and horseback riders. Follow the ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.fs.usda.gov/r02/gmug/recreation/bear-creek-635",
+          "title": "Bear Creek #635",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "alt_phrasing_grok",
+        "item": "Piedra Falls",
+        "query": "Piedra Falls Pagosa Springs, Colorado official page",
+        "error": "ReadTimeout: HTTPSConnectionPool(host='api.x.ai', port=443): Read timed out. (read timeout=60)",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "alt_phrasing_grok",
+        "item": "Tent Rocks Cave Loop",
+        "query": "Tent Rocks Cave Loop Kasha-Katuwe Tent Rocks National Monument, New Mexico official page",
+        "citation_count": 10,
+        "candidates": [
+          {
+            "title": "Kasha-Katuwe Tent Rocks National Monument - New Mexico",
+            "url": "https://www.blm.gov/visit/kktr",
+            "snippet": "The Monument includes a national recreational trail. \u00b7 The Cave Loop Trail is 1.2 miles long, rated as easy. \u00b7 The Veterans' Memorial is located at the end of a 3 ... Entry into the monument is by reservation only...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Kasha-Katuwe Tent Rocks National Monument",
+            "url": "https://www.blm.gov/programs/national-conservation-lands/new-mexico/kasha-katuwe-tent-rocks-national-monument",
+            "snippet": "Cave Loop Trail: Enjoy an easy 1.2-mile loop with stunning views. The trail surface is gravel and sand, with relatively little elevation change. 505-761-8700 Entry into the monument is by reservation only...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Kasha Katuwe Tent Rocks National Monument Ticketed Entry",
+            "url": "https://www.recreation.gov/ticket/facility/10065448",
+            "snippet": "The Cave Loop Trail is 1.2 miles long, rated as easy. into a narrow canyon with a steep (630-ft) climb to the mesa top. Designated by U.S. Congress in 2001...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Kasha-Katuwe Tent Rocks National Monument - BLM",
+            "url": "https://www.newmexico.org/listing/kasha-katuwe-tent-rocks-national-monument-blm/2086/",
+            "snippet": "The Cave Loop Trail is 1.2 miles long, rated as easy. The more difficult Canyon Trail is a 1.5-mile, one-way trek into a narrow, \"slot\" canyon with a steep (630 ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Kasha-Katuwe Tent Rocks National Monument - TOURISM Santa Fe",
+            "url": "https://www.santafe.org/listing/kasha-katuwe-tent-rocks-national-monument/211/",
+            "snippet": "The Cave Loop Trail is an easy 1.2 mile hike. The more challenging Canyon Trail takes you 1.5 miles one-way into a narrow canyon then steeply up a 630-foot ...",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.blm.gov/programs/national-conservation-lands/new-mexico/kasha-katuwe-tent-rocks-national-monument",
+          "title": "Kasha-Katuwe Tent Rocks National Monument",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "alt_phrasing_grok",
+        "item": "Lava Tubes via Lava Flow Trail",
+        "query": "Lava Tubes via Lava Flow Trail Snow Canyon State Park, Utah official page",
+        "citation_count": 9,
+        "candidates": [
+          {
+            "title": "Snow Canyon State Park - Utah State Parks",
+            "url": "https://stateparks.utah.gov/parks/snow-canyon/",
+            "snippet": "Explore the trails and dunes of beautiful Snow Canyon on foot, bike, and horseback. Camp in the peaceful campground surrounded by ancient lava flows and red Navajo sandstone. Discover the secrets of the desert landscape through seasonal ranger programs.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Snow Canyon Lava Tubes | Lava Flow Trail - Utah's Adventure Family",
+            "url": "https://www.utahsadventurefamily.com/snow-canyon-lava-tubes/",
+            "snippet": "The Lava Flow Trail is a unique hike to two large lava tube caves in Snow Canyon State Park near St. George. Both Snow Canyon lava tubes are open to exploration, so make sure to take a flashlight if you plan to venture into the caves. Distance: 1.0 mile roundtrip.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Lava Tubes via Lava Flow Trail, Utah - AllTrails",
+            "url": "https://www.alltrails.com/trail/us/utah/lava-tubes-via-lava-flow-trail",
+            "snippet": "Lava Tubes via Lava Flow Trail offers a unique hiking experience characterized by spectacular scenic views and opportunities for exploration.",
+            "policy_class": "alltrails",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Hiking Lava Tubes - Snow Canyon State Park - Road Trip Ryan",
+            "url": "https://www.roadtripryan.com/go/t/utah/zion/lava-tubes-snow-canyon",
+            "snippet": "You can reach the lava tubes from the Lava Flow Trail, or the Butterfly Trail. Or, you can do it as a loop using the two trails and a 0.4 miles of road walking. The trailhead is either the Lava Flow Trailhead or Butterfly Trailhead in Snow Canyon State Park.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "lava flow overlook \u2013 snow canyon state park",
+            "url": "https://hikestgeorge.com/hiking-trails/lava-flow-overlook/",
+            "snippet": "Lava Flow Overlook Trail \u2013 also known as Lava Tubes \u2013 is a family friendly trail that takes you down past three lava tube/cave entrances in the heart of Snow Canyon State Park.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.utahsadventurefamily.com/snow-canyon-lava-tubes/",
+          "title": "Snow Canyon Lava Tubes | Lava Flow Trail - Utah's Adventure Family",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": false,
+          "http_status": "403"
+        }
+      }
+    ],
+    "claude_web_search": [
+      {
+        "strategy": "claude_web_search",
+        "item": "Sunrise Point",
+        "query": "site:nps.gov/brca \"Sunrise Point\" Bryce Canyon National Park attraction landmark",
+        "error": "HTTPError: 400 Client Error: Bad Request for url: https://api.anthropic.com/v1/messages",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "claude_web_search",
+        "item": "Inspiration Point",
+        "query": "site:nps.gov/brca \"Inspiration Point\" Bryce Canyon National Park attraction landmark",
+        "error": "HTTPError: 400 Client Error: Bad Request for url: https://api.anthropic.com/v1/messages",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "claude_web_search",
+        "item": "The Waterpocket Fold",
+        "query": "site:nps.gov/care \"The Waterpocket Fold\" Capitol Reef National Park attraction landmark",
+        "error": "HTTPError: 400 Client Error: Bad Request for url: https://api.anthropic.com/v1/messages",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "claude_web_search",
+        "item": "Chimney Rock National Monument",
+        "query": "\"Chimney Rock National Monument\" Pagosa Springs, Colorado attraction landmark",
+        "error": "HTTPError: 400 Client Error: Bad Request for url: https://api.anthropic.com/v1/messages",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "claude_web_search",
+        "item": "Museum of International Folk Art",
+        "query": "\"Museum of International Folk Art\" Santa Fe, New Mexico attraction landmark",
+        "error": "HTTPError: 400 Client Error: Bad Request for url: https://api.anthropic.com/v1/messages",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "claude_web_search",
+        "item": "Queens Garden Trail",
+        "query": "site:nps.gov/brca \"Queens Garden Trail\" Bryce Canyon National Park trail hike",
+        "error": "HTTPError: 400 Client Error: Bad Request for url: https://api.anthropic.com/v1/messages",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "claude_web_search",
+        "item": "Fins and Things Trail",
+        "query": "\"Fins and Things Trail\" Moab, Utah trail hike",
+        "error": "HTTPError: 400 Client Error: Bad Request for url: https://api.anthropic.com/v1/messages",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "claude_web_search",
+        "item": "Park Avenue Trail",
+        "query": "site:nps.gov/arch \"Park Avenue Trail\" Arches National Park trail hike",
+        "error": "HTTPError: 400 Client Error: Bad Request for url: https://api.anthropic.com/v1/messages",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "claude_web_search",
+        "item": "Jud Wiebe Trail",
+        "query": "\"Jud Wiebe Trail\" Telluride, Colorado trail hike",
+        "error": "HTTPError: 400 Client Error: Bad Request for url: https://api.anthropic.com/v1/messages",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "claude_web_search",
+        "item": "Bear Creek Trail",
+        "query": "\"Bear Creek Trail\" Telluride, Colorado trail hike",
+        "error": "HTTPError: 400 Client Error: Bad Request for url: https://api.anthropic.com/v1/messages",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "claude_web_search",
+        "item": "Piedra Falls",
+        "query": "\"Piedra Falls\" Pagosa Springs, Colorado trail hike",
+        "error": "HTTPError: 400 Client Error: Bad Request for url: https://api.anthropic.com/v1/messages",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "claude_web_search",
+        "item": "Tent Rocks Cave Loop",
+        "query": "\"Tent Rocks Cave Loop\" Kasha-Katuwe Tent Rocks National Monument, New Mexico trail hike",
+        "error": "HTTPError: 400 Client Error: Bad Request for url: https://api.anthropic.com/v1/messages",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "claude_web_search",
+        "item": "Lava Tubes via Lava Flow Trail",
+        "query": "\"Lava Tubes via Lava Flow Trail\" Snow Canyon State Park, Utah trail hike",
+        "error": "HTTPError: 400 Client Error: Bad Request for url: https://api.anthropic.com/v1/messages",
+        "candidates": [],
+        "chosen": null
+      }
+    ],
+    "gemini_google_search": [
+      {
+        "strategy": "gemini_google_search",
+        "item": "Sunrise Point",
+        "query": "site:nps.gov/brca \"Sunrise Point\" Bryce Canyon National Park attraction landmark",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "Sunrise Point - Bryce Canyon - National Park Service",
+            "url": "https://www.nps.gov/places/000/sunrise-point.htm",
+            "snippet": "Sunrise Point is the northernmost of the four major viewpoints that overlook the iconic Bryce Amphitheater. This view provides access to trails leading into the hoodoos below and is equally spectacular at daybreak and day's end.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Viewpoints - Bryce Canyon - National Park Service",
+            "url": "https://www.nps.gov/brca/planyourvisit/viewpoints.htm",
+            "snippet": "Sunrise Point is the northernmost viewpoint in the Bryce Amphitheater area, located along the first 3 miles of the main road, offering vistas of famous red rock formations and hoodoos.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Queens Garden & Navajo Combination - National Park Service",
+            "url": "https://www.nps.gov/brca/planyourvisit/queens-navajo-combination.htm",
+            "snippet": "The Queen's/Navajo Combination Loop trail can be accessed directly from Sunrise Point, connecting visitors from the canyon rim down amongst the amphitheater's iconic rock formations.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/places/000/sunrise-point.htm",
+          "title": "Sunrise Point - Bryce Canyon - National Park Service",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": false,
+          "http_status": "404"
+        }
+      },
+      {
+        "strategy": "gemini_google_search",
+        "item": "Inspiration Point",
+        "query": "site:nps.gov/brca \"Inspiration Point\" Bryce Canyon National Park attraction landmark",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "Inspiration Point - Bryce Canyon - National Park Service",
+            "url": "https://www.nps.gov/places/inspiration-point.htm",
+            "snippet": "Along with Bryce Point, Inspiration Point provides a birds-eye view of the world's largest collection of rock spires called \"hoodoos\" found within the Bryce Amphitheater.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Viewpoints - Bryce Canyon - National Park Service",
+            "url": "https://www.nps.gov/brca/planyourvisit/viewpoints.htm",
+            "snippet": "Inspiration Point provides a birds-eye view of the world's largest collection of \"hoodoos\" found within the Bryce Amphitheater, situated along the iconic Bryce Amphitheater area in Bryce Canyon National Park.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Bryce Amphitheater Viewpoints - National Park Service",
+            "url": "https://www.nps.gov/brca/planyourvisit/bryce-amphitheater-viewpoints.htm",
+            "snippet": "Guide to the primary Bryce Amphitheater viewpoints at Bryce Canyon National Park, including Sunrise Point, Sunset Point, Inspiration Point, and Bryce Point.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/places/inspiration-point.htm",
+          "title": "Inspiration Point - Bryce Canyon - National Park Service",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "gemini_google_search",
+        "item": "The Waterpocket Fold",
+        "query": "site:nps.gov/care \"The Waterpocket Fold\" Capitol Reef National Park attraction landmark",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "Geology - Capitol Reef National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/care/learn/nature/geology.htm",
+            "snippet": "The Waterpocket Fold defines Capitol Reef National Park. A nearly 100-mile long warp in the Earth's crust, the Waterpocket Fold is a classic monocline, a regional 'wrinkle' extending from Thousand Lake Mountain south to Lake Powell.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Waterpocket District - Capitol Reef - National Park Service",
+            "url": "https://www.nps.gov/care/planyourvisit/waterpocket.htm",
+            "snippet": "The Burr Trail offers one of the few routes through the Waterpocket Fold, featuring steep, narrow switchbacks with expansive views across Capitol Reef National Park.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Hiking Routes in the Waterpocket District - National Park Service",
+            "url": "https://www.nps.gov/care/planyourvisit/waterpocket-district-hiking.htm",
+            "snippet": "Backcountry hiking opportunities abound in Capitol Reef's remote southern Waterpocket District, with routes exploring canyons, narrow slots, and dramatic monocline topography.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Guide to the Scenic Drive - Capitol Reef - National Park Service",
+            "url": "https://www.nps.gov/care/planyourvisit/scenicdriveguide.htm",
+            "snippet": "The 100-mile (161 km) long Waterpocket Fold is named for the numerous small potholes, tanks, or 'pockets' that hold rainwater and snowmelt along the dramatic rock layers of Capitol Reef.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/care/planyourvisit/waterpocket.htm",
+          "title": "Waterpocket District - Capitol Reef - National Park Service",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": false,
+          "http_status": "404"
+        }
+      },
+      {
+        "strategy": "gemini_google_search",
+        "item": "Chimney Rock National Monument",
+        "query": "\"Chimney Rock National Monument\" Pagosa Springs, Colorado attraction landmark",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "San Juan National Forest | Chimney Rock National Monument",
+            "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQE78MvOIzDOU50JTlelMNNCU2m6AsPh1VzRJV2G4VnUdnN2UKYFHEvpqC5cOe42l7qPPRbrEEr1BpeSVnvDL2MRjckhJG4rOsZauiCLXsoqwC_zLBfAXI_9U5J9SAc63cuuCF3mdF7RKLk1-f3ngReApFUuRr531v8T7YkmDIwm6Rxz",
+            "snippet": "The Chimney Rock National Monument encompasses 4,726 acres of the San Juan National Forest between Durango and Pagosa Springs, Colorado. The Chimney Rock Interpretive Program is managed and staffed by the U.S. Forest Service and Chimney Rock Interpretive Association.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Chimney Rock Interpretive Association",
+            "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQE_g2OEN3XKLNK0qJgIujWy_cxqJ1BhnG4qVYwxS4YGq7npwVRTsyUvQpkO72y3MEvTWF5lkXbe5bQtW9lw6rDnUSdTxNXIOIhlqP7LhdTvixklRQ==",
+            "snippet": "Chimney Rock National Monument is a sacred place that celebrates the life of Ancestral Puebloans over 1,000 years ago in Southwest Colorado.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Chimney Rock National Monument | US Forest Service",
+            "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFtQwvvUmW8fhdWV_SEINls4XSuVGcFwdEtQTEvpCprUbwINmIutUGf5RrzuxeYMsUVSTPK1em2NehBJ8qqUW9McaRqFKu3fuDESUUQg8bt2TVLblvvNHZxjG3GhX1pXy2nV4wBKo7L5Sb-6muoDZ8yS9K_PO9AIWtmEkpFPxhDJ6N0gME=",
+            "snippet": "Covering 4,726 acres of the San Juan National Forest between Pagosa Springs and Durango, Colo., the Chimney Rock National Monument is a significant archaeological, cultural, geological and biological site.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Chimney Rock National Monument | Colorado.com",
+            "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQE3FnFxoRLHW6YWdfZav4o_oSDPNzE6y6I5sN8d6wGkdxPtmA8-pPbHHIcup1bjyUQeobFue259Nyc8bRbOsHHuGEKjfCTb_oVttuWr-P4pBxtILbjSqJ-uZfrDopKzZXsiGCq0ASQcXtDHCY0zpGAmXJPkl80jPJvqqACOXL4doVgm6hPvcvzk",
+            "snippet": "Explore Chimney Rock National Monument, an intimate, off-the-beaten-path archaeological area located between Durango and Pagosa Springs showcasing Native American history.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Chimney Rock National Monument Tours, San Juan National Forest - Recreation.gov",
+            "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQG7p8M6xJq0XVALwk18T_vni_bzrNiDvEOsB7NGli0qnZJ00UvlWIfCN-k5exArhCv8UjhtTAmSoYEXesWV2tVAnrxQrDkpR5-7lq9gPW_Aj11Syt0ubZ6S_a4wByjZ9bon5tBYtBg=",
+            "snippet": "Chimney Rock National Monument lies within the San Juan National Forest, preserving hundreds of prehistoric sites that dot the landscape around the twin spires known as Chimney Rock and Companion Rock.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQE78MvOIzDOU50JTlelMNNCU2m6AsPh1VzRJV2G4VnUdnN2UKYFHEvpqC5cOe42l7qPPRbrEEr1BpeSVnvDL2MRjckhJG4rOsZauiCLXsoqwC_zLBfAXI_9U5J9SAc63cuuCF3mdF7RKLk1-f3ngReApFUuRr531v8T7YkmDIwm6Rxz",
+          "title": "San Juan National Forest | Chimney Rock National Monument",
+          "accepted_by_policy_and_specificity": false,
+          "was_only_a_fallback_pick": true,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "gemini_google_search",
+        "item": "Museum of International Folk Art",
+        "query": "\"Museum of International Folk Art\" Santa Fe, New Mexico attraction landmark",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "Museum of International Folk Art | New Mexico Department of Cultural Affairs",
+            "url": "https://www.newmexicoculture.org/museums/museum-of-international-folk-art",
+            "snippet": "Official profile and visitor guide for the Museum of International Folk Art on Santa Fe's Museum Hill, home to the world's largest collection of international folk art across five distinct wings.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Museum of International Folk Art - TOURISM Santa Fe",
+            "url": "https://www.santafe.org/listing/museum-of-international-folk-art/496/",
+            "snippet": "Santa Fe visitor guide entry featuring details on the Museum of International Folk Art, Alexander Girard's 'Multiple Visions: A Common Bond' exhibition, public programs, and event facilities.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Museum of International Folk Art | Santa Fe, NM - New Mexico Tourism Department",
+            "url": "https://www.newmexico.org/listing/museum-of-international-folk-art/2006/",
+            "snippet": "Travel overview of the Museum of International Folk Art on Camino Lejo in Santa Fe, highlighting its collections of more than 135,000 artifacts from global cultures.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Museum of International Folk Art - Museum of New Mexico Foundation",
+            "url": "https://www.museumfoundation.org/museum-of-international-folk-art/",
+            "snippet": "Information on support, exhibitions, and programs at Santa Fe's Museum of International Folk Art via the Museum of New Mexico Foundation.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Museum of International Folk Art - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Museum_of_International_Folk_Art",
+            "snippet": "Comprehensive history and overview of the Museum of International Folk Art (MOIFA) in Santa Fe, founded in 1953 by Florence Dibell Bartlett.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.newmexicoculture.org/museums/museum-of-international-folk-art",
+          "title": "Museum of International Folk Art | New Mexico Department of Cultural Affairs",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "gemini_google_search",
+        "item": "Queens Garden Trail",
+        "query": "site:nps.gov/brca \"Queens Garden Trail\" Bryce Canyon National Park trail hike",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "Queen's Garden Trail (U.S. National Park Service)",
+            "url": "https://www.nps.gov/places/000/queens-garden-trail.htm",
+            "snippet": "The Queen's Garden Trail is the least difficult of the trails descending from the rim into the Bryce Canyon Amphitheater. Hike this 1.8-mile round-trip out-and-back trail starting at Sunrise Point to the Queen Victoria hoodoo to experience hiking amongst the hoodoos.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Queens Garden & Navajo Combination - National Park Service",
+            "url": "https://www.nps.gov/thingstodo/queens-garden-navajo-loop.htm",
+            "snippet": "The most popular hike in Bryce Canyon National Park, the Queen's/Navajo Combination Loop connects the open views and hoodoos of the Queen's Garden Trail with the switchbacks and canyon walls of the Navajo Loop Trail.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Queens Garden Trailhead (U.S. National Park Service)",
+            "url": "https://www.nps.gov/places/000/queens-garden-trailhead.htm",
+            "snippet": "Located at Sunrise Point, the Queens Garden Trailhead provides access to the Queen's Garden Trail, Queen's/Navajo Combination Loop, and Figure-8 Combination Loop within the Bryce Canyon National Park Scenic Trails Historic District.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/places/000/queens-garden-trail.htm",
+          "title": "Queen's Garden Trail (U.S. National Park Service)",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": false,
+          "http_status": "404"
+        }
+      },
+      {
+        "strategy": "gemini_google_search",
+        "item": "Fins and Things Trail",
+        "query": "\"Fins and Things Trail\" Moab, Utah trail hike",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "Fins & Things 4\u00d74 Trail | Grand County, UT - Official Website",
+            "url": "https://www.grandcountyutah.net/197/Fins-Things-44-Trail",
+            "snippet": "Detailed trail log and guide for Fins & Things in the Sand Flats Recreation Area in Moab, Utah, including mile markers, slickrock navigation, and safety regulations.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Fins and Things Trailhead - Bureau of Land Management",
+            "url": "https://www.blm.gov/visit/fins-and-things-trailhead",
+            "snippet": "Official BLM page for the Fins and Things trail, highlighting spectacular views of the La Sal Mountains across Navajo Sandstone domes and daytime usage hours.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Fins and Things - Red Rock 4-Wheelers",
+            "url": "https://www.rr4w.com/trail-details.cfm?trailid=5",
+            "snippet": "Trail guide for Fins and Things exploring Navajo Sandstone slickrock formations east of Hell's Revenge with technical ratings and trail overview.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Fins and Things Canyon - Moab - Road Trip Ryan",
+            "url": "https://www.roadtripryan.com/go/t/utah/moab/fins-and-things-canyon",
+            "snippet": "Route description, map, and GPS details for hiking and exploring the scenic sandstone country around Fins & Things near Moab, Utah.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Fins & Things Multi Trail - Moab, Utah | Trailforks",
+            "url": "https://www.trailforks.com/trails/fins--things-north/",
+            "snippet": "Trailforks overview of the Fins & Things trail network covering trail difficulty, terrain details, elevation, and multi-use recreation access in Moab.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.grandcountyutah.net/197/Fins-Things-44-Trail",
+          "title": "Fins & Things 4\u00d74 Trail | Grand County, UT - Official Website",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "gemini_google_search",
+        "item": "Park Avenue Trail",
+        "query": "site:nps.gov/arch \"Park Avenue Trail\" Arches National Park trail hike",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "Park Avenue and Courthouse Towers - Arches - National Park Service",
+            "url": "https://www.nps.gov/arch/planyourvisit/courthouse.htm",
+            "snippet": "Information on hiking the Park Avenue Trail and exploring the Courthouse Towers area in Arches National Park. The trail to the viewpoint is flat and paved, continuing steeply one mile into the canyon to Courthouse Towers.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Hiking - Arches National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/arch/planyourvisit/hiking.htm",
+            "snippet": "Overview of hiking trails in Arches National Park, including easy to moderate hikes like Park Avenue, trail safety, navigation tips, and regulations.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Places To Go - Arches National Park (U.S. National Park Service)",
+            "url": "https://www.nps.gov/arch/planyourvisit/places.htm",
+            "snippet": "Guide to major destinations and scenic areas within Arches National Park, including Park Avenue, Courthouse Towers, Balanced Rock, and the Windows Section.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Self-Guided Field Trips - Arches - National Park Service",
+            "url": "https://www.nps.gov/arch/learn/education/selfguidedfieldtrips.htm",
+            "snippet": "Field trip and self-guided hiking recommendations for educational groups visiting Arches National Park, featuring Park Avenue Trail, Balanced Rock, and The Windows.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/arch/planyourvisit/courthouse.htm",
+          "title": "Park Avenue and Courthouse Towers - Arches - National Park Service",
+          "accepted_by_policy_and_specificity": false,
+          "was_only_a_fallback_pick": true,
+          "policy_class": "general",
+          "alive": false,
+          "http_status": "404"
+        }
+      },
+      {
+        "strategy": "gemini_google_search",
+        "item": "Jud Wiebe Trail",
+        "query": "\"Jud Wiebe Trail\" Telluride, Colorado trail hike",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "Grand Mesa, Uncompahgre and Gunnison National Forests | Jud Wiebe #432",
+            "url": "https://www.fs.usda.gov/recarea/gmug/recarea/?recid=32598",
+            "snippet": "The Jud Wiebe Trail #432 begins at the end of Aspen Street and ends at Tomboy Road. This popular loop route provides panoramic views of the town of Telluride, the Telluride Ski Area, and neighboring peaks, climbing approximately 1,300 feet through aspen and spruce/fir forests.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Jud Wiebe Trail | Visit Telluride",
+            "url": "https://www.visittelluride.com/activity/jud-wiebe-trail/",
+            "snippet": "A classic Telluride hiking loop accessible from Aspen Street or Tomboy Road. The south-facing trail is typically accessible year-round and offers spectacular views overlooking the entire canyon and ski mountain.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Jud Wiebe Hiking Trail in Telluride, Colorado",
+            "url": "https://www.hikingincolorado.org/jud.html",
+            "snippet": "Detailed hiking guide for the Jud Wiebe Trail, a 3.2-mile loop with roughly 1,100 to 1,300 feet of elevation gain starting at around 8,900 feet elevation and climbing up to 10,000 feet.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Guide to Hiking the Jud Wiebe Trail in Telluride, Colorado",
+            "url": "https://handluggageonly.co.uk/guide-to-hiking-the-jud-wiebe-trail-in-telluride-colorado/",
+            "snippet": "A comprehensive trail guide covering distance, elevation gain, trailhead access from the north end of Aspen Street, trail conditions, and scenic vantage points overlooking Telluride.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.visittelluride.com/activity/jud-wiebe-trail/",
+          "title": "Jud Wiebe Trail | Visit Telluride",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": false,
+          "http_status": "404"
+        }
+      },
+      {
+        "strategy": "gemini_google_search",
+        "item": "Bear Creek Trail",
+        "query": "\"Bear Creek Trail\" Telluride, Colorado trail hike",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "Bear Creek Falls | Visit Telluride",
+            "url": "https://www.visittelluride.com/activity/bear-creek-falls/",
+            "snippet": "Bear Creek Falls is one of Telluride's most popular trails due to its accessibility and beautiful waterfall. Accessible from the end of South Pine Street, a steady 2-mile climb through the 325-acre Bear Creek Preserve leads to upper Bear Creek Falls and connects to the Wasatch Trail and Bridal Veil Basin.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bear Creek Falls Hike | onX Backcountry",
+            "url": "https://www.onxmaps.com/backcountry/hiking-trails/bear-creek-falls",
+            "snippet": "A popular 5-mile round-trip hike with approximately 1,100 feet of elevation gain leading to the 80-foot Bear Creek Falls. The trail begins off South Pine Street in downtown Telluride and winds south through the Bear Creek Preserve.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Bear Creek Falls Trail Guide - Hiking & Walking",
+            "url": "https://www.hikingwalking.com/index.php/destinations/co/co_sw/telluride/bear_creek_falls",
+            "snippet": "Starting at the end of South Pine Street in Telluride, the Bear Creek Trail ascends a wide dirt track into the Bear Creek Preserve, offering scenic canyon views and leading up to the waterfall.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Hiking Bear Creek Falls Trail in Telluride, Colorado - Van Life By Design",
+            "url": "https://vanlifebydesign.com/hiking-bear-creek-falls-telluride/",
+            "snippet": "Overview and guide for hiking the moderate 5-mile round-trip Bear Creek Trail in Telluride, featuring forested climbs, river views, and a dramatic waterfall payoff at Bear Creek Falls.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.visittelluride.com/activity/bear-creek-falls/",
+          "title": "Bear Creek Falls | Visit Telluride",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": false,
+          "http_status": "404"
+        }
+      },
+      {
+        "strategy": "gemini_google_search",
+        "item": "Piedra Falls",
+        "query": "\"Piedra Falls\" Pagosa Springs, Colorado trail hike",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "San Juan National Forest | Piedra Falls Trail",
+            "url": "https://www.fs.usda.gov/recarea/sanjuan/recreation/hiking/recarea/?recid=43360&actid=50",
+            "snippet": "Official trail guide for Piedra Falls Trail (#671) in the San Juan National Forest near Pagosa Springs, Colorado. Features an easy 0.5-mile family-friendly hike along the river up to the waterfall.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Piedra Falls Trail No. 671 - Pagosa Springs Area Trails",
+            "url": "https://pagosaspringsareatrails.com/trail/piedra-falls-trail-no-671/",
+            "snippet": "Trail guide for Piedra Falls Trail No. 671, describing the easy 15-minute riverside walk leading to the waterfall cascading into a canyon of boulders.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Piedra Falls Hike - My Pagosa Springs",
+            "url": "https://mypagosasprings.com/piedra-falls-hike/",
+            "snippet": "Information on hiking to Piedra Falls, covering trail length (approximately 0.5 miles each way), elevation gain, directions, and tips for visiting.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Piedra Falls - gjhikes.com",
+            "url": "https://www.gjhikes.com/2020/08/piedra-falls.html",
+            "snippet": "Detailed trail report and photo guide for the half-mile hike to Piedra Falls cascading over volcanic cliffs in the San Juan National Forest north of Pagosa Springs.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://pagosaspringsareatrails.com/trail/piedra-falls-trail-no-671/",
+          "title": "Piedra Falls Trail No. 671 - Pagosa Springs Area Trails",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": null,
+          "http_status": "ConnectionError"
+        }
+      },
+      {
+        "strategy": "gemini_google_search",
+        "item": "Tent Rocks Cave Loop",
+        "query": "\"Tent Rocks Cave Loop\" Kasha-Katuwe Tent Rocks National Monument, New Mexico trail hike",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "Kasha-Katuwe Tent Rocks National Monument - Bureau of Land Management",
+            "url": "https://www.blm.gov/programs/national-conservation-lands/new-mexico/kasha-katuwe-tent-rocks-national-monument",
+            "snippet": "Official BLM overview for Kasha-Katuwe Tent Rocks National Monument in north-central New Mexico. Details trail information including the 1.2-mile easy Cave Loop Trail, accessibility, geological background of the volcanic hoodoos, and entry reservation guidelines.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Cave Loop and Slot Canyon Trail - Modern Hiker",
+            "url": "https://modernhiker.com/hike/cave-loop-and-slot-canyon-trail-kasha-katuwe-tent-rocks-national-monument/",
+            "snippet": "A detailed trail guide for hiking the Cave Loop and Slot Canyon Trail in Kasha-Katuwe Tent Rocks National Monument, featuring route descriptions, scenery highlights, distance, and tips for navigating the terrain.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Hike Tent Rocks Slot Canyon and Cave Loop - Stav is Lost",
+            "url": "https://stavislost.com/hikes/trail/tent-rocks-slot-canyon-and-cave-loop",
+            "snippet": "Trail guide and breakdown for hiking the Slot Canyon and Cave Loop at Kasha-Katuwe Tent Rocks, including trail stats, elevation profile, and information about the human-carved sandstone cavates along the loop.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Kasha Katuwe Tent Rocks National Monument Ticketed Entry - Recreation.gov",
+            "url": "https://www.recreation.gov/ticket/facility/10065448",
+            "snippet": "Reservation portal for Kasha-Katuwe Tent Rocks National Monument containing rules and regulations, visitor schedules, and trail overviews for the Cave Loop Trail and Slot Canyon Trail.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          }
+        ],
+        "chosen": {
+          "url": "https://www.blm.gov/programs/national-conservation-lands/new-mexico/kasha-katuwe-tent-rocks-national-monument",
+          "title": "Kasha-Katuwe Tent Rocks National Monument - Bureau of Land Management",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "gemini_google_search",
+        "item": "Lava Tubes via Lava Flow Trail",
+        "query": "\"Lava Tubes via Lava Flow Trail\" Snow Canyon State Park, Utah trail hike",
+        "citation_count": 0,
+        "candidates": [
+          {
+            "title": "Hiking Lava Tubes - Snow Canyon State Park - Road Trip Ryan",
+            "url": "https://www.roadtripryan.com/go/t/utah/st-george/snow-canyon-lava-tubes",
+            "snippet": "A detailed trail guide for hiking the Lava Flow Trail and exploring the ancient volcanic lava tube caves in Snow Canyon State Park, Utah, including safety guidelines, entry points, and route details.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Snow Canyon Lava Tubes | Lava Flow Trail - Utah's Adventure Family",
+            "url": "https://www.utahsadventurefamily.com/snow-canyon-lava-tubes/",
+            "snippet": "Guide to the Lava Flow Trail in Snow Canyon State Park near St. George, featuring directions to the lava tube caves, what gear to bring (such as flashlights and headlamps), and trail highlights.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Lava Flow Overlook - Hike St George",
+            "url": "https://hikestgeorge.com/hiking-trails/lava-flow-overlook-lava-tubes-snow-canyon-state-park/",
+            "snippet": "Trail information for the family-friendly Lava Flow Overlook and Lava Tubes trail in Snow Canyon State Park, covering round-trip distance, elevation, difficulty, and tips for underground exploration.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Where Fire Once Flowed: Hiking the Lava Tubes Trail in Snow Canyon",
+            "url": "https://adamthealien.com/2024/hiking-lava-tubes-trail-snow-canyon-state-park/",
+            "snippet": "Overview and trip report of hiking through rugged basalt formations along the Lava Flow Trail to explore the hollow lava tubes shaped by prehistoric volcanic activity in Snow Canyon.",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.roadtripryan.com/go/t/utah/st-george/snow-canyon-lava-tubes",
+          "title": "Hiking Lava Tubes - Snow Canyon State Park - Road Trip Ryan",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": false,
+          "http_status": "404"
+        }
+      }
+    ],
+    "openai_search": [
+      {
+        "strategy": "openai_search",
+        "item": "Sunrise Point",
+        "query": "site:nps.gov/brca \"Sunrise Point\" Bryce Canyon National Park attraction landmark",
+        "citation_count": 14,
+        "candidates": [
+          {
+            "title": "Viewpoints - Bryce Canyon National Park (U.S. National Park Service)",
+            "url": "https://home.nps.gov/brca/planyourvisit/viewpoints.htm?utm_source=openai",
+            "snippet": "",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Viewpoints - Bryce Canyon National Park (U.S. National Park Service)",
+            "url": "https://home.nps.gov/brca/planyourvisit/viewpoints.htm?utm_source=openai",
+            "snippet": "",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": false,
+            "accepted": false
+          },
+          {
+            "title": "Sunrise Point (U.S. National Park Service)",
+            "url": "https://www.nps.gov/places/sunrise-point.htm?utm_source=openai",
+            "snippet": "",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Sunrise Point (U.S. National Park Service)",
+            "url": "https://www.nps.gov/places/sunrise-point.htm?utm_source=openai",
+            "snippet": "",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Sunrise Point (U.S. National Park Service)",
+            "url": "https://www.nps.gov/places/sunrise-point.htm?utm_source=openai",
+            "snippet": "",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          },
+          {
+            "title": "Sunrise Point (U.S. National Park Service)",
+            "url": "https://www.nps.gov/places/sunrise-point.htm?utm_source=openai",
+            "snippet": "",
+            "policy_class": "general",
+            "policy_blocked": false,
+            "is_specific": true,
+            "accepted": true
+          }
+        ],
+        "chosen": {
+          "url": "https://www.nps.gov/places/sunrise-point.htm?utm_source=openai",
+          "title": "Sunrise Point (U.S. National Park Service)",
+          "accepted_by_policy_and_specificity": true,
+          "was_only_a_fallback_pick": false,
+          "policy_class": "general",
+          "alive": true,
+          "http_status": "200"
+        }
+      },
+      {
+        "strategy": "openai_search",
+        "item": "Inspiration Point",
+        "query": "site:nps.gov/brca \"Inspiration Point\" Bryce Canyon National Park attraction landmark",
+        "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "openai_search",
+        "item": "The Waterpocket Fold",
+        "query": "site:nps.gov/care \"The Waterpocket Fold\" Capitol Reef National Park attraction landmark",
+        "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "openai_search",
+        "item": "Chimney Rock National Monument",
+        "query": "\"Chimney Rock National Monument\" Pagosa Springs, Colorado attraction landmark",
+        "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "openai_search",
+        "item": "Museum of International Folk Art",
+        "query": "\"Museum of International Folk Art\" Santa Fe, New Mexico attraction landmark",
+        "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "openai_search",
+        "item": "Queens Garden Trail",
+        "query": "site:nps.gov/brca \"Queens Garden Trail\" Bryce Canyon National Park trail hike",
+        "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "openai_search",
+        "item": "Fins and Things Trail",
+        "query": "\"Fins and Things Trail\" Moab, Utah trail hike",
+        "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "openai_search",
+        "item": "Park Avenue Trail",
+        "query": "site:nps.gov/arch \"Park Avenue Trail\" Arches National Park trail hike",
+        "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "openai_search",
+        "item": "Jud Wiebe Trail",
+        "query": "\"Jud Wiebe Trail\" Telluride, Colorado trail hike",
+        "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "openai_search",
+        "item": "Bear Creek Trail",
+        "query": "\"Bear Creek Trail\" Telluride, Colorado trail hike",
+        "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "openai_search",
+        "item": "Piedra Falls",
+        "query": "\"Piedra Falls\" Pagosa Springs, Colorado trail hike",
+        "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "openai_search",
+        "item": "Tent Rocks Cave Loop",
+        "query": "\"Tent Rocks Cave Loop\" Kasha-Katuwe Tent Rocks National Monument, New Mexico trail hike",
+        "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+        "candidates": [],
+        "chosen": null
+      },
+      {
+        "strategy": "openai_search",
+        "item": "Lava Tubes via Lava Flow Trail",
+        "query": "\"Lava Tubes via Lava Flow Trail\" Snow Canyon State Park, Utah trail hike",
+        "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://api.openai.com/v1/chat/completions",
+        "candidates": [],
+        "chosen": null
+      }
+    ]
+  },
+  "summary": {
+    "baseline_grok": {
+      "hit_count": 9,
+      "total": 13,
+      "hit_items": [
+        "Sunrise Point",
+        "Inspiration Point",
+        "Chimney Rock National Monument",
+        "Museum of International Folk Art",
+        "Queens Garden Trail",
+        "Fins and Things Trail",
+        "Jud Wiebe Trail",
+        "Bear Creek Trail",
+        "Piedra Falls"
+      ]
+    },
+    "site_scoped_grok": {
+      "hit_count": 4,
+      "total": 13,
+      "hit_items": [
+        "Sunrise Point",
+        "Inspiration Point",
+        "The Waterpocket Fold",
+        "Chimney Rock National Monument"
+      ]
+    },
+    "alt_phrasing_grok": {
+      "hit_count": 7,
+      "total": 13,
+      "hit_items": [
+        "Sunrise Point",
+        "The Waterpocket Fold",
+        "Fins and Things Trail",
+        "Park Avenue Trail",
+        "Jud Wiebe Trail",
+        "Bear Creek Trail",
+        "Tent Rocks Cave Loop"
+      ]
+    },
+    "claude_web_search": {
+      "hit_count": 0,
+      "total": 13,
+      "hit_items": []
+    },
+    "gemini_google_search": {
+      "hit_count": 4,
+      "total": 13,
+      "hit_items": [
+        "Inspiration Point",
+        "Museum of International Folk Art",
+        "Fins and Things Trail",
+        "Tent Rocks Cave Loop"
+      ]
+    },
+    "openai_search": {
+      "hit_count": 1,
+      "total": 13,
+      "hit_items": [
+        "Sunrise Point"
+      ]
+    }
+  }
+}
