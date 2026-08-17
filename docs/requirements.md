@@ -516,6 +516,8 @@ The AI must NEVER invent events. Remote national parks almost always return Form
 
 AI content generation and URL discovery are strictly separate pipeline stages. **AI never generates URLs.**
 
+All content collectively must be valid, distinctive, useful, and trustworthy.
+
 After AI content is generated, the URL Discoverer uses xAI Grok semantic search for every named entity:
 
 1. **Hike attractions:** Resolve via AllTrails domain filter (primary policy)
