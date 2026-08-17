@@ -1882,6 +1882,57 @@ def test_build_attractions_orders_non_hikes_before_hikes_before_scenic_drives() 
     assert positions["Angels Landing Trail"] < positions["Zion-Mt Carmel Highway"]
 
 
+def test_build_attractions_orders_hike_difficulty_items_in_hike_bucket_despite_type() -> None:
+    """Regression for dipstick60 Bug 2 (real data): type == "hike" alone
+    under-detects hikes. Canyonlands' "Mesa Arch" rendered with type
+    "viewpoint" and Telluride's "Bridal Veil Falls" rendered with type
+    "attraction", yet both carried a hike-difficulty badge (Easy/Moderate)
+    and a walking duration -- so both stayed in the non-hike bucket and
+    rendered first instead of in the middle with the real hikes.
+    `difficulty` is a hike-specific field (url_discovery.py clears it when
+    demoting an item away from hike-ness), so a recognized difficulty value
+    must also route an item into the hike bucket even when `type` doesn't
+    say "hike"."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Mesa Arch",
+                "type": "viewpoint",
+                "difficulty": "Easy",
+                "duration": "30 min",
+                "description": "A short trail leads to this arch.",
+                "url": "https://www.alltrails.com/trail/us/utah/mesa-arch",
+            },
+            {
+                "name": "Grand View Point",
+                "type": "attraction",
+                "description": "Sweeping 360-degree vistas.",
+                "url": "https://www.nps.gov/cany/grandview.htm",
+            },
+            {
+                "name": "White Rim Overlook Trail",
+                "type": "hike",
+                "description": "Flat scenic path to a rim overlook.",
+                "url": "https://www.alltrails.com/trail/us/utah/white-rim-overlook-trail",
+            },
+        ]
+    }
+
+    html = assembler._build_attractions(ai, drives=[], dest_name="Canyonlands National Park")
+
+    positions = {
+        name: html.index(name)
+        for name in ("Mesa Arch", "Grand View Point", "White Rim Overlook Trail")
+    }
+
+    # The true non-hike (no difficulty, type "attraction") renders first...
+    assert positions["Grand View Point"] < positions["Mesa Arch"]
+    # ...and the difficulty-bearing "viewpoint" joins the type=="hike" item
+    # in the hike bucket, not ahead of every non-hike.
+    assert positions["Grand View Point"] < positions["White Rim Overlook Trail"]
+
+
 def test_build_attractions_drops_scenic_drive_describing_same_place_different_wording() -> None:
     """Regression for dipstick58 Bug 3 (real Telluride data): a top_attraction
     titled "Telluride Mountain Village Gondola" and a scenic_drives item

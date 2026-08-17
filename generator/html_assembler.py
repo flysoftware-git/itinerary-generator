@@ -1546,10 +1546,27 @@ class HTMLAssembler:
         # here). A stable sort keeps items within each bucket in their
         # existing relative order -- this only changes render position, not
         # which items render, their badges, or their content.
+        #
+        # dipstick60 Bug 2 (real data): type == "hike" alone under-detects.
+        # E.g. Canyonlands' "Mesa Arch" and Telluride's "Bridal Veil Falls"
+        # both carry a hike-difficulty badge (Easy/Moderate/Strenuous, from
+        # `difficulty`) and a walking duration -- clearly hikes -- yet their
+        # `type` is "viewpoint"/"attraction", not "hike", so they stayed in
+        # the non-hike bucket and rendered first/interleaved instead of in
+        # the middle. `difficulty` is itself a hike-specific field: see
+        # url_discovery.py's trail-miles-threshold demotion, which explicitly
+        # clears `difficulty`/`elevation_gain_feet` when it reclassifies an
+        # item away from being a hike. A recognized hike-difficulty value is
+        # therefore just as reliable a hike signal as type == "hike".
         def _attraction_render_bucket(candidate: Any) -> int:
             if not isinstance(candidate, dict):
                 return 0
-            return 1 if str(candidate.get("type", "attraction") or "attraction").lower() == "hike" else 0
+            item_type = str(candidate.get("type", "attraction") or "attraction").lower()
+            if item_type == "hike":
+                return 1
+            if str(candidate.get("difficulty", "") or "") in difficulty_colors:
+                return 1
+            return 0
 
         ordered_attrs = sorted(attrs, key=_attraction_render_bucket) if isinstance(attrs, list) else attrs
 
