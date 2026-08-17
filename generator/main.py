@@ -2247,15 +2247,20 @@ def main(
 
     _run_quality_gate(trip, output_file)
 
-    predicted_cost, actual_cost = summarize_from_usage(trip.get("_meta", {}).get("llm", {}).get("usage", {}))
+    estimated_cost = summarize_from_usage(trip.get("_meta", {}).get("llm", {}).get("usage", {}))
+    usage_models = trip.get("_meta", {}).get("llm", {}).get("usage", {}).get("models", [])
+    if usage_models:
+        cost_summary_model = "+".join(
+            f"{row.get('provider')}/{row.get('model')}" for row in usage_models
+        )
+    else:
+        cost_summary_model = trip.get("_meta", {}).get("llm", {}).get("model", llm_client.model)
     print_cost_summary(
-        model=trip.get("_meta", {}).get("llm", {}).get("model", llm_client.model),
+        model=cost_summary_model,
         manifest_path=manifest,
-        predicted_usd=predicted_cost,
-        actual_usd=actual_cost,
+        estimated_usd=estimated_cost,
         environment=environment_selected,
     )
-    usage_models = trip.get("_meta", {}).get("llm", {}).get("usage", {}).get("models", [])
     if usage_models:
         click.echo("  Usage breakdown by provider/model:")
         for row in usage_models:

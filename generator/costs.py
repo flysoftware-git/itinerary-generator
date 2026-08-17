@@ -10,30 +10,31 @@ def print_cost_summary(
     *,
     model: str,
     manifest_path: str,
-    predicted_usd: float,
-    actual_usd: float,
+    estimated_usd: float,
     environment: str = "dev",
 ) -> None:
-    """Print formatted LLM cost summary."""
+    """Print formatted LLM cost summary.
+
+    ``estimated_usd`` is computed post-run from real recorded token counts times
+    a static price table -- it is not a provider-reported bill, so it is labeled
+    as an estimate rather than as a distinct "actual" figure.
+    """
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     manifest_name = Path(manifest_path).name
     print(f"[LLM-COST] {ts} | {model} | {manifest_name}")
-    print(f"  Predicted USD : ${predicted_usd:.4f}")
-    print(f"  Actual USD    : ${actual_usd:.4f}")
+    print(f"  Estimated USD : ${estimated_usd:.4f} (from recorded token usage, list pricing)")
     print(f"  Environment   : {environment}")
 
 
-def summarize_from_usage(usage: dict[str, Any]) -> tuple[float, float]:
-    """Return predicted and actual costs.
+def summarize_from_usage(usage: dict[str, Any]) -> float:
+    """Return the estimated cost computed from recorded token usage.
 
-    This pipeline currently has model pricing estimates, so actual equals predicted.
     Debugs if usage is empty.
     """
     import logging
     logger = logging.getLogger(__name__)
     if not usage:
         logger.warning("summarize_from_usage: usage dict is empty")
-    predicted = float(usage.get("total_estimated_cost_usd", 0.0) or 0.0)
-    actual = predicted
-    logger.info(f"Cost summary: predicted=${predicted:.4f}, actual=${actual:.4f} (from {len(usage)} keys)")
-    return predicted, actual
+    estimated = float(usage.get("total_estimated_cost_usd", 0.0) or 0.0)
+    logger.info(f"Cost summary: estimated=${estimated:.4f} (from {len(usage)} keys)")
+    return estimated
