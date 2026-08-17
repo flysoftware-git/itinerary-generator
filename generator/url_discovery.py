@@ -2123,14 +2123,61 @@ class URLDiscoverer:
                         eligible_attractions.append(attr)
                         continue
                     if threshold_miles is not None and threshold_miles > max_trail_miles and is_seed:
-                        self._log_decision(
-                            kind="attraction",
-                            dest_name=dest_name,
-                            item_name=attr_name,
-                            reason="seed_threshold_override",
-                            message="seed attraction exceeds trail threshold but link retention allowed",
-                            url=str(attr.get("url", "") or ""),
-                        )
+                        # A seed must never end up with zero link, but confidently
+                        # pointing at the single most strenuous AllTrails variant
+                        # (e.g. "The Narrows" resolving to the ~19-mile top-down
+                        # wilderness-permit hike when most visitors mean the short
+                        # bottom-up day-hike) is misleading. Prefer an official
+                        # nps.gov page for the item first, when the destination has
+                        # an NPS park code -- it typically covers the full picture
+                        # (route variants, permits, safety/seasonal info) rather
+                        # than one specific variant. Reuse the same NPS-preference
+                        # search approach used for attraction discovery above
+                        # (site_filter="nps.gov" / site:nps.gov/<code> site hint).
+                        original_url = str(attr.get("url", "") or "")
+                        nps_code = dest.get("nps_park_code")
+                        nps_replacement_url: str | None = None
+                        if nps_code:
+                            nps_replacement_url = self._search_first(
+                                _build_query_variants(attr_name, dest_name, "trail hike"),
+                                site_filter="nps.gov",
+                                site_hint=f"site:nps.gov/{nps_code}",
+                                item_name=attr_name,
+                                dest_name=dest_name,
+                                allow_alltrails=False,
+                            )
+                        if nps_replacement_url:
+                            attr["url"] = nps_replacement_url
+                            if maps_url:
+                                attr["maps_url"] = maps_url
+                            self._log_decision(
+                                kind="attraction",
+                                dest_name=dest_name,
+                                item_name=attr_name,
+                                reason="seed_threshold_nps_fallback_preferred",
+                                message=(
+                                    "seed attraction exceeds trail threshold; preferred nps.gov page "
+                                    f"over over-threshold AllTrails link (old url: {original_url})"
+                                ),
+                                url=nps_replacement_url,
+                            )
+                            # The nps.gov URL just assigned is a terminal decision for
+                            # this attraction -- it must bypass the trail-specific
+                            # AllTrails/maps URL gate directly below (which expects
+                            # trail-like items to carry an AllTrails or maps URL and
+                            # would otherwise strip this legitimate nps.gov link).
+                            self._annotate_registry_url_decision(attr, rendered_url=nps_replacement_url)
+                            eligible_attractions.append(attr)
+                            continue
+                        else:
+                            self._log_decision(
+                                kind="attraction",
+                                dest_name=dest_name,
+                                item_name=attr_name,
+                                reason="seed_threshold_override",
+                                message="seed attraction exceeds trail threshold but link retention allowed",
+                                url=original_url,
+                            )
 
                 if trail_like and url and not self._is_alltrails_trail_url(url):
                     policy_class = self._classify_url_policy_class(url)

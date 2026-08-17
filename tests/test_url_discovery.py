@@ -7547,6 +7547,102 @@ def test_audit_keeps_seed_trail_link_even_when_over_max_trail_miles() -> None:
     assert str(attraction.get("url", "") or "").startswith("https://www.alltrails.com/trail/")
 
 
+def test_audit_seed_trail_over_threshold_prefers_nps_page_when_available() -> None:
+    """Real reported example: "The Narrows" is seeded for Zion National Park and
+    resolves to an AllTrails page for the ~19-mile top-down wilderness-permit
+    route, which exceeds max_trail_miles. Since it's a seed the link must never
+    be dropped -- but confidently pointing at the single most strenuous variant
+    is misleading. When the destination has an NPS park code and a live nps.gov
+    page can be found for the item, it should be preferred over the
+    over-threshold AllTrails link."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 4.0
+
+    alltrails_url = "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
+    nps_url = "https://www.nps.gov/zion/planyourvisit/thenarrows.htm"
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "seeds": ["The Narrows"],
+                "nps_park_code": "zion",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "The Narrows",
+                            "type": "hike",
+                            "description": "Length: 19.0 mi. Strenuous top-down wilderness route requiring a permit.",
+                            "url": alltrails_url,
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_search_first", return_value=nps_url) as mock_search_first:
+            discoverer.audit_discovered_urls(trip)
+
+    attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
+    assert attraction.get("url") == nps_url
+    mock_search_first.assert_called_once()
+    _, kwargs = mock_search_first.call_args
+    assert kwargs.get("site_filter") == "nps.gov"
+    assert kwargs.get("site_hint") == "site:nps.gov/zion"
+
+
+def test_audit_seed_trail_over_threshold_falls_back_to_alltrails_when_no_nps_match() -> None:
+    """Same over-threshold seed scenario as above, but the NPS-site-filtered
+    search finds nothing live -- the pipeline must fall back to today's
+    existing safety net and keep the original over-threshold AllTrails link
+    rather than end up with no link at all for a seed."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 4.0
+
+    alltrails_url = "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "seeds": ["The Narrows"],
+                "nps_park_code": "zion",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "The Narrows",
+                            "type": "hike",
+                            "description": "Length: 19.0 mi. Strenuous top-down wilderness route requiring a permit.",
+                            "url": alltrails_url,
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_search_first", return_value=None) as mock_search_first:
+            with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *_a, **_k: url):
+                discoverer.audit_discovered_urls(trip)
+
+    attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
+    assert attraction.get("url") == alltrails_url
+    mock_search_first.assert_called_once()
+
+
 def test_audit_validates_authoritative_restaurant_maps_place_url():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
