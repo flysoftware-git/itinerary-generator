@@ -4421,8 +4421,8 @@ class URLDiscoverer:
                 "Each <li> must begin with the restaurant name and include up to two links: "
                 "<a href=...>Source</a> for the restaurant's own website or TripAdvisor page, "
                 "and <a href=\"https://www.google.com/maps/search/?api=1&query=Restaurant+Name+Address+City+State\">Maps</a> as an address-qualified Google Maps search link. "
-                "Include the restaurant's rating as a clear numeric value like '4.7/5' or '4.7 stars' and include a price indicator like '$$', '$$$', or 'moderate' when available, "
-                "then a short descriptive note (8-15 words) about the food, atmosphere, or signature dishes -- real prose, not just a repeat of the cuisine or price, when available. "
+                "Include the restaurant's rating as a clear numeric value like '4.7/5' or '4.7 stars', a price indicator like '$$', '$$$', or 'moderate', and the cuisine or restaurant type (e.g. 'Italian', 'New American', 'Poke') when available, "
+                "then a short descriptive note (8-15 words) about the food, atmosphere, or signature dishes -- real prose that adds detail beyond the cuisine or price, when available. "
                 "Keep only highly rated items (>4.3), include cuisine variety, "
                 "and keep only likely-open, high-confidence options. "
                 "Avoid generic destination listing pages."
@@ -4431,7 +4431,7 @@ class URLDiscoverer:
             user_prompt = (
                 f"Generate a list of local restaurants near {location_clause}{date_clause} "
                 "with clickable links to source material and corresponding Google Maps content. "
-                "Include a rating and price indicator for each item when available, using a clear numeric or price format, "
+                "Include a rating, price indicator, and the cuisine or restaurant type for each item when available, using a clear numeric or price format, "
                 "and a short descriptive note about the food, atmosphere, or signature dishes for each item when available. "
                 "Keep only highly rated items (>4.3), include cuisine variety, "
                 "and keep only places likely open on the indicated dates. "
@@ -4584,8 +4584,8 @@ class URLDiscoverer:
                 "Each <li> must begin with the restaurant name and include up to two links: "
                 "<a href=...>Source</a> for the restaurant's own website or TripAdvisor page, "
                 "and <a href=\"https://www.google.com/maps/search/?api=1&query=Restaurant+Name+Address+City+State\">Maps</a> as an address-qualified Google Maps search link. "
-                "Include the restaurant's rating as a clear numeric value like '4.7/5' or '4.7 stars' and include a price indicator like '$$', '$$$', or 'moderate' when available, "
-                "then a short descriptive note (8-15 words) about the food, atmosphere, or signature dishes -- real prose, not just a repeat of the cuisine or price, when available. "
+                "Include the restaurant's rating as a clear numeric value like '4.7/5' or '4.7 stars', a price indicator like '$$', '$$$', or 'moderate', and the cuisine or restaurant type (e.g. 'Italian', 'New American', 'Poke') when available, "
+                "then a short descriptive note (8-15 words) about the food, atmosphere, or signature dishes -- real prose that adds detail beyond the cuisine or price, when available. "
                 "Keep only highly rated items (>4.3), include cuisine variety, "
                 "and keep only likely-open, high-confidence options. "
                 "Avoid generic destination listing pages."
@@ -4594,7 +4594,7 @@ class URLDiscoverer:
                 "Generate local restaurants near these destinations:\n"
                 + "\n".join(dest_lines)
                 + "\nInclude clickable links to source material and corresponding Google Maps content. "
-                "Include a rating and price indicator for each item when available, using a clear numeric or price format, "
+                "Include a rating, price indicator, and the cuisine or restaurant type for each item when available, using a clear numeric or price format, "
                 "and a short descriptive note about the food, atmosphere, or signature dishes for each item when available. "
                 "Keep only highly rated items (>4.3), include cuisine variety, "
                 "and keep only places likely open on the indicated dates. "
@@ -5279,6 +5279,12 @@ class URLDiscoverer:
             "pizza": "Pizza",
             "burger": "American",
             "bistro": "Bistro",
+            "cafe": "Cafe",
+            "café": "Cafe",
+            "poke": "Hawaiian",
+            "hawaiian": "Hawaiian",
+            "pies": "Bakery",
+            "bakery": "Bakery",
         }
         for key, label in cuisine_keywords.items():
             if re.search(rf"\b{re.escape(key)}\b", lowered):
