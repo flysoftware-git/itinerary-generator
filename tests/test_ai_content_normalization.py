@@ -1057,6 +1057,79 @@ def test_filter_departure_aligned_drives_moves_matching_one_way_drive_to_getting
     assert moved["_registry"]["validation_status"] == "accepted"
 
 
+def test_filter_high_clearance_drives_removed_when_manifest_declares_no_vehicle() -> None:
+    g = _gen()
+    trip = {
+        "trip": {"has_high_clearance_vehicle": False},
+        "destinations": [
+            {
+                "name": "Canyonlands",
+                "scenic_drives": [
+                    {"title": "Paved Overlook Road", "vehicle_requirement": "Any vehicle"},
+                    {"title": "White Rim Road", "vehicle_requirement": "4WD required"},
+                    {"title": "Elephant Hill", "vehicle_requirement": "High-clearance recommended"},
+                    {"title": "Scenic Byway", "vehicle_requirement": "Paved — any vehicle"},
+                    {"title": "Mountain Village Gondola", "vehicle_requirement": "Gondola (no vehicle needed)"},
+                    {"title": "No Field Set"},
+                ],
+            }
+        ],
+    }
+
+    g._filter_drives_requiring_high_clearance_vehicle(trip)
+
+    titles = [d["title"] for d in trip["destinations"][0]["scenic_drives"]]
+    assert "White Rim Road" not in titles
+    assert "Elephant Hill" not in titles
+    assert "Paved Overlook Road" in titles
+    assert "Scenic Byway" in titles
+    assert "Mountain Village Gondola" in titles
+    assert "No Field Set" in titles
+
+
+def test_filter_high_clearance_drives_noop_when_manifest_field_absent() -> None:
+    g = _gen()
+    trip = {
+        "trip": {},
+        "destinations": [
+            {
+                "name": "Canyonlands",
+                "scenic_drives": [
+                    {"title": "White Rim Road", "vehicle_requirement": "4WD required"},
+                    {"title": "Elephant Hill", "vehicle_requirement": "High-clearance recommended"},
+                    {"title": "Paved Overlook Road", "vehicle_requirement": "Any vehicle"},
+                ],
+            }
+        ],
+    }
+
+    g._filter_drives_requiring_high_clearance_vehicle(trip)
+
+    titles = [d["title"] for d in trip["destinations"][0]["scenic_drives"]]
+    assert titles == ["White Rim Road", "Elephant Hill", "Paved Overlook Road"]
+
+
+def test_filter_high_clearance_drives_noop_when_manifest_declares_has_vehicle() -> None:
+    g = _gen()
+    trip = {
+        "trip": {"has_high_clearance_vehicle": True},
+        "destinations": [
+            {
+                "name": "Canyonlands",
+                "scenic_drives": [
+                    {"title": "White Rim Road", "vehicle_requirement": "4WD required"},
+                    {"title": "Paved Overlook Road", "vehicle_requirement": "Any vehicle"},
+                ],
+            }
+        ],
+    }
+
+    g._filter_drives_requiring_high_clearance_vehicle(trip)
+
+    titles = [d["title"] for d in trip["destinations"][0]["scenic_drives"]]
+    assert titles == ["White Rim Road", "Paved Overlook Road"]
+
+
 def test_cross_destination_scenic_drive_dedup_keeps_zion_drive_under_zion() -> None:
     g = _gen()
     trip = {

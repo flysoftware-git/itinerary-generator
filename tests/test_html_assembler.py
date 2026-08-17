@@ -121,6 +121,52 @@ def test_scenic_drive_card_uses_teaser_while_popup_keeps_full_description() -> N
     )
 
 
+def test_scenic_drive_card_excludes_high_clearance_drives_when_manifest_declares_no_vehicle() -> None:
+    """End-to-end regression for the manifest-driven vehicle-clearance filter:
+    AIContentGenerator._filter_drives_requiring_high_clearance_vehicle runs
+    during normalize_trip_content (before html assembly), so a 4WD/high-clearance
+    drive dropped there never reaches _build_attractions's rendered HTML, while
+    an 'Any vehicle' drive in the same destination survives untouched."""
+    from generator.ai_content import AIContentGenerator
+
+    gen = AIContentGenerator.__new__(AIContentGenerator)
+    trip = {
+        "trip": {"has_high_clearance_vehicle": False},
+        "destinations": [
+            {
+                "name": "Canyonlands National Park",
+                "scenic_drives": [
+                    {
+                        "title": "Paved Overlook Road",
+                        "category": "drive",
+                        "distance_or_duration": "20 mi",
+                        "description": "Easy paved drive to the main overlooks.",
+                        "vehicle_requirement": "Any vehicle",
+                    },
+                    {
+                        "title": "White Rim Road",
+                        "category": "drive",
+                        "distance_or_duration": "100 mi",
+                        "description": "Remote backcountry route around the rim.",
+                        "vehicle_requirement": "4WD required",
+                    },
+                ],
+            }
+        ],
+    }
+
+    gen._filter_drives_requiring_high_clearance_vehicle(trip)
+
+    dest = trip["destinations"][0]
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_attractions(
+        {"top_attractions": []}, drives=dest["scenic_drives"], dest_name=dest["name"]
+    )
+
+    assert "Paved Overlook Road" in html
+    assert "White Rim Road" not in html
+
+
 def test_scenic_drive_card_ignores_st_abbreviation_in_first_sentence() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     drives = [

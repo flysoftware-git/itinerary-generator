@@ -339,7 +339,53 @@ class AIContentGenerator:
         self._deduplicate_cross_destination_what_to_know(trip)
         self._filter_oversized_scenic_drives(trip)
         self._filter_departure_aligned_drives(trip)
+        self._filter_drives_requiring_high_clearance_vehicle(trip)
         self._deduplicate_cross_destination_scenic_drives(trip)
+
+    # Exact vehicle_requirement values (prompts/scenic_drives.txt's fixed
+    # classification vocabulary, ~line 59-68) that mean "needs a
+    # high-clearance or 4WD vehicle". Matched by exact string only -- this
+    # field's values are constrained to a fixed vocabulary by the prompt,
+    # never free text, so no fuzzy parsing is needed or wanted here.
+    _HIGH_CLEARANCE_VEHICLE_REQUIREMENTS = frozenset(
+        {"High-clearance recommended", "4WD required"}
+    )
+
+    def _filter_drives_requiring_high_clearance_vehicle(self, trip: dict[str, Any]) -> None:
+        """Optional opt-in filter (manifest trip.has_high_clearance_vehicle).
+
+        When the traveler has explicitly declared they do NOT have a
+        high-clearance/4WD vehicle (has_high_clearance_vehicle: false),
+        drop scenic drives whose vehicle_requirement demands one -- no
+        reason to recommend a drive they can't make. When the field is
+        omitted entirely (or set to true), this is a no-op and output is
+        identical to before this filter existed: absence must never change
+        default behavior, only explicit opt-in does.
+        """
+        trip_meta = trip.get("trip", {}) if isinstance(trip.get("trip", {}), dict) else {}
+        if trip_meta.get("has_high_clearance_vehicle") is not False:
+            return
+
+        for dest in trip.get("destinations", []) or []:
+            if not isinstance(dest, dict):
+                continue
+            drives = dest.get("scenic_drives", []) if isinstance(dest.get("scenic_drives", []), list) else []
+            if not drives:
+                continue
+            eligible = [
+                drive for drive in drives
+                if not isinstance(drive, dict)
+                or str(drive.get("vehicle_requirement", "") or "")
+                not in self._HIGH_CLEARANCE_VEHICLE_REQUIREMENTS
+            ]
+            removed = len(drives) - len(eligible)
+            if removed:
+                logger.info(
+                    "  High-clearance vehicle filter: removed %d drive(s) from '%s' "
+                    "(manifest declares no high-clearance vehicle)",
+                    removed, dest.get("name", ""),
+                )
+            dest["scenic_drives"] = eligible
 
     def _deduplicate_cross_destination_scenic_drives(self, trip: dict[str, Any]) -> None:
         """Keep duplicate scenic drives only under the most relevant destination.
