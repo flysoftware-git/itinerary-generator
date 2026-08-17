@@ -47,6 +47,60 @@ destinations:
         parser.load(str(f))
 
 
+def test_en_route_seed_urls_rejected(tmp_path):
+    manifest_content = """
+trip:
+  title: "Test"
+  subtitle: "Test"
+  theme_color: "#123456"
+destinations:
+  - id: test
+    name: "Test Destination"
+    dates: "Jan 1–3, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+    en_route_seeds:
+      - "https://example.com/enchanted-circle"
+"""
+    f = tmp_path / "bad_en_route_seed_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    with pytest.raises(ValueError, match="URL"):
+        parser.load(str(f))
+
+
+def test_en_route_seeds_valid_manifest_parses(tmp_path):
+    manifest_content = """
+trip:
+  title: "Test"
+  subtitle: "Test"
+  theme_color: "#123456"
+destinations:
+  - id: taos
+    name: "Taos"
+    dates: "Jan 1–3, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com/taos"
+  - id: pagosa_springs
+    name: "Pagosa Springs"
+    dates: "Jan 3–5, 2026"
+    en_route_seeds:
+      - "Enchanted Circle Scenic Drive"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com/pagosa"
+"""
+    f = tmp_path / "en_route_seed_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    trip = parser.load(str(f))
+    dests = {d["id"]: d for d in trip["destinations"]}
+    assert dests["pagosa_springs"]["en_route_seeds"] == ["Enchanted Circle Scenic Drive"]
+    assert "en_route_seeds" not in dests["taos"]
+
+
 def test_duplicate_ids_rejected(tmp_path):
     manifest_content = """
 trip:

@@ -162,6 +162,19 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                         "items": {"type": "string", "minLength": 2},
                         "description": "Attraction/hike/experience name hints only — no URLs.",
                     },
+                    "en_route_seeds": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 2},
+                        "description": "Name hints for en-route-stop discovery on the leg "
+                                       "arriving at this destination (i.e. the drive from the "
+                                       "previous destination to this one) — not attractions "
+                                       "within the destination itself. Structurally identical "
+                                       "to `seeds` (plain names only, no URLs); these are "
+                                       "threaded into en-route-stop candidate discovery as "
+                                       "strong hints, still subject to the same route-proximity "
+                                       "and detour-threshold verification as any other "
+                                       "en-route-stop candidate.",
+                    },
                     "group_with": {
                         "type": "string",
                         "pattern": "^[a-z0-9_]+$",
@@ -197,6 +210,7 @@ class ManifestParser:
         data: dict[str, Any] = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         self._validate_schema(data)
         self._validate_seeds(data)
+        self._validate_en_route_seeds(data)
         self._validate_ids_unique(data)
         self._validate_group_with(data)
         logger.info(
@@ -219,6 +233,15 @@ class ManifestParser:
                 if seed.startswith(("http://", "https://")):
                     raise ValueError(
                         f"Destination '{dest['id']}': seed '{seed}' must be a "
+                        "name only — not a URL. The generator discovers all URLs automatically."
+                    )
+
+    def _validate_en_route_seeds(self, data: dict[str, Any]) -> None:
+        for dest in data.get("destinations", []):
+            for seed in dest.get("en_route_seeds", []):
+                if seed.startswith(("http://", "https://")):
+                    raise ValueError(
+                        f"Destination '{dest['id']}': en_route_seed '{seed}' must be a "
                         "name only — not a URL. The generator discovers all URLs automatically."
                     )
 
