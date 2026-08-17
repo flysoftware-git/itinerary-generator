@@ -291,6 +291,88 @@ def test_discover_en_route_stops_skips_stops_but_still_updates_route_distance_wh
     assert ai["getting_here"].get("distance_miles")
 
 
+def test_ensure_en_route_seed_candidates_adds_missing_seed():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {"id": "pagosa_springs", "en_route_seeds": ["Enchanted Circle Scenic Drive"]}
+
+    result = discoverer._ensure_en_route_seed_candidates([], dest, "Pagosa Springs")
+
+    assert len(result) == 1
+    assert result[0]["name"] == "Enchanted Circle Scenic Drive"
+    assert result[0]["is_seed"] is True
+
+
+def test_ensure_en_route_seed_candidates_dedupes_against_existing_stop():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    dest = {"id": "pagosa_springs", "en_route_seeds": ["Wolf Creek Pass Overlook"]}
+    existing = [{"name": "Wolf Creek Pass Overlook", "description": "Already proposed by the AI."}]
+
+    result = discoverer._ensure_en_route_seed_candidates(existing, dest, "Pagosa Springs")
+
+    assert len(result) == 1
+    assert result[0]["description"] == "Already proposed by the AI."
+
+
+def test_ensure_en_route_seed_candidates_no_seeds_returns_same_list():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    stops = [{"name": "Some AI Stop"}]
+
+    result = discoverer._ensure_en_route_seed_candidates(stops, {"id": "x"}, "X")
+
+    assert result is stops
+
+
+def test_discover_en_route_stops_includes_manifest_seed_as_search_candidate():
+    """A traveler-supplied `en_route_seeds` name hint (manifest_parser.py) must
+    surface as an en-route-stop candidate for the leg arriving at this
+    destination, and go through the normal search/link-resolution path just
+    like any AI-proposed stop -- not an unconditional include."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+    discoverer._route_distance_live_fetch_enabled = False
+
+    ai = {"getting_here": {"en_route_stops": []}}
+    dest = {"id": "pagosa_springs", "en_route_seeds": ["Enchanted Circle Scenic Drive"]}
+
+    with patch.object(
+        discoverer,
+        "_search_first",
+        return_value="https://www.example.com/enchanted-circle-scenic-drive",
+    ) as fake_search:
+        discoverer._discover_en_route_stops(
+            ai, "Pagosa Springs", origin_name="Taos", dest=dest,
+        )
+
+    stops = ai["getting_here"]["en_route_stops"]
+    names = [s.get("name") for s in stops]
+    assert "Enchanted Circle Scenic Drive" in names
+    seeded = next(s for s in stops if s.get("name") == "Enchanted Circle Scenic Drive")
+    assert seeded["url"] == "https://www.example.com/enchanted-circle-scenic-drive"
+    fake_search.assert_called()
+
+
+def test_discover_en_route_stops_does_not_add_seed_from_a_different_destination():
+    """en_route_seeds is scoped per destination to the leg arriving at that
+    destination -- a seed on one destination's manifest entry must not leak
+    into a sibling destination's en-route-stop candidates."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+    discoverer._route_distance_live_fetch_enabled = False
+
+    ai = {"getting_here": {"en_route_stops": []}}
+    # This destination ("pagosa_springs") intentionally has no en_route_seeds
+    # of its own -- "Wilson Arch" belongs to a sibling manifest entry
+    # (e.g. "moab") and must never leak in here.
+    dest_without_seed = {"id": "pagosa_springs"}
+
+    with patch.object(discoverer, "_search_first", return_value=""):
+        discoverer._discover_en_route_stops(
+            ai, "Pagosa Springs", origin_name="Taos", dest=dest_without_seed,
+        )
+
+    assert ai["getting_here"]["en_route_stops"] == []
+
+
 def test_discover_scenic_drives_skips_and_clears_content_when_deferred():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._multi_site_base_owned_categories = frozenset({"scenic_drive"})

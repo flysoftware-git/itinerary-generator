@@ -8438,6 +8438,58 @@ class URLDiscoverer:
 
     # ── En-Route Stops ───────────────────────────────────────────────────────
 
+    def _ensure_en_route_seed_candidates(
+        self,
+        stops: list[dict[str, Any]],
+        dest: dict[str, Any] | None,
+        dest_name: str,
+    ) -> list[dict[str, Any]]:
+        """Guarantee manifest `en_route_seeds` (see manifest_parser.py) are present
+        as en-route-stop candidates for the leg arriving at this destination.
+
+        This is the en-route-stop counterpart to how `seeds` get folded into
+        `top_attractions` for destination-attraction discovery: a seed name not
+        already among the proposed stops is added as a bare-name candidate so it
+        gets a search-priority boost (guaranteed candidacy) rather than depending
+        on the AI or the direct-link-batch harvest happening to propose it.
+
+        Crucially this does NOT bypass verification -- an injected seed still
+        flows through every check that runs immediately after this call inside
+        _discover_en_route_stops (threshold filtering via
+        _en_route_stop_within_threshold, generic-title filtering, and real
+        geocoding/route-proximity pruning via _prune_en_route_stops_by_geometry),
+        exactly like any AI-proposed or batch-harvested stop. A seed that isn't a
+        real, verifiably on-route place is filtered out same as anything else.
+        """
+        seed_names = [
+            str(seed or "").strip()
+            for seed in ((dest or {}).get("en_route_seeds", []) or [])
+            if str(seed or "").strip()
+        ]
+        if not seed_names:
+            return stops
+
+        existing_keys = {
+            re.sub(r"[^a-z0-9]+", " ", str((stop or {}).get("name", "") or "").lower()).strip()
+            for stop in stops
+            if isinstance(stop, dict)
+        }
+        result = list(stops)
+        for seed in seed_names:
+            key = re.sub(r"[^a-z0-9]+", " ", seed.lower()).strip()
+            if not key or key in existing_keys:
+                continue
+            result.append({"name": seed, "is_seed": True})
+            existing_keys.add(key)
+            self._log_decision(
+                kind="en_route_stop",
+                dest_name=dest_name,
+                item_name=seed,
+                reason="en_route_seed_injected",
+                message="en-route seed added as a discovery candidate for the incoming leg (subject to normal verification)",
+            )
+        return result
+
     def _discover_en_route_stops(
         self,
         ai: dict[str, Any],
@@ -8484,6 +8536,13 @@ class URLDiscoverer:
             stops = self._prioritize_direct_batch_en_route_stops(stops, dest_name, dest_dates, origin_name)
             getting_here["en_route_stops"] = stops
             ai["getting_here"] = getting_here
+
+        if not en_route_stop_deferred:
+            seeded_stops = self._ensure_en_route_seed_candidates(stops, dest, dest_name)
+            if seeded_stops is not stops:
+                stops = seeded_stops
+                getting_here["en_route_stops"] = stops
+                ai["getting_here"] = getting_here
 
         if stops and source_mode == "direct_link_batch":
             filtered_stops: list[dict[str, Any]] = []
