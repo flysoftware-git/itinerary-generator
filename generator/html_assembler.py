@@ -969,7 +969,29 @@ class HTMLAssembler:
             stop_name = str(stop.get("name", "") or "").strip()
             if not stop_name:
                 continue
-            if waypoint_scope and self._looks_location_qualified(waypoint_scope):
+            # Prefer a real geocoded coordinate over any name-based guess when
+            # one exists (url_discovery.py already verified it's plausibly
+            # on-route -- see _prune_en_route_stops_by_geometry). A coordinate
+            # resolves to exactly one point; a free-text waypoint name does
+            # not, and the qualification heuristic below has a real failure
+            # mode for en-route stops specifically: an en-route stop isn't
+            # "at" the arrival destination the way a same-destination
+            # attraction is, so (a) a coincidental shared word can suppress
+            # qualification entirely (dipstick60: "Canyon Overlook Trail", a
+            # Zion-area trail, shares "canyon" with arrival destination
+            # "Bryce Canyon National Park" and rendered fully unqualified,
+            # resolving in Google Maps to an unrelated "Stan's Overlook
+            # Trail, Snoqualmie, WA"), and (b) even when qualification does
+            # fire, blindly appending the *arrival* destination's name is
+            # wrong for a stop that isn't actually near it (dipstick60:
+            # "Mossy Cave", a real Bryce Canyon trail, rendered as "Mossy
+            # Cave Capitol Reef National Park" on the Bryce->Capitol Reef
+            # leg). Both are avoided entirely once a real coordinate exists.
+            geocoded_lat = stop.get("geocode_lat")
+            geocoded_lng = stop.get("geocode_lng")
+            if isinstance(geocoded_lat, (int, float)) and isinstance(geocoded_lng, (int, float)):
+                waypoint_names.append(f"{geocoded_lat},{geocoded_lng}")
+            elif waypoint_scope and self._looks_location_qualified(waypoint_scope):
                 waypoint_names.append(self._maps_fallback_query_text(stop_name, waypoint_scope))
             else:
                 waypoint_names.append(stop_name)

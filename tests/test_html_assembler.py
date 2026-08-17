@@ -366,6 +366,63 @@ def test_build_getting_here_route_waypoints_are_destination_scoped_for_ambiguous
     assert "waypoints=Red%20Cliffs%20Desert%20Reserve%20St.%20George%2C%20Utah|Leeds%20Historic%20District%20St.%20George%2C%20Utah" in html
 
 
+def test_build_getting_here_route_waypoint_prefers_geocoded_coordinates() -> None:
+    """dipstick60: "Canyon Overlook Trail" (a real Zion-area trail) rendered
+    as a fully UNQUALIFIED waypoint on the Zion->Bryce leg, because it
+    coincidentally shares the word "canyon" with arrival destination "Bryce
+    Canyon National Park" -- the qualification heuristic wrongly concluded
+    no qualifier was needed. In Google Maps, the bare name resolved to an
+    unrelated "Stan's Overlook Trail, Snoqualmie, WA". A stop with a real
+    verified geocode must use coordinates instead, bypassing the
+    name-qualification guesswork (and its failure modes) entirely."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "getting_here": {
+            "route_summary": "Drive to Bryce.",
+            "en_route_stops": [
+                {"name": "Canyon Overlook Trail", "geocode_lat": 37.2136, "geocode_lng": -113.0064},
+            ],
+        }
+    }
+    dest = {"name": "Bryce Canyon National Park"}
+
+    html = assembler._build_getting_here(
+        ai,
+        dest,
+        previous_name="Zion National Park",
+        previous_route_target="Zion National Park",
+        current_route_target="Bryce Canyon National Park",
+    )
+
+    assert "waypoints=37.2136%2C-113.0064" in html
+    assert "Canyon%20Overlook%20Trail" not in html
+
+
+def test_build_getting_here_route_waypoint_falls_back_to_qualified_name_without_geocode() -> None:
+    """Without a real geocode, the existing name-qualification fallback still
+    applies (unchanged behavior) -- this is the pre-fix path other tests
+    already cover, confirming the geocode-preference addition doesn't break
+    the no-geocode case."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "getting_here": {
+            "route_summary": "Arrive via scenic corridor.",
+            "en_route_stops": [{"name": "Red Cliffs Desert Reserve"}],
+        }
+    }
+    dest = {"name": "St. George, Utah"}
+
+    html = assembler._build_getting_here(
+        ai,
+        dest,
+        previous_name="Las Vegas International Airport",
+        previous_route_target="Las Vegas International Airport",
+        current_route_target="St. George, Utah",
+    )
+
+    assert "waypoints=Red%20Cliffs%20Desert%20Reserve%20St.%20George%2C%20Utah" in html
+
+
 def test_build_getting_here_route_skips_ineligible_waypoints() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {
