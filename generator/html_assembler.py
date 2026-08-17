@@ -1244,16 +1244,41 @@ class HTMLAssembler:
         base = (dest_by_id or {}).get(base_id) or {}
         base_name = str(base.get("name", "") or base_id).strip()
 
+        # Project-owner review feedback (dipstick -- see docs/reports):
+        # the old banner ("Day trip from X", plain text, no link) and the
+        # separate _build_group_lodging_pointer line right under the header
+        # ("Based from Hyatt Moab (see Moab)") duplicated the same "this is
+        # a day trip from the base" fact in two visually disconnected
+        # places, and only the lower one was a link. Consolidate into one
+        # centered, linked top banner row that carries both facts, and drop
+        # the redundant pointer call entirely. Mirrors
+        # _build_group_lodging_pointer's own own-lodging-overrides-dedup /
+        # lodging-name-optional fallback logic, just folded into the banner
+        # instead of a second line.
+        own_lodging = dest.get("lodging")
+        lodging_name = ""
+        if not (isinstance(own_lodging, dict) and own_lodging):
+            base_lodging = base.get("lodging") if isinstance(base.get("lodging"), dict) else {}
+            lodging_name = str(base_lodging.get("name") or base_lodging.get("location") or "").strip()
+
+        banner_text = (
+            f'\U0001f9ed Day trip from <a href="#section-{base_id}" '
+            'style="color:#fff;text-decoration:underline;text-underline-offset:2px;">'
+            f'{html_escape.escape(base_name)}</a>'
+        )
+        if lodging_name:
+            banner_text += f' · Based at {html_escape.escape(lodging_name)}'
+
         html = (
             f'<div id="section-{child_id}" class="group-child-card" '
-            'style="margin:0 1.5rem 1.25rem;border:2px solid var(--sandstone);'
-            'border-radius:14px;overflow:hidden;background:#faf7f2;">\n'
+            'style="margin:0 1.5rem 1.25rem;border:2px solid var(--sage);'
+            'border-radius:14px;overflow:hidden;background:#f2f6f1;">\n'
         )
         html += (
-            '  <div class="group-child-banner" style="padding:0.5rem 1.25rem;'
-            'background:var(--sandstone);font-size:0.8rem;font-weight:700;'
-            'letter-spacing:0.03em;color:var(--canyon);text-transform:uppercase;">'
-            f'\U0001f9ed Day trip from {html_escape.escape(base_name)}</div>\n'
+            '  <div class="group-child-banner" style="padding:0.6rem 1.25rem;'
+            'background:var(--sage);font-size:0.8rem;font-weight:700;'
+            'letter-spacing:0.03em;color:#fff;text-transform:uppercase;'
+            f'text-align:center;">{banner_text}</div>\n'
         )
 
         html += self._build_header(
@@ -1263,7 +1288,6 @@ class HTMLAssembler:
             dest.get("nps_park_code"),
             ai.get("top_attractions", []),
         )
-        html += self._build_group_lodging_pointer(dest, dest_by_id)
         html += self._build_intro_note(dest, events)
         html += self._build_image_gallery(images, dest["name"])
         html += self._build_environment_card(ai, dest)

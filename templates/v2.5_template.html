@@ -198,17 +198,22 @@
       .card h3::before { content: none; display: none; }
       .intro-note-card { background: #f6f2e8; }
 
-      /* ── GH #68 "see base" pointers (deferred-category / lodging) ── */
-      .group-base-pointer, .group-lodging-pointer {
+      /* ── GH #68 "see base" pointers (deferred-category) ── */
+      /* group-lodging-pointer's CSS was removed here: the grouped-child
+         "Based from X (see Y)" line it styled is now folded into
+         .group-child-banner (inline-styled, see _build_group_child_card),
+         and _build_group_lodging_pointer's only remaining call site
+         (_build_single_section) is a documented no-op in practice. */
+      .group-base-pointer {
         margin: 0; padding: 0.85rem 1.5rem; text-align: center;
         background: var(--sandstone); font-size: 0.9rem; font-weight: 600;
         color: var(--dark);
       }
-      .group-base-pointer a, .group-lodging-pointer a {
+      .group-base-pointer a {
         color: var(--canyon); font-weight: 700; text-decoration: underline;
         text-underline-offset: 2px;
       }
-      .group-base-pointer a:hover, .group-lodging-pointer a:hover { color: var(--terracotta); }
+      .group-base-pointer a:hover { color: var(--terracotta); }
       .intro-note-text { font-size: 0.95rem; line-height: 1.7; color: #5c4a35; margin: 0; }
 
       /* ── Expected environment ── */
