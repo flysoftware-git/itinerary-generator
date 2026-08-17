@@ -8844,6 +8844,26 @@ class URLDiscoverer:
         else:
             attempts = [(q, False) for q in queries]
 
+        # AI-generated en-route stop names frequently tack a descriptive
+        # feature word onto a real, well-known landmark -- e.g. "Cedar
+        # Breaks National Monument Rim View", "Coral Pink Sand Dunes State
+        # Park Boardwalk", "Willis Creek Slot Canyon Trailhead" (all real
+        # dipstick59 stops on the Zion -> Bryce leg). Nominatim's free-text
+        # search requires (approximately) every significant word to match
+        # something in its index, so these exact strings return zero
+        # results even though the landmark itself ("Cedar Breaks National
+        # Monument", "Coral Pink Sand Dunes State Park", "Willis Creek")
+        # geocodes cleanly. When that happens the stop silently gets no
+        # route_progress_ratio and sorts to the very end of the waypoint
+        # list (see the "unknown ratio sorts last" fix), which scrambles
+        # the real visiting order into a zigzag between geographic
+        # clusters instead of merely misplacing one stop. Progressively
+        # dropping the last word and retrying recovers the real
+        # coordinates without a hardcoded list of "known bad suffix
+        # words" that would need constant upkeep.
+        for truncated in self._en_route_stop_name_truncations(name):
+            attempts.append((truncated, bool(viewbox_params)))
+
         for query, use_viewbox in attempts:
             q = str(query or "").strip()
             if not q:
@@ -8910,6 +8930,28 @@ class URLDiscoverer:
 
         cache[key] = None
         return None
+
+    @staticmethod
+    def _en_route_stop_name_truncations(name: str, *, min_words: int = 2, max_variants: int = 3) -> list[str]:
+        """Progressively drop the last word of a multi-word place name.
+
+        Used as a last-resort geocoding fallback: see the call site in
+        _geocode_en_route_stop_for_route for why this recovers real
+        landmarks whose AI-generated name has a descriptive suffix
+        Nominatim's free-text search can't match ("... Rim View", "...
+        Boardwalk", "... Trailhead"). Capped at a handful of variants and a
+        floor of min_words so this can't degrade into a single, overly
+        generic word (e.g. just "Park") that would risk a wrong-region
+        false match.
+        """
+        words = str(name or "").split()
+        variants: list[str] = []
+        while len(words) > min_words and len(variants) < max_variants:
+            words = words[:-1]
+            candidate = " ".join(words).strip()
+            if candidate:
+                variants.append(candidate)
+        return variants
 
     def _mark_en_route_stop_geocode_rejected_out_of_region(self, cache_key: str) -> None:
         if not hasattr(self, "_en_route_stop_geocode_rejected_out_of_region"):
