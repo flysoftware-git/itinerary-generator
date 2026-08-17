@@ -141,7 +141,14 @@ def test_schedule_injects_arrival_and_departure_context() -> None:
     last_text = updated[-1]["periods"][-1]["summary"].lower()
 
     assert "travel from zion national park" in first_text
-    assert "onward drive to capitol reef national park" in last_text
+    # The final evening at a transfer destination must not imply an
+    # after-dinner drive -- the onward drive to the next destination happens
+    # the following morning (that destination's own Day 1 arrival leg), so
+    # this evening stays local. See docs/design/schedule-normalization.md
+    # Case 4.
+    assert "onward drive" not in last_text
+    assert "capitol reef national park" in last_text
+    assert "next morning" in last_text
 
 
 def test_infer_day_count_single_day_date() -> None:
@@ -496,8 +503,13 @@ def test_normalize_schedule_fills_sparse_multi_day_periods_and_departure_on_last
     day2_text = " ".join(p.get("summary", "") for p in out[1]["periods"]).lower()
     assert "onward drive to telluride" not in day2_text
 
+    # The final evening at a transfer destination stays local -- no
+    # after-dinner drive implied; the onward drive to the next destination
+    # is explicitly framed as happening the following morning instead.
     day3_evening = out[2]["periods"][2]["summary"].lower()
-    assert "onward drive to telluride" in day3_evening
+    assert "onward drive" not in day3_evening
+    assert "telluride" in day3_evening
+    assert "next morning" in day3_evening
 
 
 def test_normalize_schedule_reserves_first_day_morning_for_origin_transport() -> None:
@@ -613,7 +625,13 @@ def test_inject_travel_realism_removes_checkin_from_non_afternoon_day2_blocks() 
 
     day2_evening = out[1]["periods"][2]["summary"].lower()
     assert "check in" not in day2_evening
-    assert "check-in" in day2_evening or "destination-focused" in day2_evening or "onward drive" in day2_evening
+    # Day 2 is this destination's last day before moving on to Pagosa
+    # Springs -- the deterministic last-evening override applies here, and
+    # it must not imply an after-dinner drive (the onward drive happens the
+    # next morning instead).
+    assert "onward drive" not in day2_evening
+    assert "pagosa springs" in day2_evening
+    assert "next morning" in day2_evening
 
 
 def test_inject_travel_realism_single_day_transfer_includes_arrival_checkin_guidance() -> None:
@@ -676,7 +694,13 @@ def test_normalize_schedule_softens_first_day_heavy_afternoon_after_origin_trave
     assert "keep activity light after travel" in first_afternoon
 
 
-def test_normalize_schedule_reserves_last_day_afternoon_evening_for_return() -> None:
+def test_normalize_schedule_reserves_last_day_afternoon_for_return_and_drops_evening() -> None:
+    """Regression grounded in the project owner's real review finding: 'Last
+    day still repeats afternoon and evening, once headed to airport in the
+    afternoon, there doesn't need to be an evening.' Afternoon carries the
+    return-travel note; Evening must be suppressed (empty, so the renderer
+    skips it) rather than repeating a near-duplicate reserved-for-return
+    sentence for a period that no longer exists once the traveler has left."""
     g = _gen()
     schedule = [
         {
@@ -709,9 +733,9 @@ def test_normalize_schedule_reserves_last_day_afternoon_evening_for_return() -> 
     )
 
     last_afternoon = out[-1]["periods"][1]["summary"].lower()
-    last_evening = out[-1]["periods"][2]["summary"].lower()
+    last_evening = out[-1]["periods"][2]["summary"]
     assert "reserved for return travel to las vegas" in last_afternoon
-    assert "reserved for return travel to las vegas" in last_evening
+    assert last_evening == ""
 
 
 def test_normalize_schedule_ensures_each_day_has_unique_signal() -> None:
@@ -811,9 +835,83 @@ def test_inject_travel_realism_day2_plus_scrub_uses_activity_aware_variation() -
     assert any(name in day2[1]["summary"].lower() for name in ("mossy cave trail", "bryce point"))
     assert "navajo loop trail" not in day2[1]["summary"].lower()
     assert "sunset point" not in day2[1]["summary"].lower()
-    # Last-day evening for a transfer destination is reserved for onward-drive prep.
-    assert "onward drive to capitol reef national park" in day2[2]["summary"].lower()
+    # Last-day evening for a transfer destination stays local and relaxed --
+    # no after-dinner drive implied; the onward drive is explicitly framed
+    # as happening the next morning instead.
+    last_evening = day2[2]["summary"].lower()
+    assert "onward drive" not in last_evening
+    assert "capitol reef national park" in last_evening
+    assert "next morning" in last_evening
     assert "start with a different priority trailhead or district than day 1" not in day2_text
+
+
+def test_inject_travel_realism_scrubs_premature_departure_mentions_on_earlier_days() -> None:
+    """Regression grounded in the project owner's real review finding: 'The
+    scheduler is also suggesting departing Capitol Reef each of the 3 days
+    for Moab.' The LLM's own schedule text is not otherwise touched by
+    normalization -- if it echoes departure/onward-drive framing on Day 1
+    or Day 2 of a 3-day stay (not just the actual last day), that text must
+    be scrubbed and replaced with something that doesn't reference leaving,
+    since the traveler isn't departing yet on those days."""
+    g = _gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Explore Cathedral Valley at sunrise."},
+                {"period": "Afternoon", "summary": "Hike Capitol Gorge and Grand Wash."},
+                {
+                    "period": "Evening",
+                    "summary": "Wrap up and prepare for the onward drive to Moab tomorrow; keep departure buffers.",
+                },
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Drive the Scenic Drive to Capitol Gorge."},
+                {"period": "Afternoon", "summary": "Visit Fruita Historic District."},
+                {
+                    "period": "Evening",
+                    "summary": "Sunset at Panorama Point, then head to Moab in preparation for departure.",
+                },
+            ],
+        },
+        {
+            "day_label": "Day 3",
+            "periods": [
+                {"period": "Morning", "summary": "Final morning at Hickman Bridge."},
+                {"period": "Afternoon", "summary": "Last stop at Chimney Rock."},
+                {"period": "Evening", "summary": "Dinner in Torrey."},
+            ],
+        },
+    ]
+
+    out = g._inject_travel_realism(
+        days,
+        {"drive_time": "2 hr 20 min"},
+        "Bryce Canyon National Park",
+        "Moab",
+    )
+
+    day1_evening = out[0]["periods"][2]["summary"].lower()
+    day2_evening = out[1]["periods"][2]["summary"].lower()
+    day3_evening = out[2]["periods"][2]["summary"].lower()
+
+    # Days 1 and 2 are not the departure day -- no mention of Moab, driving
+    # onward, or departure buffers should survive.
+    assert "moab" not in day1_evening
+    assert "onward drive" not in day1_evening
+    assert "departure buffer" not in day1_evening
+    assert "moab" not in day2_evening
+    assert "onward drive" not in day2_evening
+
+    # Only Day 3 (the actual last day here) carries the onward-travel note,
+    # and it must not imply an after-dinner drive -- the drive happens the
+    # next morning instead.
+    assert "moab" in day3_evening
+    assert "onward drive" not in day3_evening
+    assert "next morning" in day3_evening
 
 
 def test_inject_travel_realism_moab_schedule_avoids_repeats_and_multi_park_blocks() -> None:

@@ -219,7 +219,14 @@ def test_reconcile_schedule_from_registry_scrubs_threshold_demoted_mention_even_
     """A trail demoted to a plain attraction for exceeding the mileage
     threshold stays 'accepted' in the registry (it's still present, just
     re-typed) -- but a schedule mention still implies the original hike
-    recommendation, which is no longer accurate and must still be scrubbed."""
+    recommendation, which is no longer accurate and must still be scrubbed.
+
+    A second, still-fully-accepted attraction (Bridal Veil Falls) survives
+    for this destination, so the scrub should re-anchor the period to that
+    real, concrete attraction rather than falling back to vague "currently
+    eligible" filler -- the generic fallback is reserved for when no real
+    substitute is available at all (see the "rejected mention" test below,
+    where the only attraction present is the blocked one)."""
     trip = {
         "destinations": [
             {
@@ -258,7 +265,8 @@ def test_reconcile_schedule_from_registry_scrubs_threshold_demoted_mention_even_
 
     morning = reconciled["destinations"][0]["ai_content"]["possible_daily_schedule"][0]["periods"][0]["summary"].lower()
     assert "san miguel river trail" not in morning
-    assert "currently eligible" in morning
+    assert "bridal veil falls" in morning
+    assert "currently eligible" not in morning
 
 
 def test_reconcile_schedule_from_registry_preserves_mentions_of_accepted_entities() -> None:
@@ -290,3 +298,63 @@ def test_reconcile_schedule_from_registry_preserves_mentions_of_accepted_entitie
 
     morning = reconciled["destinations"][0]["ai_content"]["possible_daily_schedule"][0]["periods"][0]["summary"]
     assert "Bridal Veil Falls" in morning
+
+
+def test_reconcile_schedule_from_registry_afternoon_names_a_real_substitute_not_generic_filler() -> None:
+    """Regression grounded in the project owner's real review finding:
+    'Still disappointed in the scheduler falling back to generic statements
+    like "Focus on currently eligible nearby highlights and realistic
+    transition time between stops." for multiple afternoons ... Make
+    decisions about recommendations, they are just recommendations.'
+
+    Root cause: when a schedule period names an attraction that later gets
+    rejected by the entity registry (bad URL, dedup, etc.), the old
+    reconciler discarded the ENTIRE period summary and replaced it with
+    this generic, non-committal filler -- even when another real, accepted
+    attraction for the same destination was sitting right there unused.
+    This is a genuine fallback-path bug (not the LLM echoing prompt
+    instructions -- the phrase lives in entity_registry.py's
+    _SCHEDULE_FALLBACK_BY_PERIOD, never in any ai_content.py prompt). The
+    fix re-anchors the period to a real substitute attraction whenever one
+    is available, and only falls back to the generic phrase when nothing
+    concrete is left to name."""
+    trip = {
+        "destinations": [
+            {
+                "id": "moab",
+                "name": "Moab",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Corona Arch Trail",
+                            "type": "hike",
+                            "url": "https://example.com/corona-arch",
+                            "_registry": {"validation_status": "rejected", "rejection_reasons": ["url_rejected"]},
+                        },
+                        {"name": "Dead Horse Point State Park", "type": "viewpoint"},
+                    ],
+                    "possible_daily_schedule": [
+                        {
+                            "day_label": "Day 1",
+                            "periods": [
+                                {"period": "Morning", "summary": "Start the day in town."},
+                                {"period": "Afternoon", "summary": "Hike Corona Arch Trail before sunset."},
+                                {"period": "Evening", "summary": "Dinner in town."},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+
+    registry = build_entity_registry(trip)
+    reconciled = reconcile_trip_from_registry(trip, registry)
+    reconcile_schedule_from_registry(reconciled, registry)
+
+    afternoon = reconciled["destinations"][0]["ai_content"]["possible_daily_schedule"][0]["periods"][1][
+        "summary"
+    ].lower()
+    assert "corona arch trail" not in afternoon
+    assert "focus on currently eligible nearby highlights" not in afternoon
+    assert "dead horse point state park" in afternoon

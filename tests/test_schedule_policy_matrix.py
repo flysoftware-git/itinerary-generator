@@ -91,9 +91,12 @@ def test_policy_departure_day_reserves_return_blocks() -> None:
 
     last = out[-1]
     afternoon = str(last["periods"][1]["summary"] or "").lower()
-    evening = str(last["periods"][2]["summary"] or "").lower()
+    evening = str(last["periods"][2]["summary"] or "")
     assert "reserved for return travel" in afternoon
-    assert "reserved for return travel" in evening
+    # Evening is suppressed, not a near-duplicate of the Afternoon
+    # return-travel note -- once the traveler has left for the return trip
+    # in the afternoon, there's no destination-side "evening" to describe.
+    assert evening == ""
 
 
 def test_policy_schedule_should_not_reference_filtered_entities() -> None:

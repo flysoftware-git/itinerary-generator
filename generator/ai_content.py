@@ -1969,6 +1969,7 @@ class AIContentGenerator:
                 if packed:
                     _set_period_summary(day, "Afternoon", packed)
 
+        _protected_departure_period: dict[str, Any] | None = None
         if is_last_destination:
             return_label = trip_return or "base"
             return_time_label = _format_anchor_time(trip_return_datetime)
@@ -1979,19 +1980,103 @@ class AIContentGenerator:
                 "Afternoon",
                 f"Reserved for return travel to {return_label}{return_time_suffix}; begin checkout and departure logistics.",
             )
-            _set_period_summary(
-                last,
-                "Evening",
-                f"Reserved for return travel to {return_label}; plan buffer time for traffic, stops, and arrival.",
-            )
+            # Afternoon above already covers departure for the return trip
+            # (airport, etc.) -- once the traveler has left, there's no one
+            # at the destination to have an "evening," so don't also render
+            # a second, near-duplicate return-travel note for it. Previously
+            # this set almost-identical text on BOTH Afternoon and Evening
+            # ("Last day still repeats afternoon and evening, once headed to
+            # airport in the afternoon, there doesn't need to be an evening"
+            # -- project owner review). The renderer (html_assembler.py's
+            # _build_schedule) already skips periods with an empty summary,
+            # so clearing it here suppresses the slot entirely.
+            _set_period_summary(last, "Evening", "")
         elif len(days) > 1 and next_destination:
             last = days[-1]
             last_periods = last.get("periods", [])
             if last_periods:
+                # The drive to next_destination happens the following
+                # morning (it's that destination's own Day 1 arrival leg --
+                # see the "Travel from {previous_destination}" block above),
+                # never tonight. Framing this evening around departure prep
+                # implies a multi-hour after-dinner drive, which contradicts
+                # the no-multi-hour-drives-after-dinner rule already applied
+                # to Evening content elsewhere in this function (see the
+                # "Enjoy a relaxed evening back at your lodging after
+                # dinner." fallback below) -- reuse that same relaxed-local
+                # framing here instead of inventing new phrasing.
+                # (Deliberately avoids the words "lodging"/"check-in"/
+                # "arrival"/"drive from" -- those trigger the Day2+
+                # arrival-logistics scrub pass further down, which would
+                # otherwise immediately overwrite this text.)
                 last_periods[-1]["summary"] = (
-                    f"Wrap key stops early and prepare for onward drive to {next_destination}; "
-                    "skip new sunset commitments and keep departure buffers."
+                    f"Enjoy a relaxed, local evening; the drive to {next_destination} "
+                    "happens the next morning, not tonight."
                 ).strip()
+                _protected_departure_period = last_periods[-1]
+
+        # The LLM's own schedule text is untouched by normalization except
+        # for the specific overrides above, so a multi-day destination can
+        # end up with EVERY day's text referencing departure to
+        # next_destination -- not just the actual departure day (e.g. a
+        # 3-day stay mentioning "departing for Moab" on Day 1 and Day 2, not
+        # only Day 3). Scrub any such premature onward-drive/next-destination
+        # framing from every period except the one intentionally set above
+        # to carry it.
+        if len(days) > 1 and next_destination and str(next_destination).strip():
+            next_destination_text = str(next_destination).strip()
+            departure_pattern = re.compile(
+                r"\b(onward\s+drive|onward\s+journey|departure\s+buffer|"
+                r"depart(?:ing|s|ed)?\s+(?:for|to)\b|leav(?:e|ing)\s+for\b|"
+                r"head(?:ing)?\s+(?:out\s+)?(?:for|to)\s+" + re.escape(next_destination_text) + r"\b|"
+                r"prepare[sd]?\s+for\s+(?:the\s+)?onward)",
+                re.IGNORECASE,
+            )
+            next_dest_pattern = (
+                re.compile(r"\b" + re.escape(next_destination_text) + r"\b", re.IGNORECASE)
+                if len(next_destination_text) > 2
+                else None
+            )
+            # Deliberately avoids "lodging"/"check-in"/"arrival"/"drive
+            # from" -- those trigger the Day2+ arrival-logistics scrub pass
+            # further down and would get immediately overwritten by it.
+            local_evening_fallback = "Enjoy a relaxed, local evening."
+            local_fallback_by_period = {
+                "Morning": "Start with a local highlight and keep parking buffers before midday crowds.",
+                "Afternoon": "Keep the afternoon destination-focused with a nearby stop or two.",
+                "Evening": local_evening_fallback,
+            }
+            for day in days:
+                for period in day.get("periods", []) or []:
+                    if period is _protected_departure_period:
+                        continue
+                    summary = str(period.get("summary", "") or "")
+                    if not summary:
+                        continue
+                    mentions_departure = bool(departure_pattern.search(summary))
+                    mentions_next_dest = bool(next_dest_pattern.search(summary)) if next_dest_pattern else False
+                    if not mentions_departure and not mentions_next_dest:
+                        continue
+                    sentences = AIContentGenerator._split_sentences(summary)
+                    kept = [
+                        s
+                        for s in sentences
+                        if not departure_pattern.search(s)
+                        and not (next_dest_pattern and next_dest_pattern.search(s))
+                    ]
+                    cleaned = " ".join(kept).strip()
+                    if not cleaned:
+                        label = str(period.get("period", "")).title()
+                        cleaned = local_fallback_by_period.get(
+                            label, "Keep this block destination-focused for today."
+                        )
+                    if cleaned != summary:
+                        period["summary"] = cleaned
+                        logger.info(
+                            "  Schedule: removed premature onward-drive/next-destination mention "
+                            "from a non-departure day (period=%s)",
+                            str(period.get("period", "")),
+                        )
 
         if len(days) == 1:
             day_one_periods = days[0].get("periods", []) or []
