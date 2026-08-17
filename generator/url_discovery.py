@@ -3754,14 +3754,29 @@ class URLDiscoverer:
                             url=fallback_attraction_url,
                         )
                         continue
-                    attr["url"] = ""
-                    attr.pop("maps_url", None)
+                    # No direct-link batch row matched this trail-like item
+                    # either directly (AllTrails) or via the misclassified-
+                    # attraction recovery above. Authoritative mode still
+                    # forbids trusting a fresh live web/AI-candidate search
+                    # for a specific canonical URL, but the same safe
+                    # Google-Maps-search fallback every other "no URL found"
+                    # attraction gets (see _assign_attraction_maps_fallback_
+                    # or_fail_closed) applies equally here -- it's a name+
+                    # destination search link, not a claim of a specific
+                    # correct source page.
+                    self._assign_attraction_maps_fallback_or_fail_closed(
+                        attr,
+                        attr_name=attr_name,
+                        dest_name=dest_name,
+                        maps_fallback_url=maps_fallback_url,
+                    )
                     self._log_decision(
                         kind="attraction",
                         dest_name=dest_name,
                         item_name=attr_name,
                         reason="direct_batch_source_locked_no_match",
-                        message="trail-like link omitted; authoritative direct-link batch had no usable result",
+                        message="trail-like link omitted; authoritative direct-link batch had no usable result; maps fallback applied where not fail-closed",
+                        url=str(attr.get("url", "") or ""),
                     )
                     continue
                 attr.pop("url", None)

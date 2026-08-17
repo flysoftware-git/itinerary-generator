@@ -5178,8 +5178,15 @@ def test_discover_attractions_infers_nps_code_for_park_attraction_at_non_nps_des
     assert first_kwargs["site_hint"] is None
 
 
-def test_trail_like_attraction_falls_back_to_nps_fanout_when_alltrails_fails() -> None:
-    """In authoritative direct-batch mode, trail items should stay empty rather than fallback to generic NPS fanout."""
+def test_trail_like_attraction_falls_back_to_maps_not_nps_fanout_when_alltrails_fails() -> None:
+    """In authoritative direct-batch mode, trail items with no batch match
+    must not fall back to the generic NPS fanout (that path is reserved for
+    non-authoritative mode -- see the `not self._direct_batch_is_authoritative()`
+    guard a few lines above the fanout call). Since the trail-like-branch
+    no-link-fallback fix, they instead get the same safe maps-search
+    fallback every other "no URL found" attraction gets, rather than being
+    left with no link and no maps fallback at all.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
     discoverer._attraction_source = "direct_link_batch"
@@ -5202,13 +5209,17 @@ def test_trail_like_attraction_falls_back_to_nps_fanout_when_alltrails_fails() -
                 "_search_attraction_from_item_query_fanout",
                 return_value=("https://www.nps.gov/care/planyourvisit/cassidy-arch.htm", "nps"),
             ) as fanout_search:
-                discoverer._discover_attractions(
-                    ai, "Capitol Reef National Park", "care", "October 11, 2026",
-                    seed_names=["Cassidy Arch"],
-                )
+                with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+                    discoverer._discover_attractions(
+                        ai, "Capitol Reef National Park", "care", "October 11, 2026",
+                        seed_names=["Cassidy Arch"],
+                    )
 
     out = ai["top_attractions"][0]
-    assert out["url"] == ""
+    assert out["url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Cassidy%20Arch%20Capitol%20Reef%20National%20Park"
+    )
+    assert out["maps_url"] == out["url"]
     fanout_search.assert_not_called()
 
 
@@ -5270,7 +5281,18 @@ def test_discover_attractions_direct_batch_authoritative_ignores_maps_area_fanou
     fanout_search.assert_not_called()
 
 
-def test_trail_like_direct_batch_authoritative_no_match_does_not_assign_maps_fallback() -> None:
+def test_trail_like_direct_batch_authoritative_no_match_assigns_maps_fallback() -> None:
+    """Regression for the trail-like-branch counterpart of the attractions
+    no-link-fallback fix: real dipstick64 names ("Canyon Overlook Trail",
+    "Queens Garden Trail", etc.) rendered with no url and no maps_url because
+    authoritative direct-batch mode's trail-like branch cleared both fields
+    with no fall-through to the maps-search fallback used a few lines later
+    in the same branch (the `trail_maps_fallback_assigned` case) or by the
+    equivalent non-trail-branch fallback. It must not call the generic NPS
+    fanout (that's a non-authoritative-mode-only recovery path) but it must
+    get the safe maps-search fallback instead of being left completely
+    unverified.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
     discoverer._attraction_source = "direct_link_batch"
@@ -5289,12 +5311,51 @@ def test_trail_like_direct_batch_authoritative_no_match_does_not_assign_maps_fal
     with patch.object(discoverer, "_search_alltrails_for_trail_from_direct_batch", return_value=None):
         with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
             with patch.object(discoverer, "_search_attraction_from_item_query_fanout") as fanout_search:
-                discoverer._discover_attractions(ai, "Capitol Reef National Park", "care", "October 11, 2026")
+                with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+                    discoverer._discover_attractions(ai, "Capitol Reef National Park", "care", "October 11, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Cassidy%20Arch%20Capitol%20Reef%20National%20Park"
+    )
+    assert out["maps_url"] == out["url"]
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("Capitol Reef National Park", {})
+    assert stats.get("maps_fallback_assigned", 0) == 1
+    fanout_search.assert_not_called()
+
+
+def test_trail_like_direct_batch_authoritative_no_match_ambiguous_geography_still_fail_closed() -> None:
+    """Uniformity check mirroring the non-trail-branch fail-closed tests:
+    an ambiguous, generic geographic trail name must still get no link at
+    all (not a maps fallback) even now that the trail-like authoritative
+    no-match path falls through to the shared fallback-or-fail-closed logic.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+    discoverer._alltrails_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Echo Canyon",
+                "type": "hike",
+                "description": "A scenic canyon hike near the park entrance.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_search_alltrails_for_trail_from_direct_batch", return_value=None):
+        with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
+            with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+                discoverer._discover_attractions(ai, "Some National Park", None, "October 18, 2026")
 
     out = ai["top_attractions"][0]
     assert out["url"] == ""
-    assert "google.com/maps" not in out.get("url", "")
-    fanout_search.assert_not_called()
+    assert "maps_url" not in out or not out["maps_url"]
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("Some National Park", {})
+    assert stats.get("maps_fallback_omitted_ambiguous_geography", 0) == 1
+    assert stats.get("maps_fallback_assigned", 0) == 0
 
 
 def test_discover_attractions_direct_batch_authoritative_no_match_real_bryce_attraction_gets_maps_fallback() -> None:
@@ -9096,14 +9157,21 @@ def test_nps_category_activity_fail_closes_when_nps_activity_page_unavailable():
 
 
 def test_trail_like_attraction_fail_closes_when_no_validated_trail_url() -> None:
-    """Unresolved trail-like items stay empty in authoritative mode; generic maps fallbacks are not used."""
+    """Unresolved trail-like items in authoritative mode (the default -- see
+    DEFAULT_DIRECT_BATCH_AUTHORITATIVE) no longer stay completely unverified:
+    since the trail-like-branch no-link-fallback fix they get the same safe
+    maps-search fallback every other "no URL found" attraction gets. This is
+    NOT a claim of a specific correct source page (that's what "generic maps
+    fallbacks are not used" guarded against pre-fix, for the AI-candidate/
+    live-search risk) -- it's a deterministic name+destination search link.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._search = MagicMock()
     discoverer._url_validator = MagicMock()
 
     with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None), patch.object(
         discoverer, "_search_alltrails_for_trail", return_value=None
-    ):
+    ), patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
         ai = {
             "top_attractions": [
                 {
@@ -9116,11 +9184,21 @@ def test_trail_like_attraction_fail_closes_when_no_validated_trail_url() -> None
         discoverer._discover_attractions(ai, "Telluride", None, "July 10-12, 2026")
 
     attr = ai["top_attractions"][0]
-    assert attr.get("url") in (None, "")
-    assert "maps_url" not in attr
+    assert attr.get("url") == (
+        "https://www.google.com/maps/search/?api=1&query=Jud%20Wiebe%20Trail%20Telluride"
+    )
+    assert attr.get("maps_url") == attr.get("url")
 
 
 def test_trail_like_attraction_direct_batch_authoritative_does_not_accept_ai_candidate_url() -> None:
+    """Fabrication-guard tripwire mirroring the non-trail-branch equivalent
+    (test_discover_attractions_direct_batch_authoritative_recovers_seed_from_ai_candidate):
+    authoritative mode must never resolve an AI-suggested url_candidate when
+    the batch harvest found no match, regardless of whether the item
+    afterward gets a maps-search fallback. The load-bearing assertion is
+    `ai_candidate_mock.assert_not_called()`; the exact fallback URL only
+    confirms the recovered link didn't come from the AI-candidate resolver.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._alltrails_source = "direct_link_batch"
     discoverer._direct_batch_authoritative = True
@@ -9140,11 +9218,14 @@ def test_trail_like_attraction_direct_batch_authoritative_does_not_accept_ai_can
 
     with patch.object(discoverer, "_resolve_ai_candidate_url") as ai_candidate_mock:
         with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
-            discoverer._discover_attractions(ai, "Telluride", None, "July 10-12, 2026")
+            with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+                discoverer._discover_attractions(ai, "Telluride", None, "July 10-12, 2026")
 
     attraction = ai["top_attractions"][0]
-    assert attraction.get("url") in (None, "")
-    assert "maps_url" not in attraction
+    assert attraction.get("url") == (
+        "https://www.google.com/maps/search/?api=1&query=Jud%20Wiebe%20Trail%20Telluride"
+    )
+    assert attraction.get("maps_url") == attraction.get("url")
     ai_candidate_mock.assert_not_called()
 
 
@@ -9402,6 +9483,11 @@ def test_search_alltrails_for_trail_includes_explicit_alltrails_variants():
 
 
 def test_trail_like_attraction_omits_link_when_no_validated_trail_url_exists() -> None:
+    """Authoritative mode is the default (DEFAULT_DIRECT_BATCH_AUTHORITATIVE),
+    so an unresolved trail-like item here now gets the same safe maps-search
+    fallback every other "no URL found" attraction gets, instead of being
+    left completely unverified (the trail-like-branch no-link-fallback fix).
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
 
     def fake_search(variants, site_filter=None, **kwargs):
@@ -9421,11 +9507,14 @@ def test_trail_like_attraction_omits_link_when_no_validated_trail_url_exists() -
 
     with patch.object(discoverer, "_search_first", side_effect=fake_search):
         with patch.object(discoverer, "_search_attraction_from_item_query_fanout", return_value=(None, "no_match")):
-            discoverer._discover_attractions(ai, "Bryce Canyon National Park", "blca")
+            with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+                discoverer._discover_attractions(ai, "Bryce Canyon National Park", "blca")
 
     attr = ai["top_attractions"][0]
-    assert attr.get("url") in (None, "")
-    assert "maps_url" not in attr
+    assert attr.get("url") == (
+        "https://www.google.com/maps/search/?api=1&query=Grand%20Wash%20Trail%20Bryce%20Canyon%20National%20Park"
+    )
+    assert attr.get("maps_url") == attr.get("url")
 
 
 def _make_nominatim_response(lat: str, lon: str):
@@ -10131,7 +10220,19 @@ def test_alltrails_confidence_reaches_medium_via_broad_search_when_filtered_sear
     assert confidence == "medium"
 
 
-def test_trail_like_attraction_omits_link_when_alltrails_confidence_below_threshold() -> None:
+def test_trail_like_attraction_gets_maps_fallback_when_alltrails_confidence_below_threshold() -> None:
+    """Regression using a real affected name from the SW2026-dipstick64 run:
+    Zion's "Canyon Overlook Trail" rendered with no url and no maps_url
+    because authoritative mode's trail-like branch (default -- see
+    DEFAULT_DIRECT_BATCH_AUTHORITATIVE) unconditionally cleared both fields
+    with `attr["url"] = ""; attr.pop("maps_url", None); continue` when it
+    ran out of AllTrails/NPS-fanout/batch-recovery options, instead of
+    falling through to the same safe maps-search fallback the
+    "not authoritative" case in this same branch already used
+    (`trail_maps_fallback_assigned`) and the non-trail branch got in the
+    earlier `fe0024a` fix. It must still not use the below-confidence-
+    threshold AllTrails URL itself.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._alltrails_min_confidence_for_publish = "high"
 
@@ -10151,11 +10252,17 @@ def test_trail_like_attraction_omits_link_when_alltrails_confidence_below_thresh
         return_value="https://www.alltrails.com/trail/us/utah/canyon-overlook-trail",
     ):
         with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
-            discoverer._discover_attractions(ai, "Zion National Park", "zion")
+            with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+                discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
     attr = ai["top_attractions"][0]
-    assert attr.get("url") in (None, "")
-    assert "maps_url" not in attr
+    assert attr.get("url") == (
+        "https://www.google.com/maps/search/?api=1&query=Canyon%20Overlook%20Trail%20Zion%20National%20Park"
+    )
+    assert attr.get("maps_url") == attr.get("url")
+    assert "alltrails.com" not in attr.get("url", "")
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("Zion National Park", {})
+    assert stats.get("maps_fallback_assigned", 0) == 1
 
 
 def test_retain_discovered_url_rejects_low_confidence_alltrails_for_trails():
@@ -10646,13 +10753,18 @@ def test_filtered_alltrails_does_not_pad_with_weak_matches_when_only_one_candida
     with patch.object(discoverer, "_search_alltrails_for_trail_filtered", side_effect=fake_filtered):
         with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None):
             with patch.object(discoverer, "_meets_alltrails_publish_confidence", return_value=True):
-                discoverer._discover_attractions(ai, "Zion National Park", "zion")
+                with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+                    discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
     first_url = ai["top_attractions"][0]["url"]
     second_url = ai["top_attractions"][1].get("url", "")
 
     assert first_url == "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"
-    assert second_url in (None, "")
+    # "Sand Bench Trail" must not get padded with a weak/unrelated AllTrails
+    # match -- but since the trail-like-branch no-link-fallback fix it does
+    # get the same safe maps-search fallback every other unresolved
+    # attraction gets, instead of no link at all.
+    assert second_url == "https://www.google.com/maps/search/?api=1&query=Sand%20Bench%20Trail%20Zion%20National%20Park"
 
 
 def test_load_interest_filters_applies_multi_site_base_owned_categories_default(tmp_path):
@@ -11969,7 +12081,14 @@ def test_deduplicate_tripwide_removes_attraction_matching_other_destination_en_r
     assert "Treasure Falls" in pagosa_attractions
 
 
-def test_trail_ai_candidate_rejected_when_filtered_constraints_fail_then_stays_empty_for_ambiguous_trail():
+def test_trail_ai_candidate_rejected_when_filtered_constraints_fail_then_gets_maps_fallback():
+    """Authoritative mode is the default (DEFAULT_DIRECT_BATCH_AUTHORITATIVE),
+    so once every AllTrails/relaxed-seed path is exhausted for "The Narrows"
+    this now gets the same safe maps-search fallback every other
+    unresolved attraction gets, instead of being left with no link at all
+    (the trail-like-branch no-link-fallback fix). The load-bearing
+    assertion remains that the rejected url_candidate itself is never used.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = True
     discoverer._alltrails_filtered_selection_cache = {}
@@ -11990,14 +12109,22 @@ def test_trail_ai_candidate_rejected_when_filtered_constraints_fail_then_stays_e
     with patch.object(discoverer, "_search_alltrails_for_trail_filtered", return_value=None):
         with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
             with patch.object(discoverer, "_search_alltrails_for_seed_relaxed", return_value=None):
-                discoverer._discover_attractions(ai, "Zion National Park", "zion")
+                with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+                    discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
     attr = ai["top_attractions"][0]
-    assert attr.get("url") in (None, "")
-    assert "maps_url" not in attr
+    assert attr.get("url") == "https://www.google.com/maps/search/?api=1&query=The%20Narrows%20Zion%20National%20Park"
+    assert attr.get("maps_url") == attr.get("url")
+    assert attr.get("url") != "https://www.alltrails.com/trail/us/utah/the-narrows"
 
 
-def test_angels_landing_seed_fails_filtered_constraints_stays_empty_in_authoritative_mode():
+def test_angels_landing_seed_fails_filtered_constraints_gets_maps_fallback_in_authoritative_mode():
+    """Since the trail-like-branch no-link-fallback fix, an authoritative-mode
+    seed trail that exhausts every AllTrails path (filtered, standard, and
+    relaxed-seed) gets the same safe maps-search fallback every other
+    unresolved attraction gets, rather than no link at all. The
+    fabrication-risk url_candidate itself must still never be used.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = True
     discoverer._alltrails_filtered_selection_cache = {}
@@ -12020,14 +12147,23 @@ def test_angels_landing_seed_fails_filtered_constraints_stays_empty_in_authorita
     with patch.object(discoverer, "_search_alltrails_for_trail_filtered", return_value=None):
         with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
             with patch.object(discoverer, "_search_alltrails_for_seed_relaxed", return_value=None):
-                discoverer._discover_attractions(ai, "Zion National Park", "zion")
+                with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+                    discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
     attr = ai["top_attractions"][0]
-    assert attr.get("url") in (None, "")
-    assert "maps_url" not in attr
+    assert attr.get("url") == "https://www.google.com/maps/search/?api=1&query=Angels%20Landing%20Zion%20National%20Park"
+    assert attr.get("maps_url") == attr.get("url")
+    assert attr.get("url") != "https://www.alltrails.com/trail/us/utah/angels-landing"
 
 
 def test_narrows_seed_fails_filtered_constraints_does_not_override_authoritative_direct_batch() -> None:
+    """The url_candidate fabrication guard must hold even for a non-seed
+    "The Narrows" item (no seed_names passed, so the relaxed-seed recovery
+    path is never attempted): authoritative direct-batch mode must not
+    resolve the AI-suggested url_candidate when AllTrails search finds no
+    match. Since the trail-like-branch no-link-fallback fix, it gets the
+    safe maps-search fallback instead of no link at all.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = True
     discoverer._alltrails_filtered_selection_cache = {}
@@ -12049,11 +12185,13 @@ def test_narrows_seed_fails_filtered_constraints_does_not_override_authoritative
 
     with patch.object(discoverer, "_search_alltrails_for_trail_filtered", return_value=None):
         with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
-            discoverer._discover_attractions(ai, "Zion National Park", "zion")
+            with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+                discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
     attr = ai["top_attractions"][0]
-    assert attr.get("url") in (None, "")
-    assert "maps_url" not in attr
+    assert attr.get("url") == "https://www.google.com/maps/search/?api=1&query=The%20Narrows%20Zion%20National%20Park"
+    assert attr.get("maps_url") == attr.get("url")
+    assert attr.get("url") != "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
 
 
 def test_seed_trail_uses_relaxed_alltrails_recovery_before_maps_fallback() -> None:
@@ -12099,7 +12237,13 @@ def test_human_history_museum_is_not_classified_as_trail_like_when_type_is_hike(
     ) is False
 
 
-def test_seeded_alltrails_candidate_with_404_marker_stays_empty_under_fail_closed_policy():
+def test_seeded_alltrails_candidate_with_404_marker_gets_maps_fallback_not_the_dead_link():
+    """The 404-marker fail-closed policy still rejects the dead url_candidate
+    (that's the load-bearing behavior this test protects). Since the
+    trail-like-branch no-link-fallback fix, the item then gets the same safe
+    maps-search fallback every other unresolved attraction gets, instead of
+    being left with no link and no maps fallback at all.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = False
 
@@ -12119,14 +12263,23 @@ def test_seeded_alltrails_candidate_with_404_marker_stays_empty_under_fail_close
     with patch.object(discoverer, "_fetch_page_text", return_value=(False, 404, "")):
         with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
             with patch.object(discoverer, "_search_alltrails_for_seed_relaxed", return_value=None):
-                discoverer._discover_attractions(ai, "Zion National Park", "zion")
+                with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+                    discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
     attraction = ai["top_attractions"][0]
-    assert attraction.get("url") in (None, "")
-    assert "maps_url" not in attraction
+    assert attraction.get("url") == "https://www.google.com/maps/search/?api=1&query=Angels%20Landing%20Zion%20National%20Park"
+    assert attraction.get("maps_url") == attraction.get("url")
+    assert attraction.get("url") != "https://www.alltrails.com/trail/us/utah/angels-landing"
 
 
-def test_seeded_alltrails_candidate_blocked_fetch_with_verify_404_stays_empty_under_fail_closed_policy():
+def test_seeded_alltrails_candidate_blocked_fetch_with_verify_404_gets_maps_fallback_not_the_dead_link():
+    """The blocked-fetch-plus-verify-404 fail-closed policy still rejects the
+    dead url_candidate (that's the load-bearing behavior this test
+    protects). Since the trail-like-branch no-link-fallback fix, the item
+    then gets the same safe maps-search fallback every other unresolved
+    attraction gets, instead of being left with no link and no maps
+    fallback at all.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._enable_filtered_alltrails_selection = False
     discoverer._alltrails_slug_denylist = frozenset()
@@ -12148,11 +12301,13 @@ def test_seeded_alltrails_candidate_blocked_fetch_with_verify_404_stays_empty_un
         with patch.object(discoverer, "_verify_url_cached", return_value=(False, 404)):
             with patch.object(discoverer, "_search_alltrails_for_trail", return_value=None):
                 with patch.object(discoverer, "_search_alltrails_for_seed_relaxed", return_value=None):
-                    discoverer._discover_attractions(ai, "Zion National Park", "zion")
+                    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+                        discoverer._discover_attractions(ai, "Zion National Park", "zion")
 
     attraction = ai["top_attractions"][0]
-    assert attraction.get("url") in (None, "")
-    assert "maps_url" not in attraction
+    assert attraction.get("url") == "https://www.google.com/maps/search/?api=1&query=Inspiration%20Point%20Zion%20National%20Park"
+    assert attraction.get("maps_url") == attraction.get("url")
+    assert attraction.get("url") != "https://www.alltrails.com/trail/us/utah/inspiration-point-trail"
 
 
 def test_non_strict_trail_ai_candidate_can_pass_when_filtered_metadata_missing():
