@@ -9052,6 +9052,97 @@ def test_alltrails_confidence_stays_medium_without_corroboration_opt_in() -> Non
     assert confidence == "medium"
 
 
+def test_alltrails_confidence_demoted_to_low_when_corroboration_finds_no_match() -> None:
+    """Regression for dipstick60: Capitol Reef "Water Tanks via Capitol Gorge"
+    resolved to https://www.alltrails.com/trail/us/utah/water-tanks-via-capitol-gorge-
+    and-tanks-trail -- a slug the direct-batch harvest LLM invented outright (it
+    never appeared in any real AllTrails search result) -- and it still reached
+    "medium" confidence and got published as a live link (it 404s) because
+    AllTrails' bot-blocking makes the 403'd primary liveness check unable to ever
+    affirmatively confirm *or* deny a candidate, and the old fail-open default left
+    unconfirmed slug-matched candidates at "medium" even when the independent
+    corroboration search (opt-in, on by default in config.yaml) came back empty.
+    With corroboration opt-in enabled but returning no match, confidence must now
+    fall through to "low" -- below the "medium" publish threshold -- instead of
+    silently staying at "medium".
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+    url = "https://www.alltrails.com/trail/us/utah/water-tanks-via-capitol-gorge-and-tanks-trail"
+
+    with patch.object(discoverer, "_alltrails_slug_matches_item", return_value=True):
+        with patch.object(discoverer, "_alltrails_slug_has_numbered_suffix", return_value=False):
+            with patch.object(discoverer, "_alltrails_slug_extra_term_count", return_value=0):
+                with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+                    with patch.object(discoverer, "_verify_url_cached", return_value=(False, 403)):
+                        with patch.object(discoverer, "_get_filtered_alltrails_selection", return_value=None):
+                            confidence = discoverer._alltrails_confidence_level(
+                                url, "Water Tanks via Capitol Gorge", "Capitol Reef National Park"
+                            )
+
+    assert confidence == "low"
+
+
+def test_alltrails_confidence_demoted_to_low_when_corroboration_raises() -> None:
+    """A corroboration-search failure (network/API error) must fail closed the
+    same way a clean no-match result does -- an exception is not evidence the
+    candidate is correct, so it must not leave confidence fail-open at
+    "medium"."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+    url = "https://www.alltrails.com/trail/us/utah/angels-landing-trail"
+
+    with patch.object(discoverer, "_alltrails_slug_matches_item", return_value=True):
+        with patch.object(discoverer, "_alltrails_slug_has_numbered_suffix", return_value=False):
+            with patch.object(discoverer, "_alltrails_slug_extra_term_count", return_value=0):
+                with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+                    with patch.object(discoverer, "_verify_url_cached", return_value=(False, 403)):
+                        with patch.object(
+                            discoverer,
+                            "_get_filtered_alltrails_selection",
+                            side_effect=RuntimeError("search backend unavailable"),
+                        ):
+                            confidence = discoverer._alltrails_confidence_level(
+                                url, "Angels Landing", "Zion National Park"
+                            )
+
+    assert confidence == "low"
+
+
+def test_alltrails_confidence_reaches_medium_via_broad_search_when_filtered_search_has_no_match() -> None:
+    """Tier-2 of the blocked-exact-slug-match gate: the narrow, metadata-
+    filtered corroboration search (_get_filtered_alltrails_selection)
+    requires a full rating/reviews/difficulty/mileage snippet and
+    family-hike-policy compliance, so it routinely returns no match even for
+    genuinely correct trails (e.g. ones outside the difficulty/mileage/
+    review-count policy, or with a snippet missing a metric). This must not
+    be treated the same as "no corroboration at all" -- when the broader,
+    unfiltered site:alltrails.com search (the same mechanism
+    _search_alltrails_for_trail() itself treats as authoritative discovery in
+    non-direct-batch mode) independently resolves to this exact URL, that is
+    still real corroboration and must reach "medium" (publish-eligible), not
+    fall all the way to "low". This is the counterpart to the
+    fabricated-slug regression above: proof the fix doesn't just flip the bug
+    to the opposite failure mode of losing genuinely correct AllTrails links
+    that AllTrails itself also routinely bot-blocks.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._enable_filtered_alltrails_selection = True
+    url = "https://www.alltrails.com/trail/us/utah/navajo-loop-trail"
+
+    with patch.object(discoverer, "_alltrails_slug_matches_item", return_value=True):
+        with patch.object(discoverer, "_alltrails_slug_has_numbered_suffix", return_value=False):
+            with patch.object(discoverer, "_alltrails_slug_extra_term_count", return_value=0):
+                with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+                    with patch.object(discoverer, "_get_filtered_alltrails_selection", return_value=None):
+                        with patch.object(discoverer, "_search_first", return_value=url):
+                            confidence = discoverer._alltrails_confidence_level(
+                                url, "Navajo Loop Trail", "Bryce Canyon National Park"
+                            )
+
+    assert confidence == "medium"
+
+
 def test_trail_like_attraction_omits_link_when_alltrails_confidence_below_threshold() -> None:
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._alltrails_min_confidence_for_publish = "high"

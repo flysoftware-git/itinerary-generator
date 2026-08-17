@@ -2807,9 +2807,114 @@ class URLDiscoverer:
         if blocked:
             # Blocked fetches are common; only strict slug matches qualify as medium.
             if slug_extra_terms == 0:
-                return self._boost_alltrails_confidence_via_corroboration("medium", url, item_name, dest_name)
+                return self._confidence_for_blocked_exact_slug_match(url, item_name, dest_name)
             return self._corroborate_alltrails_slug_with_extra_terms(url, item_name, dest_name)
 
+        return "low"
+
+    def _confidence_for_blocked_exact_slug_match(self, url: str, item_name: str, dest_name: str) -> str:
+        """AllTrails bot-blocks (401/403) essentially all automated verification
+        fetches, so for a slug that exactly matches the item name (no extra
+        qualifier terms -- see _corroborate_alltrails_slug_with_extra_terms for
+        that case) a blocked fetch alone can never distinguish "genuinely
+        correct link" from "direct-batch-harvest link whose slug the AI
+        invented" -- both look identical from here (403, slug text matches).
+
+        This used to grant "medium" (sufficient to publish under the default
+        alltrails_min_confidence_for_publish) purely from that slug match, with
+        corroboration only ever able to *upgrade* a default "medium" to "high"
+        on a successful search -- never able to *downgrade* an unverifiable
+        claim. That is precisely the gap that let a direct-batch-harvested,
+        bot-blocked, slug-matching AllTrails URL for "Water Tanks via Capitol
+        Gorge" (Capitol Reef) publish and 404: the "liveness check" meant to
+        catch a fabricated link was functionally disabled by AllTrails' own
+        bot-blocking, which hits genuinely correct links just as often as
+        fabricated ones.
+
+        Corroboration is now actually required, not just optionally consulted,
+        but calibrated in two tiers precisely so this doesn't just flip the bug
+        to the opposite failure mode (losing genuinely correct links, which
+        AllTrails also blocks routinely):
+
+          1. The narrow, metadata-filtered corroboration search
+             (_get_filtered_alltrails_selection) -- if an independent,
+             differently-queried search agrees on this exact canonical URL
+             *and* its full rating/reviews/difficulty/mileage metadata is
+             extractable and within the family-hike policy, that's the
+             strongest evidence available and promotes straight to "high"
+             (unchanged from the existing medium->high boost behavior for
+             candidates that already corroborate this way).
+          2. If that narrow search doesn't produce a match -- common, since it
+             requires every metadata field to be extractable from a search
+             snippet and the trail to fall within the difficulty/mileage/
+             review-count policy, so plenty of genuinely correct trails never
+             clear it -- fall back to the broader, unfiltered
+             site:alltrails.com search that _search_alltrails_for_trail()
+             itself already treats as authoritative discovery in
+             non-direct-batch mode. Landing on the same URL there is still
+             real, independent corroboration -- just not "best trail"
+             caliber -- so it earns "medium" (publish-eligible) rather than
+             "high".
+          3. Only when *neither* search corroborates the slug at all does this
+             fall to "low" -- an independently-queried search never turned up
+             so much as a hint of this exact page, which is the actual signal
+             a fabricated slug produces that a bot-block alone cannot supply.
+
+        Opt-in via the same _enable_filtered_alltrails_selection flag that
+        gates the other corroboration paths in this file (this costs one or
+        two extra search calls per borderline candidate); when disabled,
+        preserves the original fail-open "medium" default so deployments that
+        don't want the extra search cost keep the pre-existing behavior
+        unchanged.
+        """
+        if not bool(getattr(self, "_enable_filtered_alltrails_selection", DEFAULT_ENABLE_FILTERED_ALLTRAILS_SELECTION)):
+            return "medium"
+
+        try:
+            filtered_url = self._get_filtered_alltrails_selection(item_name=item_name, dest_name=dest_name)
+        except Exception:
+            filtered_url = None
+        if filtered_url and self._same_alltrails_trail(url, filtered_url):
+            self._log_decision(
+                kind="attraction",
+                dest_name=dest_name,
+                item_name=item_name,
+                reason="alltrails_confidence_boosted_by_corroboration",
+                message="alltrails confidence promoted medium->high: independent filtered search agreed",
+                url=url,
+            )
+            return "high"
+
+        try:
+            variants = _build_alltrails_query_variants(item_name, dest_name)
+            broad_url = self._search_first(
+                variants,
+                site_filter="alltrails.com",
+                item_name=item_name,
+                dest_name=dest_name,
+                max_attempts=min(len(variants), int(getattr(self, "_max_alltrails_query_attempts", 5) or 5)),
+            )
+        except Exception:
+            broad_url = None
+        if broad_url and self._same_alltrails_trail(url, broad_url):
+            self._log_decision(
+                kind="attraction",
+                dest_name=dest_name,
+                item_name=item_name,
+                reason="alltrails_confidence_corroborated_by_broad_search",
+                message="alltrails confidence granted medium: independent broad search agreed on same URL despite bot-block",
+                url=url,
+            )
+            return "medium"
+
+        self._log_decision(
+            kind="attraction",
+            dest_name=dest_name,
+            item_name=item_name,
+            reason="alltrails_confidence_denied_no_corroboration",
+            message="alltrails bot-blocked slug-only match could not be corroborated by any independent search; treating as unverified",
+            url=url,
+        )
         return "low"
 
     def _corroborate_alltrails_slug_with_extra_terms(self, url: str, item_name: str, dest_name: str) -> str:
@@ -2857,14 +2962,25 @@ class URLDiscoverer:
         get to "medium" confidence (page fetch was inconclusive or blocked), an
         independent secondary lookup pointing at the exact same trail page is
         strong evidence the candidate is genuinely correct -- promote it to
-        "high" rather than leaving it stuck at "medium" (or getting silently
-        capped out by a stricter publish threshold). This never *lowers*
-        confidence and never overrides an explicit "low" (dead/mismatched slugs
-        stay rejected regardless of what a second source says) -- it only
-        rescues a borderline candidate, per the "augment scoring for inclusion,
-        don't replace the primary link" principle. Opt-in via the same config
-        flag that already gates the (more expensive) filtered-selection search,
-        since this triggers one extra search call per borderline trail.
+        "high". This never *lowers* confidence below "medium" on its own
+        initiative, but once corroboration is actually attempted (opt-in via
+        the same config flag that gates the filtered-selection search) a
+        failure to confirm now falls through to "low" rather than being left
+        at the publish-eligible "medium" default.
+
+        Fixes a real gap found in dipstick60 (Capitol Reef "Water Tanks via
+        Capitol Gorge"): AllTrails' own bot-blocking means a 403'd liveness
+        check can *never* affirmatively confirm a candidate, so leaving
+        "medium" as a fail-open default let a slug that the direct-batch
+        harvest LLM had outright invented -- it never appeared in any real
+        AllTrails search result -- sail past the "medium" publish threshold on
+        slug-text matching alone, with no independent source ever having
+        looked at the URL. Requiring corroboration to affirmatively succeed
+        (mirroring the stricter standard `_corroborate_alltrails_slug_with_extra_terms`
+        already uses for extra-slug-term candidates, per the dipstick58 fix)
+        closes that gap without touching the "high" (page text/corroboration
+        confirmed) or "low" (confirmed dead/mismatched) cases, which were
+        already correct.
         """
         if base_confidence != "medium":
             return base_confidence
@@ -2873,7 +2989,7 @@ class URLDiscoverer:
         try:
             corroborated_url = self._get_filtered_alltrails_selection(item_name=item_name, dest_name=dest_name)
         except Exception:
-            return base_confidence
+            corroborated_url = None
         if corroborated_url and self._same_alltrails_trail(url, corroborated_url):
             self._log_decision(
                 kind="attraction",
@@ -2884,7 +3000,15 @@ class URLDiscoverer:
                 url=url,
             )
             return "high"
-        return base_confidence
+        self._log_decision(
+            kind="attraction",
+            dest_name=dest_name,
+            item_name=item_name,
+            reason="alltrails_confidence_corroboration_failed",
+            message="alltrails confidence demoted medium->low: independent search could not confirm a bot-blocked candidate",
+            url=url,
+        )
+        return "low"
 
     def _is_restaurant_ineligible(self, rest: dict[str, Any], dest_name: str) -> bool:
         """Return True when a restaurant entry should be excluded from recommendations.
