@@ -773,9 +773,8 @@ class HTMLAssembler:
                 html += (
                     '    <div class="stop-card">'
                     '<span class="stop-icon">🚗</span>'
-                    f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}'
+                    f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}{maps_corner_html}'
                     f'<div class="stop-desc">{description}</div></div>'
-                    f'{maps_corner_html}'
                     '</div>\n'
                 )
             html += '  </div>\n'
@@ -1420,9 +1419,8 @@ class HTMLAssembler:
                 html += (
                     f'    <div class="stop-card">'
                     f'<span class="stop-icon">{icon}</span>'
-                    f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}{rating_badge_html}{caution_html}'
+                    f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}{rating_badge_html}{caution_html}{maps_corner_html}'
                     f'<div class="stop-desc">{description}</div>{note_html}</div>'
-                    f'{maps_corner_html}'
                     f'</div>\n'
                 )
             html += '  </div>\n'
@@ -1695,11 +1693,11 @@ class HTMLAssembler:
                 f'{dur_html}'
                 f'{distance_html}'
                 f'{elevation_html}'
+                f'{maps_corner_html}'
                 f'</div>'
                 f'</div>'
                 f'<span class="attr-desc">{html_escape.escape(str(attr.get("description", "") or ""))}</span>'
                 f'{note_html}'
-                f'{maps_corner_html}'
                 f'</div>\n'
             )
 
@@ -2122,10 +2120,10 @@ class HTMLAssembler:
                 f'        {rating_badge}\n'
                 f'        {price_badge}\n'
                 f'        {reserve_badge}\n'
+                f'        {maps_corner_html}\n'
                 f'      </div>\n'
                 f'    </div>\n'
                 f'{desc_html}'
-                f'{maps_corner_html}'
                 f'  </div>\n'
             )
 
@@ -2276,8 +2274,9 @@ class HTMLAssembler:
         return "google.com/maps" in lower or "maps.google.com" in lower or "maps.app.goo.gl" in lower
 
     def _maps_corner_link_html(self, item: dict[str, Any], primary_url: str) -> str:
-        """Small map-icon link to `item["maps_url"]`, rendered in the card's
-        lower-right corner (see `.map-corner-link` in v2.5_template.html).
+        """Small map-icon badge linking to `item["maps_url"]`, rendered inline
+        alongside the card's other badges (see `.badge-map` in
+        v2.5_template.html).
 
         Project owner's ask: when an item carries BOTH a real primary source
         URL (e.g. an NPS/official page, chosen by `_select_preferred_external_link`
@@ -2286,20 +2285,23 @@ class HTMLAssembler:
         card. This surfaces it, but only when it's a genuinely distinct,
         useful destination: skipped when there's no maps_url, when the primary
         link IS already that maps_url (the `_select_preferred_external_link`
-        maps-fallback case), when the primary link is itself already some
-        other Google Maps URL, or when maps_url is only a generic text-query
-        search link (`_is_maps_search_url`) -- ambiguous and not guaranteed to
-        land on the right place, so `_select_preferred_external_link` already
-        keeps it out of the primary-link decision for these sections and this
-        icon respects the same call (see e.g.
-        test_build_restaurants_prefers_discovered_url_over_maps_query, which
-        asserts a maps/search fallback stays out of the HTML entirely once a
-        real URL is already showing).
+        maps-fallback case), or when the primary link is itself already some
+        other Google Maps URL.
+
+        A `maps_url` that's only a generic text-query search link
+        (`_is_maps_search_url`) is still shown here even though
+        `_select_preferred_external_link` keeps that same URL class out of
+        the *primary* link slot for these sections (see
+        test_build_restaurants_prefers_discovered_url_over_maps_query) --
+        that rule protects the primary attribution link from being an
+        ambiguous guess, but as a secondary "locate on a map" convenience a
+        name+destination search query is still useful, and excluding it here
+        too meant this affordance almost never rendered on real data (nearly
+        every maps_url this pipeline ever attaches *is* exactly this kind of
+        search-fallback URL).
         """
         maps_url = self._normalize_external_url(item.get("maps_url", ""))
         if not maps_url:
-            return ""
-        if self._is_maps_search_url(maps_url):
             return ""
         normalized_primary = self._normalize_external_url(primary_url)
         if not normalized_primary:
@@ -2309,7 +2311,7 @@ class HTMLAssembler:
         if self._looks_like_maps_url(normalized_primary):
             return ""
         return (
-            f'<a href="{self._safe_href(maps_url)}" class="map-corner-link" target="_blank" '
+            f' <a href="{self._safe_href(maps_url)}" class="badge badge-map" target="_blank" '
             f'rel="noopener" title="Open in Google Maps" aria-label="Open in Google Maps">🗺️</a>'
         )
 

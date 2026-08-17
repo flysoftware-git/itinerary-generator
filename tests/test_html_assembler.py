@@ -2382,6 +2382,10 @@ def test_destination_attractions_map_url_single_item_remains_focused_search() ->
 
 
 def test_build_restaurants_prefers_discovered_url_over_maps_query() -> None:
+    """The primary attribution link must stay the real discovered URL, not
+    the maps-search fallback -- but the fallback is still useful as a
+    secondary "locate on a map" badge, so it's expected to appear there
+    (see _maps_corner_link_html)."""
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {
         "dinner_recommendations": [
@@ -2398,7 +2402,9 @@ def test_build_restaurants_prefers_discovered_url_over_maps_query() -> None:
     html = assembler._build_restaurants(ai, dest_name="St. George, Utah")
 
     assert "tripadvisor.com" in html
-    assert "google.com/maps/search/?api=1&amp;query=Tandoor" not in html
+    assert '<a href="https://www.tripadvisor.com' in html
+    assert 'class="badge badge-map"' in html
+    assert "google.com/maps/search/?api=1&amp;query=Tandoor" in html
 
 
 def test_build_restaurants_omits_items_with_no_usable_url_even_when_maps_fallback_exists() -> None:
@@ -3352,7 +3358,7 @@ def test_build_attractions_renders_maps_corner_link_when_distinct_from_primary_u
     html = assembler._build_attractions(ai, drives=[], dest_name="Zion National Park")
 
     assert "nps.gov" in html
-    assert 'class="map-corner-link"' in html
+    assert 'class="badge badge-map"' in html
     assert "maps/place/The+Narrows" in html
 
 
@@ -3372,7 +3378,7 @@ def test_build_attractions_omits_maps_corner_link_when_no_maps_url() -> None:
     html = assembler._build_attractions(ai, drives=[], dest_name="Zion National Park")
 
     assert "nps.gov" in html
-    assert "map-corner-link" not in html
+    assert "badge-map" not in html
 
 
 def test_build_attractions_omits_maps_corner_link_when_redundant_with_primary_url() -> None:
@@ -3393,14 +3399,17 @@ def test_build_attractions_omits_maps_corner_link_when_redundant_with_primary_ur
 
     html = assembler._build_attractions(ai, drives=[], dest_name="Anywhere")
 
-    assert "map-corner-link" not in html
+    assert "badge-map" not in html
 
 
-def test_build_attractions_omits_maps_corner_link_for_ambiguous_maps_search_fallback() -> None:
-    """A generic text-query google.com/maps/search fallback is ambiguous --
-    not guaranteed to land on the right place -- so it's excluded from the
-    corner icon just like it's excluded from being a primary link
-    (see test_build_restaurants_prefers_discovered_url_over_maps_query)."""
+def test_build_attractions_renders_maps_corner_link_for_search_fallback_maps_url() -> None:
+    """A generic text-query google.com/maps/search fallback is ambiguous as a
+    *primary* attribution link (see
+    test_build_restaurants_prefers_discovered_url_over_maps_query -- the real
+    nps.gov page must still win that slot), but it's still shown here as a
+    secondary "locate on a map" convenience icon: excluding it entirely made
+    this feature almost never fire on real data, since nearly every maps_url
+    this pipeline attaches is exactly this kind of search-fallback URL."""
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {
         "top_attractions": [
@@ -3417,7 +3426,9 @@ def test_build_attractions_omits_maps_corner_link_for_ambiguous_maps_search_fall
     html = assembler._build_attractions(ai, drives=[], dest_name="Zion National Park")
 
     assert "nps.gov" in html
-    assert "map-corner-link" not in html
+    assert '<a href="https://www.nps.gov' in html
+    assert 'class="badge badge-map"' in html
+    assert "google.com/maps/search" in html
 
 
 def test_build_restaurants_renders_maps_corner_link_when_distinct_from_primary_url() -> None:
@@ -3437,7 +3448,7 @@ def test_build_restaurants_renders_maps_corner_link_when_distinct_from_primary_u
     html = assembler._build_restaurants(ai, dest_name="St. George, Utah")
 
     assert "paintedponyrestaurant.com" in html
-    assert 'class="map-corner-link"' in html
+    assert 'class="badge badge-map"' in html
     assert "maps/place/Painted+Pony" in html
 
 
@@ -3457,7 +3468,7 @@ def test_build_restaurants_omits_maps_corner_link_when_no_maps_url() -> None:
     html = assembler._build_restaurants(ai, dest_name="St. George, Utah")
 
     assert "paintedponyrestaurant.com" in html
-    assert "map-corner-link" not in html
+    assert "badge-map" not in html
 
 
 def test_build_getting_here_renders_maps_corner_link_when_distinct_from_primary_url() -> None:
@@ -3482,7 +3493,7 @@ def test_build_getting_here_renders_maps_corner_link_when_distinct_from_primary_
     html = assembler._build_getting_here(ai, dest, previous_name="Albuquerque")
 
     assert "example.com/el-rito-visitor-info" in html
-    assert 'class="map-corner-link"' in html
+    assert 'class="badge badge-map"' in html
     assert "maps/place/El+Rito" in html
 
 
@@ -3512,7 +3523,7 @@ def test_build_getting_here_omits_maps_corner_link_when_redundant_with_primary_u
     html = assembler._build_getting_here(ai, dest, previous_name="Albuquerque")
 
     assert "El Rito" in html
-    assert "map-corner-link" not in html
+    assert "badge-map" not in html
 
 
 def test_template_drive_popup_offers_distinct_route_map_icon() -> None:
