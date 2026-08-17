@@ -9094,6 +9094,117 @@ def test_retain_discovered_url_rejects_low_confidence_alltrails_for_trails():
     assert retained == ""
 
 
+def test_retain_discovered_url_preserves_seed_alltrails_trail_via_relaxed_standard():
+    """Regression test for the dipstick60 "Why didn't NPS resolve?" investigation
+    into Zion's "The Narrows".
+
+    A seed trail is attached via the relaxed seed-only AllTrails fallback
+    (_search_alltrails_for_seed_relaxed), which deliberately accepts long/
+    strenuous trails that fail the strict, non-seed-aware length/gain/
+    difficulty confidence gate (_meets_alltrails_publish_confidence). Before
+    this fix, the later audit_discovered_urls() safety pass called
+    _retain_discovered_url() again on every attraction without threading
+    is_seed through, so it silently re-rejected the exact URL it had just
+    accepted -- AllTrails was bot-blocked (403) and the slug carries an extra
+    qualifier ("top-down") that requires corroboration search (which was
+    unavailable/inconclusive here) to reach anything above "low" confidence.
+    is_seed must exempt the retain-time check the same way it already exempts
+    the trail-miles demotion check earlier in the same audit loop.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_min_confidence_for_publish = "medium"
+    discoverer._enable_filtered_alltrails_selection = True
+
+    url = "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")), \
+         patch.object(discoverer, "_verify_url_cached", return_value=(True, 200)), \
+         patch.object(discoverer, "_get_filtered_alltrails_selection", return_value=None):
+        retained = discoverer._retain_discovered_url(
+            url,
+            "The Narrows",
+            "Zion National Park",
+            allow_alltrails=True,
+            kind="attraction",
+            is_seed=True,
+        )
+
+    assert retained == url
+
+
+def test_retain_discovered_url_rejects_same_alltrails_url_when_not_seed():
+    """Contrast case for the seed-relaxed regression above: without is_seed,
+    the exact same bot-blocked, extra-slug-term AllTrails URL still hits the
+    strict confidence gate and is rejected -- the fix only exempts seeds, it
+    does not weaken the general AllTrails confidence policy."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_min_confidence_for_publish = "medium"
+    discoverer._enable_filtered_alltrails_selection = True
+
+    url = "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")), \
+         patch.object(discoverer, "_verify_url_cached", return_value=(True, 200)), \
+         patch.object(discoverer, "_get_filtered_alltrails_selection", return_value=None):
+        retained = discoverer._retain_discovered_url(
+            url,
+            "The Narrows",
+            "Zion National Park",
+            allow_alltrails=True,
+            kind="attraction",
+            is_seed=False,
+        )
+
+    assert retained == ""
+
+
+def test_audit_discovered_urls_preserves_seed_trail_attraction_link() -> None:
+    """End-to-end regression through audit_discovered_urls(): a destination's
+    seeds list marks "The Narrows" as a seed, so the final audit pass must
+    preserve its already-attached AllTrails URL via the relaxed seed standard
+    instead of discarding it through the strict confidence gate."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._alltrails_min_confidence_for_publish = "medium"
+    discoverer._enable_filtered_alltrails_selection = True
+    discoverer._max_trail_miles = 3.0
+
+    url = "https://www.alltrails.com/trail/us/utah/the-narrows-top-down"
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "seeds": ["The Narrows"],
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "The Narrows",
+                            "type": "hike",
+                            "description": "An iconic river hike through a slot canyon.",
+                            "url": url,
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None), \
+         patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")), \
+         patch.object(discoverer, "_verify_url_cached", return_value=(True, 200)), \
+         patch.object(discoverer, "_get_filtered_alltrails_selection", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 1
+    assert attractions[0].get("url") == url
+
+
 def test_fetch_page_text_caches_alltrails_fetches():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._url_validator = MagicMock()

@@ -2160,6 +2160,7 @@ class URLDiscoverer:
                     dest_name,
                     allow_alltrails=trail_like,
                     kind="attraction",
+                    is_seed=is_seed,
                 )
                 if cleaned != url:
                     self._log_rejected_url("attraction", dest_name, attr_name, url)
@@ -2365,6 +2366,7 @@ class URLDiscoverer:
         candidate: dict[str, Any] | None = None,
         allow_shallow_relevance: bool = False,
         allow_google_maps_search: bool = False,
+        is_seed: bool = False,
     ) -> str:
         if not url:
             return ""
@@ -2624,10 +2626,21 @@ class URLDiscoverer:
             logger.info("Scenic-drive URL rejected (non-route target) for '%s': %s", item_name, url)
             return ""
         if allow_alltrails and self._is_alltrails_trail_url(url):
-            if not self._meets_alltrails_publish_confidence(url, item_name, dest_name):
-                return ""
-            if not self._passes_alltrails_post_search_filters(url, item_name, dest_name):
-                return ""
+            if is_seed:
+                # Seeds were attached via the relaxed seed standard (see
+                # _search_alltrails_for_seed_relaxed / dipstick60 "The Narrows"
+                # investigation), which intentionally skips the length/gain/
+                # difficulty confidence gate below. Re-validating a seed's
+                # already-attached AllTrails link against that stricter,
+                # non-seed-aware gate here would silently undo the seed
+                # exemption and discard a correct, explicitly-requested link.
+                if not self._alltrails_url_meets_seed_relaxed_standard(url, item_name):
+                    return ""
+            else:
+                if not self._meets_alltrails_publish_confidence(url, item_name, dest_name):
+                    return ""
+                if not self._passes_alltrails_post_search_filters(url, item_name, dest_name):
+                    return ""
         if not is_safe_fallback:
             # Keep the direct-batch fail-closed rule narrow: only reject a curated
             # row when the URL is explicitly dead (404/410). Generic landing pages
@@ -6433,21 +6446,42 @@ class URLDiscoverer:
             max_attempts=min(len(deduped_variants), int(getattr(self, "_max_alltrails_query_attempts", 5) or 5)),
         )
         selected = self._prefer_canonical_alltrails_url(resolved, item_name)
-        if not selected or not self._is_alltrails_trail_url(selected):
+        if not selected or not self._alltrails_url_meets_seed_relaxed_standard(selected, item_name):
             return None
-
-        verified_ok, verified_status = self._verify_url_cached(selected)
-        if not verified_ok and self._is_definitively_dead_status(verified_status):
-            return None
-
-        ok, _status, text = self._fetch_page_text(selected, timeout=8)
-        if ok and text and self._has_alltrails_closure_marker(text):
-            return None
-
-        if not self._alltrails_slug_matches_item(selected, item_name):
-            return None
-
         return selected
+
+    def _alltrails_url_meets_seed_relaxed_standard(self, url: str | None, item_name: str) -> bool:
+        """Seed-appropriate AllTrails acceptance standard: liveness, no closure
+        marker, and slug/entity match -- deliberately *not* the length/gain/
+        difficulty confidence gate (_meets_alltrails_publish_confidence /
+        _passes_alltrails_post_search_filters), which is tuned for the
+        family-short-hike policy (max_trail_miles) and has no seed exemption.
+
+        A seed is an item the trip owner explicitly asked to include, so the
+        same length/difficulty rules that legitimately demote a *non-seed*
+        AllTrails candidate (e.g. "The Narrows" in Zion, a long/strenuous
+        through-hike) must not silently re-reject a seed that already passed
+        this exact relaxed standard once (in _search_alltrails_for_seed_relaxed,
+        at attach time). Reusing the same standard here -- in the later
+        audit_discovered_urls() safety pass via _retain_discovered_url -- keeps
+        attach-time and retain-time decisions consistent instead of accepting
+        a seed's AllTrails link and then discarding it moments later.
+        """
+        if not url or not self._is_alltrails_trail_url(url):
+            return False
+
+        verified_ok, verified_status = self._verify_url_cached(url)
+        if not verified_ok and self._is_definitively_dead_status(verified_status):
+            return False
+
+        ok, _status, text = self._fetch_page_text(url, timeout=8)
+        if ok and text and self._has_alltrails_closure_marker(text):
+            return False
+
+        if not self._alltrails_slug_matches_item(url, item_name):
+            return False
+
+        return True
 
     def _passes_alltrails_post_search_filters(self, url: str | None, item_name: str, dest_name: str) -> bool:
         if not url or not self._is_alltrails_trail_url(url):
