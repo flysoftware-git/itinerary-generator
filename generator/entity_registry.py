@@ -303,6 +303,17 @@ _SCHEDULE_FALLBACK_BY_PERIOD = {
     "evening": "Wrap with an eligible low-friction stop and dinner near your base.",
 }
 _SCHEDULE_FALLBACK_GENERIC = "Use currently eligible activities for this block and avoid filtered-out stops."
+# When a scrubbed period can be re-anchored to a real, still-accepted
+# attraction from this destination's own top_attractions list, prefer that
+# over the generic "eligible highlights" filler above -- same voice, but
+# names an actual place instead of describing the selection process. Only
+# falls back to the fully generic text when no untouched attraction is left
+# to substitute (see reconcile_schedule_from_registry).
+_CONCRETE_SUBSTITUTE_BY_PERIOD = {
+    "morning": "Start with {name} and keep parking buffers before midday crowds.",
+    "afternoon": "Spend the afternoon at {name}, keeping realistic transition time between stops.",
+    "evening": "Wrap the day with {name} before dinner near your base.",
+}
 # An entity can stay "accepted" in the registry while carrying one of these
 # reason codes -- e.g. a trail demoted to a plain attraction for exceeding
 # the configured mileage threshold is still present, just no longer the
@@ -362,6 +373,35 @@ def reconcile_schedule_from_registry(reconciled_trip: dict[str, Any], registry: 
             continue
         ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content", {}), dict) else {}
         schedule = ai.get("possible_daily_schedule", []) if isinstance(ai.get("possible_daily_schedule", []), list) else []
+        blocked_lower = {name.lower() for name in blocked_names}
+
+        # Candidate stand-ins: attractions that survived registry
+        # reconciliation for this destination (present in the already-
+        # filtered top_attractions list) and aren't themselves blocked --
+        # e.g. a soft-demoted trail stays "accepted" but is still excluded
+        # here via blocked_lower. Seeded against any names the schedule
+        # already mentions elsewhere so a substitution doesn't duplicate an
+        # attraction that legitimately appears in another period/day.
+        top_attractions = ai.get("top_attractions", []) if isinstance(ai.get("top_attractions", []), list) else []
+        candidate_names = [
+            name
+            for name in (
+                str(attr.get("name", "") or "").strip() for attr in top_attractions if isinstance(attr, dict)
+            )
+            if name and name.lower() not in blocked_lower
+        ]
+        used_candidate_names: set[str] = set()
+        for day in schedule:
+            if not isinstance(day, dict):
+                continue
+            for period in day.get("periods", []) or []:
+                if not isinstance(period, dict):
+                    continue
+                existing_summary = str(period.get("summary", "") or "")
+                for name in candidate_names:
+                    if _schedule_summary_mentions_entity(existing_summary, name):
+                        used_candidate_names.add(name.lower())
+
         for day in schedule:
             if not isinstance(day, dict):
                 continue
@@ -375,4 +415,12 @@ def reconcile_schedule_from_registry(reconciled_trip: dict[str, Any], registry: 
                 if not any(_schedule_summary_mentions_entity(summary, name) for name in blocked_names):
                     continue
                 label = str(period.get("period", "") or "").strip().lower()
-                period["summary"] = _SCHEDULE_FALLBACK_BY_PERIOD.get(label, _SCHEDULE_FALLBACK_GENERIC)
+                substitute = next(
+                    (name for name in candidate_names if name.lower() not in used_candidate_names),
+                    "",
+                )
+                if substitute and label in _CONCRETE_SUBSTITUTE_BY_PERIOD:
+                    period["summary"] = _CONCRETE_SUBSTITUTE_BY_PERIOD[label].format(name=substitute)
+                    used_candidate_names.add(substitute.lower())
+                else:
+                    period["summary"] = _SCHEDULE_FALLBACK_BY_PERIOD.get(label, _SCHEDULE_FALLBACK_GENERIC)
