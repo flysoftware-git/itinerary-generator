@@ -238,7 +238,7 @@ def test_inject_travel_realism_packs_multiple_afternoon_activities_with_default_
     # directly into that 5-hour allotment, leaving 3 hours: The Narrows (2h)
     # + Canyon Overlook Trail (1h) fit exactly; Emerald Pools Trail (1.5h)
     # does not.
-    assert "fit multiple activities" in afternoon
+    assert "consider one or more of the following" in afternoon
     assert "The Narrows" in afternoon
     assert "Canyon Overlook Trail" in afternoon
     assert "Emerald Pools Trail" not in afternoon
@@ -335,8 +335,8 @@ def test_inject_travel_realism_extends_packing_to_day2_plus_with_rotated_attract
 
     day2_afternoon = out[1]["periods"][1]["summary"]
     day3_afternoon = out[2]["periods"][1]["summary"]
-    assert "fit multiple activities" in day2_afternoon.lower()
-    assert "fit multiple activities" in day3_afternoon.lower()
+    assert "consider one or more of the following" in day2_afternoon.lower()
+    assert "consider one or more of the following" in day3_afternoon.lower()
     # Rotated starting point means Day 2 and Day 3 don't pack the identical set.
     assert day2_afternoon != day3_afternoon
 

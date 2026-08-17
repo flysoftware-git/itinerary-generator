@@ -793,7 +793,7 @@ def test_inject_travel_realism_day2_plus_scrub_uses_activity_aware_variation() -
     # than the older cosmetic "allocate this block to X" rotation -- both
     # attractions have no explicit duration (falls back to 90min each) and
     # fit the default 5-hour budget, so packing supersedes the plain rotation.
-    assert "fit multiple activities" in day2[1]["summary"].lower()
+    assert "consider one or more of the following" in day2[1]["summary"].lower()
     assert any(name in day2[1]["summary"].lower() for name in ("navajo loop trail", "sunset point"))
     # Last-day evening for a transfer destination is reserved for onward-drive prep.
     assert "onward drive to capitol reef national park" in day2[2]["summary"].lower()

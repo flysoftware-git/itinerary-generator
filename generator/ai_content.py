@@ -1661,12 +1661,12 @@ class AIContentGenerator:
             parts = [f"{name} ({_format_duration_compact(minutes)})" for name, minutes in picked]
             if arrival_day:
                 return (
-                    f"After arrival, fit multiple activities within about {_format_duration_compact(total_minutes)}: "
+                    f"After arrival, consider one or more of the following, within about {_format_duration_compact(total_minutes)}: "
                     + ", ".join(parts)
                     + ". Keep the afternoon realistic after travel."
                 )
             return (
-                f"Fit multiple activities within about {_format_duration_compact(total_minutes)}: "
+                f"Consider one or more of the following, within about {_format_duration_compact(total_minutes)}: "
                 + ", ".join(parts)
                 + ". Keep transfer/parking buffers between stops."
             )
@@ -2001,7 +2001,7 @@ class AIContentGenerator:
                             recent_focuses.append(focus.lower())
 
                     elif label == "Afternoon":
-                        if "fit multiple activities" in low_summary:
+                        if "consider one or more of the following" in low_summary:
                             _record_focus_mentions(summary, recent_focuses)
                             continue
                         focus = _pick_non_repeating_focus(day_index, offset=1, recent_focuses=recent_focuses[-2:])
