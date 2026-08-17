@@ -140,3 +140,86 @@ def test_drop_events_before_arrival_keeps_event_on_arrival_day() -> None:
     filtered = d._drop_events_before_arrival(result, "October 17, 2026")
 
     assert len(filtered["events"]) == 1
+
+
+def test_verify_event_urls_strips_generic_landing_page() -> None:
+    """Real dipstick60 Moab bug: "Field of Screams Softball Tournament" and
+    "Canyonlands Ultra" rendered with no verified link. Cultural events'
+    URL check only confirmed the URL was *reachable* (HTTP status), so a
+    generic /things-to-do listing page -- live, but not actually the event's
+    own page -- would have sailed through unflagged. Verify the generic-URL
+    check (reused from url_discovery.URLDiscoverer, the same detector
+    attractions/restaurants rely on) now strips those before they render."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {
+                "name": "Field of Screams Softball Tournament",
+                "venue": "Moab",
+                "dates_in_range": "October 23-24, 2026",
+                "url": "https://www.moab.org/things-to-do",
+            },
+            {
+                "name": "Canyonlands Ultra",
+                "venue": "Moab",
+                "dates_in_range": "October 24, 2026",
+                "url": "https://www.moabultra.com/404errorpage",
+            },
+        ],
+    }
+
+    verified = d._verify_event_urls(result)
+
+    assert all("url" not in e for e in verified["events"])
+
+
+def test_verify_event_urls_keeps_live_specific_url() -> None:
+    """A specific, reachable event page must survive verification unstripped."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {
+                "name": "Canyonlands Ultra",
+                "venue": "Moab",
+                "dates_in_range": "October 24, 2026",
+                "url": "https://www.moabultra.com/canyonlands-ultra-race-info",
+            },
+        ],
+    }
+
+    with patch("generator.url_validator.URLValidator.verify_url", return_value=(True, 200)):
+        verified = d._verify_event_urls(result)
+
+    assert verified["events"][0]["url"] == "https://www.moabultra.com/canyonlands-ultra-race-info"
+
+
+def test_verify_event_urls_strips_dead_link() -> None:
+    """A URL that isn't generic-looking but fails the live reachability check
+    (dead link / real 404) must still be stripped -- the pre-existing behavior
+    this refactor must not regress."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {
+                "name": "Canyon Ultra",
+                "venue": "Moab",
+                "dates_in_range": "October 24, 2026",
+                "url": "https://www.moabultra.com/canyonlands-ultra-race-info",
+            },
+        ],
+    }
+
+    with patch("generator.url_validator.URLValidator.verify_url", return_value=(False, 404)):
+        verified = d._verify_event_urls(result)
+
+    assert "url" not in verified["events"][0]
+
+
+def test_verify_event_urls_noop_when_no_events() -> None:
+    d = _discoverer()
+    result = {"has_events": False, "honest_assessment": "No events found."}
+
+    assert d._verify_event_urls(result) == result

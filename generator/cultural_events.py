@@ -103,14 +103,7 @@ class CulturalEventsDiscoverer:
                 return {"has_events": False, "honest_assessment": "Unable to parse events."}
             
             # Verify any event URLs that came back
-            if result.get("has_events") and result.get("events"):
-                from generator.url_validator import URLValidator
-                uv = URLValidator()
-                for event in result["events"]:
-                    if event.get("url"):
-                        ok, _ = uv.verify_url(event["url"])
-                        if not ok:
-                            event.pop("url", None)
+            result = self._verify_event_urls(result)
 
             result = self._drop_events_before_arrival(result, dest.get("dates", ""))
             result = self._sanitize_local_tip_by_itinerary_days(result, dest.get("dates", ""))
@@ -118,6 +111,38 @@ class CulturalEventsDiscoverer:
         except Exception as e:
             logger.error("Exception in _discover_for_dest for '%s': %s", dest["name"], e, exc_info=True)
             return {"has_events": False, "honest_assessment": "Event discovery encountered an error."}
+
+    def _verify_event_urls(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Strip event URLs that are dead OR merely a generic/fallback page.
+
+        Previously this only checked HTTP reachability (URLValidator.verify_url),
+        which passes plenty of URLs that are "live" but useless -- e.g. a
+        destination's generic /things-to-do listing page or a stale /404
+        redirect target presented as if it were the event's own page. Real
+        dipstick60 example: Moab's "Field of Screams Softball Tournament" and
+        "Canyonlands Ultra" cultural events. Reuses URLDiscoverer's generic-URL
+        detector (the same one attractions/restaurants rely on) instead of
+        duplicating that pattern list here.
+        """
+        if not isinstance(result, dict) or not result.get("has_events") or not result.get("events"):
+            return result
+
+        from generator.url_discovery import URLDiscoverer
+        from generator.url_validator import URLValidator
+
+        uv = URLValidator()
+        for event in result["events"]:
+            url = event.get("url")
+            if not url:
+                continue
+            if URLDiscoverer._is_obviously_generic_url(str(url).lower()):
+                event.pop("url", None)
+                continue
+            ok, _ = uv.verify_url(url)
+            if not ok:
+                event.pop("url", None)
+
+        return result
 
     def _grok_search(self, destination: str, dates: str) -> list[dict[str, Any]]:
         month = dates.split()[0] if dates else "October"
