@@ -536,14 +536,45 @@ v2.1 activity-budget behavior:
 	generic AI text or the older same-name-swap rotation). Day index rotates
 	which attractions are considered first so consecutive days don't
 	greedily pick the identical set.
+- **Cross-day dedup guard** (fixed -- real dipstick62 Moab output showed the
+	rotation above wasn't sufficient on its own: "Moab Giants Dinosaur Park"
+	still got packed into more than one day's block, since start-offset
+	rotation only changes which attraction is considered *first*, not
+	whether an already-used one is excluded outright). A single
+	`used_multi_activity_names` set is now threaded through every packing
+	call for one destination's `_inject_travel_realism` invocation (the
+	arrival-day call and every Day 2+ call): once an attraction is packed
+	into any day's block, it's removed from consideration for every later
+	day of that same multi-day stay. If too few not-yet-used attractions
+	remain to build a real block (fewer than two), that day's Afternoon is
+	left as-is rather than forcing a repeat.
+- **One major destination per block guard** (fixed -- same dipstick62 report:
+	"Moab Giants Dinosaur Park (1h 30m), Canyonlands National Park (1h 30m),
+	Arches National Park (1h 30m)" packed into a single time block, ignoring
+	that Canyonlands and Arches are each a separate multi-mile drive from
+	town and from each other). No real inter-attraction distance matrix
+	exists in this codebase (see below), so this is a name-pattern heuristic,
+	not a distance check: an attraction name matching `National Park`,
+	`National Monument`, `National Recreation Area`, `National Forest`, or
+	`State Park` is treated as a distinct, genuinely off-site destination.
+	At most one such name is ever packed into the same block, regardless of
+	whether the raw time budget would technically fit more than one --
+	cheap to check, and directionally correct for the common "in-town spot
+	plus two separate parks" shape this bug report described. It does not
+	distinguish, e.g., two attractions inside the *same* park (that's still
+	budget-only, correctly so) or catch a non-"National/State ___"-named
+	destination that's actually just as far away.
 - Deliberately not extended: Morning and Evening periods (Morning is usually
 	already spoken for by transit/logistics text; Evening is anchored to a
 	single dinner slot via a separate rotation mechanism, not a multi-activity
 	block), and the trip's first destination's arrival day (no comparable
 	drive-duration signal exists for travel from trip origin). True
 	inter-activity travel-time modeling (distance *between* attractions, not
-	just total daily budget) would need geocoded attraction positions --
-	a separate, larger effort, not covered here.
+	just total daily budget, and not just the name-pattern proxy above) would
+	need geocoded attraction positions and a real distance matrix between
+	them -- a separate, larger effort, not covered here. The "one major
+	destination per block" guard above is a deliberately narrow, cheap
+	partial mitigation, not a substitute for that.
 
 ## Reserved Travel Windows
 The scheduler now reserves specific windows for transportation at trip boundaries.

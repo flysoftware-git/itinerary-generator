@@ -316,11 +316,19 @@ def test_inject_travel_realism_extends_packing_to_day2_plus_with_rotated_attract
             ],
         },
     ]
+    # Six distinct attractions -- enough for Day 2 and Day 3 to each get a
+    # full (non-overlapping) 3-item pack, now that packing enforces a
+    # cross-day dedup guard (an attraction used on an earlier day is
+    # excluded from later days' picks entirely, not just deprioritized by
+    # rotation -- see the real "Moab Giants Dinosaur Park repeated across
+    # days" bug this guard fixes).
     attractions = [
         {"name": "The Narrows", "duration": "1 hour"},
         {"name": "Emerald Pools Trail", "duration": "1 hour"},
         {"name": "Canyon Overlook Trail", "duration": "1 hour"},
         {"name": "Weeping Rock", "duration": "1 hour"},
+        {"name": "Riverside Walk", "duration": "1 hour"},
+        {"name": "Kayenta Trail", "duration": "1 hour"},
     ]
 
     out = gen._inject_travel_realism(
@@ -339,6 +347,11 @@ def test_inject_travel_realism_extends_packing_to_day2_plus_with_rotated_attract
     assert "consider one or more of the following" in day3_afternoon.lower()
     # Rotated starting point means Day 2 and Day 3 don't pack the identical set.
     assert day2_afternoon != day3_afternoon
+    # Cross-day dedup guard: no attraction named in Day 2's pack may also
+    # appear in Day 3's pack for the same multi-day stay.
+    day2_names = {a["name"] for a in attractions if a["name"].lower() in day2_afternoon.lower()}
+    day3_names = {a["name"] for a in attractions if a["name"].lower() in day3_afternoon.lower()}
+    assert not (day2_names & day3_names)
 
 
 def test_inject_travel_realism_day2_plus_packing_declines_with_insufficient_attractions():

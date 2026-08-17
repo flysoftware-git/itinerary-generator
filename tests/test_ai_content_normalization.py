@@ -781,6 +781,14 @@ def test_inject_travel_realism_day2_plus_scrub_uses_activity_aware_variation() -
         attractions=[
             {"name": "Navajo Loop Trail"},
             {"name": "Sunset Point"},
+            # Two extra attractions so Day 2's Afternoon pack has fresh,
+            # not-yet-used material: Day 1's arrival-day pack already
+            # consumes Navajo Loop Trail + Sunset Point (both fit the
+            # drive-discounted budget), and the cross-day dedup guard now
+            # excludes those from Day 2's own pack rather than allowing a
+            # repeat.
+            {"name": "Mossy Cave Trail"},
+            {"name": "Bryce Point"},
         ],
     )
 
@@ -788,16 +796,131 @@ def test_inject_travel_realism_day2_plus_scrub_uses_activity_aware_variation() -
     day2_text = " ".join(str(period.get("summary", "") or "") for period in day2).lower()
 
     assert "start with" in day2[0]["summary"].lower()
-    assert any(name in day2[0]["summary"].lower() for name in ("navajo loop trail", "sunset point"))
+    assert any(
+        name in day2[0]["summary"].lower()
+        for name in ("navajo loop trail", "sunset point", "mossy cave trail", "bryce point")
+    )
     # Day 2+ Afternoon now gets capacity-aware multi-activity packing rather
     # than the older cosmetic "allocate this block to X" rotation -- both
     # attractions have no explicit duration (falls back to 90min each) and
     # fit the default 5-hour budget, so packing supersedes the plain rotation.
     assert "consider one or more of the following" in day2[1]["summary"].lower()
-    assert any(name in day2[1]["summary"].lower() for name in ("navajo loop trail", "sunset point"))
+    # Cross-day dedup guard: Day 2's pack must draw from attractions NOT
+    # already used by Day 1's arrival-day pack (Navajo Loop Trail, Sunset
+    # Point), not repeat them.
+    assert any(name in day2[1]["summary"].lower() for name in ("mossy cave trail", "bryce point"))
+    assert "navajo loop trail" not in day2[1]["summary"].lower()
+    assert "sunset point" not in day2[1]["summary"].lower()
     # Last-day evening for a transfer destination is reserved for onward-drive prep.
     assert "onward drive to capitol reef national park" in day2[2]["summary"].lower()
     assert "start with a different priority trailhead or district than day 1" not in day2_text
+
+
+def test_inject_travel_realism_moab_schedule_avoids_repeats_and_multi_park_blocks() -> None:
+    """Regression grounded in the real dipstick62 Moab output (project
+    owner's exact words): 'Schedule for Moab should avoid repeats (Moab
+    Giants Dinosaur Park repeated multiple times), and should focus on one
+    of two subareas, not go back and forth.' Concrete example given: dance
+    cards like 'Moab Giants Dinosaur Park (1h 30m), Canyonlands National
+    Park (1h 30m), Arches National Park (1h 30m)' packed into one time
+    block, not tuned to minimal driving time.
+
+    No real inter-attraction distance matrix exists in this codebase (see
+    docs/design/schedule-normalization.md's v2.1 activity-budget section),
+    so this doesn't verify true geographic realism -- it verifies the two
+    narrow, cheap-to-check guards that ARE fixable without that data:
+    (1) an attraction packed into one day's block is never re-packed into
+    a later day's block for the same multi-day stay, and (2) no single
+    time block ever combines more than one named National/State
+    Park/Monument/Forest/Recreation Area -- the strong, cheap signal that
+    two items are genuinely separate, multi-mile drives in different
+    directions, not co-located in-town stops.
+    """
+    g = _gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Free morning."},
+                {"period": "Afternoon", "summary": "Old afternoon text."},
+                {"period": "Evening", "summary": "Dinner in Moab."},
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Free morning."},
+                {"period": "Afternoon", "summary": "Old afternoon text."},
+                {"period": "Evening", "summary": "Dinner in Moab."},
+            ],
+        },
+        {
+            "day_label": "Day 3",
+            "periods": [
+                {"period": "Morning", "summary": "Free morning."},
+                {"period": "Afternoon", "summary": "Old afternoon text."},
+                {"period": "Evening", "summary": "Dinner in Moab."},
+            ],
+        },
+    ]
+    # Real Moab-area top_attractions shape: one in-town attraction and two
+    # genuinely separate national parks, each ~1.5 hours if you count the
+    # round-trip drive plus time on-site -- exactly the dipstick62 example.
+    attractions = [
+        {"name": "Moab Giants Dinosaur Park", "duration": "1 hour 30 min"},
+        {"name": "Canyonlands National Park", "duration": "1 hour 30 min"},
+        {"name": "Arches National Park", "duration": "1 hour 30 min"},
+        {"name": "Moab Museum", "duration": "1 hour"},
+        {"name": "Moab Skydive", "duration": "1 hour"},
+    ]
+
+    out = g._inject_travel_realism(
+        days,
+        getting_here={},  # no drive -- isolates Day 2+ capacity-aware packing
+        previous_destination="Capitol Reef National Park",
+        # Not the trip's last destination -- otherwise the last-day
+        # return-travel reservation overwrites Day 3's Afternoon/Evening
+        # after packing runs, which isn't what this test is isolating.
+        next_destination="Telluride",
+        attractions=attractions,
+        default_daily_activity_hours=5,
+    )
+
+    major_park_names = ("canyonlands national park", "arches national park")
+
+    day2_afternoon = out[1]["periods"][1]["summary"].lower()
+    day3_afternoon = out[2]["periods"][1]["summary"].lower()
+
+    # Both days actually got a capacity-aware pack (sanity check the fixture
+    # produces the scenario under test at all).
+    assert "consider one or more of the following" in day2_afternoon
+    assert "consider one or more of the following" in day3_afternoon
+
+    # Guard 1 (dedup): no attraction packed on Day 2 is repeated on Day 3.
+    for attr in attractions:
+        name = attr["name"].lower()
+        assert not (name in day2_afternoon and name in day3_afternoon), (
+            f"'{attr['name']}' was packed into both Day 2 and Day 3 -- "
+            "cross-day dedup guard failed to exclude an already-used attraction."
+        )
+
+    # Guard 2 (one major destination per block): neither day's block names
+    # both Canyonlands AND Arches together -- two separate national parks in
+    # different directions must never share a single time block.
+    for day_afternoon in (day2_afternoon, day3_afternoon):
+        major_count = sum(1 for name in major_park_names if name in day_afternoon)
+        assert major_count <= 1, (
+            f"Block names {major_count} major/off-site parks together: {day_afternoon!r}"
+        )
+
+    # The exact reported bad pattern (all three landmarks in one block) must
+    # never occur, in either day.
+    for day_afternoon in (day2_afternoon, day3_afternoon):
+        assert not (
+            "moab giants dinosaur park" in day_afternoon
+            and "canyonlands national park" in day_afternoon
+            and "arches national park" in day_afternoon
+        )
 
 
 def test_inject_travel_realism_rotates_focus_to_reduce_adjacent_duplicates() -> None:
