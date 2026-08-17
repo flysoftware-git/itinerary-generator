@@ -4421,7 +4421,8 @@ class URLDiscoverer:
                 "Each <li> must begin with the restaurant name and include up to two links: "
                 "<a href=...>Source</a> for the restaurant's own website or TripAdvisor page, "
                 "and <a href=\"https://www.google.com/maps/search/?api=1&query=Restaurant+Name+Address+City+State\">Maps</a> as an address-qualified Google Maps search link. "
-                "Include the restaurant's rating as a clear numeric value like '4.7/5' or '4.7 stars' and include a price indicator like '$$', '$$$', or 'moderate' when available. "
+                "Include the restaurant's rating as a clear numeric value like '4.7/5' or '4.7 stars' and include a price indicator like '$$', '$$$', or 'moderate' when available, "
+                "then a short descriptive note (8-15 words) about the food, atmosphere, or signature dishes -- real prose, not just a repeat of the cuisine or price, when available. "
                 "Keep only highly rated items (>4.3), include cuisine variety, "
                 "and keep only likely-open, high-confidence options. "
                 "Avoid generic destination listing pages."
@@ -4430,7 +4431,8 @@ class URLDiscoverer:
             user_prompt = (
                 f"Generate a list of local restaurants near {location_clause}{date_clause} "
                 "with clickable links to source material and corresponding Google Maps content. "
-                "Include a rating and price indicator for each item when available, using a clear numeric or price format. "
+                "Include a rating and price indicator for each item when available, using a clear numeric or price format, "
+                "and a short descriptive note about the food, atmosphere, or signature dishes for each item when available. "
                 "Keep only highly rated items (>4.3), include cuisine variety, "
                 "and keep only places likely open on the indicated dates. "
                 "Include only suggestions with reliable clickable links."
@@ -4582,7 +4584,8 @@ class URLDiscoverer:
                 "Each <li> must begin with the restaurant name and include up to two links: "
                 "<a href=...>Source</a> for the restaurant's own website or TripAdvisor page, "
                 "and <a href=\"https://www.google.com/maps/search/?api=1&query=Restaurant+Name+Address+City+State\">Maps</a> as an address-qualified Google Maps search link. "
-                "Include the restaurant's rating as a clear numeric value like '4.7/5' or '4.7 stars' and include a price indicator like '$$', '$$$', or 'moderate' when available. "
+                "Include the restaurant's rating as a clear numeric value like '4.7/5' or '4.7 stars' and include a price indicator like '$$', '$$$', or 'moderate' when available, "
+                "then a short descriptive note (8-15 words) about the food, atmosphere, or signature dishes -- real prose, not just a repeat of the cuisine or price, when available. "
                 "Keep only highly rated items (>4.3), include cuisine variety, "
                 "and keep only likely-open, high-confidence options. "
                 "Avoid generic destination listing pages."
@@ -4591,7 +4594,8 @@ class URLDiscoverer:
                 "Generate local restaurants near these destinations:\n"
                 + "\n".join(dest_lines)
                 + "\nInclude clickable links to source material and corresponding Google Maps content. "
-                "Include a rating and price indicator for each item when available, using a clear numeric or price format. "
+                "Include a rating and price indicator for each item when available, using a clear numeric or price format, "
+                "and a short descriptive note about the food, atmosphere, or signature dishes for each item when available. "
                 "Keep only highly rated items (>4.3), include cuisine variety, "
                 "and keep only places likely open on the indicated dates. "
                 "Include only suggestions with reliable clickable links."
@@ -5147,8 +5151,25 @@ class URLDiscoverer:
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:|,;")
         return cleaned
 
-    @staticmethod
-    def _is_metadata_only_residual_text(text: str, name: str = "") -> bool:
+    # Restaurant-row filler vocabulary: cuisine, meal-type, and price-tier
+    # words that show up in harvested rows with no real prose at all (e.g.
+    # "(high volume), $$ American." or "(French/Southwestern fine dining)")
+    # -- these must not count as "real words" when judging whether anything
+    # substantive remains, since they're just a restatement of the rating/
+    # price/cuisine fields that are already extracted into their own columns.
+    _METADATA_ONLY_FILLER_WORDS = frozenset({
+        "volume", "high", "low", "moderate",
+        "mexican", "italian", "american", "bbq", "barbecue", "steakhouse",
+        "thai", "indian", "japanese", "sushi", "chinese", "mediterranean",
+        "greek", "french", "seafood", "vietnamese", "korean", "pizza",
+        "burger", "bistro", "cafe", "diner", "grill", "brewpub", "bakery",
+        "coffee", "cuisine", "food", "dining", "fine", "fast", "casual",
+        "contemporary", "southwestern", "breakfast", "lunch", "dinner",
+        "eatery", "kitchen", "style", "upscale",
+    })
+
+    @classmethod
+    def _is_metadata_only_residual_text(cls, text: str, name: str = "") -> bool:
         """True when text carries only the item's own name plus rating/price/
         cuisine tokens and no real prose -- i.e. nothing worth surfacing as a
         description/teaser. Some harvested rows have no separator between the
@@ -5164,12 +5185,33 @@ class URLDiscoverer:
                 return True
         residual = re.sub(r"\d+(?:\.\d+)?\s*(?:/\s*5|out\s+of\s+5|stars?)", "", cleaned, flags=re.IGNORECASE)
         residual = re.sub(r"[\$#]{1,4}", "", residual)
+        # Review-volume qualifiers ("(high volume)", "(very high volume)") are
+        # pure metadata carried over from the harvested rating line, not prose.
+        residual = re.sub(r"\(?\s*(?:very\s+)?(?:high|low|moderate)\s+volume\s*\)?", "", residual, flags=re.IGNORECASE)
         # Compound cuisine labels ("Thai/Japanese", "Mexican-American") are still
         # metadata, not prose -- collapse slash/hyphen/ampersand-joined alpha runs
-        # to a placeholder that doesn't count as a word before counting.
-        residual = re.sub(r"\b[A-Za-z]+(?:\s*[/\-&]\s*[A-Za-z]+)+\b", "x", residual)
+        # to a placeholder that doesn't count as a word before counting. Only
+        # collapse when every joined word is itself known filler/cuisine
+        # vocabulary -- a real compound descriptor like "Chef-driven" (as in
+        # "Chef-driven Southwestern plates.") must survive as two real words,
+        # not get eaten by the same rule that erases "Thai/Japanese".
+        def _collapse_compound_if_all_filler(match: "re.Match[str]") -> str:
+            words = [w for w in re.split(r"[/\-&]", match.group(0)) if w.strip()]
+            if words and all(w.strip().lower() in cls._METADATA_ONLY_FILLER_WORDS for w in words):
+                return "x"
+            return match.group(0)
+
+        residual = re.sub(
+            r"\b[A-Za-z]+(?:\s*[/\-&]\s*[A-Za-z]+)+\b", _collapse_compound_if_all_filler, residual
+        )
         residual_words = re.findall(r"[A-Za-z]{3,}", residual)
-        return len(residual_words) <= 1
+        # A word list of pure cuisine/meal-type/price-tier filler doesn't count
+        # as real content either -- e.g. "(Contemporary American)" or "American
+        # fast food/pizza." are just restatements of rating/price/cuisine
+        # metadata dressed up as a sentence fragment, not an actual descriptive
+        # note about the place.
+        substantive_words = [w for w in residual_words if w.lower() not in cls._METADATA_ONLY_FILLER_WORDS]
+        return len(substantive_words) <= 1
 
     @staticmethod
     def _infer_direct_batch_quality_metadata(text: str, url: str) -> dict[str, Any]:
