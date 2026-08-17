@@ -1332,6 +1332,12 @@ class HTMLAssembler:
                     )
                 else:
                     name_html = stop_name
+                # These two values are rendered exactly as extracted, with no
+                # normalization of one-way vs. round-trip vs. loop-back
+                # semantics -- see the detour-semantics note above
+                # _extract_en_route_detour_minutes_from_text in
+                # url_discovery.py for why that's a documented open gap
+                # rather than a bug fixed here.
                 detour_parts: list[str] = []
                 detour_miles = stop.get("detour_distance_miles")
                 detour_minutes = stop.get("detour_time_minutes")

@@ -478,6 +478,84 @@ def test_build_getting_here_unresolved_progress_ratio_sorts_after_confirmed_stop
     )
 
 
+def test_build_getting_here_renders_geographic_order_when_all_stops_resolve() -> None:
+    """Regression for dipstick59 Bug 1 (real Zion -> Bryce Canyon leg).
+
+    The reported bug: Google's actual driving route for this leg zigzagged
+    between two geographic clusters (Cedar City area vs. Kanab area) three
+    times -- Parowan Gap Petroglyphs (Cedar City) -> Moqui Cave (Kanab) ->
+    Cedar Breaks National Monument (Cedar City) -> Coral Pink Sand Dunes
+    (Kanab) -> Willis Creek (near Bryce) -- instead of visiting each cluster
+    once. Root cause (see generator/url_discovery.py
+    _geocode_en_route_stop_for_route): 3 of these 5 real stop names carry an
+    AI-generated descriptive suffix ("... Rim View", "... Boardwalk", "...
+    Trailhead") that Nominatim's free-text search can't match, so those 3
+    stops got no route_progress_ratio at all and piled up at the end of the
+    list in AI-harvest order (reproducing the exact zigzag above) rather
+    than in their real geographic position. Once url_discovery's
+    progressive-truncation geocoding fallback resolves real coordinates for
+    all 5 (verified against live Nominatim during investigation), this
+    layer -- which only ever consumes whatever ratio it's given -- must
+    render them in true route order.
+    """
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "getting_here": {
+            "route_summary": "Take US-89 N to UT-12 E.",
+            "en_route_stops": [
+                # Original AI-harvest order exactly as it appeared in the
+                # dipstick59 output, each carrying its real, Nominatim-verified
+                # route_progress_ratio (computed from real coordinates for a
+                # Zion Canyon Visitor Center -> Bryce Canyon City leg).
+                {"name": "Parowan Gap Petroglyphs", "route_waypoint_eligible": True, "route_progress_ratio": 0.3224},
+                {"name": "Moqui Cave", "route_waypoint_eligible": True, "route_progress_ratio": 0.3664},
+                {
+                    "name": "Cedar Breaks National Monument Rim View",
+                    "route_waypoint_eligible": True,
+                    "route_progress_ratio": 0.3328,
+                },
+                {
+                    "name": "Coral Pink Sand Dunes State Park Boardwalk",
+                    "route_waypoint_eligible": True,
+                    "route_progress_ratio": 0.1662,
+                },
+                {
+                    "name": "Willis Creek Slot Canyon Trailhead",
+                    "route_waypoint_eligible": True,
+                    "route_progress_ratio": 0.9959,
+                },
+            ],
+        }
+    }
+    dest = {"name": "Bryce Canyon National Park"}
+
+    html = assembler._build_getting_here(
+        ai,
+        dest,
+        previous_name="Zion National Park",
+        previous_route_target="Zion National Park",
+        current_route_target="Bryce Canyon National Park",
+    )
+
+    rendered_order = [
+        "Coral Pink Sand Dunes State Park Boardwalk",
+        "Parowan Gap Petroglyphs",
+        "Cedar Breaks National Monument Rim View",
+        "Moqui Cave",
+        "Willis Creek Slot Canyon Trailhead",
+    ]
+    positions = [html.index(name) for name in rendered_order]
+    assert positions == sorted(positions), (
+        "All 5 real en-route stops must render in true route-progress order "
+        "once each has a resolved ratio, instead of the buggy AI-harvest "
+        "order that zigzagged between the Cedar City and Kanab clusters"
+    )
+    # The buggy AI-harvest order must not survive: Moqui Cave (Kanab)
+    # historically rendered immediately after Parowan Gap (Cedar City),
+    # backtracking across the whole route.
+    assert html.index("Cedar Breaks National Monument Rim View") < html.index("Moqui Cave")
+
+
 def test_build_getting_here_uses_lodging_endpoint_but_destination_scoped_waypoints() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {

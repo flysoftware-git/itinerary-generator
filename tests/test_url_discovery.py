@@ -8311,6 +8311,174 @@ def test_prune_en_route_stops_drops_stop_confirmed_out_of_region() -> None:
     assert "Mesquite" in names
 
 
+def test_en_route_stop_name_truncations_drops_one_word_at_a_time() -> None:
+    """Unit coverage for the progressive-truncation helper itself: it must
+    drop exactly one trailing word per step, cap at max_variants, and never
+    shrink below min_words."""
+    assert URLDiscoverer._en_route_stop_name_truncations("Willis Creek Slot Canyon Trailhead") == [
+        "Willis Creek Slot Canyon",
+        "Willis Creek Slot",
+        "Willis Creek",
+    ]
+    assert URLDiscoverer._en_route_stop_name_truncations("Coral Pink Sand Dunes State Park Boardwalk") == [
+        "Coral Pink Sand Dunes State Park",
+        "Coral Pink Sand Dunes State",
+        "Coral Pink Sand Dunes",
+    ]
+    # Already at (or below) min_words: nothing to drop.
+    assert URLDiscoverer._en_route_stop_name_truncations("Red Canyon") == []
+    assert URLDiscoverer._en_route_stop_name_truncations("Solo") == []
+
+
+def test_geocode_en_route_stop_recovers_real_landmark_behind_descriptive_suffix() -> None:
+    """Regression for dipstick59 Bug 1 (real Zion -> Bryce Canyon leg).
+
+    Real screenshot from the project owner: Google's driving route for this
+    leg zigzagged between two geographic clusters (Cedar City area vs. Kanab
+    area) three times instead of visiting each once. Investigation traced
+    this to _geocode_en_route_stop_for_route silently failing for 3 of the 5
+    real en-route stops -- "Cedar Breaks National Monument Rim View",
+    "Coral Pink Sand Dunes State Park Boardwalk", "Willis Creek Slot Canyon
+    Trailhead" -- because Nominatim's free-text search requires
+    (approximately) every significant word to match, and none of those exact
+    compound strings are in its index (verified live against Nominatim
+    during investigation). The real landmark underneath each ("Cedar Breaks
+    National Monument", "Coral Pink Sand Dunes State Park", "Willis Creek")
+    geocodes cleanly. Without a resolved coordinate, these 3 stops got no
+    route_progress_ratio at all and piled up at the end of the waypoint
+    list in AI-harvest order instead of their real geographic position --
+    reproducing the exact zigzag from the screenshot. The fix retries with
+    progressively word-truncated queries before giving up.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+
+    origin = (37.3221673, -113.0047934)  # Zion Canyon Visitor Center
+    dest = (37.5707948, -112.1855939)  # Bryce Canyon City
+
+    # Real, live-verified Nominatim results: the exact AI-generated name
+    # (with its descriptive suffix) returns nothing; the truncated landmark
+    # name underneath it resolves correctly.
+    resolves = {
+        "cedar breaks national monument": ("37.6387738", "-112.8447452"),
+        "willis creek": ("37.5047232", "-112.1575941"),
+    }
+
+    def fake_get(_url, params=None, **_kwargs):
+        q = str((params or {}).get("q", "")).strip().lower()
+        if params and params.get("bounded") == 1 and q in resolves:
+            return _make_nominatim_response(*resolves[q])
+        return _make_nominatim_empty_response()
+
+    discoverer._url_validator.session.get.side_effect = fake_get
+
+    with patch("generator.url_discovery.time.sleep"):
+        cedar_breaks = discoverer._geocode_en_route_stop_for_route(
+            "Cedar Breaks National Monument Rim View",
+            origin_name="Zion National Park",
+            dest_name="Bryce Canyon National Park",
+            origin=origin,
+            dest=dest,
+        )
+        willis_creek = discoverer._geocode_en_route_stop_for_route(
+            "Willis Creek Slot Canyon Trailhead",
+            origin_name="Zion National Park",
+            dest_name="Bryce Canyon National Park",
+            origin=origin,
+            dest=dest,
+        )
+
+    assert cedar_breaks == (37.6387738, -112.8447452)
+    assert willis_creek == (37.5047232, -112.1575941)
+
+
+def test_prune_en_route_stops_resolves_ratio_for_real_dipstick59_stops() -> None:
+    """End-to-end regression for dipstick59 Bug 1: with the progressive-
+    truncation geocoding fallback, the real Zion -> Bryce en-route stops
+    whose AI-generated name previously failed to geocode ("Cedar Breaks
+    National Monument Rim View", "Coral Pink Sand Dunes State Park
+    Boardwalk") now resolve real coordinates and a real route_progress_ratio,
+    instead of silently falling back to the buggy 'sorts last' behavior that
+    produced the reported zigzag (Parowan Gap -> Moqui Cave -> Cedar Breaks
+    -> Coral Pink -> Willis Creek, crossing between the Cedar City and Kanab
+    clusters three times).
+
+    "Willis Creek Slot Canyon Trailhead" also now resolves real coordinates
+    (verified live against Nominatim: "Willis Creek", Kane County, UT) --
+    but those real coordinates place it only ~4.8 miles from Bryce Canyon
+    City, 48.17 of the leg's 48.11 route-miles from the origin (progress
+    ratio ~0.996). That trips the pre-existing "at/past the destination"
+    geometry filter a few lines below in _prune_en_route_stops_by_geometry
+    (same filter dipstick58's fix relies on for stops literally inside the
+    next destination) and the stop is dropped from this leg's en-route list
+    entirely -- consistent, intentional behavior for a stop this close to
+    the destination, not a side effect specific to this fix.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._decision_threads_by_destination = {}
+    discoverer._decision_stats_by_destination = {}
+    discoverer._decision_source_stats_by_destination = {}
+    discoverer._decision_event_sequence = 0
+    discoverer._request_cache_lock = Lock()
+
+    origin = (37.3221673, -113.0047934)
+    dest = (37.5707948, -112.1855939)
+
+    resolves = {
+        "parowan gap petroglyphs": ("37.9094137", "-112.9848435"),
+        "moqui cave": ("37.1207779", "-112.5638010"),
+        "cedar breaks national monument": ("37.6387738", "-112.8447452"),
+        "coral pink sand dunes state park": ("37.0405873", "-112.7131482"),
+        "willis creek": ("37.5047232", "-112.1575941"),
+    }
+
+    def fake_get(_url, params=None, **_kwargs):
+        q = str((params or {}).get("q", "")).strip().lower()
+        if params and params.get("bounded") == 1 and q in resolves:
+            return _make_nominatim_response(*resolves[q])
+        return _make_nominatim_empty_response()
+
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.session.get.side_effect = fake_get
+
+    stops = [
+        {"name": "Parowan Gap Petroglyphs"},
+        {"name": "Moqui Cave"},
+        {"name": "Cedar Breaks National Monument Rim View"},
+        {"name": "Coral Pink Sand Dunes State Park Boardwalk"},
+        {"name": "Willis Creek Slot Canyon Trailhead"},
+    ]
+
+    with patch("generator.url_discovery.time.sleep"):
+        result = discoverer._prune_en_route_stops_by_geometry(
+            stops=stops,
+            origin_name="Zion National Park",
+            dest_name="Bryce Canyon National Park",
+            origin_lat=origin[0],
+            origin_lng=origin[1],
+            dest_lat=dest[0],
+            dest_lng=dest[1],
+        )
+
+    by_name = {str(stop.get("name", "")): stop for stop in result}
+    for stop_name in [
+        "Parowan Gap Petroglyphs",
+        "Moqui Cave",
+        "Cedar Breaks National Monument Rim View",
+        "Coral Pink Sand Dunes State Park Boardwalk",
+    ]:
+        stop = by_name[stop_name]
+        assert stop.get("route_waypoint_eligible") is True, stop_name
+        assert isinstance(stop.get("route_progress_ratio"), float), (
+            f"{stop_name} must have a resolved route_progress_ratio now that its "
+            "underlying landmark name geocodes via the truncation fallback"
+        )
+
+    # See the docstring above: this one is correctly pruned as at/past the
+    # destination once its real coordinates are known, not silently dropped.
+    assert "Willis Creek Slot Canyon Trailhead" not in by_name
+
+
 def test_alltrails_confidence_boosted_to_high_when_corroborating_search_agrees() -> None:
     """Corroboration piece: a blocked-fetch 'medium' confidence trail must be
     promoted to 'high' when an independent secondary lookup (opt-in via the
