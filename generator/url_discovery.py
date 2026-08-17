@@ -9134,6 +9134,104 @@ class URLDiscoverer:
             miles = self._extract_en_route_detour_miles_from_text(blob)
         return miles, minutes
 
+    # Real-coordinate-grounded detour distance/time -- corrects the
+    # free-text-mined numbers above when the stop has verified geocoded
+    # coordinates (dipstick63: "Kolob Canyons Scenic Drive" rendered "(10 mi
+    # detour | 15 min)" on the real St. George -> Springdale leg for a
+    # detour that actually runs ~18-20 mi one-way off I-15 near exit 40 --
+    # the AI-generated prose that number was mined from was simply wrong,
+    # and nothing cross-checked it against the stop's own coordinates, which
+    # ARE available here: _prune_en_route_stops_by_geometry (which runs
+    # immediately before this in _discover_en_route_stops's call order)
+    # already geocodes every surviving stop and persists
+    # geocode_lat/geocode_lng onto it for the maps_url it builds.
+    #
+    # This is a narrower, more tractable problem than
+    # _prune_en_route_stops_by_geometry's straight-line lateral-distance
+    # check (see that method's long comment on why a hard distance cutoff
+    # for stop *inclusion* was tried and reverted -- "Swasey's Beach"
+    # legitimately sits 35.4 mi off the straight route line via real,
+    # winding Utah highways, so straight-line distance alone can't safely
+    # decide whether a stop belongs on the list at all). Correcting the
+    # *displayed number* for a stop whose inclusion has already been decided
+    # is different: a round-trip detour (leave the route, drive to the
+    # point, drive back to roughly the same spot on the route) can never be
+    # shorter than 2x the point's straight-line perpendicular offset from
+    # the route, because a real road can never be shorter than the
+    # straight-line distance between two points. That is a hard geometric
+    # floor, not merely a competing estimate -- so a text-mined value below
+    # it is provably wrong, not just "different from our guess", and is
+    # always safe to override regardless of how the ambiguous
+    # one-way/round-trip/loop semantics documented above
+    # _extract_en_route_detour_minutes_from_text end up being interpreted
+    # elsewhere.
+    @staticmethod
+    def _en_route_stop_geometry_grounded_detour_floor(perpendicular_miles: float) -> tuple[float, int]:
+        """Hard lower bound on a round-trip detour's distance/time implied by
+        a stop's straight-line perpendicular offset from the route. See the
+        block comment above for why this is a provable floor, not an
+        estimate."""
+        min_round_trip_miles = max(0.0, perpendicular_miles) * 2.0
+        # A generous highway-speed ceiling (rural Utah interstate limit is
+        # 80 mph; 70 leaves margin for the slower stretches most detours
+        # actually run on) -- driving faster than this is never realistic,
+        # so a real round trip can never be quicker than this floor implies.
+        max_plausible_mph = 70.0
+        min_round_trip_minutes = (min_round_trip_miles / max_plausible_mph) * 60.0 if min_round_trip_miles else 0.0
+        return min_round_trip_miles, int(ceil(min_round_trip_minutes))
+
+    @staticmethod
+    def _en_route_stop_geometry_grounded_detour_estimate(perpendicular_miles: float) -> tuple[float, int]:
+        """Best-effort round-trip distance/time estimate (not just the hard
+        floor above) for filling in a stop that has no text-mined/AI-provided
+        detour figures at all. Uses the same real-road inflation factor and
+        average speed _estimate_route_from_haversine already uses elsewhere
+        in this file for the main leg distance/time, applied to the
+        round-trip (2x perpendicular) distance rather than a one-way leg."""
+        road_factor = 1.30
+        avg_speed_mph = 60.0
+        estimate_miles = max(0.0, perpendicular_miles) * 2.0 * road_factor
+        estimate_minutes = (estimate_miles / avg_speed_mph) * 60.0 if estimate_miles else 0.0
+        return round(estimate_miles, 1), int(round(estimate_minutes))
+
+    def _resolve_en_route_stop_detour_metrics_against_geometry(
+        self,
+        stop: dict[str, Any],
+        *,
+        origin: tuple[float, float] | None,
+        dest: tuple[float, float] | None,
+    ) -> tuple[float | None, int | None, bool]:
+        """Return (miles, minutes, was_overridden): the text-mined/AI-provided
+        detour figures for `stop`, corrected against its own verified geocode
+        when one is available and the correction is geometrically forced. See
+        the block comment above _en_route_stop_geometry_grounded_detour_floor
+        for the reasoning."""
+        text_miles, text_minutes = self._en_route_stop_detour_metrics(stop)
+        geocode_lat = stop.get("geocode_lat")
+        geocode_lng = stop.get("geocode_lng")
+        has_geocode = isinstance(geocode_lat, (int, float)) and isinstance(geocode_lng, (int, float))
+        if not has_geocode or origin is None or dest is None:
+            return text_miles, text_minutes, False
+
+        perpendicular_miles = self._route_perpendicular_distance_miles(
+            origin=origin, dest=dest, point=(float(geocode_lat), float(geocode_lng))
+        )
+        if perpendicular_miles is None:
+            return text_miles, text_minutes, False
+
+        min_miles, min_minutes = self._en_route_stop_geometry_grounded_detour_floor(perpendicular_miles)
+        estimate_miles, estimate_minutes = self._en_route_stop_geometry_grounded_detour_estimate(perpendicular_miles)
+
+        final_miles, final_minutes = text_miles, text_minutes
+        overridden = False
+        if text_miles is None or text_miles < min_miles:
+            final_miles = estimate_miles
+            overridden = True
+        if text_minutes is None or text_minutes < min_minutes:
+            final_minutes = estimate_minutes
+            overridden = True
+        return final_miles, final_minutes, overridden
+
     def _en_route_stop_within_threshold(self, stop: dict[str, Any]) -> tuple[bool, str]:
         max_minutes = int(getattr(self, "_en_route_detour_max_minutes", DEFAULT_EN_ROUTE_DETOUR_MAX_MINUTES) or 0)
         max_miles = float(getattr(self, "_en_route_detour_max_miles", DEFAULT_EN_ROUTE_DETOUR_MAX_MILES) or 0)
@@ -9422,6 +9520,45 @@ class URLDiscoverer:
                 stops = geocode_deduped_stops
                 getting_here["en_route_stops"] = stops
                 ai["getting_here"] = getting_here
+
+        if stops:
+            # Correct free-text-mined/AI-provided detour distance/time against
+            # each stop's own verified geocode (just persisted onto it, above,
+            # by _prune_en_route_stops_by_geometry) -- see the block comment
+            # above _en_route_stop_geometry_grounded_detour_floor for why this
+            # is a safe, geometrically-forced correction to a number, distinct
+            # from that method's deliberately-not-auto-rejecting inclusion
+            # check.
+            origin_point = self._parse_lat_lng(origin_lat, origin_lng)
+            dest_point = self._parse_lat_lng(dest_lat, dest_lng)
+            if origin_point is not None and dest_point is not None:
+                for stop in stops:
+                    if not isinstance(stop, dict):
+                        continue
+                    stop_name = str(stop.get("name", "") or "").strip()
+                    prior_miles = stop.get("detour_distance_miles")
+                    prior_minutes = stop.get("detour_time_minutes")
+                    final_miles, final_minutes, overridden = (
+                        self._resolve_en_route_stop_detour_metrics_against_geometry(
+                            stop, origin=origin_point, dest=dest_point
+                        )
+                    )
+                    if not overridden:
+                        continue
+                    stop["detour_distance_miles"] = final_miles
+                    stop["detour_time_minutes"] = final_minutes
+                    self._log_decision(
+                        kind="en_route_stop",
+                        dest_name=dest_name,
+                        item_name=stop_name,
+                        reason="en_route_detour_metrics_geometry_corrected",
+                        message=(
+                            "en-route detour distance/time replaced with a geometry-grounded "
+                            f"value from the stop's own verified coordinates (was "
+                            f"miles={prior_miles!r} minutes={prior_minutes!r}, now "
+                            f"miles={final_miles!r} minutes={final_minutes!r})"
+                        ),
+                    )
 
         resolved_stops: list[dict[str, Any]] = []
         for stop in stops:

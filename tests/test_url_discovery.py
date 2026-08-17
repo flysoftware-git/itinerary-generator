@@ -12720,6 +12720,75 @@ def test_dedupe_en_route_stops_same_leg_by_geocode_proximity_keeps_named_entry()
     assert names == ["Moab Museum of Film and Western Heritage"]
 
 
+# ── Bug 2 (dipstick63): en-route detour distance/time corrected against  ──
+# real geocoded coordinates rather than trusted verbatim from AI/text-mined
+# prose (Kolob Canyons Scenic Drive rendering "(10 mi detour | 15 min)" for
+# a real ~18-20 mi one-way detour off I-15).
+
+def test_en_route_stop_geometry_grounded_detour_floor_rejects_bogus_short_value() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    min_miles, min_minutes = discoverer._en_route_stop_geometry_grounded_detour_floor(20.8)
+    # A round trip can never be shorter than 2x the one-way perpendicular
+    # offset -- the real Kolob Canyons "10 mi detour" figure is well below
+    # this floor and is therefore geometrically impossible.
+    assert min_miles == pytest.approx(41.6)
+    assert 10.0 < min_miles
+    assert min_minutes > 15  # the bogus "15 min" figure is also impossible
+
+
+def test_en_route_stop_geometry_grounded_detour_estimate_exceeds_floor() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    min_miles, _min_minutes = discoverer._en_route_stop_geometry_grounded_detour_floor(20.8)
+    est_miles, est_minutes = discoverer._en_route_stop_geometry_grounded_detour_estimate(20.8)
+    assert est_miles > min_miles
+    assert est_minutes > 0
+
+
+def test_discover_en_route_stops_corrects_geometrically_impossible_detour_distance() -> None:
+    """Regression for dipstick63 Bug 2: 'Kolob Canyons Scenic Drive' rendered
+    '(10 mi detour | 15 min)' on the real St. George -> Springdale (Zion)
+    leg. The stop's real coordinates (Kolob Canyons Visitor Center, off I-15
+    exit 40) sit ~21.8 mi perpendicular-offset from the direct St. George ->
+    Springdale route line -- a round-trip detour to a point that far off the
+    route can never be as short as 10 miles / 15 minutes, so the
+    AI-provided/text-mined figures must be replaced with a geometry-grounded
+    value once the stop's own geocode is available."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+
+    kolob_coords = (37.4530, -113.3564)
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {
+                    "name": "Kolob Canyons Scenic Drive",
+                    "detour_distance_miles": 10,
+                    "detour_time_minutes": 15,
+                },
+            ],
+        }
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        with patch.object(discoverer, "_geocode_en_route_stop_for_route", return_value=kolob_coords):
+            discoverer._discover_en_route_stops(
+                ai,
+                "Zion National Park",
+                origin_name="St. George, Utah",
+                origin_lat=37.0965,
+                origin_lng=-113.5684,
+                dest_lat=37.1889,
+                dest_lng=-112.9975,
+            )
+
+    stop = ai["getting_here"]["en_route_stops"][0]
+    # The real round-trip detour is on the order of 40+ miles / 35-45+ min
+    # each way -- nowhere close to the bogus "10 mi | 15 min" the AI/text
+    # mining originally produced.
+    assert stop["detour_distance_miles"] > 30, stop
+    assert stop["detour_time_minutes"] > 30, stop
+
+
 def test_infer_destination_day_count_from_date_ranges() -> None:
     assert URLDiscoverer._infer_destination_day_count("October 17, 2026") == 1
     assert URLDiscoverer._infer_destination_day_count("October 19-21, 2026") == 3
