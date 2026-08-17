@@ -351,6 +351,68 @@ def test_discover_en_route_stops_includes_manifest_seed_as_search_candidate():
     fake_search.assert_called()
 
 
+def test_discover_en_route_stops_seed_survives_missing_detour_metadata_threshold():
+    """Regression for dipstick60: Pagosa Springs' en_route_seeds
+    ["Enchanted Circle Scenic Byway"] correctly logged
+    'en_route_seed_injected', but in the direct_link_batch source mode the
+    seed was then immediately dropped by the pre-existing
+    en_route_threshold_filtered (missing_detour_metadata) filter before it
+    ever reached real geocoding/route-proximity verification --
+    "Enchanted Circle Scenic Byway" appeared zero times in the final HTML.
+    A manifest-seeded en-route candidate is the traveler's own explicit
+    pick and must not need pre-existing detour distance/time metadata to
+    survive this filter, mirroring the existing seed_threshold_override
+    precedent already used for the max_trail_miles threshold."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "direct_link_batch"
+    discoverer._en_route_require_detour_metadata = True
+
+    ai = {"getting_here": {"en_route_stops": []}}
+    dest = {"id": "pagosa_springs", "en_route_seeds": ["Enchanted Circle Scenic Byway"]}
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=[]):
+        with patch.object(discoverer, "_search_en_route_stop_from_direct_batch", return_value=None):
+            with patch.object(
+                discoverer,
+                "_search_first",
+                return_value="https://www.example.com/enchanted-circle-scenic-byway",
+            ):
+                with patch.object(discoverer, "_geocode_en_route_stop_for_route", return_value=None):
+                    discoverer._discover_en_route_stops(
+                        ai, "Pagosa Springs", origin_name="Taos", dest=dest,
+                    )
+
+    stops = ai["getting_here"]["en_route_stops"]
+    names = [str(s.get("name", "") or "") for s in stops]
+    assert "Enchanted Circle Scenic Byway" in names
+
+
+def test_en_route_stop_within_threshold_seed_override_still_enforces_hard_caps():
+    """The seed override in _en_route_stop_within_threshold relaxes only the
+    missing-metadata requirement -- a seed with real detour metadata that
+    exceeds a configured hard cap (max minutes/miles) must still be
+    filtered, exactly like a non-seed candidate."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_require_detour_metadata = True
+    discoverer._en_route_detour_max_minutes = 20
+    discoverer._en_route_detour_max_miles = 0.0
+
+    seed_missing_metadata = {"name": "Enchanted Circle Scenic Byway", "is_seed": True}
+    keep, reason = discoverer._en_route_stop_within_threshold(seed_missing_metadata)
+    assert keep is True
+    assert reason == "seed_threshold_override"
+
+    seed_over_cap = {"name": "Enchanted Circle Scenic Byway", "is_seed": True, "detour_time_minutes": 45}
+    keep, reason = discoverer._en_route_stop_within_threshold(seed_over_cap)
+    assert keep is False
+    assert reason == "detour_minutes_exceeded"
+
+    non_seed_missing_metadata = {"name": "Some AI Stop"}
+    keep, reason = discoverer._en_route_stop_within_threshold(non_seed_missing_metadata)
+    assert keep is False
+    assert reason == "missing_detour_metadata"
+
+
 def test_discover_en_route_stops_does_not_add_seed_from_a_different_destination():
     """en_route_seeds is scoped per destination to the leg arriving at that
     destination -- a seed on one destination's manifest entry must not leak
