@@ -257,16 +257,47 @@ def _strip_destination_seeds(trip: dict[str, Any]) -> int:
 
 
 def _run_quality_gate(trip: dict[str, Any], html_path: "Path | None" = None) -> None:
-    """Emit warnings for known quality regressions so they're visible on every run."""
+    """Emit warnings for known quality regressions so they're visible on every run.
+
+    Verified-link-or-seed policy (project owner decision, 2026-08-17):
+    url_discovery.py's audit_discovered_urls now REMOVES non-seed
+    attractions/en-route stops/restaurants that never got a real, verified
+    source URL, rather than leaving them present with an empty url. That
+    changes what this gate can still observe by walking the final trip data:
+
+    - `no_url_*` below (present-in-the-list-but-no-url) should now normally
+      be 0 for non-seed items, since those items are gone from the list
+      entirely rather than present-with-no-url. It still walks the data
+      (rather than being deleted) as a defensive check for skip-url-discovery
+      runs or any other path where the audit/prune pass never ran.
+    - `unverified_seed_*` counts seed items kept and shown with the
+      "Unverified" badge -- expected, acceptable noise (the traveler's own
+      request the pipeline couldn't verify), so it does NOT feed into
+      warnings/go-no-go signal, only visibility.
+    - `removed_no_verified_url_*` is the real successor to the old
+      `no_url_*` signal: how many items were silently dropped this run for
+      lacking a verified link. This is where a genuine harvest/recall
+      regression would now show up, since the items themselves no longer
+      appear anywhere else in the trip data for a human skimming the output
+      to notice. Sourced from the `_registry_decisions` audit trail
+      url_discovery.py records for every removal (rejection_reason
+      "no_verified_url_removed").
+    """
     import re as _re
     from pathlib import Path as _Path
     warnings: list[str] = []
+    info_lines: list[str] = []
 
     synthetic_phrases = ("locally surfaced dinner option", "local dinner option")
     synthetic_count = 0
     no_url_attractions = 0
     no_url_stops = 0
     no_url_restaurants = 0
+    unverified_seed_attractions = 0
+    unverified_seed_stops = 0
+    removed_no_verified_url_attractions = 0
+    removed_no_verified_url_stops = 0
+    removed_no_verified_url_restaurants = 0
 
     for dest in trip.get("destinations", []) or []:
         ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content"), dict) else {}
@@ -276,16 +307,41 @@ def _run_quality_gate(trip: dict[str, Any], html_path: "Path | None" = None) -> 
             if not desc or any(p in desc for p in synthetic_phrases):
                 synthetic_count += 1
             if not str(rest.get("url", "") or rest.get("maps_url", "") or "").strip():
+                # Restaurants have no seed concept anywhere in this codebase
+                # (see url_discovery.py's audit_discovered_urls) -- one
+                # reaching this point with no url means the audit/prune pass
+                # didn't run (e.g. --skip-url-discovery), not an expected
+                # "kept unverified" case.
                 no_url_restaurants += 1
 
         for attr in ai.get("top_attractions", []) or []:
             if not str(attr.get("url", "") or attr.get("maps_url", "") or "").strip():
-                no_url_attractions += 1
+                if attr.get("is_seed"):
+                    unverified_seed_attractions += 1
+                else:
+                    no_url_attractions += 1
 
         getting_here = ai.get("getting_here", {}) if isinstance(ai.get("getting_here"), dict) else {}
         for stop in getting_here.get("en_route_stops", []) or []:
             if not str(stop.get("url", "") or stop.get("maps_url", "") or "").strip():
-                no_url_stops += 1
+                if stop.get("is_seed"):
+                    unverified_seed_stops += 1
+                else:
+                    no_url_stops += 1
+
+        for decision in dest.get("_registry_decisions", []) or []:
+            if not isinstance(decision, dict):
+                continue
+            if "no_verified_url_removed" not in (decision.get("rejection_reasons", []) or []):
+                continue
+            section_target = str(decision.get("section_target", "") or "")
+            entity_class = str(decision.get("entity_class", "") or "")
+            if section_target == "dinner_recommendations" or entity_class == "restaurant":
+                removed_no_verified_url_restaurants += 1
+            elif section_target == "en_route_stops" or entity_class == "en_route_stop":
+                removed_no_verified_url_stops += 1
+            else:
+                removed_no_verified_url_attractions += 1
 
     if synthetic_count:
         warnings.append(f"restaurants with synthetic description: {synthetic_count}")
@@ -295,6 +351,36 @@ def _run_quality_gate(trip: dict[str, Any], html_path: "Path | None" = None) -> 
         warnings.append(f"attractions with no URL or maps fallback: {no_url_attractions}")
     if no_url_stops > 2:
         warnings.append(f"en-route stops with no URL or maps fallback: {no_url_stops}")
+
+    # Real successor to the old no_url_* signal: these items no longer
+    # appear anywhere in the trip data, so this is the only place a genuine
+    # harvest/recall regression is still visible. Same thresholds as the
+    # no_url_* checks above, since it's the same underlying concern.
+    if removed_no_verified_url_restaurants:
+        warnings.append(
+            "restaurants removed for no verified URL (verified-link-or-seed policy): "
+            f"{removed_no_verified_url_restaurants}"
+        )
+    if removed_no_verified_url_attractions > 3:
+        warnings.append(
+            "attractions removed for no verified URL (verified-link-or-seed policy): "
+            f"{removed_no_verified_url_attractions}"
+        )
+    if removed_no_verified_url_stops > 2:
+        warnings.append(
+            "en-route stops removed for no verified URL (verified-link-or-seed policy): "
+            f"{removed_no_verified_url_stops}"
+        )
+
+    # Visibility only -- an unverified seed is expected/acceptable noise
+    # (see docstring), not a pipeline-health signal, so it's reported
+    # separately from `warnings` rather than gating quality-gate pass/fail.
+    if unverified_seed_attractions or unverified_seed_stops:
+        info_lines.append(
+            "unverified seed items kept (shown with the Unverified badge, not counted "
+            f"above): attractions: {unverified_seed_attractions}, "
+            f"en-route stops: {unverified_seed_stops}"
+        )
 
     if html_path:
         try:
@@ -315,6 +401,8 @@ def _run_quality_gate(trip: dict[str, Any], html_path: "Path | None" = None) -> 
             _click.echo(f"      · {w}")
     else:
         _click.echo("  ✓ Quality gate passed")
+    for line in info_lines:
+        _click.echo(f"  ℹ {line}")
 
 
 def _build_gate_a_metrics(

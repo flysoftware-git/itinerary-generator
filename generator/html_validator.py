@@ -248,21 +248,55 @@ class HTMLValidator:
     #    with no URL or maps fallback) ─────────────────────────────────────
 
     def _check_orphan_content_rate(self, trip: dict[str, Any], warnings: list[str]) -> None:
+        """Verified-link-or-seed policy (project owner decision, 2026-08-17):
+        url_discovery.py's audit_discovered_urls now REMOVES non-seed
+        attractions/en-route stops/restaurants that never got a real,
+        verified source URL, rather than leaving them present with an empty
+        url. Two consequences for this check:
+
+        - A seed item kept with no url (shown with the "Unverified" badge)
+          is expected/acceptable noise, not a signal of a real recall/
+          pipeline regression -- it must not count toward the no_url_*
+          thresholds below.
+        - Non-seed items with no verified url are gone from the trip data
+          entirely, so no_url_* can no longer see them at all. The real
+          successor signal is `removed_no_verified_url_*`, sourced from the
+          `_registry_decisions` audit trail url_discovery.py records for
+          every removal (rejection_reason "no_verified_url_removed") --
+          checked against the same configured thresholds, since it's the
+          same underlying "how much unverified content is here" concern.
+        """
         no_url_attractions = 0
         no_url_restaurants = 0
         no_url_stops = 0
+        removed_attractions = 0
+        removed_restaurants = 0
+        removed_stops = 0
         for dest in trip.get("destinations", []) or []:
             ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content"), dict) else {}
             for attr in ai.get("top_attractions", []) or []:
-                if not str(attr.get("url", "") or attr.get("maps_url", "") or "").strip():
+                if not attr.get("is_seed") and not str(attr.get("url", "") or attr.get("maps_url", "") or "").strip():
                     no_url_attractions += 1
             for rest in ai.get("dinner_recommendations", []) or []:
                 if not str(rest.get("url", "") or "").strip():
                     no_url_restaurants += 1
             getting_here = ai.get("getting_here", {}) if isinstance(ai.get("getting_here"), dict) else {}
             for stop in getting_here.get("en_route_stops", []) or []:
-                if not str(stop.get("url", "") or "").strip():
+                if not stop.get("is_seed") and not str(stop.get("url", "") or "").strip():
                     no_url_stops += 1
+            for decision in dest.get("_registry_decisions", []) or []:
+                if not isinstance(decision, dict):
+                    continue
+                if "no_verified_url_removed" not in (decision.get("rejection_reasons", []) or []):
+                    continue
+                section_target = str(decision.get("section_target", "") or "")
+                entity_class = str(decision.get("entity_class", "") or "")
+                if section_target == "dinner_recommendations" or entity_class == "restaurant":
+                    removed_restaurants += 1
+                elif section_target == "en_route_stops" or entity_class == "en_route_stop":
+                    removed_stops += 1
+                else:
+                    removed_attractions += 1
 
         if no_url_attractions > self._max_no_url_attractions:
             warnings.append(
@@ -277,6 +311,21 @@ class HTMLValidator:
         if no_url_stops > self._max_no_url_en_route_stops:
             warnings.append(
                 f"En-route stops with no URL: {no_url_stops} "
+                f"(threshold: {self._max_no_url_en_route_stops})"
+            )
+        if removed_attractions > self._max_no_url_attractions:
+            warnings.append(
+                f"Attractions removed for no verified URL: {removed_attractions} "
+                f"(threshold: {self._max_no_url_attractions})"
+            )
+        if removed_restaurants > self._max_no_url_restaurants:
+            warnings.append(
+                f"Restaurants removed for no verified URL: {removed_restaurants} "
+                f"(threshold: {self._max_no_url_restaurants})"
+            )
+        if removed_stops > self._max_no_url_en_route_stops:
+            warnings.append(
+                f"En-route stops removed for no verified URL: {removed_stops} "
                 f"(threshold: {self._max_no_url_en_route_stops})"
             )
 

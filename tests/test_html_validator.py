@@ -138,6 +138,56 @@ def test_orphan_attractions_within_threshold_silent(tmp_path):
     assert not any("attractions with no url" in w.lower() for w in report["warnings"])
 
 
+# ── Verified-link-or-seed policy (2026-08-17) ───────────────────────────────
+
+
+def test_orphan_seed_attractions_excluded_from_no_url_warning(tmp_path):
+    """Policy (2026-08-17): a seed attraction kept with no url (shown with the
+    "Unverified" badge) is expected/acceptable noise, not a signal of a real
+    recall/pipeline regression -- it must not count toward the persisted
+    no-url-attractions threshold, even in numbers that would otherwise trip
+    it."""
+    attractions = [{"name": f"Attraction {i}", "url": "", "is_seed": True} for i in range(4)]
+    trip = _trip_with_attractions(attractions)
+    p = _write_html(tmp_path, VALID_HTML)
+    v = _make_validator(tmp_path)
+    report = v.validate(p, trip)
+    assert not any("attractions with no url" in w.lower() for w in report["warnings"])
+
+
+def test_orphan_seed_en_route_stops_excluded_from_no_url_warning(tmp_path):
+    stops = [{"name": f"Stop {i}", "url": "", "is_seed": True} for i in range(3)]
+    trip = _trip_with_attractions([], en_route_stops=stops)
+    p = _write_html(tmp_path, VALID_HTML)
+    v = _make_validator(tmp_path)
+    report = v.validate(p, trip)
+    assert not any("en-route stops with no url" in w.lower() for w in report["warnings"])
+
+
+def test_removed_no_verified_url_attractions_flagged_above_threshold(tmp_path):
+    """New visibility signal (2026-08-17): non-seed attractions with no
+    verified URL are now REMOVED from the trip data entirely by
+    url_discovery.py's audit pass, so the old no-url-attractions check can no
+    longer see them at all. The removal itself is recorded in the
+    destination's _registry_decisions (rejection_reason
+    "no_verified_url_removed") and must still trip the persisted warning
+    above the same threshold as before."""
+    trip = _trip_with_attractions([])
+    trip["destinations"][0]["_registry_decisions"] = [
+        {
+            "entity_class": "attraction",
+            "display_name": f"Attraction {i}",
+            "section_target": "top_attractions",
+            "rejection_reasons": ["no_verified_url_removed"],
+        }
+        for i in range(4)
+    ]
+    p = _write_html(tmp_path, VALID_HTML)
+    v = _make_validator(tmp_path)
+    report = v.validate(p, trip)
+    assert any("attractions removed for no verified url" in w.lower() for w in report["warnings"])
+
+
 def test_any_orphan_restaurant_warns(tmp_path):
     """max_no_url_restaurants defaults to 0 -- even a single orphan
     restaurant warns, matching the old quality gate's stricter bar for
