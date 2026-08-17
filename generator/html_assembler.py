@@ -1264,9 +1264,22 @@ class HTMLAssembler:
         qualifying.sort(key=lambda a: (-(float(a.get("rating") or 0)), -(int(a.get("votes") or 0))))
         must_see_ids = {id(a) for a in qualifying[: self._MUST_SEE_MAX_BADGES]}
 
+        # Render order: everything else up front, hikes/trails in the middle,
+        # scenic drives last (drives are already appended after this loop via
+        # the separate `drives` param, so they're covered without a bucket
+        # here). A stable sort keeps items within each bucket in their
+        # existing relative order -- this only changes render position, not
+        # which items render, their badges, or their content.
+        def _attraction_render_bucket(candidate: Any) -> int:
+            if not isinstance(candidate, dict):
+                return 0
+            return 1 if str(candidate.get("type", "attraction") or "attraction").lower() == "hike" else 0
+
+        ordered_attrs = sorted(attrs, key=_attraction_render_bucket) if isinstance(attrs, list) else attrs
+
         attraction_rows: list[str] = []
         rendered_attraction_names: list[str] = []
-        for attr in attrs:
+        for attr in ordered_attrs:
             url, _is_map_fallback = self._select_preferred_external_link(attr, section="attraction")
             if not url and not self._should_render_without_url(attr, section="attraction"):
                 continue

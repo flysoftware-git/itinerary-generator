@@ -1680,6 +1680,73 @@ def test_build_attractions_keeps_distinctly_named_scenic_drive() -> None:
     assert "attr-drive-item" in html
 
 
+def test_build_attractions_orders_non_hikes_before_hikes_before_scenic_drives() -> None:
+    """Owner feedback: attraction cards should render with non-hike items up
+    front, hikes/trails in the middle, and scenic drives last -- regardless
+    of the order top_attractions arrived in from AI generation/harvest.
+    Items within the same bucket must keep their original relative order
+    (stable sort), so this deliberately interleaves two hikes and two
+    non-hikes rather than grouping them already."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Zion Narrows Hike",
+                "type": "hike",
+                "description": "A river-wading slot canyon hike.",
+                "url": "https://www.nps.gov/zion/narrows.htm",
+            },
+            {
+                "name": "Zion History Museum",
+                "type": "attraction",
+                "description": "Exhibits on the park's human history.",
+                "url": "https://www.nps.gov/zion/museum.htm",
+            },
+            {
+                "name": "Angels Landing Trail",
+                "type": "hike",
+                "description": "A strenuous chain-assisted climb to a narrow summit ridge.",
+                "url": "https://www.nps.gov/zion/angels-landing.htm",
+            },
+            {
+                "name": "Kolob Canyons Viewpoint",
+                "type": "viewpoint",
+                "description": "A pull-off overlook of the red-rock Kolob Canyons formations.",
+                "url": "https://www.nps.gov/zion/kolob.htm",
+            },
+        ]
+    }
+    drives = [
+        {
+            "title": "Zion-Mt Carmel Highway",
+            "category": "drive",
+            "description": "A scenic switchback highway through slickrock tunnels.",
+            "distance_or_duration": "1 hr",
+        }
+    ]
+
+    html = assembler._build_attractions(ai, drives=drives, dest_name="Zion National Park")
+
+    positions = {
+        name: html.index(name)
+        for name in (
+            "Zion Narrows Hike",
+            "Zion History Museum",
+            "Angels Landing Trail",
+            "Kolob Canyons Viewpoint",
+            "Zion-Mt Carmel Highway",
+        )
+    }
+
+    # Non-hike bucket first, in original relative order.
+    assert positions["Zion History Museum"] < positions["Kolob Canyons Viewpoint"]
+    # Hike bucket next, in original relative order, after all non-hikes.
+    assert positions["Kolob Canyons Viewpoint"] < positions["Zion Narrows Hike"]
+    assert positions["Zion Narrows Hike"] < positions["Angels Landing Trail"]
+    # Scenic drives last, after every top_attractions entry.
+    assert positions["Angels Landing Trail"] < positions["Zion-Mt Carmel Highway"]
+
+
 def test_build_attractions_drops_scenic_drive_describing_same_place_different_wording() -> None:
     """Regression for dipstick58 Bug 3 (real Telluride data): a top_attraction
     titled "Telluride Mountain Village Gondola" and a scenic_drives item
