@@ -2914,8 +2914,12 @@ def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_cluster
     assert 'data-tab="section-arches"' not in html
     assert 'data-tab="section-canyonlands"' not in html
     assert 'data-tab="section-moab"' in html
-    # Lodging dedup pointers on both grouped children
-    assert html.count("Based from Moab Springs Ranch") == 2
+    # Consolidated day-trip banner on both grouped children: centered,
+    # linked back to Moab's section, and folded in the lodging name (no
+    # more separate "Based from X (see Y)" pointer line).
+    assert html.count('Day trip from <a href="#section-moab"') == 2
+    assert html.count("Based at Moab Springs Ranch") == 2
+    assert "class=\"group-lodging-pointer\"" not in html
     # Restaurant deferral pointer on both grouped children, base keeps its own card
     # -- only the destination name itself is the anchor (dipstick60 Bug 3).
     assert html.count("Dinner recommendations: see ") == 2
@@ -3219,7 +3223,92 @@ def test_build_group_child_card_omits_schedule_and_renders_nested_div() -> None:
     assert "Should never render." not in html
     assert "schedule-card" not in html
     assert "Delicate Arch" in html
-    assert "Day trip from Moab" in html
+    assert 'Day trip from <a href="#section-moab"' in html
+    assert ">Moab</a>" in html
+    assert "Based at Moab Springs Ranch" in html
+    assert "text-align:center" in html
+    assert "class=\"group-lodging-pointer\"" not in html
+
+
+def test_build_group_child_card_banner_is_centered_and_distinct_from_base() -> None:
+    """Project-owner review feedback: the day-trip banner must (a) be
+    visually distinct from a regular destination section/attraction card
+    (no longer the same #faf7f2 as a plain attraction card, and no longer
+    the plain --sandstone banner background either), and (b) be centered,
+    not left-aligned."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._config = {}
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    arches = dict(dest_by_id["arches"])
+    arches["ai_content"] = {"top_attractions": [], "getting_here": {"en_route_stops": []}}
+
+    html = assembler._build_group_child_card(arches, {}, "Moab", "Moab Springs Ranch, Moab, UT", "Arches National Park", dest_by_id)
+
+    banner_start = html.index('class="group-child-banner"')
+    banner_div = html[banner_start : html.index("</div>", banner_start)]
+    assert "text-align:center" in banner_div
+    assert "var(--sage)" in banner_div
+    assert "#faf7f2" not in html  # not the plain attraction-card background
+    assert "var(--sandstone)" not in html  # not the old plain banner background either
+
+
+def test_build_group_child_card_banner_carries_the_base_section_link() -> None:
+    """The link back to the base's section must live on the top banner row
+    itself (dipstick review: "inject link on top row"), not only in a
+    separate lower pointer line."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._config = {}
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    arches = dict(dest_by_id["arches"])
+    arches["ai_content"] = {"top_attractions": [], "getting_here": {"en_route_stops": []}}
+
+    html = assembler._build_group_child_card(arches, {}, "Moab", "Moab Springs Ranch, Moab, UT", "Arches National Park", dest_by_id)
+
+    banner_start = html.index('class="group-child-banner"')
+    banner_div = html[banner_start : html.index("</div>", banner_start)]
+    assert 'href="#section-moab"' in banner_div
+
+
+def test_build_group_child_card_banner_falls_back_without_lodging_name() -> None:
+    """When the grouped entry overrides lodging itself (own `lodging`
+    block present), the base's lodging name must not be folded into the
+    banner -- mirrors _build_group_lodging_pointer's own
+    own-lodging-overrides-dedup rule -- and the banner falls back to the
+    plain, still-centered, still-linked "Day trip from X" wording."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._config = {}
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    arches = dict(dest_by_id["arches"])
+    arches["lodging"] = {"name": "Arches Basecamp", "location": "Arches Basecamp, Moab, UT"}
+    arches["ai_content"] = {"top_attractions": [], "getting_here": {"en_route_stops": []}}
+
+    html = assembler._build_group_child_card(arches, {}, "Moab", "Moab Springs Ranch, Moab, UT", "Arches National Park", dest_by_id)
+
+    assert 'Day trip from <a href="#section-moab"' in html
+    assert ">Moab</a>" in html
+    assert "Based at" not in html
+    assert "Arches Basecamp" not in html
+    assert "Moab Springs Ranch" not in html
+
+
+def test_build_group_child_card_no_longer_renders_separate_lodging_pointer() -> None:
+    """The old separate group-lodging-pointer paragraph must be gone from
+    the grouped-child card entirely -- its distinct info (the lodging
+    name) now lives in the consolidated banner instead."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._config = {}
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    arches = dict(dest_by_id["arches"])
+    arches["ai_content"] = {"top_attractions": [], "getting_here": {"en_route_stops": []}}
+
+    html = assembler._build_group_child_card(arches, {}, "Moab", "Moab Springs Ranch, Moab, UT", "Arches National Park", dest_by_id)
+
+    assert "class=\"group-lodging-pointer\"" not in html
+    assert "(see Moab)" not in html
 
 
 def test_group_child_covered_names_collects_child_name_attractions_and_drives() -> None:

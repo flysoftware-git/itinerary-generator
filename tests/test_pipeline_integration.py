@@ -353,9 +353,12 @@ def test_moab_group_manifest_parses_discovers_and_renders_with_correct_grouping(
     assert 'data-tab="section-arches"' not in html
     assert 'data-tab="section-canyonlands"' not in html
     assert 'data-tab="section-moab"' in html
-    # §2 lodging dedup pointer on both grouped children, base's own lodging
-    # never duplicated as a separate full block
-    assert html.count("Based from Moab Springs Ranch") == 2
+    # §2 lodging dedup: base's own lodging never duplicated as a separate
+    # full block, now folded into the consolidated group-child-banner top
+    # row instead of a separate "Based from X (see Y)" pointer line.
+    assert html.count('Day trip from <a href="#section-moab"') == 2
+    assert html.count("Based at Moab Springs Ranch") == 2
+    assert 'class="group-lodging-pointer"' not in html
     # §5 rendering: "see base" pointer for the deferred restaurant category
     # -- only the destination name itself is the anchor (dipstick60 Bug 3),
     # so the surrounding label stays as plain text and "Moab" is the link.
