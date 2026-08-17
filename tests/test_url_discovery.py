@@ -12569,6 +12569,226 @@ def test_discover_en_route_stops_preserves_mined_stop_metadata_from_generic_desc
     assert all(str(stop.get("detour_distance_miles", "") or "") != "None" for stop in stops), stops
 
 
+# ── Bug 1 (dipstick63): en-route stop vs. destination's own scenic-drive/  ──
+# attraction list cross-check dedup (Kolob Canyons Scenic Drive vs. Kolob
+# Canyons Road), and intra-leg same-place dedup (Moab Museum bare-address
+# vs. named entry).
+
+def test_en_route_stop_duplicates_destination_own_list_matches_scenic_drive() -> None:
+    """Direct unit test for the Kolob Canyons cross-list matcher: an
+    en-route stop and a destination's own scenic-drives entry that reduce to
+    the same significant-token set are recognized as the same real place."""
+    dest = {
+        "scenic_drives": [
+            {
+                "title": "Kolob Canyons Road",
+                "distance_or_duration": "5 miles",
+                "description": "A lesser-known but beautiful drive that leads to the Kolob Canyons section of Zion.",
+            },
+        ],
+    }
+    match = URLDiscoverer._en_route_stop_duplicates_destination_own_list("Kolob Canyons Scenic Drive", dest)
+    assert match == "Kolob Canyons Road"
+
+
+def test_en_route_stop_duplicates_destination_own_list_matches_top_attraction() -> None:
+    dest = {
+        "ai_content": {
+            "top_attractions": [{"name": "Kolob Canyons Trail"}],
+        },
+    }
+    match = URLDiscoverer._en_route_stop_duplicates_destination_own_list("Kolob Canyons Scenic Drive", dest)
+    assert match == "Kolob Canyons Trail"
+
+
+def test_en_route_stop_duplicates_destination_own_list_no_false_positive() -> None:
+    dest = {"scenic_drives": [{"title": "Zion Canyon Scenic Drive"}]}
+    assert URLDiscoverer._en_route_stop_duplicates_destination_own_list("Kolob Canyons Scenic Drive", dest) is None
+
+
+def test_discover_en_route_stops_drops_stop_duplicating_destination_scenic_drive() -> None:
+    """Regression for dipstick63 Bug 1: Zion's 'Getting Here' en-route stops
+    included 'Kolob Canyons Scenic Drive' (linked to zionnationalpark.com)
+    while Zion's own scenic_drives list -- populated by ai_content.py's
+    destination-content generation, which always runs before URL discovery
+    -- independently included 'Kolob Canyons Road' for the exact same real
+    place. The en-route-stop duplicate must be dropped in favor of the
+    destination's own (fuller, more authoritative) entry."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {
+                    "name": "Kolob Canyons Scenic Drive",
+                    "url": "https://zionnationalpark.com/getting-around/",
+                    "description": (
+                        "Kolob Canyons Scenic Drive runs for 5 miles from the Kolob Canyons "
+                        "Visitor Center along a ridge up to Kolob Canyons Viewpoint."
+                    ),
+                    "detour_distance_miles": 10,
+                    "detour_time_minutes": 15,
+                },
+            ],
+        }
+    }
+    dest = {
+        "name": "Zion National Park",
+        "scenic_drives": [
+            {
+                "title": "Kolob Canyons Road",
+                "distance_or_duration": "5 miles",
+                "description": "A lesser-known but beautiful drive that leads to the Kolob Canyons section of Zion.",
+            }
+        ],
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        discoverer._discover_en_route_stops(
+            ai,
+            "Zion National Park",
+            origin_name="St. George, Utah",
+            dest=dest,
+        )
+
+    assert ai["getting_here"]["en_route_stops"] == []
+
+
+def test_en_route_stop_address_key_matches_bare_address_and_named_variant() -> None:
+    """Direct unit test for the Moab Museum address-key matcher: a bare
+    street address and a venue name plus the same address reduce to the
+    same normalized key."""
+    bare = URLDiscoverer._en_route_stop_address_key("118 E Center St, Moab, UT 84532")
+    named = URLDiscoverer._en_route_stop_address_key("Moab Museum, 118 E Center St, Moab, UT")
+    assert bare and named
+    assert bare == named
+
+
+def test_en_route_stop_name_is_bare_street_address() -> None:
+    assert URLDiscoverer._en_route_stop_name_is_bare_street_address("118 E Center St, Moab, UT 84532") is True
+    assert URLDiscoverer._en_route_stop_name_is_bare_street_address("Moab Museum, 118 E Center St, Moab, UT") is False
+
+
+def test_discover_en_route_stops_dedupes_bare_address_against_named_entry_same_leg() -> None:
+    """Regression for a real Moab -> Arches leg Google Maps waypoint
+    screenshot: the harvested en_route_stops list for a single leg included
+    both a bare geocoded address ('118 E Center St, Moab, UT 84532') and a
+    named entry for the exact same address ('Moab Museum, 118 E Center St,
+    Moab, UT') as two separate candidates -- the same real place forced onto
+    the route as two waypoints, contributing to the observed route bouncing
+    between Moab town and inside Arches. The named entry (more informative)
+    must survive; the bare-address duplicate must be dropped."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {"name": "118 E Center St, Moab, UT 84532"},
+                {
+                    "name": "Moab Museum, 118 E Center St, Moab, UT",
+                    "description": "Local history museum in downtown Moab.",
+                },
+            ],
+        }
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        discoverer._discover_en_route_stops(
+            ai,
+            "Arches National Park",
+            origin_name="Moab, Utah",
+        )
+
+    names = [str(s.get("name", "") or "") for s in ai["getting_here"]["en_route_stops"]]
+    assert names == ["Moab Museum, 118 E Center St, Moab, UT"]
+
+
+def test_dedupe_en_route_stops_same_leg_by_geocode_proximity_keeps_named_entry() -> None:
+    """Same-place collapse for two stops that don't share a parseable street
+    address but geocode to essentially the same point -- the geocode-based
+    fallback for the address-key pass above."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    stops = [
+        {"name": "Moab Museum of Film and Western Heritage", "geocode_lat": 38.5733, "geocode_lng": -109.5498,
+         "description": "Museum near downtown Moab."},
+        {"name": "Downtown Moab Pin", "geocode_lat": 38.57335, "geocode_lng": -109.54985},
+    ]
+    result = discoverer._dedupe_en_route_stops_same_leg_by_geocode_proximity(stops, "Arches National Park")
+    names = [s["name"] for s in result]
+    assert names == ["Moab Museum of Film and Western Heritage"]
+
+
+# ── Bug 2 (dipstick63): en-route detour distance/time corrected against  ──
+# real geocoded coordinates rather than trusted verbatim from AI/text-mined
+# prose (Kolob Canyons Scenic Drive rendering "(10 mi detour | 15 min)" for
+# a real ~18-20 mi one-way detour off I-15).
+
+def test_en_route_stop_geometry_grounded_detour_floor_rejects_bogus_short_value() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    min_miles, min_minutes = discoverer._en_route_stop_geometry_grounded_detour_floor(20.8)
+    # A round trip can never be shorter than 2x the one-way perpendicular
+    # offset -- the real Kolob Canyons "10 mi detour" figure is well below
+    # this floor and is therefore geometrically impossible.
+    assert min_miles == pytest.approx(41.6)
+    assert 10.0 < min_miles
+    assert min_minutes > 15  # the bogus "15 min" figure is also impossible
+
+
+def test_en_route_stop_geometry_grounded_detour_estimate_exceeds_floor() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    min_miles, _min_minutes = discoverer._en_route_stop_geometry_grounded_detour_floor(20.8)
+    est_miles, est_minutes = discoverer._en_route_stop_geometry_grounded_detour_estimate(20.8)
+    assert est_miles > min_miles
+    assert est_minutes > 0
+
+
+def test_discover_en_route_stops_corrects_geometrically_impossible_detour_distance() -> None:
+    """Regression for dipstick63 Bug 2: 'Kolob Canyons Scenic Drive' rendered
+    '(10 mi detour | 15 min)' on the real St. George -> Springdale (Zion)
+    leg. The stop's real coordinates (Kolob Canyons Visitor Center, off I-15
+    exit 40) sit ~21.8 mi perpendicular-offset from the direct St. George ->
+    Springdale route line -- a round-trip detour to a point that far off the
+    route can never be as short as 10 miles / 15 minutes, so the
+    AI-provided/text-mined figures must be replaced with a geometry-grounded
+    value once the stop's own geocode is available."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "search"
+
+    kolob_coords = (37.4530, -113.3564)
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {
+                    "name": "Kolob Canyons Scenic Drive",
+                    "detour_distance_miles": 10,
+                    "detour_time_minutes": 15,
+                },
+            ],
+        }
+    }
+
+    with patch.object(discoverer, "_search_first", return_value=None):
+        with patch.object(discoverer, "_geocode_en_route_stop_for_route", return_value=kolob_coords):
+            discoverer._discover_en_route_stops(
+                ai,
+                "Zion National Park",
+                origin_name="St. George, Utah",
+                origin_lat=37.0965,
+                origin_lng=-113.5684,
+                dest_lat=37.1889,
+                dest_lng=-112.9975,
+            )
+
+    stop = ai["getting_here"]["en_route_stops"][0]
+    # The real round-trip detour is on the order of 40+ miles / 35-45+ min
+    # each way -- nowhere close to the bogus "10 mi | 15 min" the AI/text
+    # mining originally produced.
+    assert stop["detour_distance_miles"] > 30, stop
+    assert stop["detour_time_minutes"] > 30, stop
+
+
 def test_infer_destination_day_count_from_date_ranges() -> None:
     assert URLDiscoverer._infer_destination_day_count("October 17, 2026") == 1
     assert URLDiscoverer._infer_destination_day_count("October 19-21, 2026") == 3
