@@ -1683,6 +1683,68 @@ def test_intro_note_does_not_repeat_fallback_cultural_events_copy() -> None:
     assert "Local tip:" not in html
 
 
+def test_build_events_local_tip_renders_anchor_around_named_place() -> None:
+    """Project owner's concrete example: 'Check out Moab Farmers Market' names
+    a real place. When cultural_events.py attaches a verified/maps-fallback
+    URL plus the specific place name, the rendered Local Tip must wrap that
+    name in a real clickable <a href> instead of flat escaped text."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    events = {
+        "has_events": False,
+        "honest_assessment": "Moab has a reliable weekly market scene.",
+        "local_tip": "Check out Moab Farmers Market on Thursday evenings for fresh produce.",
+        "local_tip_name": "Moab Farmers Market",
+        "local_tip_url": "https://www.google.com/maps/search/?api=1&query=Moab%20Farmers%20Market",
+    }
+
+    html = assembler._build_events(events, "Moab")
+
+    assert (
+        '<a href="https://www.google.com/maps/search/?api=1&amp;query=Moab%20Farmers%20Market" '
+        'target="_blank" rel="noopener">Moab Farmers Market</a>' in html
+    )
+    assert "Check out " in html
+    assert "on Thursday evenings for fresh produce." in html
+
+
+def test_build_events_local_tip_appends_link_when_name_not_verbatim_in_text() -> None:
+    """If the tip text paraphrases the place name (doesn't contain it
+    verbatim), still surface the real URL rather than silently dropping it --
+    append a linked mention of the place instead."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    events = {
+        "has_events": False,
+        "honest_assessment": "Moab has a reliable weekly market scene.",
+        "local_tip": "Head downtown Thursday evenings for fresh local produce.",
+        "local_tip_name": "Moab Farmers Market",
+        "local_tip_url": "https://moabfarmersmarket.org/",
+    }
+
+    html = assembler._build_events(events, "Moab")
+
+    assert '<a href="https://moabfarmersmarket.org/" target="_blank" rel="noopener">Moab Farmers Market</a>' in html
+    assert "Head downtown Thursday evenings for fresh local produce." in html
+
+
+def test_build_events_local_tip_renders_plain_text_without_url() -> None:
+    """Today's exact behavior must be preserved when no URL is present:
+    plain escaped text, no anchor markup."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    events = {
+        "has_events": False,
+        "honest_assessment": "Quiet scene with visitor center programs.",
+        "local_tip": "Check ranger talks posted at the visitor center desk.",
+    }
+
+    html = assembler._build_events(events, "Zion National Park")
+
+    assert (
+        '<p class="local-tip"><strong>Local tip:</strong> '
+        "Check ranger talks posted at the visitor center desk.</p>" in html
+    )
+    assert "<a href=" not in html
+
+
 def test_image_caption_drops_wikimedia_template_boilerplate() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     image = {

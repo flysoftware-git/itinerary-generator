@@ -1858,8 +1858,33 @@ class HTMLAssembler:
             html += f'<p>{honest}</p>\n'
             tip = events.get("local_tip", "")
             if tip:
+                tip_text = str(tip)
+                tip_url = self._normalize_external_url(events.get("local_tip_url", ""))
+                tip_name = str(events.get("local_tip_name", "") or "").strip()
+                if tip_url and tip_name:
+                    match = re.search(re.escape(tip_name), tip_text, re.IGNORECASE)
+                    if match:
+                        # Link the specific named place where it appears in the tip text.
+                        tip_html = (
+                            html_escape.escape(tip_text[:match.start()])
+                            + f'<a href="{self._safe_href(tip_url)}" target="_blank" rel="noopener">'
+                            + html_escape.escape(tip_text[match.start():match.end()])
+                            + '</a>'
+                            + html_escape.escape(tip_text[match.end():])
+                        )
+                    else:
+                        # Name wasn't found verbatim (e.g. paraphrased) -- append a linked
+                        # mention rather than silently dropping a real, verified URL.
+                        tip_html = (
+                            html_escape.escape(tip_text)
+                            + f' <a href="{self._safe_href(tip_url)}" target="_blank" rel="noopener">'
+                            + html_escape.escape(tip_name)
+                            + '</a>'
+                        )
+                else:
+                    tip_html = html_escape.escape(tip_text)
                 html += (
-                    f'<p class="local-tip"><strong>Local tip:</strong> {html_escape.escape(str(tip))}</p>\n'
+                    f'<p class="local-tip"><strong>Local tip:</strong> {tip_html}</p>\n'
                 )
         html += '</div>\n'
         return html
