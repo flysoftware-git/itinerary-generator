@@ -136,16 +136,36 @@ the owner — do not invent a shape silently.
 
 **Current behavior:** `is_last_destination` (`next_destination` empty,
 `ai_content.py:1481`) unconditionally overwrites the last day's Afternoon
-*and* Evening with static "reserved for return travel" text
-(`ai_content.py:1849-1858`), regardless of how much actual drive time the
-return leg requires. A destination 20 minutes from the airport and one 5
-hours away get identical treatment.
+with static "reserved for return travel" text (`ai_content.py:1849-1858`),
+regardless of how much actual drive time the return leg requires. A
+destination 20 minutes from the airport and one 5 hours away get identical
+treatment.
 
 **Status: (b) partial.** The reservation exists and prevents the original
 bug pattern (activities booked into a window travel logistics dominate),
 but it's a blunt, non-computed block, not a "must leave by X" derived from
 real distance + buffer the way the arrival-day discount (Reserved Travel
 Windows / v2.1 budget section below) at least attempts for inbound legs.
+
+**Update, 2026-08-17 — Evening duplication fixed, blunt-block gap above
+still open.** The owner's review also caught a second symptom of the
+unconditional-block behavior: "Last day still repeats afternoon and
+evening, once headed to airport in the afternoon, there doesn't need to be
+an evening." The code used to set near-identical "reserved for return
+travel" text on *both* Afternoon and Evening — nonsensical once the
+traveler has actually left for the airport that afternoon, since there's no
+one at the destination left to have an evening. Fixed: Evening is now
+cleared (`_set_period_summary(last, "Evening", "")`) instead of getting a
+second copy of the return-travel note; `html_assembler.py`'s
+`_build_schedule` already skips periods with an empty summary, so the slot
+is simply omitted from the rendered card. This is a narrow language/
+rendering fix, not a resolution of the gap above — the block is still
+"Afternoon is universally reserved" rather than derived from the traveler's
+actual return time, so a destination where departure genuinely happens in
+the *evening* (not the afternoon) is not yet distinguished; that requires
+the same return-time-bucketing the owner's Case 1 (arrival) example already
+gets, applied symmetrically here, which remains gated on the open questions
+above (safety-buffer field, return_datetime semantics).
 
 **Gap: (c).** No safety-buffer field, no outbound-drive-time computation for
 the terminal leg.
@@ -239,6 +259,47 @@ time, threaded onward-drive-duration) are resolved.
 duration back to the *current* destination's normalization call (a plumbing
 gap, not just a missing field — see interaction note re: pipeline ordering
 above).
+
+**Update, 2026-08-17 — framing bug fixed, budget/checkout gap above still
+open.** The project owner reviewed a real run and found two symptoms of the
+asymmetry described above:
+
+1. The deterministic last-evening override text itself ("Wrap key stops
+   early and prepare for onward drive to {next}; skip new sunset
+   commitments and keep departure buffers.") read as a multi-hour
+   after-dinner drive, contradicting the no-multi-hour-drives-after-dinner
+   framing already used elsewhere in this function. Fixed: the override now
+   reads "Enjoy a relaxed, local evening; the drive to {next} happens the
+   next morning, not tonight." — reusing the existing relaxed-evening voice
+   (see the closes-early-venue fallback a few paragraphs below) rather than
+   inventing new phrasing, and stating explicitly that the drive is a
+   *tomorrow-morning* event (it's next_destination's own Day 1 arrival leg,
+   not something that happens tonight).
+2. More severe: since the LLM's own schedule text for Morning/Afternoon/
+   every-day-but-the-last-Evening is untouched by normalization, a 3-day
+   intermediate stop could have Day 1 *and* Day 2 (not just the actual
+   departure day) mention departing for `next_destination` — the owner's
+   exact report was "the scheduler is also suggesting departing Capitol
+   Reef each of the 3 days for Moab." Fixed with a defensive scrub pass in
+   `_inject_travel_realism` (`ai_content.py`, after the last-evening
+   override): every period except the one intentionally carrying the
+   departure note is checked for onward-drive phrasing or a literal mention
+   of `next_destination`'s name, and offending sentences are stripped
+   (falling back to a local, non-generic-filler sentence per period type if
+   nothing else survives). The destination-content prompt
+   (`prompts/destination_content.txt`) was also fixed: it had a malformed,
+   unscoped fragment duplicating the old "onward drive" instruction outside
+   any period's JSON field (a likely contributor to the model applying it
+   inconsistently), and now explicitly instructs the model never to
+   reference departure/onward travel in `possible_daily_schedule` on any
+   day, since the app owns that framing deterministically.
+
+Neither fix touches the underlying data gaps above (`checkout_time`, a
+threaded onward-drive duration, or discounting the departure day's activity
+budget the way arrival days already are) — those remain open per the
+"Gap: (c)" note. This update is scoped to *language correctness*: what the
+schedule text says about departure, not *when* departure realistically
+allows activities to end.
 
 ### Case 5 — Multi-day destination, middle day(s)
 
@@ -428,6 +489,30 @@ is implemented. Three distinct scheduling looseness levels, not two.
 ## Entry Point
 `AIContentGenerator._normalize_schedule(...)` in `generator/ai_content.py`.
 
+**A second, separate normalization pass exists outside this file:**
+`generator/entity_registry.py:reconcile_schedule_from_registry`, called from
+`main.py:_reconcile_trip_via_registry` *after* `_normalize_schedule` has
+already run and after the entity registry's final accept/reject state is
+known (URL validation, dedup, cross-destination reassignment, threshold
+demotion, etc. — none of which is knowable at `_normalize_schedule` time,
+since it runs per-destination before those pipeline stages). If a schedule
+period names an attraction/restaurant/stop that gets rejected later, this
+pass rewrites that period's text. Until 2026-08-17 it always replaced the
+*entire* period with a fully generic sentence (e.g. "Focus on currently
+eligible nearby highlights and realistic transition time between stops.")
+regardless of whether another real, still-accepted attraction for that same
+destination was available to name instead — this was the actual source of
+the project owner's "generic filler instead of concrete attraction
+allocation" complaint (not an LLM prompt-echo; the phrase is a Python
+literal in `_SCHEDULE_FALLBACK_BY_PERIOD`, never present in any
+`ai_content.py` prompt template). Fixed: the pass now looks for an
+unblocked, not-yet-mentioned-elsewhere attraction from the destination's own
+(already-reconciled) `top_attractions` and re-anchors the period's text to
+name it concretely; the fully generic fallback is now reserved for the case
+where truly nothing real is left to substitute (verified by
+`tests/test_entity_registry.py::test_reconcile_schedule_from_registry_afternoon_names_a_real_substitute_not_generic_filler`
+and the adjacent threshold-demoted-mention test).
+
 Inputs include:
 - raw schedule payload from model output
 - dinner recommendations (for named-dinner constraints)
@@ -504,7 +589,13 @@ generic fallback string does within one.
 ## Travel Realism Injection
 `_inject_travel_realism` applies route-aware adjustments:
 - For multi-day stops, Day 1 can get arrival-driving context.
-- Last day evening gets onward-drive preparation note when a next destination exists.
+- Last day evening at a transfer destination (a next destination exists) gets
+	a relaxed, local framing that explicitly states the onward drive happens
+	the *next morning* — never phrasing that reads as a same-night drive
+	(2026-08-17 fix; see Case 4 in the Physical Reality Model section above).
+- Earlier days of that same multi-day transfer destination are scrubbed of
+	any premature onward-drive/next-destination mentions (2026-08-17 fix,
+	same section).
 - Single-day schedules skip this to avoid duplicating route detail already shown
 	in the Getting Here card.
 
@@ -597,13 +688,23 @@ First destination rule:
 - Trigger condition: `previous_destination` is empty or `none`.
 
 Final destination rule:
-- Last day Afternoon and Evening are reserved for return travel to base.
+- Last day Afternoon is reserved for return travel to base; Evening is
+  cleared (not rendered) rather than repeating a near-duplicate note, since
+  the traveler has already left by the time Evening would occur (2026-08-17
+  fix — see Case 2 above).
 - Trigger condition: `next_destination` is empty.
-- Unconditional and duration-blind: applies the same two-period reservation
-  regardless of actual drive distance to the return point (Case 2, GH #16).
+- Unconditional and duration-blind: applies the same reservation regardless
+  of actual drive distance to the return point (Case 2, GH #16).
 
 Intermediate destinations:
-- Keep onward-drive guidance on final evening (existing behavior).
+- Final evening at a transfer destination stays local/relaxed and explicitly
+  states the onward drive happens the *next* morning, not that night — never
+  reworded as an onward-drive-prep block that could be read as a same-night
+  drive (2026-08-17 fix — see Case 4 above).
+- Earlier days of a multi-day transfer destination (not the actual departure
+  day) are scrubbed of any premature onward-drive/next-destination mentions
+  the LLM's own text may have introduced (2026-08-17 fix — see Case 4
+  above).
 
 Design intent:
 - Prevent unrealistic booking of activities in boundary windows where travel
