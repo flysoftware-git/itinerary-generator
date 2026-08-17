@@ -2082,6 +2082,11 @@ class URLDiscoverer:
                 for seed in (dest.get("seeds", []) or [])
                 if str(seed or "").strip()
             }
+            en_route_seed_key_set = {
+                re.sub(r"[^a-z0-9]+", " ", str(seed or "").lower()).strip()
+                for seed in (dest.get("en_route_seeds", []) or [])
+                if str(seed or "").strip()
+            }
             ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content", {}), dict) else {}
 
             max_trail_miles = float(getattr(self, "_max_trail_miles", DEFAULT_MAX_TRAIL_MILES) or 0)
@@ -2161,7 +2166,15 @@ class URLDiscoverer:
                             url="",
                         )
                         self._annotate_registry_url_decision(attr, rendered_url="", rejection_reason="threshold_demoted_to_attraction")
-                        eligible_attractions.append(attr)
+                        if self._keep_item_if_verified_or_seed(
+                            dest, attr, attr_name,
+                            is_seed=is_seed,
+                            section_target="top_attractions",
+                            entity_class="attraction",
+                            kind="attraction",
+                            dest_name=dest_name,
+                        ):
+                            eligible_attractions.append(attr)
                         continue
                     if threshold_miles is not None and threshold_miles > max_trail_miles and is_seed:
                         # A seed must never end up with zero link, but confidently
@@ -2271,7 +2284,15 @@ class URLDiscoverer:
                                 rendered_url=str(attr.get("url", "") or ""),
                                 rejection_reason="" if attr.get("url") else "url_rejected",
                             )
-                    eligible_attractions.append(attr)
+                    if self._keep_item_if_verified_or_seed(
+                        dest, attr, attr_name,
+                        is_seed=is_seed,
+                        section_target="top_attractions",
+                        entity_class="trail" if trail_like else "attraction",
+                        kind="attraction",
+                        dest_name=dest_name,
+                    ):
+                        eligible_attractions.append(attr)
                     continue
                 cleaned = self._retain_discovered_url(
                     url,
@@ -2295,7 +2316,15 @@ class URLDiscoverer:
                         else:
                             attr.pop("maps_url", None)
                         self._annotate_registry_url_decision(attr, rendered_url="", rejection_reason="url_rejected")
-                eligible_attractions.append(attr)
+                if self._keep_item_if_verified_or_seed(
+                    dest, attr, attr_name,
+                    is_seed=is_seed,
+                    section_target="top_attractions",
+                    entity_class="trail" if trail_like else "attraction",
+                    kind="attraction",
+                    dest_name=dest_name,
+                ):
+                    eligible_attractions.append(attr)
 
             if len(eligible_attractions) != len(ai.get("top_attractions", []) or []):
                 ai["top_attractions"] = eligible_attractions
@@ -2307,8 +2336,14 @@ class URLDiscoverer:
                 if str(a.get("url", "") or "").strip()
             }
 
+            eligible_stops: list[dict[str, Any]] = []
             for stop in ai.get("getting_here", {}).get("en_route_stops", []) or []:
                 stop_name = str(stop.get("name", "") or "")
+                stop_key = re.sub(r"[^a-z0-9]+", " ", stop_name.lower()).strip()
+                stop_is_seed = bool(
+                    (stop_key and stop_key in en_route_seed_key_set) or stop.get("is_seed")
+                )
+                stop["is_seed"] = stop_is_seed
                 url = str(stop.get("url", "") or "").strip()
                 direct_batch_authoritative_url = self._is_remembered_direct_batch_authoritative_url(url, stop_name)
                 maps_url = str(stop.get("maps_url", "") or "").strip()
@@ -2320,6 +2355,7 @@ class URLDiscoverer:
                     dest_name,
                     allow_alltrails=False,
                     kind="en-route stop",
+                    is_seed=stop_is_seed,
                 )
                 if cleaned != url:
                     self._log_rejected_url("en-route stop", dest_name, stop_name, url)
@@ -2335,6 +2371,19 @@ class URLDiscoverer:
                         else:
                             stop.pop("maps_url", None)
                         self._annotate_registry_url_decision(stop, rendered_url="", rejection_reason="url_rejected")
+                if self._keep_item_if_verified_or_seed(
+                    dest, stop, stop_name,
+                    is_seed=stop_is_seed,
+                    section_target="en_route_stops",
+                    entity_class="en_route_stop",
+                    kind="en_route_stop",
+                    dest_name=dest_name,
+                ):
+                    eligible_stops.append(stop)
+            gh_block = ai.get("getting_here", {})
+            if isinstance(gh_block, dict) and len(eligible_stops) != len(gh_block.get("en_route_stops", []) or []):
+                gh_block["en_route_stops"] = eligible_stops
+                ai["getting_here"] = gh_block
 
             for route_opt in ai.get("getting_there", {}).get("route_options", []) or []:
                 opt_name = str(route_opt.get("title", "") or route_opt.get("name", "") or "")
@@ -2409,7 +2458,19 @@ class URLDiscoverer:
                         rejection_reason="entity_removed",
                     )
                     continue
-                eligible_restaurants.append(rest)
+                # Restaurants carry no seed concept anywhere in this codebase
+                # (no manifest field, no is_seed tracking) -- every restaurant
+                # is a non-seed item for policy purposes, so is_seed=False
+                # unconditionally here.
+                if self._keep_item_if_verified_or_seed(
+                    dest, rest, rest_name,
+                    is_seed=False,
+                    section_target="dinner_recommendations",
+                    entity_class="restaurant",
+                    kind="restaurant",
+                    dest_name=dest_name,
+                ):
+                    eligible_restaurants.append(rest)
             if len(eligible_restaurants) != len(ai.get("dinner_recommendations", []) or []):
                 ai["dinner_recommendations"] = eligible_restaurants
 
@@ -3552,6 +3613,72 @@ class URLDiscoverer:
             "metadata": {"removed": True},
         })
         dest["_registry_decisions"] = decisions
+
+    @staticmethod
+    def _item_has_verified_url(item: dict[str, Any]) -> bool:
+        """True when `item["url"]` is a real, specific source link.
+
+        A generic Google Maps search/directions URL is a best-guess text
+        query, never confirmed to be about the right specific place -- it
+        does not satisfy "verified" under the verified-link-or-seed policy
+        (project owner decision, 2026-08-17). Only the `url` field counts;
+        a `maps_url` fallback (kept separately for the optional map-icon
+        link) never counts as verification on its own.
+        """
+        url = str((item or {}).get("url", "") or "").strip()
+        if not url:
+            return False
+        return URLDiscoverer._classify_url_policy_class(url) not in {
+            "google_maps_search",
+            "google_maps_dir",
+        }
+
+    def _keep_item_if_verified_or_seed(
+        self,
+        dest: dict[str, Any],
+        item: dict[str, Any],
+        item_name: str,
+        *,
+        is_seed: bool,
+        section_target: str,
+        entity_class: str,
+        kind: str,
+        dest_name: str,
+    ) -> bool:
+        """Decide whether `item` stays in its section's list.
+
+        Policy (project owner decision, 2026-08-17): a non-seed item with
+        no real, verified, specific source URL -- after all discovery/
+        search/retry attempts are exhausted -- is removed from the
+        itinerary entirely, not shown with a caution badge and not shown
+        with a maps-search fallback link. A seed item (the traveler's own
+        explicit request via the manifest `seeds`/`en_route_seeds` fields)
+        always stays, even unverified, because an unverifiable seed may be
+        a typo/obscure-but-real place rather than a systemic pipeline
+        failure -- silently dropping a traveler's own request would be a
+        worse UX failure than showing it honestly-unverified.
+
+        Returns True (keep) or False (drop, after logging the removal for
+        registry/audit visibility).
+        """
+        if is_seed or self._item_has_verified_url(item):
+            return True
+        self._log_decision(
+            kind=kind,
+            dest_name=dest_name,
+            item_name=item_name,
+            reason="no_verified_url_removed",
+            message="non-seed item removed: no real verified source URL survived discovery/audit",
+        )
+        self._record_registry_entity_removal(
+            dest,
+            section_target=section_target,
+            entity_class=entity_class,
+            display_name=item_name,
+            description=str(item.get("description", "") or ""),
+            rejection_reason="no_verified_url_removed",
+        )
+        return False
 
     # ── Attractions ──────────────────────────────────────────────────────────
 

@@ -4,14 +4,24 @@ Gap this closes: the test suite has 698+ tests, but the overwhelming majority
 construct classes via __new__ (bypassing __init__) and exercise one method in
 isolation. Zero tests previously exercised the real chain of
 generate_all -> discover_all -> audit_discovered_urls -> normalize_trip_content
--> HTMLAssembler.assemble with real __init__-constructed instances. Several
-real bugs found in this project's history were "seam" bugs -- each piece
-correct in isolation, the wiring between them wrong -- which unit tests
-structurally cannot catch. This test mocks only the actual network boundary
-(LLM calls, Grok search/harvest, and a blanket requests.Session.request
-safety net) and lets everything else run for real: config loading, prompt
-templates, normalization, entity-name matching, badge computation, template
-checksum verification, HTML rendering.
+-> entity-registry reconciliation -> HTMLAssembler.assemble with real
+__init__-constructed instances. Several real bugs found in this project's
+history were "seam" bugs -- each piece correct in isolation, the wiring
+between them wrong -- which unit tests structurally cannot catch. This test
+mocks only the actual network boundary (LLM calls, Grok search/harvest, and a
+blanket requests.Session.request safety net) and lets everything else run for
+real: config loading, prompt templates, normalization, entity-name matching,
+badge computation, template checksum verification, HTML rendering.
+
+The entity-registry reconciliation step (generator/main.py's
+_reconcile_trip_via_registry) matters here specifically for the
+verified-link-or-seed policy (2026-08-17): url_discovery.py's audit pass
+prunes non-seed, unverified items from the trip data, but the daily-schedule
+narrative text is authored by the LLM earlier in generate_all and can still
+mention a since-pruned item by name. Only reconcile_schedule_from_registry
+(which reads the removal decisions url_discovery.py records) scrubs those
+stale mentions -- skipping it here would hide a real bug this test exists to
+catch.
 """
 from __future__ import annotations
 
@@ -23,6 +33,11 @@ import pytest
 import requests
 
 from generator.ai_content import AIContentGenerator
+from generator.entity_registry import (
+    build_entity_registry,
+    reconcile_schedule_from_registry,
+    reconcile_trip_from_registry,
+)
 from generator.html_assembler import HTMLAssembler
 from generator.llm_client import UsageTracker
 from generator.parser import ManifestParser
@@ -186,24 +201,42 @@ def test_core_pipeline_generates_valid_checksummed_html_with_no_network(_no_netw
 
     ai_gen.normalize_trip_content(trip)
 
+    # Matches generator/main.py's real pipeline order: entity-registry
+    # reconciliation runs after normalize_trip_content, and
+    # reconcile_schedule_from_registry scrubs any daily-schedule narrative
+    # text that still names an item url_discovery.py's audit pass pruned
+    # (see the module docstring above).
+    registry = build_entity_registry(trip)
+    trip = reconcile_trip_from_registry(trip, registry)
+    reconcile_schedule_from_registry(trip, registry)
+    dest = trip["destinations"][0]
+
     # Cross-module contract: a seed name from the manifest, echoed verbatim
     # by the (fake) LLM, must be marked is_seed by url_discovery.py -- this
     # is exactly the kind of seam that a mocked-in-isolation unit test can't
     # observe, since url_discovery.py's own tests never see real
     # AIContentGenerator output and ai_content.py's tests never see
     # url_discovery.py run.
+    #
+    # Under the verified-link-or-seed policy (2026-08-17), with the network
+    # fully disabled nothing gets a real discovered url: the seeded "Angels
+    # Landing" still survives audit (shown unverified), but the non-seed
+    # "Sunset Point" attraction and non-seed "Spotted Dog Cafe" restaurant
+    # (restaurants have no seed concept at all) are pruned from the trip data
+    # entirely rather than kept with an empty url.
     attractions_by_name = {a["name"]: a for a in dest["ai_content"]["top_attractions"]}
     assert "Angels Landing" in attractions_by_name
     assert attractions_by_name["Angels Landing"].get("is_seed") is True
-    assert attractions_by_name["Sunset Point"].get("is_seed") is not True
+    assert "Sunset Point" not in attractions_by_name
+    assert dest["ai_content"]["dinner_recommendations"] == []
 
     assembler = HTMLAssembler("config.yaml")
     html = assembler.assemble(trip)  # raises RuntimeError if template checksum mismatches
 
     assert "<html" in html.lower()
     assert "Angels Landing" in html
-    assert "Sunset Point" in html
-    assert "Spotted Dog Cafe" in html
+    assert "Sunset Point" not in html
+    assert "Spotted Dog Cafe" not in html
     assert "Canyon Scenic Drive" in html
     # The seed badge for the manifest-requested attraction.
     assert '<span class="badge badge-seed">Your Pick</span>' in html

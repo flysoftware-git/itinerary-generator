@@ -7015,11 +7015,11 @@ def test_audit_demotes_direct_batch_authoritative_trail_when_over_miles_threshol
     with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
         discoverer.audit_discovered_urls(trip)
 
+    # Policy (2026-08-17): a non-seed item demoted below the trail-miles
+    # threshold has no verified link left after demotion -- it must be
+    # removed from the itinerary entirely, not kept with an empty url.
     attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
-    assert len(attractions) == 1
-    assert str(attractions[0].get("url", "")) == ""
-    assert attractions[0].get("type") == "attraction"
-    assert str(attractions[0].get("maps_url", "") or "") == ""
+    assert attractions == []
 
 
 def test_audit_demotes_long_trail_when_over_miles_threshold() -> None:
@@ -7057,13 +7057,10 @@ def test_audit_demotes_long_trail_when_over_miles_threshold() -> None:
     with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
         discoverer.audit_discovered_urls(trip)
 
+    # Policy (2026-08-17): non-seed, over-threshold demoted trail has no
+    # verified link -- removed from the itinerary entirely.
     attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
-    assert len(attractions) == 1
-    assert attractions[0].get("type") == "attraction"
-    assert str(attractions[0].get("url", "")) == ""
-    assert str(attractions[0].get("maps_url", "") or "") == ""
-    assert "5.4" in str(attractions[0].get("practical_note", "") or "")
-    assert "3-mile threshold" in str(attractions[0].get("practical_note", "") or "")
+    assert attractions == []
 
 
 def test_audit_demotion_strips_hike_badge_fields_not_just_type_and_url() -> None:
@@ -7076,6 +7073,12 @@ def test_audit_demotion_strips_hike_badge_fields_not_just_type_and_url() -> None
     is independent of "type" and was never cleared during demotion. A demoted
     trail must present as a genuinely plain attraction, not a hike whose link
     happened to be removed.
+
+    Both items are non-seed, so under the verified-link-or-seed policy
+    (2026-08-17) they are additionally pruned from top_attractions entirely
+    after demotion (asserted below). The field-stripping itself is still
+    verified by holding direct references to the original dicts, which are
+    mutated in place before being dropped from the list.
     """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._max_trail_miles = 3.0
@@ -7124,12 +7127,12 @@ def test_audit_demotion_strips_hike_badge_fields_not_just_type_and_url() -> None
         ]
     }
 
+    original_attrs = list(trip["destinations"][0]["ai_content"]["top_attractions"])
+
     with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
         discoverer.audit_discovered_urls(trip)
 
-    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
-    assert len(attractions) == 2
-    for attr in attractions:
+    for attr in original_attrs:
         assert attr.get("type") == "attraction"
         assert str(attr.get("url", "")) == ""
         assert "threshold" in str(attr.get("practical_note", "") or "").lower()
@@ -7138,6 +7141,11 @@ def test_audit_demotion_strips_hike_badge_fields_not_just_type_and_url() -> None
         # longer being presented as a hike.
         assert "difficulty" not in attr
         assert "elevation_gain_feet" not in attr
+
+    # Policy (2026-08-17): both are non-seed and, after demotion, have no
+    # verified url -- removed from top_attractions entirely.
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert attractions == []
 
 
 def test_audit_demotes_alltrails_linked_attraction_when_description_lacks_trail_keywords() -> None:
@@ -7175,12 +7183,9 @@ def test_audit_demotes_alltrails_linked_attraction_when_description_lacks_trail_
         ):
             discoverer.audit_discovered_urls(trip)
 
+    # Policy (2026-08-17): non-seed, demoted with no verified link -- removed.
     attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
-    assert len(attractions) == 1
-    assert attractions[0].get("type") == "attraction"
-    assert str(attractions[0].get("url", "") or "") == ""
-    assert str(attractions[0].get("maps_url", "") or "") == ""
-    assert "3-mile threshold" in str(attractions[0].get("practical_note", "") or "")
+    assert attractions == []
 
 
 def test_audit_demotes_trail_over_threshold_keeps_primary_maps_search_url() -> None:
@@ -7218,11 +7223,9 @@ def test_audit_demotes_trail_over_threshold_keeps_primary_maps_search_url() -> N
     with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
         discoverer.audit_discovered_urls(trip)
 
+    # Policy (2026-08-17): non-seed, demoted with no verified link -- removed.
     attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
-    assert len(attractions) == 1
-    assert attractions[0]["type"] == "attraction"
-    assert str(attractions[0].get("url", "") or "") == ""
-    assert str(attractions[0].get("maps_url", "") or "") == ""
+    assert attractions == []
 
 
 def test_summarizes_restaurant_dispositions_by_item_and_source() -> None:
@@ -7781,11 +7784,13 @@ def test_audit_marks_seed_attraction_and_seed_survives_render_without_url() -> N
 
 def test_audit_seed_vs_nonseed_with_identical_thin_content_diverge_in_render() -> None:
     """Differential proof that the seed override actually discriminates: a seed
-    and a non-seed attraction with byte-identical (thin, linkless) content must
-    render differently. Only the seed is a documented user-requested anchor
+    and a non-seed attraction with byte-identical (thin, linkless, no-url)
+    content must diverge. Only the seed is a documented user-requested anchor
     (requirements.md §3.4, 'Dark Sky Stargazing' is a listed experience-anchor
-    example); the non-seed must still be dropped per the ordinary no-url
-    eligibility bar so the seed override isn't accidentally a blanket bypass."""
+    example); under the verified-link-or-seed policy (2026-08-17) the non-seed
+    twin is removed from `top_attractions` entirely at audit time (not just
+    hidden at render time) so the seed override isn't accidentally a blanket
+    bypass."""
     from generator.html_assembler import HTMLAssembler
 
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
@@ -7817,7 +7822,9 @@ def test_audit_seed_vs_nonseed_with_identical_thin_content_diverge_in_render() -
     ai = trip["destinations"][0]["ai_content"]
     attractions = {a["name"]: a for a in ai["top_attractions"]}
     assert attractions["Dark Sky Stargazing"].get("is_seed") is True
-    assert attractions["Random Overlook"].get("is_seed") is False
+    # Random Overlook is non-seed and never got a verified url -- removed
+    # from top_attractions entirely, not merely present-with-empty-url.
+    assert "Random Overlook" not in attractions
 
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     html = assembler._build_attractions(ai, drives=[], dest_name="Zion National Park")
@@ -7855,12 +7862,9 @@ def test_audit_demotes_trail_when_description_distance_exceeds_threshold_hyphena
     with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
         discoverer.audit_discovered_urls(trip)
 
+    # Policy (2026-08-17): non-seed, demoted with no verified link -- removed.
     attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
-    assert len(attractions) == 1
-    assert attractions[0].get("name") == "Angels Landing"
-    assert attractions[0].get("type") == "attraction"
-    assert str(attractions[0].get("url", "") or "") == ""
-    assert str(attractions[0].get("maps_url", "") or "") == ""
+    assert attractions == []
 
 
 def test_audit_demotes_trail_when_fetched_page_distance_exceeds_threshold():
@@ -7894,12 +7898,9 @@ def test_audit_demotes_trail_when_fetched_page_distance_exceeds_threshold():
         with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, "Length: 9.0 mi. Elevation gain 700 ft.")):
             discoverer.audit_discovered_urls(trip)
 
+    # Policy (2026-08-17): non-seed, demoted with no verified link -- removed.
     attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
-    assert len(attractions) == 1
-    assert attractions[0].get("name") == "San Miguel River Trail"
-    assert attractions[0].get("type") == "attraction"
-    assert str(attractions[0].get("url", "") or "") == ""
-    assert str(attractions[0].get("maps_url", "") or "") == ""
+    assert attractions == []
 
 
 
@@ -8069,9 +8070,10 @@ def test_audit_validates_authoritative_restaurant_maps_place_url():
     with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
         discoverer.audit_discovered_urls(trip)
 
+    # Policy (2026-08-17): restaurants have no seed concept -- a restaurant
+    # rejected down to no url is removed from dinner_recommendations entirely.
     restaurants = trip["destinations"][0]["ai_content"]["dinner_recommendations"]
-    assert len(restaurants) == 1
-    assert "url" not in restaurants[0]
+    assert restaurants == []
 
 
 def test_audit_validates_authoritative_attraction_url():
@@ -8107,9 +8109,11 @@ def test_audit_validates_authoritative_attraction_url():
         with patch.object(discoverer, "_retain_discovered_url", return_value="") as mock_retain:
             discoverer.audit_discovered_urls(trip)
 
+    # Policy (2026-08-17): non-seed attraction rejected down to no url is
+    # removed from top_attractions entirely.
     assert mock_retain.called
     attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
-    assert "url" not in attractions[0]
+    assert attractions == []
 
 
 def test_audit_validates_authoritative_en_route_stop_url():
@@ -8146,9 +8150,11 @@ def test_audit_validates_authoritative_en_route_stop_url():
         with patch.object(discoverer, "_retain_discovered_url", return_value="") as mock_retain:
             discoverer.audit_discovered_urls(trip)
 
+    # Policy (2026-08-17): non-seed en-route stop rejected down to no url is
+    # removed from en_route_stops entirely.
     assert mock_retain.called
     stops = trip["destinations"][0]["ai_content"]["getting_here"]["en_route_stops"]
-    assert "url" not in stops[0]
+    assert stops == []
 
 
 def test_retain_discovered_url_rejects_incomplete_google_maps_place_link():
@@ -8266,7 +8272,11 @@ def test_audit_removes_uninterested_attractions_from_top_list():
                             "name": "Snow Canyon State Park",
                             "type": "attraction",
                             "description": "Red rock park with scenic overlooks.",
-                            "url": "https://www.google.com/maps/search/?api=1&query=Snow+Canyon+State+Park",
+                            # A real, specific source url (not a maps-search
+                            # fallback) so this survives the verified-link-or-
+                            # seed policy independently of the interest filter
+                            # this test is actually exercising.
+                            "url": "https://stateparks.utah.gov/parks/snow-canyon/",
                         },
                     ],
                     "getting_here": {"en_route_stops": []},
@@ -11173,9 +11183,12 @@ def test_audit_fail_closed_removes_named_entity_url_when_policy_blocks_only_cand
 
     discoverer.audit_discovered_urls(trip)
 
-    attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
-    assert str(attraction.get("url", "") or "") == ""
-    assert str(attraction.get("maps_url", "") or "").startswith("https://www.google.com/maps/search/?api=1&query=")
+    # Policy (2026-08-17): the only candidate URL is a google_maps_search
+    # link blocked by enforce-mode policy, leaving a non-seed attraction
+    # with no verified url and no maps fallback to render -- removed from
+    # top_attractions entirely rather than kept as a maps-only fallback card.
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert attractions == []
 
 
 def test_load_url_policy_allowlist_merges_manual_and_output_urls(tmp_path):
@@ -13934,11 +13947,14 @@ def test_audit_strips_non_alltrails_url_for_trail_like_attraction_but_assigns_ma
     trail-like attraction (it can't tell a specifically-matched authoritative
     recovery -- e.g. real dipstick64 "Bryce Point", a misclassified viewpoint
     whose correct nps.gov page was recovered via the attraction direct-batch
-    fallback -- from an arbitrary low-confidence web hit). But since the
-    audit-pass no-link-fallback fix, when there's no pre-existing maps_url to
-    fall back on either, it now assigns the same safe Google-Maps-search
-    fallback every other "no URL found" attraction gets, instead of leaving
-    the item completely unverified.
+    fallback -- from an arbitrary low-confidence web hit). Since the audit-pass
+    no-link-fallback fix, when there's no pre-existing maps_url to fall back on
+    either, it still internally assigns the same safe Google-Maps-search
+    fallback every other "no URL found" attraction gets (asserted below via
+    the registry decision) -- but under the verified-link-or-seed policy
+    (2026-08-17) a maps-search fallback is explicitly NOT "verified", so this
+    non-seed attraction is then removed from top_attractions entirely rather
+    than rendered with the fallback as its link.
     """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._url_validator = MagicMock()
@@ -13970,9 +13986,13 @@ def test_audit_strips_non_alltrails_url_for_trail_like_attraction_but_assigns_ma
         ]
     }
 
+    # Keep a direct reference to the original dict -- it's mutated in place
+    # with the internally-assigned maps fallback even though the policy
+    # prunes it out of top_attractions afterward.
+    attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
+
     discoverer.audit_discovered_urls(trip)
 
-    attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
     assert attraction.get("url") == (
         "https://www.google.com/maps/search/?api=1&query=Grand%20Wash%20Trail%20Bryce%20Canyon%20National%20Park"
     )
@@ -13980,6 +14000,10 @@ def test_audit_strips_non_alltrails_url_for_trail_like_attraction_but_assigns_ma
     assert attraction["_registry"]["validation_status"] == "accepted"
     assert attraction["_registry"]["rendered_url"] == attraction["url"]
     assert "url_rejected" not in attraction["_registry"].get("rejection_reasons", [])
+    # Policy (2026-08-17): a maps-search fallback is not "verified" -- this
+    # non-seed attraction is removed from top_attractions entirely despite
+    # the fallback having been internally assigned.
+    assert trip["destinations"][0]["ai_content"]["top_attractions"] == []
 
 
 def test_audit_real_bryce_point_misclassified_viewpoint_gets_maps_fallback_not_stripped() -> None:
@@ -13990,10 +14014,17 @@ def test_audit_real_bryce_point_misclassified_viewpoint_gets_maps_fallback_not_s
     page via the attraction direct-batch fallback (reason=trail_like_
     misclassified_attraction_batch_recovered), but this later audit_discovered_
     urls safety pass re-derives trail_like the same way, sees a non-AllTrails
-    URL, and (before this fix) stripped it with no maps fallback because no
-    maps_url had ever been populated for this recovery path -- rendering with
-    the "Unverified" badge and no link at all despite discovery having found
-    the correct page. It must now get the safe maps-search fallback instead.
+    URL, and strips it, internally assigning the same safe maps-search
+    fallback every other "no URL found" attraction gets instead of leaving no
+    link at all.
+
+    Under the verified-link-or-seed policy (2026-08-17) a maps-search
+    fallback is explicitly not "verified", so this non-seed item is then
+    removed from top_attractions entirely -- a real nps.gov page existed but
+    the audit pass's own AllTrails-only rule for trail-like items discarded
+    it before the fallback was assigned, and the fallback itself doesn't earn
+    it a spot on the card list. This is a known, deliberate trade-off of the
+    2026-08-17 policy, not a bug in this pass.
     """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._url_validator = MagicMock()
@@ -14028,15 +14059,18 @@ def test_audit_real_bryce_point_misclassified_viewpoint_gets_maps_fallback_not_s
         ]
     }
 
+    attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
+
     discoverer.audit_discovered_urls(trip)
 
-    attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
     # "Bryce Point" already shares a token ("Bryce") with the destination name,
     # so _maps_fallback_query_text uses the item name alone rather than
     # appending the destination again.
     assert attraction.get("url") == "https://www.google.com/maps/search/?api=1&query=Bryce%20Point"
     assert attraction.get("maps_url") == attraction.get("url")
     assert attraction.get("url") != "https://www.nps.gov/brca/planyourvisit/brycepoint.htm"
+    # Policy (2026-08-17): non-seed, maps-fallback-only -- removed.
+    assert trip["destinations"][0]["ai_content"]["top_attractions"] == []
 
 
 def test_semantic_scoring_prefers_cultural_domain_over_preserve_domain():
@@ -14302,9 +14336,10 @@ def test_audit_discovered_urls_strips_weak_hallucinated_links():
         ]
     }
 
+    attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
+
     discoverer.audit_discovered_urls(trip)
 
-    attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
     # The weak/hallucinated dixie.edu URL is still stripped (unchanged). Since
     # the audit-pass no-link-fallback fix, the trail-like attraction then gets
     # the same safe maps-search fallback every other unresolved attraction
@@ -14314,6 +14349,10 @@ def test_audit_discovered_urls_strips_weak_hallucinated_links():
         "https://www.google.com/maps/search/?api=1&query=Dixie%20State%20University%20Trail%20St.%20George%2C%20Utah"
     )
     assert attraction.get("url") != "https://www.dixie.edu/trails/dixie-trail"
+    # Policy (2026-08-17): a maps-search fallback is not "verified" -- this
+    # non-seed attraction is removed from top_attractions entirely despite
+    # the fallback having been internally assigned.
+    assert trip["destinations"][0]["ai_content"]["top_attractions"] == []
     assert "url" not in trip["destinations"][0]["scenic_drives"][0]
     assert "url" not in trip["destinations"][0]["cultural_events"]["events"][0]
 
