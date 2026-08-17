@@ -1042,16 +1042,27 @@ class HTMLAssembler:
         css_class: str = "group-base-pointer",
     ) -> str:
         """Compact link back to a grouped entry's base section, e.g.
-        'Dining: see Moab'. Returns "" when the base can't be resolved."""
+        'Dining: see Moab'. Returns "" when the base can't be resolved.
+
+        dipstick60 Bug 3: only the destination name itself ("Moab") is the
+        clickable anchor -- the icon/label prefix stays plain text -- so the
+        rendered line reads as a sentence with a linked place name rather
+        than one large button-like link. The href reuses the same
+        `#section-<id>` hash target the top nav's tab buttons already jump
+        to (see the TAB NAVIGATION hashchange handler in
+        templates/v2.5_template.html), so clicking it smoothly scrolls to
+        and activates the base's own section like any other in-page nav
+        link -- no new navigation mechanism invented here.
+        """
         base_id = group_base_id(dest)
         if not base_id:
             return ""
         base = (dest_by_id or {}).get(base_id) or {}
         base_name = str(base.get("name", "") or base_id).strip()
-        text = f"{label}: see {base_name}"
         return (
             f'<p class="{css_class}">'
-            f'<a href="#section-{base_id}">{icon} {html_escape.escape(text)}</a></p>\n'
+            f'{icon} {html_escape.escape(label)}: see '
+            f'<a href="#section-{base_id}">{html_escape.escape(base_name)}</a></p>\n'
         )
 
     def _build_group_lodging_pointer(

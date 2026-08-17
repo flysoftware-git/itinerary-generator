@@ -357,7 +357,10 @@ def test_moab_group_manifest_parses_discovers_and_renders_with_correct_grouping(
     # never duplicated as a separate full block
     assert html.count("Based from Moab Springs Ranch") == 2
     # §5 rendering: "see base" pointer for the deferred restaurant category
-    assert html.count("Dinner recommendations: see Moab") == 2
+    # -- only the destination name itself is the anchor (dipstick60 Bug 3),
+    # so the surrounding label stays as plain text and "Moab" is the link.
+    assert html.count("Dinner recommendations: see ") == 2
+    assert html.count('<a href="#section-moab">Moab</a>') >= 2
     assert "Moab Diner" in html
     # §0: each grouped entry's own genuinely distinct content survives to render
     assert "Delicate Arch" in html

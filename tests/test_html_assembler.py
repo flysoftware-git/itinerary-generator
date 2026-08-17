@@ -2635,8 +2635,31 @@ def test_build_restaurants_renders_see_base_pointer_when_deferred() -> None:
 
     html = assembler._build_restaurants({"dinner_recommendations": []}, "Arches National Park", dest=arches, dest_by_id=dest_by_id)
 
-    assert "see Moab" in html
-    assert 'href="#section-moab"' in html
+    assert "Dinner recommendations: see " in html
+    # dipstick60 Bug 3: only the destination name itself is the clickable
+    # anchor, not the whole "see Moab" phrase.
+    assert '<a href="#section-moab">Moab</a>' in html
+
+
+def test_group_base_pointer_html_styles_and_links_only_the_destination_name() -> None:
+    """dipstick60 Bug 3: the owner reported the "see base" pointer (e.g.
+    "Dinner recommendations: see Moab") as plain, unstyled/uncentered text.
+    _group_base_pointer_html now (a) carries the .group-base-pointer CSS
+    class the template styles with padding/centering (see
+    templates/v2.5_template.html), and (b) wraps only the destination name
+    itself in the <a> -- the icon/label prefix stays plain text -- reusing
+    the same #section-<id> hash target the top nav's own tab buttons jump
+    to, not a new navigation mechanism."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest_by_id = {"moab": {"id": "moab", "name": "Moab"}}
+    dest = {"id": "arches", "name": "Arches National Park", "group_with": "moab"}
+
+    html = assembler._group_base_pointer_html(dest, dest_by_id, "Dinner recommendations", icon="\U0001f37d️")
+
+    assert html == (
+        '<p class="group-base-pointer">\U0001f37d️ Dinner recommendations: see '
+        '<a href="#section-moab">Moab</a></p>\n'
+    )
 
 
 def test_build_restaurants_no_pointer_for_ungrouped_entry_with_no_restaurants() -> None:
@@ -2659,7 +2682,8 @@ def test_build_attractions_renders_see_base_pointer_for_deferred_scenic_drives_o
     html = assembler._build_attractions({"top_attractions": []}, [], "Arches National Park", dest=arches, dest_by_id=dest_by_id)
 
     assert "Scenic drives" in html
-    assert "see Moab" in html
+    assert "Scenic drives: see " in html
+    assert '<a href="#section-moab">Moab</a>' in html
 
 
 def test_build_attractions_appends_scenic_drive_pointer_alongside_own_attractions() -> None:
@@ -2679,7 +2703,8 @@ def test_build_attractions_appends_scenic_drive_pointer_alongside_own_attraction
 
     assert "Delicate Arch" in html
     assert "Scenic drives" in html
-    assert "see Moab" in html
+    assert "Scenic drives: see " in html
+    assert '<a href="#section-moab">Moab</a>' in html
 
 
 def test_build_getting_here_renders_day_trip_badge_for_grouped_entry() -> None:
@@ -2755,7 +2780,8 @@ def test_build_getting_here_renders_en_route_pointer_when_deferred_and_empty() -
     html = assembler._build_getting_here(ai, arches, previous_name="Moab", dest_by_id=dest_by_id)
 
     assert "En-route stops" in html
-    assert "see Moab" in html
+    assert "En-route stops: see " in html
+    assert '<a href="#section-moab">Moab</a>' in html
 
 
 def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_clustering() -> None:
@@ -2828,7 +2854,9 @@ def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_cluster
     # Lodging dedup pointers on both grouped children
     assert html.count("Based from Moab Springs Ranch") == 2
     # Restaurant deferral pointer on both grouped children, base keeps its own card
-    assert html.count("Dinner recommendations: see Moab") == 2
+    # -- only the destination name itself is the anchor (dipstick60 Bug 3).
+    assert html.count("Dinner recommendations: see ") == 2
+    assert html.count('<a href="#section-moab">Moab</a>') >= 2
     assert "Moab Diner" in html
     # Each grouped entry keeps its own genuinely distinct attractions
     assert "Delicate Arch" in html

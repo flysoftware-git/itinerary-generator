@@ -197,6 +197,18 @@
       .card h3 { font-size: 1.05rem; font-weight: 700; color: var(--canyon); margin: 0.25rem 0 0.95rem; padding: 0.1rem 0; display: flex; align-items: center; gap: 6px; }
       .card h3::before { content: none; display: none; }
       .intro-note-card { background: #f6f2e8; }
+
+      /* ── GH #68 "see base" pointers (deferred-category / lodging) ── */
+      .group-base-pointer, .group-lodging-pointer {
+        margin: 0; padding: 0.85rem 1.5rem; text-align: center;
+        background: var(--sandstone); font-size: 0.9rem; font-weight: 600;
+        color: var(--dark);
+      }
+      .group-base-pointer a, .group-lodging-pointer a {
+        color: var(--canyon); font-weight: 700; text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .group-base-pointer a:hover, .group-lodging-pointer a:hover { color: var(--terracotta); }
       .intro-note-text { font-size: 0.95rem; line-height: 1.7; color: #5c4a35; margin: 0; }
 
       /* ── Expected environment ── */
