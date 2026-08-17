@@ -569,7 +569,7 @@ class HTMLAssembler:
         weather_url = self._build_weather_url(dest)
         if weather_url:
             pills.append(
-                f'<a href="{weather_url}" class="notion-header-btn">Current Weather</a>'
+                f'<a href="{weather_url}" class="notion-header-btn" target="_blank" rel="noopener">Current Weather</a>'
             )
         attractions_map_url = self._build_destination_attractions_map_url(
             str(dest.get("name", "") or ""),
@@ -577,11 +577,11 @@ class HTMLAssembler:
         )
         if attractions_map_url:
             pills.append(
-                f'<a href="{self._safe_href(attractions_map_url)}" class="notion-header-btn">Attractions Map</a>'
+                f'<a href="{self._safe_href(attractions_map_url)}" class="notion-header-btn" target="_blank" rel="noopener">Attractions Map</a>'
             )
         if nps_code and self._is_us_destination(dest):
             pills.append(
-                f'<a href="https://www.nps.gov/{nps_code}/" class="notion-header-btn">NPS</a>'
+                f'<a href="https://www.nps.gov/{nps_code}/" class="notion-header-btn" target="_blank" rel="noopener">NPS</a>'
             )
         for link in links:
             url = self._normalize_external_url(link.get("url", ""))
@@ -589,7 +589,7 @@ class HTMLAssembler:
                 continue
             label = html_escape.escape(link.get("label", "Plans"))
             pills.append(
-                f'<a href="{self._safe_href(url)}" class="notion-header-btn">{label}</a>'
+                f'<a href="{self._safe_href(url)}" class="notion-header-btn" target="_blank" rel="noopener">{label}</a>'
             )
         return "".join(pills)
 

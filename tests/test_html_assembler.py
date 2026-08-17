@@ -1713,7 +1713,30 @@ def test_header_links_omit_invalid_urls() -> None:
     assert "Valid Plan" in html
     assert "Bad Link" not in html
     assert "Bad Link 2" not in html
-    assert 'target="_blank" rel="noopener"' not in html
+    assert 'target="_blank" rel="noopener"' in html
+
+
+def test_header_links_all_four_types_open_in_new_tab() -> None:
+    """Every notion-header-btn anchor (Current Weather, Attractions Map,
+    NPS, and custom manifest-provided links) must carry
+    target="_blank" rel="noopener" so it doesn't navigate away from the
+    generated page -- see dipstick63 bug report."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {"name": "St. George", "lat": 37.2982, "lng": -113.0263}
+    links = [{"label": "Trip Plan", "url": "https://example.com/plan"}]
+    attractions = [
+        {"name": "Pioneer Park"},
+        {"name": "Snow Canyon State Park"},
+    ]
+
+    html = assembler._build_header_links(links, nps_code="zion", dest=dest, attractions=attractions)
+
+    assert html.count('class="notion-header-btn"') == 4
+    assert html.count('target="_blank" rel="noopener"') == 4
+    assert ">Current Weather<" in html
+    assert ">Attractions Map<" in html
+    assert ">NPS<" in html
+    assert ">Trip Plan<" in html
 
 
 def test_build_attractions_drops_scenic_drive_duplicating_a_rendered_attraction() -> None:
