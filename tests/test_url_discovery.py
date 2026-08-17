@@ -3658,6 +3658,13 @@ def test_discover_attractions_removes_closed_nonseed_attraction_page() -> None:
 
 
 def test_discover_attractions_keeps_closed_seeded_attraction_page() -> None:
+    """A closed seed keeps its card (never dropped -- it's the user's
+    explicit pick) with its canonical link unlinked and a "verify status
+    before you go" practical note. That note is only actionable if the item
+    still has some link to click, so -- since the closure-detection
+    no-link-fallback fix -- it now gets the same safe maps-search fallback
+    every other "no URL found" attraction gets, instead of literally nothing.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
 
     ai = {
@@ -3687,8 +3694,69 @@ def test_discover_attractions_keeps_closed_seeded_attraction_page() -> None:
 
     assert ai["top_attractions"]
     assert ai["top_attractions"][0]["name"] == "Weeping Rock"
-    assert ai["top_attractions"][0].get("url", "") == ""
+    assert ai["top_attractions"][0].get("url", "") == (
+        "https://www.google.com/maps/search/?api=1&query=Weeping%20Rock%20Zion%20National%20Park"
+    )
+    assert ai["top_attractions"][0].get("maps_url", "") == ai["top_attractions"][0].get("url", "")
+    assert ai["top_attractions"][0].get("url") != "https://www.nps.gov/zion/planyourvisit/weeping-rock.htm"
     assert "currently closed" in str(ai["top_attractions"][0].get("practical_note", "")).lower()
+
+
+def test_discover_attractions_real_moifa_closure_false_positive_gets_maps_fallback() -> None:
+    """Regression using the real affected name from the SW2026-dipstick64 run:
+    Santa Fe's "Museum of International Folk Art" was correctly resolved to
+    its real site (moifa.org) via the authoritative direct-link batch, but
+    the closure-detection second pass fetched that page's live text, matched
+    an ATTRACTION_CLOSURE_MARKERS substring, and (before this fix) stripped
+    both url and maps_url with the note "Currently closed; verify status
+    before you go." -- leaving the seed completely unlinked with no way to
+    actually do that verification. (Re-fetching moifa.org afterward showed
+    "Open Today from 10-5" with no closure language at all, consistent with
+    this having been a transient/false-positive match rather than a real,
+    persistent closure.) It must now get the same safe maps-search fallback
+    every other "no URL found" attraction gets.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Museum of International Folk Art",
+                "type": "attraction",
+                "description": (
+                    "This museum houses a diverse collection of folk art from "
+                    "around the world. The architecture itself is notable, "
+                    "with the 'bark' building design."
+                ),
+                "practical_note": "Free admission on Sundays.",
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None):
+        with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value="https://www.moifa.org/"):
+            with patch.object(discoverer, "_direct_batch_row_quality_metadata_for_url", return_value={}):
+                with patch.object(
+                    discoverer,
+                    "_fetch_page_text",
+                    return_value=(True, 200, "Museum currently closed for a private event today."),
+                ):
+                    discoverer._discover_attractions(
+                        ai=ai,
+                        dest={"_registry_decisions": []},
+                        dest_name="Santa Fe",
+                        nps_code=None,
+                        seed_names=["Museum of International Folk Art"],
+                    )
+
+    attr = ai["top_attractions"][0]
+    assert attr["name"] == "Museum of International Folk Art"
+    assert attr.get("url") == (
+        "https://www.google.com/maps/search/?api=1&query=Museum%20of%20International%20Folk%20Art%20Santa%20Fe"
+    )
+    assert attr.get("maps_url") == attr.get("url")
+    assert attr.get("url") != "https://www.moifa.org/"
+    assert "verify status before you go" in str(attr.get("practical_note", "")).lower()
 
 
 def test_search_restaurant_direct_batch_authoritative_skips_invalid_maps_and_uses_other():
@@ -13647,7 +13715,17 @@ def test_audit_rejects_scenic_drive_place_page_url_without_route_intent():
     assert trip["destinations"][0]["scenic_drives"][0].get("url", "") == ""
 
 
-def test_audit_strips_non_alltrails_url_for_trail_like_attraction():
+def test_audit_strips_non_alltrails_url_for_trail_like_attraction_but_assigns_maps_fallback():
+    """This audit pass still strips a non-AllTrails, non-maps URL from a
+    trail-like attraction (it can't tell a specifically-matched authoritative
+    recovery -- e.g. real dipstick64 "Bryce Point", a misclassified viewpoint
+    whose correct nps.gov page was recovered via the attraction direct-batch
+    fallback -- from an arbitrary low-confidence web hit). But since the
+    audit-pass no-link-fallback fix, when there's no pre-existing maps_url to
+    fall back on either, it now assigns the same safe Google-Maps-search
+    fallback every other "no URL found" attraction gets, instead of leaving
+    the item completely unverified.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._url_validator = MagicMock()
     discoverer._url_validator.verify_url.return_value = (True, 200)
@@ -13681,10 +13759,70 @@ def test_audit_strips_non_alltrails_url_for_trail_like_attraction():
     discoverer.audit_discovered_urls(trip)
 
     attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
-    assert "url" not in attraction
+    assert attraction.get("url") == (
+        "https://www.google.com/maps/search/?api=1&query=Grand%20Wash%20Trail%20Bryce%20Canyon%20National%20Park"
+    )
+    assert attraction.get("maps_url") == attraction.get("url")
     assert attraction["_registry"]["validation_status"] == "accepted"
-    assert attraction["_registry"]["rendered_url"] == ""
-    assert "url_rejected" in attraction["_registry"]["rejection_reasons"]
+    assert attraction["_registry"]["rendered_url"] == attraction["url"]
+    assert "url_rejected" not in attraction["_registry"].get("rejection_reasons", [])
+
+
+def test_audit_real_bryce_point_misclassified_viewpoint_gets_maps_fallback_not_stripped() -> None:
+    """Regression using the real affected name from the SW2026-dipstick64 run:
+    Bryce Canyon's "Bryce Point" is a viewpoint that _is_trail_like_attraction
+    misclassifies as trail-like purely because its description mentions "a
+    short walk". _discover_attractions correctly recovered its real nps.gov
+    page via the attraction direct-batch fallback (reason=trail_like_
+    misclassified_attraction_batch_recovered), but this later audit_discovered_
+    urls safety pass re-derives trail_like the same way, sees a non-AllTrails
+    URL, and (before this fix) stripped it with no maps fallback because no
+    maps_url had ever been populated for this recovery path -- rendering with
+    the "Unverified" badge and no link at all despite discovery having found
+    the correct page. It must now get the safe maps-search fallback instead.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.verify_url.return_value = (True, 200)
+    discoverer._url_validator.session.get.return_value = MagicMock(
+        status_code=200,
+        text="Bryce Point overlook information",
+    )
+
+    trip = {
+        "destinations": [
+            {
+                "name": "Bryce Canyon National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Bryce Point",
+                            "type": "viewpoint",
+                            "description": (
+                                "Known for its panoramic views of the canyon, Bryce "
+                                "Point is accessible via a short drive and a brief walk."
+                            ),
+                            "url": "https://www.nps.gov/brca/planyourvisit/brycepoint.htm",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"has_events": False, "events": []},
+            }
+        ]
+    }
+
+    discoverer.audit_discovered_urls(trip)
+
+    attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
+    # "Bryce Point" already shares a token ("Bryce") with the destination name,
+    # so _maps_fallback_query_text uses the item name alone rather than
+    # appending the destination again.
+    assert attraction.get("url") == "https://www.google.com/maps/search/?api=1&query=Bryce%20Point"
+    assert attraction.get("maps_url") == attraction.get("url")
+    assert attraction.get("url") != "https://www.nps.gov/brca/planyourvisit/brycepoint.htm"
 
 
 def test_semantic_scoring_prefers_cultural_domain_over_preserve_domain():
@@ -13953,7 +14091,15 @@ def test_audit_discovered_urls_strips_weak_hallucinated_links():
     discoverer.audit_discovered_urls(trip)
 
     attraction = trip["destinations"][0]["ai_content"]["top_attractions"][0]
-    assert "url" not in attraction
+    # The weak/hallucinated dixie.edu URL is still stripped (unchanged). Since
+    # the audit-pass no-link-fallback fix, the trail-like attraction then gets
+    # the same safe maps-search fallback every other unresolved attraction
+    # gets, instead of no link at all -- scenic drives and cultural events are
+    # untouched by that fix and still end up with no url.
+    assert attraction.get("url") == (
+        "https://www.google.com/maps/search/?api=1&query=Dixie%20State%20University%20Trail%20St.%20George%2C%20Utah"
+    )
+    assert attraction.get("url") != "https://www.dixie.edu/trails/dixie-trail"
     assert "url" not in trip["destinations"][0]["scenic_drives"][0]
     assert "url" not in trip["destinations"][0]["cultural_events"]["events"][0]
 

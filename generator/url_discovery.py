@@ -2198,7 +2198,38 @@ class URLDiscoverer:
                         attr.pop("url", None)
                         if maps_url:
                             attr["maps_url"] = maps_url
-                        self._annotate_registry_url_decision(attr, rendered_url="", rejection_reason="url_rejected")
+                            self._annotate_registry_url_decision(attr, rendered_url="", rejection_reason="url_rejected")
+                        else:
+                            # No pre-existing maps_url to fall back on either --
+                            # e.g. a misclassified trail-like item (real
+                            # dipstick64 "Bryce Point": a viewpoint, trail_like
+                            # only because its description mentions "a short
+                            # walk") whose real, correctly-matched nps.gov page
+                            # was recovered via the attraction direct-batch
+                            # fallback (reason=trail_like_misclassified_
+                            # attraction_batch_recovered) gets rejected here for
+                            # not being an alltrails.com URL, leaving it with no
+                            # link and no maps fallback at all. Assign the same
+                            # safe Google-Maps-search fallback every other
+                            # "no URL found" attraction gets (and the same
+                            # fail-closed exceptions), instead of leaving it
+                            # completely unverified.
+                            attr.pop("maps_url", None)
+                            fallback_query_url = (
+                                "https://www.google.com/maps/search/?api=1&query="
+                                f"{quote(self._maps_fallback_query_text(attr_name, dest_name))}"
+                            )
+                            self._assign_attraction_maps_fallback_or_fail_closed(
+                                attr,
+                                attr_name=attr_name,
+                                dest_name=dest_name,
+                                maps_fallback_url=fallback_query_url,
+                            )
+                            self._annotate_registry_url_decision(
+                                attr,
+                                rendered_url=str(attr.get("url", "") or ""),
+                                rejection_reason="" if attr.get("url") else "url_rejected",
+                            )
                     eligible_attractions.append(attr)
                     continue
                 cleaned = self._retain_discovered_url(
@@ -4008,18 +4039,37 @@ class URLDiscoverer:
                     closure_text = f"{closure_text} {page_text}".strip()
             if self._has_attraction_closure_marker(closure_text):
                 if is_seed:
-                    attr["url"] = ""
-                    attr.pop("maps_url", None)
                     closure_note = "Currently closed; verify status before you go."
                     existing_note = str(attr.get("practical_note", "") or "").strip()
                     if closure_note.lower() not in existing_note.lower():
                         attr["practical_note"] = f"{existing_note} {closure_note}".strip() if existing_note else closure_note
+                    # A seed can't be dropped outright (it's the user's explicit
+                    # pick), so the canonical link is unlinked here -- it may
+                    # point at a page describing a closure and shouldn't be
+                    # presented as a confident "this is the right, current
+                    # page" link. But the note above explicitly tells the user
+                    # to "verify status before you go", which is not actionable
+                    # if both url and maps_url are left empty. Give the same
+                    # safe maps-search fallback every other "no URL found"
+                    # attraction gets (same fail-closed exceptions) so the
+                    # verification the note asks for is actually possible.
+                    fallback_query_url = (
+                        "https://www.google.com/maps/search/?api=1&query="
+                        f"{quote(self._maps_fallback_query_text(attr_name, dest_name))}"
+                    )
+                    self._assign_attraction_maps_fallback_or_fail_closed(
+                        attr,
+                        attr_name=attr_name,
+                        dest_name=dest_name,
+                        maps_fallback_url=fallback_query_url,
+                    )
                     self._log_decision(
                         kind="attraction",
                         dest_name=dest_name,
                         item_name=attr_name,
                         reason="closure_unlinked_seed",
                         message="seeded attraction is closed; hyperlink removed",
+                        url=str(attr.get("url", "") or ""),
                     )
                     continue
                 top_attractions.remove(attr)
