@@ -8316,6 +8316,27 @@ class URLDiscoverer:
 
         return result
 
+    # NOTE on detour semantics (investigated for dipstick59 Bug 2 -- "are
+    # distances for detour one way or two way or loop that connects
+    # downstream?"): detour_distance_miles/detour_time_minutes (both here and
+    # in the sibling _extract_en_route_detour_miles_from_text /
+    # _en_route_stop_detour_metrics / _en_route_stop_within_threshold below)
+    # are taken verbatim from whatever free-text the AI generated for an
+    # en-route stop -- prompts/destination_content.txt only asks for "numeric
+    # miles off main route" / "numeric extra drive minutes", which does not
+    # specify one-way, round-trip (there-and-back), or a loop that rejoins
+    # the route further downstream without backtracking. There is no
+    # normalization anywhere in this pipeline reconciling those three cases.
+    # This is a real, open gap, not an oversight fixed here: every consumer
+    # of these two fields (_en_route_stop_within_threshold's minutes/miles
+    # cap below, and the "(X mi detour | Y min)" display text in
+    # html_assembler.py) treats the number as an opaque scalar and does not
+    # itself assume a specific interpretation, so there is no single wrong
+    # assumption to correct in code. Resolving the ambiguity for real would
+    # mean either standardizing what the prompt asks the AI to report, or
+    # having a downstream consumer (e.g. real route/schedule time-budgeting)
+    # that needs one specific interpretation and can drive the decision --
+    # both are product/design decisions, not a bug fix.
     @staticmethod
     def _extract_en_route_detour_minutes_from_text(text: str) -> int | None:
         t = str(text or "").lower()
