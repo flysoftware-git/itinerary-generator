@@ -357,14 +357,18 @@ class HTMLAssembler:
         """Build tab-btn buttons (data-tab=section-{id}) + Google Maps link.
 
         GH #68 multi-site grouping (docs/design/
-        multi-site-destination-grouping.md §3): a grouped entry's tab
-        renders nested inside its group base's tab in a shared pill
-        container -- indent + connecting background -- instead of as an
-        unrelated flat top-level tab. Exact visual treatment is a
-        template/CSS call, not a data-model one (left open by the design
-        doc); implemented here as self-contained inline styling on the
-        generated tab markup so the frozen template file itself never
-        needs to change.
+        multi-site-destination-grouping.md §3): a grouped entry no longer
+        gets its own nav-tab entry at all -- its content renders as a
+        nested card inside its base's own section (see
+        _build_group_child_card), reachable by scrolling that section, not
+        by a separate top-level click target. §3 originally called for a
+        clustered *sub-tab* per grouped child; that was superseded once the
+        card-within-card rendering landed (2026-08-16 dipstick60 review):
+        a grouped child appearing in the scrolling top-level menu breaks
+        its visual relationship to the overview map (each nav entry no
+        longer maps 1:1 to a numbered map marker) and isn't needed at the
+        menu level once its content already lives inside its base's own
+        section.
         """
         gmaps_url = self._build_google_maps_url(destinations, trip_meta)
 
@@ -384,32 +388,11 @@ class HTMLAssembler:
         tabs = []
         for i, dest in enumerate(destinations):
             if i in grouped_indices:
-                continue  # rendered nested inside its base's tab-group below
+                continue  # no nav entry -- content lives nested in its base's section
             active = ' active' if i == 0 else ''
             dest_id = dest["id"]  # use manifest id directly
             label = _tab_label(i, dest)
-            base_btn = f'<button class="tab-btn{active}" data-tab="section-{dest_id}">{label}</button>'
-            children = children_by_base.get(dest_id, [])
-            if not children:
-                tabs.append(base_btn)
-                continue
-            child_btns = []
-            for ci, child in children:
-                child_active = ' active' if ci == 0 else ''
-                child_id = child["id"]
-                child_label = _tab_label(ci, child)
-                child_btns.append(
-                    f'<button class="tab-btn tab-btn-grouped{child_active}" '
-                    f'data-tab="section-{child_id}" '
-                    f'style="margin-left:2px;border-left:2px solid var(--terracotta);'
-                    f'border-radius:9999px;">↳ {child_label}</button>'
-                )
-            tabs.append(
-                '<span class="tab-group" '
-                'style="display:inline-flex;align-items:center;gap:2px;'
-                'background:var(--sandstone);border-radius:9999px;padding:3px;">'
-                f'{base_btn}{"".join(child_btns)}</span>'
-            )
+            tabs.append(f'<button class="tab-btn{active}" data-tab="section-{dest_id}">{label}</button>')
         tabs.append(
             f'<a href="{gmaps_url}" target="_blank" rel="noopener" class="map-tab-btn">'
             f'🗺️ Full Route Map</a>'

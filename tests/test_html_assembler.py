@@ -2514,22 +2514,20 @@ def _moab_group_destinations() -> list[dict]:
     ]
 
 
-def test_build_nav_tabs_clusters_grouped_entries_under_base() -> None:
+def test_build_nav_tabs_omits_grouped_entries_entirely() -> None:
+    """dipstick60 review: a grouped child's content lives nested inside its
+    base's own section (_build_group_child_card), so it must not also get
+    its own top-level nav-tab entry -- that broke the 1:1 relationship
+    between a nav entry and a numbered overview-map marker, and isn't
+    needed once the content is reachable by scrolling the base's section."""
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     html = assembler._build_nav_tabs(_moab_group_destinations(), {})
 
-    assert 'class="tab-group"' in html
+    assert 'class="tab-group"' not in html
+    assert "tab-btn-grouped" not in html
     assert 'data-tab="section-moab"' in html
-    assert 'data-tab="section-arches"' in html
-    assert 'data-tab="section-canyonlands"' in html
-    assert "tab-btn-grouped" in html
-    # Grouped tabs render inside the single tab-group span alongside their base.
-    group_start = html.index('class="tab-group"')
-    group_end = html.index("</span>", group_start)
-    group_chunk = html[group_start:group_end]
-    assert 'data-tab="section-moab"' in group_chunk
-    assert 'data-tab="section-arches"' in group_chunk
-    assert 'data-tab="section-canyonlands"' in group_chunk
+    assert 'data-tab="section-arches"' not in html
+    assert 'data-tab="section-canyonlands"' not in html
 
 
 def test_build_nav_tabs_ungrouped_destinations_render_flat() -> None:
@@ -2770,8 +2768,12 @@ def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_cluster
 
     html = assembler.assemble(trip)
 
-    # Nav clustering
-    assert 'class="tab-group"' in html
+    # Grouped children no longer get their own nav-tab entry at all (dipstick60
+    # review) -- their content is reachable by scrolling Moab's own section.
+    assert 'class="tab-group"' not in html
+    assert 'data-tab="section-arches"' not in html
+    assert 'data-tab="section-canyonlands"' not in html
+    assert 'data-tab="section-moab"' in html
     # Lodging dedup pointers on both grouped children
     assert html.count("Based from Moab Springs Ranch") == 2
     # Restaurant deferral pointer on both grouped children, base keeps its own card

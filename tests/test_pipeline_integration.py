@@ -347,10 +347,12 @@ def test_moab_group_manifest_parses_discovers_and_renders_with_correct_grouping(
     html = assembler.assemble(trip)  # raises RuntimeError if template checksum mismatches
 
     assert "<html" in html.lower()
-    # §3 nav clustering
-    assert 'class="tab-group"' in html
-    assert 'data-tab="section-arches"' in html
-    assert 'data-tab="section-canyonlands"' in html
+    # §3 nav clustering: grouped children get no nav-tab entry at all (dipstick60
+    # review) -- their content lives nested inside Moab's own section instead.
+    assert 'class="tab-group"' not in html
+    assert 'data-tab="section-arches"' not in html
+    assert 'data-tab="section-canyonlands"' not in html
+    assert 'data-tab="section-moab"' in html
     # §2 lodging dedup pointer on both grouped children, base's own lodging
     # never duplicated as a separate full block
     assert html.count("Based from Moab Springs Ranch") == 2
