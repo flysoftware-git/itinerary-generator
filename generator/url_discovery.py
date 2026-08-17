@@ -64,6 +64,47 @@ ATTRACTION_CLOSURE_MARKERS = (
     "this place is closed",
     "this business is closed",
 )
+# A closure marker phrase found on the same page as a mention of one of
+# these sub-part nouns is a signal the closure is scoped to a part of the
+# venue (a wing, an exhibit, a specific gallery) rather than the whole
+# attraction -- e.g. a real, live "Museum of International Folk Art" page
+# describing "The Girard Wing will be temporarily closed ... for roof
+# repair" while the rest of the museum operates normally. See
+# _has_attraction_closure_marker for how this is applied (same-sentence
+# co-occurrence with a closure marker, not a whole-page check).
+ATTRACTION_PARTIAL_CLOSURE_SCOPE_MARKERS = (
+    "wing",
+    "gallery",
+    "galleries",
+    "exhibit",
+    "exhibition",
+    "annex",
+    "hall",
+    "room",
+    "section",
+    "one of the",
+    "a portion of",
+    "part of the",
+    "area of the",
+)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_HTML_SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_non_visible_html_noise(text: str) -> str:
+    """Strip HTML comments and <script>/<style> tag contents before running
+    text-based content checks (e.g. closure-marker detection) against raw,
+    unstripped page HTML (see URLValidator.get_text, which returns
+    resp.text as-is). These regions are never visible to a real site
+    visitor and can carry stale or unrelated text -- e.g. a leftover
+    developer comment mentioning an old closure -- that shouldn't be
+    treated as live page content.
+    """
+    if not text:
+        return text
+    stripped = _HTML_SCRIPT_STYLE_RE.sub(" ", text)
+    stripped = _HTML_COMMENT_RE.sub(" ", stripped)
+    return stripped
 GENERIC_BAD_URL_MARKERS = (
     "404errorpage",
     "/assetdetail/",
@@ -12070,10 +12111,43 @@ class URLDiscoverer:
 
     @staticmethod
     def _has_attraction_closure_marker(text: str) -> bool:
-        lower_text = str(text or "").lower()
+        # Strip HTML comments / <script>/<style> content first: raw fetched
+        # page text (URLValidator.get_text returns resp.text unmodified) can
+        # contain a closure marker phrase inside markup that is never
+        # visible to a real visitor -- e.g. a stale dev comment left on the
+        # page. Matching against that is a false positive, not evidence the
+        # attraction is closed.
+        lower_text = _strip_non_visible_html_noise(str(text or "")).lower()
         if not lower_text:
             return False
-        return any(marker in lower_text for marker in ATTRACTION_CLOSURE_MARKERS)
+        if not any(marker in lower_text for marker in ATTRACTION_CLOSURE_MARKERS):
+            return False
+        # A marker exists somewhere on the (comment-stripped) page, but a
+        # real, page-specific partial-closure notice -- a wing/gallery/
+        # exhibit closed for repair -- does not mean the whole attraction is
+        # closed. Evaluate at sentence granularity: if every sentence that
+        # contains a closure marker also names a specific sub-part of the
+        # venue, treat this as a partial closure rather than a whole-
+        # attraction closure. This is a coarse, deliberately simple
+        # heuristic (same-sentence co-occurrence, not deep NLP) -- it only
+        # suppresses a match when the sub-part language sits in the exact
+        # same sentence as the marker, to keep the false-negative risk (a
+        # real full closure being missed) low.
+        sentences = re.split(r"(?<=[.!?])\s+|\n+", lower_text)
+        saw_marker_sentence = False
+        for sentence in sentences:
+            if not any(marker in sentence for marker in ATTRACTION_CLOSURE_MARKERS):
+                continue
+            saw_marker_sentence = True
+            if not any(scope in sentence for scope in ATTRACTION_PARTIAL_CLOSURE_SCOPE_MARKERS):
+                return True
+        if not saw_marker_sentence:
+            # Marker text spanned a sentence-splitting boundary in some
+            # unexpected way -- fail closed (treat as a closure) rather than
+            # silently dropping a real match, matching this check's
+            # original whole-text behavior.
+            return True
+        return False
 
     @staticmethod
     def _is_generic_listing_title(text: str) -> bool:

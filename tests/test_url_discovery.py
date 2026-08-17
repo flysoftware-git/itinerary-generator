@@ -3759,6 +3759,123 @@ def test_discover_attractions_real_moifa_closure_false_positive_gets_maps_fallba
     assert "verify status before you go" in str(attr.get("practical_note", "")).lower()
 
 
+def test_has_attraction_closure_marker_ignores_html_comment_noise() -> None:
+    """Part 2 case (1) regression, grounded in real evidence from
+    docs/reports/link_recall_strategy_experiment.md (2026-08-17 live
+    re-fetch of internationalfolkart.org): the real "Museum of
+    International Folk Art" page contains, inside a raw HTML comment
+    (invisible to real visitors), the text "The Girard Wing will be
+    temporarily closed now through May 2026 for critical roof repair. The
+    Bartlett Gallery and Lloyd's Treasure Chest are also currently closed
+    due to regular gallery changeover." Before stripping HTML comments,
+    _has_attraction_closure_marker's naive whole-text substring match fired
+    on "temporarily closed" / "currently closed" inside that comment even
+    though the visible page describes an operating museum.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "<html><head></head><body>"
+        "<h1>Museum of International Folk Art</h1>"
+        "<p>Open Daily 10:00 AM - 5:00 PM May-October. Free admission on Sundays.</p>"
+        "<!-- The Girard Wing will be temporarily closed now through May 2026 for "
+        "critical roof repair. The Bartlett Gallery and Lloyd's Treasure Chest are "
+        "also currently closed due to regular gallery changeover. -->"
+        "<p>Plan your visit to the world's largest collection of folk art.</p>"
+        "</body></html>"
+    )
+    assert discoverer._has_attraction_closure_marker(page_text) is False
+
+
+def test_has_attraction_closure_marker_ignores_stale_partial_wing_closure() -> None:
+    """Part 2 case (2) regression, grounded in the same experiment's evidence
+    from the state's independent listing page (newmexicoculture.org), which
+    visibly (not in a comment) carries a real but partial, stale notice: one
+    specific exhibit in the Girard Wing closed for roof repair through a
+    window that has already elapsed, while the rest of the museum operates
+    normally. A same-sentence "wing"/"exhibit" qualifier next to the closure
+    marker should be read as a partial closure, not a whole-attraction one.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "Museum of International Folk Art, New Mexico Department of Cultural "
+        "Affairs. Since its founding in 1953, the museum has been a place to "
+        "connect people through creative expression. The exhibit 'Multiple "
+        "Visions: A Common Bond' in the Girard Wing is temporarily closed for "
+        "roof repair through May 2026. The rest of the museum remains open "
+        "daily to visitors."
+    )
+    assert discoverer._has_attraction_closure_marker(page_text) is False
+
+
+def test_has_attraction_closure_marker_still_detects_real_full_closure() -> None:
+    """Control for the Part 2 fixes: a real, whole-venue closure notice --
+    with no HTML-comment noise and no wing/gallery/exhibit qualifier in the
+    same sentence -- must still be detected. This guards against the
+    comment-stripping and partial-closure heuristics silently widening into
+    false negatives."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    assert discoverer._has_attraction_closure_marker(
+        "Museum of International Folk Art. This museum is currently closed "
+        "for renovations until further notice."
+    ) is True
+    assert discoverer._has_attraction_closure_marker(
+        "Weeping Rock. Currently closed for safety reasons."
+    ) is True
+
+
+def test_discover_attractions_real_moifa_html_comment_closure_false_positive_keeps_real_link() -> None:
+    """Full-pipeline Part 2 regression using the real evidence from
+    link_recall_strategy_experiment.md: the direct-batch harvest found a
+    real link for "Museum of International Folk Art"
+    (internationalfolkart.org), but a live re-fetch of that page contains
+    the real closure-sounding phrases only inside an HTML comment (see the
+    unit test above for the exact real text). Before the comment-stripping
+    fix, the second-pass closure check would have matched that comment and
+    stripped the real, verified link down to a maps-search fallback even
+    though the museum is actually open. With the fix, the item keeps its
+    real, discovered link.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Museum of International Folk Art",
+                "type": "attraction",
+                "description": "Houses a diverse collection of international folk art.",
+                "practical_note": "Free admission on Sundays.",
+            }
+        ]
+    }
+
+    page_text = (
+        "<html><body><h1>Museum of International Folk Art</h1>"
+        "<p>Open Daily 10:00 AM - 5:00 PM May-October.</p>"
+        "<!-- The Girard Wing will be temporarily closed now through May 2026 "
+        "for critical roof repair. The Bartlett Gallery and Lloyd's Treasure "
+        "Chest are also currently closed due to regular gallery changeover. -->"
+        "</body></html>"
+    )
+
+    with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None):
+        with patch.object(
+            discoverer, "_search_attraction_from_direct_batch", return_value="https://www.internationalfolkart.org/"
+        ):
+            with patch.object(discoverer, "_direct_batch_row_quality_metadata_for_url", return_value={}):
+                with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_text)):
+                    discoverer._discover_attractions(
+                        ai=ai,
+                        dest={"_registry_decisions": []},
+                        dest_name="Santa Fe",
+                        nps_code=None,
+                        seed_names=["Museum of International Folk Art"],
+                    )
+
+    attr = ai["top_attractions"][0]
+    assert attr.get("url") == "https://www.internationalfolkart.org/"
+    assert "closed" not in str(attr.get("practical_note", "") or "").lower()
+
+
 def test_search_restaurant_direct_batch_authoritative_skips_invalid_maps_and_uses_other():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
