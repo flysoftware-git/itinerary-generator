@@ -598,7 +598,7 @@ class HTMLAssembler:
         dest_name: str,
         attractions: list[dict[str, Any]],
     ) -> str:
-        names: list[str] = []
+        entries: list[dict[str, Any]] = []
         seen: set[str] = set()
         for item in attractions or []:
             if not isinstance(item, dict):
@@ -610,27 +610,59 @@ class HTMLAssembler:
             if key in seen:
                 continue
             seen.add(key)
-            names.append(name)
-            if len(names) >= 8:
+            entries.append(item)
+            if len(entries) >= 8:
                 break
 
-        if not names:
+        if not entries:
             return ""
 
         dest_label = str(dest_name or "").strip()
+        names = [str(item.get("name", "") or "").strip() for item in entries]
         qualified = [self._maps_fallback_query_text(name, dest_label) for name in names]
 
         # Single item: open a focused destination-scoped search query directly.
         if len(qualified) == 1:
             return f"https://www.google.com/maps/search/?api=1&query={quote(qualified[0])}"
 
-        # Multiple items: emit a simple destination-scoped query that passes
-        # single-result URL policy checks (no multi-name compound query).
-        if dest_label:
-            return f"https://www.google.com/maps/search/?api=1&query={quote(dest_label)}"
+        # Multiple items: build a directions URL so every named attraction
+        # renders as a real map pin (first item as origin, last as
+        # destination, the remaining ones as waypoints) instead of collapsing
+        # to a generic destination-only search that can't show multiple named
+        # pins. /maps/search/ only supports a single query term, but
+        # /maps/dir/ supports many -- and is explicitly accepted as a
+        # single-result target by the link-verification policy (see
+        # scripts/verify_links_until_clean.py's _looks_like_single_result,
+        # which whitelists /maps/dir paths outright; only /maps/search
+        # without a query_place_id is rejected as ambiguous). Mirrors
+        # _build_route_gmaps_url's coordinate-preference (a real geocoded
+        # lat/lng resolves to exactly one point, so prefer it over
+        # name-based text when available) and its optimize:true convention
+        # for 2+ waypoints.
+        def _point_text(item: dict[str, Any], qualified_text: str) -> str:
+            lat = item.get("geocode_lat")
+            lng = item.get("geocode_lng")
+            if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+                return f"{lat},{lng}"
+            return qualified_text
 
-        # Fallback without destination context.
-        return f"https://www.google.com/maps/search/?api=1&query={quote(', '.join(qualified))}"
+        points = [_point_text(item, qualified[idx]) for idx, item in enumerate(entries)]
+        origin = points[0]
+        destination = points[-1]
+        waypoints = points[1:-1]
+
+        params = [
+            f"origin={quote(origin)}",
+            f"destination={quote(destination)}",
+            "travelmode=driving",
+            "api=1",
+        ]
+        if waypoints:
+            if len(waypoints) > 1:
+                params.append("waypoints=" + quote("optimize:true|" + "|".join(waypoints), safe="|"))
+            else:
+                params.append("waypoints=" + quote("|".join(waypoints), safe="|"))
+        return "https://www.google.com/maps/dir/?" + "&".join(params)
 
     def _build_intro_note(self, dest: dict[str, Any], events: dict[str, Any]) -> str:
         title = html_escape.escape(dest.get("name", ""))
