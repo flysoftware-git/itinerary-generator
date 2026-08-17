@@ -4393,7 +4393,9 @@ class URLDiscoverer:
             cache[key] = normalized
         return normalized
 
-    def _get_alltrails_direct_batch_rows_for_destination(self, dest_name: str, dates: str = "") -> list[dict[str, Any]]:
+    def _get_alltrails_direct_batch_rows_for_destination(
+        self, dest_name: str, dates: str = "", seed_names: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         if not hasattr(self, "_alltrails_direct_batch_cache"):
             self._alltrails_direct_batch_cache = {}
         html_rows = self._get_direct_batch_html_rows_for_destination(
@@ -4401,6 +4403,7 @@ class URLDiscoverer:
             destination=dest_name,
             dates=dates,
             kind="trail",
+            seed_names=seed_names,
         )
         if html_rows:
             return html_rows
@@ -4412,7 +4415,9 @@ class URLDiscoverer:
             cache_context=dates,
         )
 
-    def _get_attraction_direct_batch_rows_for_destination(self, dest_name: str, dates: str = "") -> list[dict[str, Any]]:
+    def _get_attraction_direct_batch_rows_for_destination(
+        self, dest_name: str, dates: str = "", seed_names: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         if not hasattr(self, "_attraction_direct_batch_cache"):
             self._attraction_direct_batch_cache = {}
         html_rows = self._get_direct_batch_html_rows_for_destination(
@@ -4420,6 +4425,7 @@ class URLDiscoverer:
             destination=dest_name,
             dates=dates,
             kind="attraction",
+            seed_names=seed_names,
         )
         if html_rows:
             return html_rows
@@ -4455,6 +4461,7 @@ class URLDiscoverer:
         dest_name: str,
         dates: str = "",
         origin_name: str = "",
+        seed_names: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         if not hasattr(self, "_en_route_direct_batch_cache"):
             self._en_route_direct_batch_cache = {}
@@ -4464,6 +4471,7 @@ class URLDiscoverer:
             dates=dates,
             kind="en_route_stop",
             origin_name=origin_name,
+            seed_names=seed_names,
         )
         if html_rows:
             return html_rows
@@ -4475,6 +4483,39 @@ class URLDiscoverer:
             cache_context=f"{dates}|search",
         )
 
+    @staticmethod
+    def _direct_batch_seed_hint_clauses(
+        seed_names: list[str] | None, *, noun: str = "item"
+    ) -> tuple[str, str]:
+        """Build (system_clause, user_clause) text fragments that ask a
+        direct-batch harvest call to specifically verify and include the
+        traveler's manifest seed names, or ("", "") when there are none --
+        so prompt construction stays byte-identical to before this existed
+        whenever a destination has no seeds.
+
+        Root cause this addresses: named, well-documented seeds (e.g.
+        "Sunrise Point" at Bryce Canyon, "Imogene Pass" at Telluride) were
+        repeatedly absent from the raw harvest candidate list entirely --
+        not a matching/verification bug, but the harvest prompt itself
+        having no mechanism at all to surface seeds as candidates, so an
+        obscure-but-real seed had no real chance against more famous nearby
+        attractions for the model's limited slot budget. Naming the seeds
+        explicitly gives the model a concrete reason to specifically look
+        for and include them, upstream of the existing verification/matching
+        trust boundary (which this does not change).
+        """
+        names = [str(s or "").strip() for s in (seed_names or []) if str(s or "").strip()]
+        if not names:
+            return "", ""
+        joined = "; ".join(names)
+        system_clause = (
+            f" The traveler specifically asked about these {noun}s -- verify each is a real, "
+            "currently operating place and include any that check out among the items above, "
+            f"even if less well-known than your other picks: {joined}."
+        )
+        user_clause = f" Also specifically verify and include, if real: {joined}."
+        return system_clause, user_clause
+
     def _direct_batch_html_prompt(
         self,
         *,
@@ -4483,6 +4524,7 @@ class URLDiscoverer:
         dates: str = "",
         origin_name: str = "",
         lodging_location: str = "",
+        seed_names: list[str] | None = None,
     ) -> tuple[str, str] | None:
         date_clause = f" ({dates})" if str(dates or "").strip() else ""
         if kind == "trail":
@@ -4509,7 +4551,8 @@ class URLDiscoverer:
                 f"Generate clickable hikes from AllTrails for {dest_name}{date_clause}. "
                 "Include a rating, distance in miles, and a short descriptive note for each item when available."
             )
-            return system_prompt, user_prompt
+            seed_system, seed_user = self._direct_batch_seed_hint_clauses(seed_names, noun="hike")
+            return system_prompt + seed_system, user_prompt + seed_user
 
         if kind == "attraction":
             items_per_day = int(
@@ -4541,7 +4584,8 @@ class URLDiscoverer:
                 "and keep only places likely open on the indicated dates. "
                 "Include only suggestions with reliable clickable links."
             )
-            return system_prompt, user_prompt
+            seed_system, seed_user = self._direct_batch_seed_hint_clauses(seed_names, noun="attraction")
+            return system_prompt + seed_system, user_prompt + seed_user
 
         if kind == "restaurant":
             count = int(
@@ -4615,12 +4659,28 @@ class URLDiscoverer:
                 "Exclude gas stations, convenience stores, welcome centers, and rest areas. "
                 "Include only suggestions with reliable clickable links."
             )
-            return system_prompt, user_prompt
+            seed_system, seed_user = self._direct_batch_seed_hint_clauses(seed_names, noun="stop")
+            return system_prompt + seed_system, user_prompt + seed_user
 
         return None
 
+    @staticmethod
+    def _direct_batch_seed_line_suffix(seed_names: list[str] | None) -> str:
+        """Per-destination-line counterpart to _direct_batch_seed_hint_clauses
+        for the multi-destination prompt: appends the traveler's seed names
+        for THIS destination only to its own dest_lines entry, or "" when it
+        has none. See _direct_batch_html_prompt_multi."""
+        names = [str(s or "").strip() for s in (seed_names or []) if str(s or "").strip()]
+        if not names:
+            return ""
+        return f" -- must also verify and include, if real: {'; '.join(names)}"
+
     def _direct_batch_html_prompt_multi(
-        self, *, kind: str, destinations: list[tuple[str, str]]
+        self,
+        *,
+        kind: str,
+        destinations: list[tuple[str, str]],
+        seed_names_by_destination: dict[str, list[str]] | None = None,
     ) -> tuple[str, str] | None:
         """Multi-destination variant of _direct_batch_html_prompt: one call
         asking for several destinations at once, each its own
@@ -4629,6 +4689,12 @@ class URLDiscoverer:
         Deliberately does not cover en_route_stop: that kind depends on
         per-destination origin/route context that doesn't fit this shape
         cleanly, so it stays on the original one-call-per-destination path.
+
+        seed_names_by_destination (destination name -> manifest seeds) is
+        optional and only consulted for kind in {"trail", "attraction"} --
+        see _direct_batch_seed_hint_clauses for why this exists. Omitted or
+        empty for every destination leaves prompt text byte-identical to
+        before this parameter existed.
         """
         if not destinations:
             return None
@@ -4644,6 +4710,7 @@ class URLDiscoverer:
             dest_lines = [
                 f"- {name}{f' ({dates})' if str(dates or '').strip() else ''}: exactly "
                 f"{self._day_scaled_direct_batch_count(dates, items_per_day=items_per_day)} hikes"
+                f"{self._direct_batch_seed_line_suffix((seed_names_by_destination or {}).get(name))}"
                 for name, dates in destinations
             ]
             system_prompt = (
@@ -4659,6 +4726,12 @@ class URLDiscoverer:
                 f"Keep only likely-open hikes of {max_miles:g} miles or less rated {min_rating:g}+ with at least {min_votes} reviews. "
                 "Exclude generic listings and drop any item without a reliable trail-specific AllTrails link."
             )
+            if any((seed_names_by_destination or {}).get(name) for name, _dates in destinations):
+                system_prompt += (
+                    " Some destinations above list traveler-requested items after '--' -- verify each named "
+                    "item is real and currently operating, and include any that check out among that "
+                    "destination's items even if less well-known than your other picks."
+                )
             user_prompt = (
                 "Generate clickable hikes from AllTrails for these destinations:\n"
                 + "\n".join(dest_lines)
@@ -4674,6 +4747,7 @@ class URLDiscoverer:
             dest_lines = [
                 f"- {name}{f' ({dates})' if str(dates or '').strip() else ''}: exactly "
                 f"{self._day_scaled_direct_batch_count(dates, items_per_day=items_per_day)} attractions"
+                f"{self._direct_batch_seed_line_suffix((seed_names_by_destination or {}).get(name))}"
                 for name, dates in destinations
             ]
             system_prompt = (
@@ -4691,6 +4765,12 @@ class URLDiscoverer:
                 "and keep only places likely open on the indicated dates. "
                 "Avoid generic destination listing pages, general travel guides, and broad area pages."
             )
+            if any((seed_names_by_destination or {}).get(name) for name, _dates in destinations):
+                system_prompt += (
+                    " Some destinations above list traveler-requested items after '--' -- verify each named "
+                    "item is real and currently operating, and include any that check out among that "
+                    "destination's items even if less well-known than your other picks."
+                )
             user_prompt = (
                 "Generate local points of interest, cultural landmarks, and tourist attractions "
                 "for these destinations, excluding hikes:\n"
@@ -4870,7 +4950,23 @@ class URLDiscoverer:
 
     def _fetch_and_cache_grouped_direct_batch(self, *, kind: str, group: list[dict]) -> None:
         pairs = [(str(d.get("name", "") or ""), str(d.get("dates", "") or "")) for d in group]
-        prompt_pair = self._direct_batch_html_prompt_multi(kind=kind, destinations=pairs)
+        # Manifest seeds (see manifest_parser.py: "Attraction/hike/experience
+        # name hints") only apply to attraction/trail harvest -- restaurants
+        # have no seed concept, and _direct_batch_html_prompt_multi ignores
+        # this map for any other kind regardless.
+        seed_names_by_destination = (
+            {
+                str(d.get("name", "") or ""): [
+                    str(seed or "").strip() for seed in (d.get("seeds", []) or []) if str(seed or "").strip()
+                ]
+                for d in group
+            }
+            if kind in ("attraction", "trail")
+            else None
+        )
+        prompt_pair = self._direct_batch_html_prompt_multi(
+            kind=kind, destinations=pairs, seed_names_by_destination=seed_names_by_destination
+        )
         if prompt_pair is None:
             return
         system_prompt, user_prompt = prompt_pair
@@ -5033,6 +5129,7 @@ class URLDiscoverer:
         kind: str,
         origin_name: str = "",
         lodging_location: str = "",
+        seed_names: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         if not hasattr(self, "_request_cache_lock"):
             self._request_cache_lock = Lock()
@@ -5068,6 +5165,7 @@ class URLDiscoverer:
                 kind=kind,
                 origin_name=origin_name,
                 lodging_location=lodging_location,
+                seed_names=seed_names,
             )
             with self._request_cache_lock:
                 if filtered_rows:
@@ -5107,6 +5205,7 @@ class URLDiscoverer:
         kind: str,
         origin_name: str = "",
         lodging_location: str = "",
+        seed_names: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         prompt_pair = self._direct_batch_html_prompt(
             kind=kind,
@@ -5114,6 +5213,7 @@ class URLDiscoverer:
             dates=dates,
             origin_name=origin_name,
             lodging_location=lodging_location,
+            seed_names=seed_names,
         )
         if prompt_pair is None:
             return []
@@ -8079,7 +8179,9 @@ class URLDiscoverer:
         seed_names: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         try:
-            rows = self._get_attraction_direct_batch_rows_for_destination(dest_name, str(dest_dates or ""))
+            rows = self._get_attraction_direct_batch_rows_for_destination(
+                dest_name, str(dest_dates or ""), seed_names=seed_names
+            )
         except AttributeError:
             return attractions
         if not rows:
@@ -8170,7 +8272,9 @@ class URLDiscoverer:
         the AI happened to generate few (or zero) trail-type attractions.
         """
         try:
-            rows = self._get_alltrails_direct_batch_rows_for_destination(dest_name, str(dest_dates or ""))
+            rows = self._get_alltrails_direct_batch_rows_for_destination(
+                dest_name, str(dest_dates or ""), seed_names=seed_names
+            )
         except AttributeError:
             return attractions
         if not rows:
@@ -8352,9 +8456,12 @@ class URLDiscoverer:
         dest_name: str,
         dest_dates: str | None,
         origin_name: str,
+        seed_names: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         try:
-            rows = self._get_en_route_direct_batch_rows_for_destination(dest_name, str(dest_dates or ""), origin_name)
+            rows = self._get_en_route_direct_batch_rows_for_destination(
+                dest_name, str(dest_dates or ""), origin_name, seed_names=seed_names
+            )
         except AttributeError:
             return stops
         if not rows:
@@ -8758,7 +8865,14 @@ class URLDiscoverer:
         )
 
         if source_mode == "direct_link_batch" and not en_route_stop_deferred:
-            stops = self._prioritize_direct_batch_en_route_stops(stops, dest_name, dest_dates, origin_name)
+            en_route_seed_names = [
+                str(seed or "").strip()
+                for seed in ((dest or {}).get("en_route_seeds", []) or [])
+                if str(seed or "").strip()
+            ]
+            stops = self._prioritize_direct_batch_en_route_stops(
+                stops, dest_name, dest_dates, origin_name, seed_names=en_route_seed_names
+            )
             getting_here["en_route_stops"] = stops
             ai["getting_here"] = getting_here
 

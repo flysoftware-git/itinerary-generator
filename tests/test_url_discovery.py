@@ -387,6 +387,31 @@ def test_discover_en_route_stops_seed_survives_missing_detour_metadata_threshold
     assert "Enchanted Circle Scenic Byway" in names
 
 
+def test_discover_en_route_stops_forwards_en_route_seeds_to_direct_batch_prioritize():
+    """In direct_link_batch mode, _discover_en_route_stops must forward this
+    destination's manifest en_route_seeds into
+    _prioritize_direct_batch_en_route_stops (which in turn threads them into
+    the harvest prompt via _get_en_route_direct_batch_rows_for_destination) --
+    the harvest-prompt-recall fix's en-route-stop counterpart to the seeds ->
+    attraction/trail harvest wiring."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "direct_link_batch"
+
+    ai = {"getting_here": {"en_route_stops": []}}
+    dest = {"id": "zion", "en_route_seeds": ["Kolob Canyons Viewpoint"]}
+
+    with patch.object(
+        discoverer, "_prioritize_direct_batch_en_route_stops", return_value=[]
+    ) as mock_prioritize:
+        discoverer._discover_en_route_stops(
+            ai, "Zion National Park", origin_name="St. George", dest=dest,
+        )
+
+    mock_prioritize.assert_called_once_with(
+        [], "Zion National Park", None, "St. George", seed_names=["Kolob Canyons Viewpoint"]
+    )
+
+
 def test_en_route_stop_within_threshold_seed_override_still_enforces_hard_caps():
     """The seed override in _en_route_stop_within_threshold relaxes only the
     missing-metadata requirement -- a seed with real detour metadata that
@@ -2599,6 +2624,46 @@ def test_fetch_and_cache_grouped_direct_batch_populates_per_destination_caches()
     assert rows[0]["title"] == "Cliffside Restaurant"
 
 
+def test_fetch_and_cache_grouped_direct_batch_forwards_seeds_for_attractions_and_trails():
+    """The grouped path is the default in production (DEFAULT_DIRECT_BATCH_
+    GROUP_SIZE=2), so it must build a destination-name -> seeds map from
+    each group member's manifest `seeds` and pass it into
+    _direct_batch_html_prompt_multi for attraction/trail kinds -- otherwise
+    the grouped call would silently bypass the seed-hint fix entirely and a
+    seed would never reach the harvest prompt whenever grouping is active."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    group = [
+        {"name": "St. George, Utah", "dates": "October 17, 2026", "seeds": ["Snow Canyon Overlook"]},
+        {"name": "Springdale, Utah", "dates": "October 18, 2026"},
+    ]
+
+    with patch.object(discoverer, "_direct_batch_html_prompt_multi", return_value=None) as mock_prompt:
+        discoverer._fetch_and_cache_grouped_direct_batch(kind="attraction", group=group)
+
+    mock_prompt.assert_called_once_with(
+        kind="attraction",
+        destinations=[("St. George, Utah", "October 17, 2026"), ("Springdale, Utah", "October 18, 2026")],
+        seed_names_by_destination={"St. George, Utah": ["Snow Canyon Overlook"], "Springdale, Utah": []},
+    )
+
+
+def test_fetch_and_cache_grouped_direct_batch_omits_seed_map_for_restaurants():
+    """Restaurants have no seed concept (manifest `seeds` is documented as
+    attraction/hike/experience hints only) -- the grouped restaurant call
+    must not pass a seed map at all."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    group = [{"name": "St. George, Utah", "dates": "October 17, 2026", "seeds": ["Snow Canyon Overlook"]}]
+
+    with patch.object(discoverer, "_direct_batch_html_prompt_multi", return_value=None) as mock_prompt:
+        discoverer._fetch_and_cache_grouped_direct_batch(kind="restaurant", group=group)
+
+    mock_prompt.assert_called_once_with(
+        kind="restaurant",
+        destinations=[("St. George, Utah", "October 17, 2026")],
+        seed_names_by_destination=None,
+    )
+
+
 def test_fetch_and_cache_grouped_direct_batch_leaves_thin_destination_uncached():
     """A destination whose section parses to fewer rows than
     _direct_batch_min_required must NOT be cached -- it should fall through
@@ -2785,6 +2850,189 @@ def test_direct_batch_html_prompt_for_en_route_stops_prefers_specific_stop_pages
     assert "specific official or authoritative page" in system_prompt.lower()
     assert "generic destination landing page or park home page" in system_prompt.lower()
     assert "prefer specific official or authoritative pages" in _user_prompt.lower()
+
+
+def test_direct_batch_html_prompt_unchanged_when_no_seeds():
+    """Root cause of the recurring "named seed missing a URL" pattern
+    (Sunrise Point / Bryce Canyon, Imogene Pass / Telluride, etc.): the
+    direct-batch harvest prompt had no mechanism at all to surface manifest
+    seeds as candidates, so an obscure-but-real seed had no real chance
+    against more famous nearby attractions for the model's limited slot
+    budget -- this is upstream of the (unmodified) verification/matching
+    trust boundary. Passing seed_names=None (or omitting it) must leave the
+    prompt text byte-identical to before this parameter existed, for every
+    kind that accepts it."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 3.0
+    discoverer._alltrails_rating_min = 4.5
+    discoverer._alltrails_rating_min_votes = 200
+
+    for kind, kwargs in (
+        ("attraction", {}),
+        ("trail", {}),
+        ("en_route_stop", {"origin_name": "St. George"}),
+    ):
+        without_seeds = discoverer._direct_batch_html_prompt(
+            kind=kind, dest_name="Bryce Canyon", dates="October 7, 2026", **kwargs
+        )
+        with_empty_seeds = discoverer._direct_batch_html_prompt(
+            kind=kind, dest_name="Bryce Canyon", dates="October 7, 2026", seed_names=[], **kwargs
+        )
+        assert without_seeds == with_empty_seeds
+
+
+def test_direct_batch_html_prompt_lists_seed_names_for_attractions_and_trails():
+    """When a destination has manifest seeds, both the attraction and trail
+    (AllTrails) single-destination harvest prompts must name them explicitly
+    and instruct the model to verify and include any that are real -- the
+    fix for seeds like "Sunrise Point" never even appearing as harvest
+    candidates."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 3.0
+    discoverer._alltrails_rating_min = 4.5
+    discoverer._alltrails_rating_min_votes = 200
+
+    for kind in ("attraction", "trail"):
+        prompt = discoverer._direct_batch_html_prompt(
+            kind=kind,
+            dest_name="Bryce Canyon",
+            dates="October 7, 2026",
+            seed_names=["Sunrise Point", "Inspiration Point"],
+        )
+        assert prompt is not None
+        system_prompt, user_prompt = prompt
+        assert "Sunrise Point" in system_prompt
+        assert "Inspiration Point" in system_prompt
+        assert "Sunrise Point" in user_prompt
+        assert "Inspiration Point" in user_prompt
+        assert "verify" in system_prompt.lower()
+        assert "real" in system_prompt.lower()
+
+
+def test_direct_batch_html_prompt_lists_seed_names_for_en_route_stops():
+    """en_route_seeds (the en-route-stop counterpart to `seeds`) must reach
+    the en-route-stop harvest prompt the same way."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    prompt = discoverer._direct_batch_html_prompt(
+        kind="en_route_stop",
+        dest_name="Zion National Park",
+        dates="October 7-9, 2026",
+        origin_name="St. George",
+        seed_names=["Kolob Canyons Viewpoint"],
+    )
+
+    assert prompt is not None
+    system_prompt, user_prompt = prompt
+    assert "Kolob Canyons Viewpoint" in system_prompt
+    assert "Kolob Canyons Viewpoint" in user_prompt
+
+
+def test_direct_batch_html_prompt_ignores_seed_names_for_restaurants():
+    """`seeds` in the manifest are documented as "Attraction/hike/experience
+    name hints only" -- restaurants have no seed concept, so a seed_names
+    argument (if ever passed by mistake) must not change the restaurant
+    prompt at all."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    without_seeds = discoverer._direct_batch_html_prompt(
+        kind="restaurant", dest_name="St. George, Utah", dates="October 17, 2026"
+    )
+    with_seeds = discoverer._direct_batch_html_prompt(
+        kind="restaurant",
+        dest_name="St. George, Utah",
+        dates="October 17, 2026",
+        seed_names=["Some Named Attraction"],
+    )
+    assert without_seeds == with_seeds
+
+
+def test_direct_batch_html_prompt_multi_unchanged_when_no_seeds():
+    """Same byte-identical guarantee as the single-destination prompt, for
+    the grouped multi-destination variant (the path actually used by
+    default, since DEFAULT_DIRECT_BATCH_GROUP_SIZE > 1)."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 3.0
+    discoverer._alltrails_rating_min = 4.5
+    discoverer._alltrails_rating_min_votes = 200
+    destinations = [("St. George, Utah", "October 17, 2026"), ("Springdale, Utah", "October 18, 2026")]
+
+    for kind in ("attraction", "trail"):
+        without_seeds = discoverer._direct_batch_html_prompt_multi(kind=kind, destinations=destinations)
+        with_empty_map = discoverer._direct_batch_html_prompt_multi(
+            kind=kind, destinations=destinations, seed_names_by_destination={}
+        )
+        assert without_seeds == with_empty_map
+
+
+def test_direct_batch_html_prompt_multi_lists_seed_names_per_destination():
+    """The grouped multi-destination prompt must attach each destination's
+    own seed names to its own dest_line only -- a seed for St. George must
+    not leak into Springdale's line -- and add a generic verify-and-include
+    instruction when any destination in the group has seeds."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 3.0
+    discoverer._alltrails_rating_min = 4.5
+    discoverer._alltrails_rating_min_votes = 200
+    destinations = [("St. George, Utah", "October 17, 2026"), ("Springdale, Utah", "October 18, 2026")]
+
+    for kind in ("attraction", "trail"):
+        prompt = discoverer._direct_batch_html_prompt_multi(
+            kind=kind,
+            destinations=destinations,
+            seed_names_by_destination={"St. George, Utah": ["Snow Canyon Overlook"]},
+        )
+        assert prompt is not None
+        system_prompt, user_prompt = prompt
+        assert "Snow Canyon Overlook" in user_prompt
+        assert "verify" in system_prompt.lower()
+        # The seed name must be attached to its own destination's line, not
+        # bled into a different destination's line.
+        st_george_line = next(line for line in user_prompt.splitlines() if "St. George" in line)
+        springdale_line = next(line for line in user_prompt.splitlines() if "Springdale" in line)
+        assert "Snow Canyon Overlook" in st_george_line
+        assert "Snow Canyon Overlook" not in springdale_line
+
+
+def test_prioritize_direct_batch_attractions_forwards_seed_names_to_harvest():
+    """The harvest-call trigger (_get_attraction_direct_batch_rows_for_destination)
+    must receive the same seed_names _prioritize_direct_batch_attractions
+    was already given, so the prompt actually sent to the model includes
+    them -- previously seed_names was accepted here but silently dropped."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_direct_batch_items_per_day = 6
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=[]) as mock_get:
+        discoverer._prioritize_direct_batch_attractions(
+            [], "Bryce Canyon", "October 7, 2026", seed_names=["Sunrise Point"]
+        )
+
+    mock_get.assert_called_once_with("Bryce Canyon", "October 7, 2026", seed_names=["Sunrise Point"])
+
+
+def test_prioritize_direct_batch_trails_forwards_seed_names_to_harvest():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._trail_direct_batch_items_per_day = 2
+
+    with patch.object(discoverer, "_get_alltrails_direct_batch_rows_for_destination", return_value=[]) as mock_get:
+        discoverer._prioritize_direct_batch_trails(
+            [], "Telluride", "October 7, 2026", seed_names=["Imogene Pass"]
+        )
+
+    mock_get.assert_called_once_with("Telluride", "October 7, 2026", seed_names=["Imogene Pass"])
+
+
+def test_prioritize_direct_batch_en_route_stops_forwards_seed_names_to_harvest():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=[]) as mock_get:
+        discoverer._prioritize_direct_batch_en_route_stops(
+            [], "Zion National Park", "October 7, 2026", "St. George", seed_names=["Kolob Canyons Viewpoint"]
+        )
+
+    mock_get.assert_called_once_with(
+        "Zion National Park", "October 7, 2026", "St. George", seed_names=["Kolob Canyons Viewpoint"]
+    )
 
 
 def test_search_alltrails_direct_batch_authoritative_rejects_mismatched_trail_link():
