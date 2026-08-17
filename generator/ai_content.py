@@ -1481,6 +1481,38 @@ class AIContentGenerator:
 
         attractions = attractions or []
 
+        # Cross-day multi-activity dedup guard: an attraction packed into one
+        # day's Afternoon block must not be re-packed into a *later* day's
+        # block for the same multi-day stay (e.g. "Moab Giants Dinosaur
+        # Park" appearing in both Day 1 and Day 3). _build_multi_activity_
+        # afternoon_summary is called once per day below (arrival day, then
+        # each Day 2+), sharing this single set across all of those calls so
+        # a name used on an earlier day is excluded from consideration on
+        # every later day, not just skipped within one call.
+        used_multi_activity_names: set[str] = set()
+
+        # "What is near what" heuristic (no real inter-attraction distance
+        # data exists in this codebase -- see docs/design/
+        # schedule-normalization.md's v2.1 activity-budget section). A named
+        # National Park/Monument/Recreation Area/Forest or State Park is a
+        # strong, cheap-to-check signal that an item is a distinct, separate
+        # multi-mile drive from town -- not a real distance measurement, but
+        # cheap and directionally correct for the common case this bug
+        # report described: grouping "Moab Giants Dinosaur Park" (in town)
+        # with "Canyonlands National Park" AND "Arches National Park" (two
+        # separate parks in different directions) into one time block.
+        # Never pack more than one such "distinct major destination" item
+        # into the same block, regardless of whether the raw time budget
+        # would technically fit more than one.
+        _major_destination_pattern = re.compile(
+            r"\b(national\s+park|national\s+monument|national\s+recreation\s+area|"
+            r"national\s+forest|state\s+park)\b",
+            re.IGNORECASE,
+        )
+
+        def _is_distinct_major_destination(name: str) -> bool:
+            return bool(_major_destination_pattern.search(name or ""))
+
         def _is_heavy_activity_block(summary: str) -> bool:
             text = str(summary or "").lower()
             if not text:
@@ -1637,11 +1669,22 @@ class AIContentGenerator:
 
             picked: list[tuple[str, int]] = []
             remaining = activity_budget_minutes
+            major_destination_picked = False
             for attr in ordered:
                 if not isinstance(attr, dict):
                     continue
                 name = str(attr.get("name", "") or "").strip()
                 if not name:
+                    continue
+                if name.lower() in used_multi_activity_names:
+                    continue
+                is_major = _is_distinct_major_destination(name)
+                if is_major and major_destination_picked:
+                    # Already have one distinct off-site park/destination in
+                    # this block -- a second one (e.g. Canyonlands AND
+                    # Arches alongside an in-town stop) means two separate
+                    # multi-mile drives in different directions, not a
+                    # realistic single time block.
                     continue
                 duration_raw = str(attr.get("duration", "") or "").strip()
                 duration_minutes = _parse_duration_minutes(duration_raw)
@@ -1651,11 +1694,15 @@ class AIContentGenerator:
                     continue
                 picked.append((name, duration_minutes))
                 remaining -= duration_minutes
+                if is_major:
+                    major_destination_picked = True
                 if len(picked) >= 3 or remaining < 45:
                     break
 
             if len(picked) < 2:
                 return ""
+
+            used_multi_activity_names.update(name.lower() for name, _ in picked)
 
             total_minutes = sum(item[1] for item in picked)
             parts = [f"{name} ({_format_duration_compact(minutes)})" for name, minutes in picked]
