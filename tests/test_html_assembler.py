@@ -1882,6 +1882,57 @@ def test_build_attractions_orders_non_hikes_before_hikes_before_scenic_drives() 
     assert positions["Angels Landing Trail"] < positions["Zion-Mt Carmel Highway"]
 
 
+def test_build_attractions_orders_hike_difficulty_items_in_hike_bucket_despite_type() -> None:
+    """Regression for dipstick60 Bug 2 (real data): type == "hike" alone
+    under-detects hikes. Canyonlands' "Mesa Arch" rendered with type
+    "viewpoint" and Telluride's "Bridal Veil Falls" rendered with type
+    "attraction", yet both carried a hike-difficulty badge (Easy/Moderate)
+    and a walking duration -- so both stayed in the non-hike bucket and
+    rendered first instead of in the middle with the real hikes.
+    `difficulty` is a hike-specific field (url_discovery.py clears it when
+    demoting an item away from hike-ness), so a recognized difficulty value
+    must also route an item into the hike bucket even when `type` doesn't
+    say "hike"."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Mesa Arch",
+                "type": "viewpoint",
+                "difficulty": "Easy",
+                "duration": "30 min",
+                "description": "A short trail leads to this arch.",
+                "url": "https://www.alltrails.com/trail/us/utah/mesa-arch",
+            },
+            {
+                "name": "Grand View Point",
+                "type": "attraction",
+                "description": "Sweeping 360-degree vistas.",
+                "url": "https://www.nps.gov/cany/grandview.htm",
+            },
+            {
+                "name": "White Rim Overlook Trail",
+                "type": "hike",
+                "description": "Flat scenic path to a rim overlook.",
+                "url": "https://www.alltrails.com/trail/us/utah/white-rim-overlook-trail",
+            },
+        ]
+    }
+
+    html = assembler._build_attractions(ai, drives=[], dest_name="Canyonlands National Park")
+
+    positions = {
+        name: html.index(name)
+        for name in ("Mesa Arch", "Grand View Point", "White Rim Overlook Trail")
+    }
+
+    # The true non-hike (no difficulty, type "attraction") renders first...
+    assert positions["Grand View Point"] < positions["Mesa Arch"]
+    # ...and the difficulty-bearing "viewpoint" joins the type=="hike" item
+    # in the hike bucket, not ahead of every non-hike.
+    assert positions["Grand View Point"] < positions["White Rim Overlook Trail"]
+
+
 def test_build_attractions_drops_scenic_drive_describing_same_place_different_wording() -> None:
     """Regression for dipstick58 Bug 3 (real Telluride data): a top_attraction
     titled "Telluride Mountain Village Gondola" and a scenic_drives item
@@ -1919,6 +1970,63 @@ def test_build_attractions_drops_scenic_drive_describing_same_place_different_wo
     assert "Telluride Mountain Village Gondola" in html
     assert "attr-drive-item" not in html
     assert "telluride.com/activities/gondola" in html
+
+
+def test_build_attractions_dedup_never_discards_a_url_the_attraction_side_already_had() -> None:
+    """dipstick60 Bug 1 investigation (real Telluride data): the owner
+    reported that after the dipstick58 dedup fix above correctly merged the
+    duplicate gondola cards, the surviving card had no link at all. Traced
+    against the actual dipstick60 run (destination_status_report.json):
+    this run's URL-discovery harvest never resolved a real gondola URL for
+    either the top_attractions or scenic_drives entry that run (repeated
+    "direct_batch_no_match", one wrong-domain candidate that didn't survive
+    to render) -- a harvest-recall variance, not something this rendering
+    code did.
+
+    Structurally, `_build_attractions` determines the attraction's own URL
+    (via `_select_preferred_external_link`) and renders its row *before*
+    the scenic-drives dedup loop runs, so dropping a duplicate drive can
+    never retroactively clear a URL the attraction row already resolved.
+    This test locks in that ordering: when the attraction side has no URL
+    of its own, it still renders (with the "Unverified" caution badge, not
+    silently dropped) and the duplicate drive is still suppressed -- even
+    when the drive side *does* carry the real URL. The intended behavior is
+    "the attraction renders with whatever URL IT already had", not
+    "borrow the dropped drive's URL"."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Telluride Mountain Village Gondola",
+                "type": "attraction",
+                "description": "Free gondola connecting Telluride and Mountain Village.",
+                "rating": 4.5,
+                "duration": "20-min round-trip",
+                # No url/url_candidates -- mirrors this run's harvest miss.
+            }
+        ]
+    }
+    drives = [
+        {
+            "title": "Free Gondola to Mountain Village",
+            "category": "scenic",
+            "description": (
+                "The gondola ride connects Telluride and Mountain Village, "
+                "offering aerial views of the mountains and valleys below."
+            ),
+            "distance_or_duration": "13 min",
+            # Even if a URL had been found for the drive-side duplicate, it
+            # must not be borrowed onto the attraction card.
+            "url": "https://example.com/should-not-be-borrowed",
+        }
+    ]
+
+    html = assembler._build_attractions(ai, drives=drives, dest_name="Telluride")
+
+    assert "Telluride Mountain Village Gondola" in html
+    assert "attr-drive-item" not in html  # duplicate drive still suppressed
+    assert "should-not-be-borrowed" not in html  # no URL-borrowing from the drive
+    assert "⚠ Unverified" in html  # renders without a link, flagged, not blank
 
 
 def test_build_attractions_keeps_distinct_attractions_sharing_directional_qualifier() -> None:
@@ -2584,8 +2692,31 @@ def test_build_restaurants_renders_see_base_pointer_when_deferred() -> None:
 
     html = assembler._build_restaurants({"dinner_recommendations": []}, "Arches National Park", dest=arches, dest_by_id=dest_by_id)
 
-    assert "see Moab" in html
-    assert 'href="#section-moab"' in html
+    assert "Dinner recommendations: see " in html
+    # dipstick60 Bug 3: only the destination name itself is the clickable
+    # anchor, not the whole "see Moab" phrase.
+    assert '<a href="#section-moab">Moab</a>' in html
+
+
+def test_group_base_pointer_html_styles_and_links_only_the_destination_name() -> None:
+    """dipstick60 Bug 3: the owner reported the "see base" pointer (e.g.
+    "Dinner recommendations: see Moab") as plain, unstyled/uncentered text.
+    _group_base_pointer_html now (a) carries the .group-base-pointer CSS
+    class the template styles with padding/centering (see
+    templates/v2.5_template.html), and (b) wraps only the destination name
+    itself in the <a> -- the icon/label prefix stays plain text -- reusing
+    the same #section-<id> hash target the top nav's own tab buttons jump
+    to, not a new navigation mechanism."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest_by_id = {"moab": {"id": "moab", "name": "Moab"}}
+    dest = {"id": "arches", "name": "Arches National Park", "group_with": "moab"}
+
+    html = assembler._group_base_pointer_html(dest, dest_by_id, "Dinner recommendations", icon="\U0001f37d️")
+
+    assert html == (
+        '<p class="group-base-pointer">\U0001f37d️ Dinner recommendations: see '
+        '<a href="#section-moab">Moab</a></p>\n'
+    )
 
 
 def test_build_restaurants_no_pointer_for_ungrouped_entry_with_no_restaurants() -> None:
@@ -2608,7 +2739,8 @@ def test_build_attractions_renders_see_base_pointer_for_deferred_scenic_drives_o
     html = assembler._build_attractions({"top_attractions": []}, [], "Arches National Park", dest=arches, dest_by_id=dest_by_id)
 
     assert "Scenic drives" in html
-    assert "see Moab" in html
+    assert "Scenic drives: see " in html
+    assert '<a href="#section-moab">Moab</a>' in html
 
 
 def test_build_attractions_appends_scenic_drive_pointer_alongside_own_attractions() -> None:
@@ -2628,7 +2760,8 @@ def test_build_attractions_appends_scenic_drive_pointer_alongside_own_attraction
 
     assert "Delicate Arch" in html
     assert "Scenic drives" in html
-    assert "see Moab" in html
+    assert "Scenic drives: see " in html
+    assert '<a href="#section-moab">Moab</a>' in html
 
 
 def test_build_getting_here_renders_day_trip_badge_for_grouped_entry() -> None:
@@ -2704,7 +2837,8 @@ def test_build_getting_here_renders_en_route_pointer_when_deferred_and_empty() -
     html = assembler._build_getting_here(ai, arches, previous_name="Moab", dest_by_id=dest_by_id)
 
     assert "En-route stops" in html
-    assert "see Moab" in html
+    assert "En-route stops: see " in html
+    assert '<a href="#section-moab">Moab</a>' in html
 
 
 def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_clustering() -> None:
@@ -2777,7 +2911,9 @@ def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_cluster
     # Lodging dedup pointers on both grouped children
     assert html.count("Based from Moab Springs Ranch") == 2
     # Restaurant deferral pointer on both grouped children, base keeps its own card
-    assert html.count("Dinner recommendations: see Moab") == 2
+    # -- only the destination name itself is the anchor (dipstick60 Bug 3).
+    assert html.count("Dinner recommendations: see ") == 2
+    assert html.count('<a href="#section-moab">Moab</a>') >= 2
     assert "Moab Diner" in html
     # Each grouped entry keeps its own genuinely distinct attractions
     assert "Delicate Arch" in html
