@@ -3787,14 +3787,46 @@ class URLDiscoverer:
                         continue
                     # No direct-link batch row matched this trail-like item
                     # either directly (AllTrails) or via the misclassified-
-                    # attraction recovery above. Authoritative mode still
-                    # forbids trusting a fresh live web/AI-candidate search
-                    # for a specific canonical URL, but the same safe
+                    # attraction recovery above. Authoritative mode forbids
+                    # trusting an AI-suggested url_candidate for a specific
+                    # canonical URL -- that's an unverified assertion with no
+                    # independent search grounding, the exact fabrication
+                    # risk this mode exists to block (see
+                    # test_discover_attractions_direct_batch_authoritative_
+                    # recovers_seed_from_ai_candidate). A real, live, grounded
+                    # search result is different in kind: it comes from an
+                    # actual search-API call and is independently qualified
+                    # by the same specificity/relevance/policy-class/liveness
+                    # gates every non-authoritative attraction link on this
+                    # path already goes through (_search_first below is the
+                    # same call the "For NPS parks" section a few lines down
+                    # makes). One more such attempt here doesn't reopen that
+                    # risk, so try it before giving up on a real link.
+                    trail_general_search_url = self._search_first(
+                        _build_query_variants(attr_name, dest_name, "trail hike"),
+                        site_filter="nps.gov" if trail_nps_code else None,
+                        site_hint=(f"site:nps.gov/{trail_nps_code}" if trail_nps_code else None),
+                        item_name=attr_name,
+                        dest_name=dest_name,
+                        allow_alltrails=True,
+                    )
+                    if trail_general_search_url:
+                        attr["url"] = trail_general_search_url
+                        self._log_decision(
+                            kind="attraction",
+                            dest_name=dest_name,
+                            item_name=attr_name,
+                            reason="authoritative_no_match_recovered_via_general_search",
+                            message="trail-like link recovered via general search after authoritative direct-batch no-match",
+                            url=trail_general_search_url,
+                        )
+                        continue
+                    # General search also came up empty. The same safe
                     # Google-Maps-search fallback every other "no URL found"
                     # attraction gets (see _assign_attraction_maps_fallback_
-                    # or_fail_closed) applies equally here -- it's a name+
-                    # destination search link, not a claim of a specific
-                    # correct source page.
+                    # or_fail_closed) applies here -- it's a name+destination
+                    # search link, not a claim of a specific correct source
+                    # page.
                     self._assign_attraction_maps_fallback_or_fail_closed(
                         attr,
                         attr_name=attr_name,
@@ -3889,9 +3921,41 @@ class URLDiscoverer:
                 if self._direct_batch_is_authoritative():
                     # The direct-link-batch harvest didn't find a matching row
                     # for this item, and authoritative mode means we must not
-                    # trust a fresh live web/AI-candidate search to attach a
-                    # *specific* source URL (that's the confidently-wrong-link
-                    # risk this mode exists to block). But a real, harvested
+                    # trust an AI-suggested url_candidate to attach a
+                    # *specific* source URL -- that's an unverified assertion
+                    # with no independent search grounding, the confidently-
+                    # wrong-link risk this mode exists to block (see
+                    # test_discover_attractions_direct_batch_authoritative_
+                    # recovers_seed_from_ai_candidate). A real, live, grounded
+                    # search result doesn't carry that same risk: it comes
+                    # from an actual search-API call and is independently
+                    # qualified by the same specificity/relevance/policy-
+                    # class/liveness gates every non-authoritative attraction
+                    # link on this path already goes through (_search_first
+                    # below is the same call the "For NPS parks" section a
+                    # few lines down makes). Try one more such attempt before
+                    # giving up on a real link.
+                    site_hint = f"site:nps.gov/{nps_code}" if nps_code else None
+                    general_search_url = self._search_first(
+                        _build_query_variants(attr_name, dest_name, "attraction landmark museum viewpoint"),
+                        site_filter="nps.gov" if nps_code else None,
+                        site_hint=site_hint,
+                        item_name=attr_name,
+                        dest_name=dest_name,
+                        allow_alltrails=trail_like,
+                    )
+                    if general_search_url:
+                        attr["url"] = general_search_url
+                        self._log_decision(
+                            kind="attraction",
+                            dest_name=dest_name,
+                            item_name=attr_name,
+                            reason="authoritative_no_match_recovered_via_general_search",
+                            message="attraction link recovered via general search after authoritative direct-batch no-match",
+                            url=general_search_url,
+                        )
+                        continue
+                    # General search also came up empty. A real, harvested
                     # attraction name still deserves the same safe
                     # Google-Maps-search fallback every other "no URL found"
                     # attraction gets below -- it's a name+destination search

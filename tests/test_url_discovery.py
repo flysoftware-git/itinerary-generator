@@ -5642,6 +5642,97 @@ def test_discover_attractions_direct_batch_authoritative_recovers_seed_from_ai_c
     ai_candidate_mock.assert_not_called()
 
 
+def test_discover_attractions_direct_batch_authoritative_recovers_via_general_search() -> None:
+    """Part 1 regression, grounded in real evidence from
+    docs/reports/link_recall_strategy_experiment.md /
+    link_recall_strategy_experiment_results.json (2026-08-17, run against a
+    live SW2026-dipstick65 output): production shipped "Sunrise Point"
+    (Bryce Canyon NP) with no link at all, because authoritative direct-
+    batch mode went straight from "no harvested row match" to the maps-
+    fallback-or-fail-closed helper without ever trying the general web-
+    search path this project's own _build_query_variants /_search_first
+    already support elsewhere in this same function (the "For NPS parks"
+    section). A live re-run of that exact production-style query in the
+    experiment found a real, live, policy-compliant page
+    (nps.gov/brca/planyourvisit/sunrise.htm) on the first try. This test
+    proves the authoritative-no-match branch now tries that same real,
+    independently-verified search before giving up, and uses the result
+    when found -- without reopening the AI-candidate fabrication risk the
+    sibling tripwire test above guards (no url_candidates are supplied or
+    consulted here; the recovered URL comes only from the mocked
+    _search_first, matching the real _search_first_strict verification
+    pipeline's own specificity/relevance/liveness gates).
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Sunrise Point",
+                "type": "viewpoint",
+                "description": "Northernmost viewpoint over the Bryce Amphitheater.",
+            }
+        ]
+    }
+
+    def fake_search_first(variants, site_filter=None, **kwargs):
+        if site_filter == "nps.gov":
+            return "https://www.nps.gov/brca/planyourvisit/sunrise.htm"
+        return None
+
+    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+        with patch.object(discoverer, "_search_first", side_effect=fake_search_first):
+            discoverer._discover_attractions(ai, "Bryce Canyon National Park", "brca")
+
+    attr = ai["top_attractions"][0]
+    assert attr.get("url") == "https://www.nps.gov/brca/planyourvisit/sunrise.htm"
+
+
+def test_discover_attractions_direct_batch_authoritative_recovers_trail_via_general_search() -> None:
+    """Part 1 regression (trail-like branch), grounded in the same real
+    evidence: production's dipstick65 run shipped "Park Avenue Trail"
+    (Arches NP) with no link because authoritative mode's trail-like branch
+    exhausted only its AllTrails-specific paths -- and, being authoritative,
+    never tried the per-item NPS/web fan-out either (that fan-out helper is
+    itself hard-gated off in authoritative mode; see
+    _search_attraction_from_item_query_fanout's
+    authoritative_direct_batch_lockout) -- before falling straight to
+    maps-fallback-or-fail-closed. The live experiment found a real nps.gov
+    trailhead page for this exact item on a second query variant
+    (alt_phrasing_grok). This test proves the trail-like authoritative-no-
+    match branch now also tries one more real, verified general-search
+    attempt before giving up on a real link.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._alltrails_source = "direct_link_batch"
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Park Avenue Trail",
+                "type": "trail",
+                "description": "Short trail beneath towering sandstone fins.",
+            }
+        ]
+    }
+
+    def fake_search_first(variants, site_filter=None, **kwargs):
+        if site_filter == "nps.gov":
+            return "https://www.nps.gov/places/park-avenue-viewpoint-and-trailhead.htm"
+        return None
+
+    with patch.object(discoverer, "_search_attraction_from_direct_batch", return_value=None):
+        with patch.object(discoverer, "_search_first", side_effect=fake_search_first):
+            discoverer._discover_attractions(ai, "Arches National Park", "arch")
+
+    attr = ai["top_attractions"][0]
+    assert attr.get("url") == "https://www.nps.gov/places/park-avenue-viewpoint-and-trailhead.htm"
+
+
 def test_search_attraction_from_maps_area_pool_selects_item_specific_maps_candidate():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
 
@@ -9555,13 +9646,19 @@ def test_trail_like_attraction_omits_link_when_no_validated_trail_url_exists() -
     so an unresolved trail-like item here now gets the same safe maps-search
     fallback every other "no URL found" attraction gets, instead of being
     left completely unverified (the trail-like-branch no-link-fallback fix).
+
+    This must hold when EVERY real search avenue -- including the one-more
+    general-search recovery attempt authoritative mode now tries before
+    giving up (see authoritative_no_match_recovered_via_general_search) --
+    comes up empty, not just the AllTrails-specific ones. Returning None
+    unconditionally here (instead of only for site_filter == "alltrails.com")
+    is what actually exercises the "no validated trail url exists anywhere"
+    scenario this test is named for.
     """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
 
     def fake_search(variants, site_filter=None, **kwargs):
-        if site_filter == "alltrails.com":
-            return None
-        return "https://www.nps.gov/care/planyourvisit/scenicdrive.htm"
+        return None
 
     ai = {
         "top_attractions": [
