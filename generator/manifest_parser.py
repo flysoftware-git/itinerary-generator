@@ -70,6 +70,16 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                     "type": "number",
                     "description": "Optional default target number of attractions to keep per destination-day when ranking candidates.",
                 },
+                "has_high_clearance_vehicle": {
+                    "type": "boolean",
+                    "description": "Optional traveler vehicle declaration. When explicitly set to "
+                                    "false, scenic drives whose vehicle_requirement is "
+                                    "'High-clearance recommended' or '4WD required' (see "
+                                    "prompts/scenic_drives.txt) are excluded from the generated "
+                                    "output -- no point recommending a drive the traveler can't "
+                                    "make. Omitted (or true) = current behavior, unchanged; this "
+                                    "is an opt-in filter, never a new default restriction.",
+                },
                 "llm_provider": {
                     "type": "string",
                     "enum": ["openai", "anthropic", "deepseek", "gemini", "grok", "azure_openai"],

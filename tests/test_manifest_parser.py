@@ -441,3 +441,75 @@ destinations:
     lodging = trip["destinations"][0]["lodging"]
     assert lodging["location"] == "Zion Lodge, Springdale, UT"
     assert lodging["checkin_time"] == "4:00 PM"
+
+
+def test_has_high_clearance_vehicle_false_parses(tmp_path):
+    manifest_content = """
+trip:
+  title: "Test"
+  subtitle: "Test"
+  theme_color: "#123456"
+  has_high_clearance_vehicle: false
+destinations:
+  - id: zion
+    name: "Zion National Park"
+    dates: "Oct 7-9, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+"""
+    f = tmp_path / "no_clearance_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    trip = parser.load(str(f))
+    assert trip["trip"]["has_high_clearance_vehicle"] is False
+
+
+def test_has_high_clearance_vehicle_true_parses(tmp_path):
+    manifest_content = """
+trip:
+  title: "Test"
+  subtitle: "Test"
+  theme_color: "#123456"
+  has_high_clearance_vehicle: true
+destinations:
+  - id: zion
+    name: "Zion National Park"
+    dates: "Oct 7-9, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+"""
+    f = tmp_path / "has_clearance_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    trip = parser.load(str(f))
+    assert trip["trip"]["has_high_clearance_vehicle"] is True
+
+
+def test_has_high_clearance_vehicle_absent_by_default():
+    parser = ManifestParser()
+    trip = parser.load(str(FIXTURES / "sample_manifest.yaml"))
+    assert "has_high_clearance_vehicle" not in trip["trip"]
+
+
+def test_has_high_clearance_vehicle_rejects_non_boolean(tmp_path):
+    manifest_content = """
+trip:
+  title: "Test"
+  subtitle: "Test"
+  theme_color: "#123456"
+  has_high_clearance_vehicle: "no"
+destinations:
+  - id: zion
+    name: "Zion National Park"
+    dates: "Oct 7-9, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+"""
+    f = tmp_path / "bad_clearance_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    with pytest.raises(Exception):
+        parser.load(str(f))
