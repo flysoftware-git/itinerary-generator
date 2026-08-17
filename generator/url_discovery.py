@@ -2553,7 +2553,7 @@ class URLDiscoverer:
                     url,
                 )
                 return ""
-        if kind in {"generic", "attraction", "en-route stop", "getting_there route option"}:
+        if kind in {"generic", "attraction", "en-route stop", "en_route_stop", "getting_there route option"}:
             if self._is_generic_section_landing_page(url):
                 if not self._looks_like_item_specific_homepage(url, item_name):
                     logger.info(

@@ -4441,6 +4441,133 @@ def test_generic_section_landing_page_catches_bare_nps_park_code_homepage():
     assert not URLDiscoverer._is_generic_section_landing_page("https://www.example.com/blog/")
 
 
+def test_generic_section_landing_page_catches_tripadvisor_things_to_do_listing():
+    """Regression: the project owner found a real published link that's a
+    generic listing/landing page, not a specific attraction -- "THE 15 BEST
+    Things to Do in Pagosa Springs (2026) - Tripadvisor", which resolves to
+    https://www.tripadvisor.com/Attractions-g33584-Activities-Pagosa_Springs_Colorado.html
+    (confirmed via live search). TripAdvisor's "Attractions-g<id>-Activities-
+    <city>.html" URL shape is a category/listing page for the whole
+    destination -- distinct from its "Attraction_Review-g<id>-d<id>-Reviews-
+    <name>.html" shape for one specific named place, which must not be
+    caught by this check.
+    """
+    assert URLDiscoverer._is_generic_section_landing_page(
+        "https://www.tripadvisor.com/Attractions-g33584-Activities-Pagosa_Springs_Colorado.html"
+    )
+    # A category-filtered variant of the same listing shape (e.g. paginated or
+    # scoped to a sub-category) is still a listing page, not a specific place.
+    assert URLDiscoverer._is_generic_section_landing_page(
+        "https://www.tripadvisor.com/Attractions-g33584-Activities-c47-Pagosa_Springs_Colorado.html"
+    )
+    # A genuinely specific TripAdvisor attraction review page must not be caught.
+    assert not URLDiscoverer._is_generic_section_landing_page(
+        "https://www.tripadvisor.com/Attraction_Review-g33584-d123456-Reviews-"
+        "Chimney_Rock_National_Monument-Pagosa_Springs_Colorado.html"
+    )
+
+
+def test_retain_discovered_url_rejects_tripadvisor_listing_for_en_route_stop_kind():
+    """Regression: _retain_discovered_url's generic-section-landing-page gate
+    only checked kind in {"generic", "attraction", "en-route stop",
+    "getting_there route option"} -- but the en-route-stop "preserve existing
+    direct-link-batch URL" call site (_discover_en_route_stops) passes
+    kind="en_route_stop" (underscore), not "en-route stop" (hyphen/space).
+    That string mismatch let a TripAdvisor "Things to Do" listing page sail
+    straight through the gate whenever it showed up as an en-route stop's
+    already-attached URL, even though the exact same URL is correctly
+    rejected for kind="attraction". Two other kind-gated checks in this same
+    function already treat "en-route stop" and "en_route_stop" as synonyms
+    (see the google-maps-place-url and alltrails-slug-corroboration checks
+    just above/below this one) -- this gate had fallen out of sync with that
+    precedent.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    listing_url = "https://www.tripadvisor.com/Attractions-g33584-Activities-Pagosa_Springs_Colorado.html"
+
+    assert (
+        discoverer._retain_discovered_url(
+            listing_url,
+            "Pagosa Springs",
+            "Pagosa Springs",
+            allow_alltrails=False,
+            kind="en_route_stop",
+        )
+        == ""
+    )
+    # Same rejection already worked for the correctly-spelled kind string --
+    # confirm both spellings now agree.
+    assert (
+        discoverer._retain_discovered_url(
+            listing_url,
+            "Pagosa Springs",
+            "Pagosa Springs",
+            allow_alltrails=False,
+            kind="en-route stop",
+        )
+        == ""
+    )
+    # A genuinely specific attraction review page for this kind must still be
+    # preserved -- the fix must not over-reject real content.
+    specific_url = (
+        "https://www.tripadvisor.com/Attraction_Review-g33584-d123456-Reviews-"
+        "Chimney_Rock_National_Monument-Pagosa_Springs_Colorado.html"
+    )
+    assert (
+        discoverer._retain_discovered_url(
+            specific_url,
+            "Chimney Rock National Monument",
+            "Pagosa Springs",
+            allow_alltrails=False,
+            kind="en_route_stop",
+        )
+        == specific_url
+    )
+
+
+def test_discover_en_route_stops_direct_batch_discards_stale_tripadvisor_listing_url():
+    """End-to-end regression for the same bug: an en-route stop that already
+    carries a generic TripAdvisor "Things to Do" listing URL (e.g. left over
+    from an earlier harvest, or a row whose own URL field was never a
+    specific place) must not have that URL preserved verbatim -- it must be
+    discarded and re-resolved via the normal direct-batch search, unlike
+    test_discover_en_route_stops_direct_batch_preserves_existing_url_without_rematch
+    where the existing URL is a real specific page and correctly is kept.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "direct_link_batch"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {
+                    "name": "Chimney Rock National Monument",
+                    "url": "https://www.tripadvisor.com/Attractions-g33584-Activities-Pagosa_Springs_Colorado.html",
+                    "detour_time_minutes": 10,
+                }
+            ]
+        }
+    }
+
+    with patch.object(
+        discoverer,
+        "_search_en_route_stop_from_direct_batch",
+        return_value="https://www.tripadvisor.com/Attraction_Review-g33584-d123456-Reviews-"
+        "Chimney_Rock_National_Monument-Pagosa_Springs_Colorado.html",
+    ) as batch_search:
+        with patch.object(discoverer, "_search_first") as fallback_search:
+            discoverer._discover_en_route_stops(ai, "Pagosa Springs", origin_name="Durango")
+
+    stop = ai["getting_here"]["en_route_stops"][0]
+    assert stop["url"] != "https://www.tripadvisor.com/Attractions-g33584-Activities-Pagosa_Springs_Colorado.html"
+    assert stop["url"] == (
+        "https://www.tripadvisor.com/Attraction_Review-g33584-d123456-Reviews-"
+        "Chimney_Rock_National_Monument-Pagosa_Springs_Colorado.html"
+    )
+    batch_search.assert_called_once()
+    fallback_search.assert_not_called()
+
+
 def test_looks_like_item_specific_homepage_allows_bare_nps_code_only_for_that_exact_park():
     """The bare nps.gov/<code>/ homepage newly caught above as generic must
     still pass through for the one item it's genuinely correct for: an
