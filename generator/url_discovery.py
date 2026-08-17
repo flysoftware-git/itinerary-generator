@@ -12104,7 +12104,23 @@ class URLDiscoverer:
 
     @staticmethod
     def _has_alltrails_closure_marker(text: str) -> bool:
-        lower_text = str(text or "").lower()
+        # Strip HTML comments / <script>/<style> content first, for the same
+        # reason as _has_attraction_closure_marker below: both callers that
+        # matter here (_alltrails_url_meets_seed_relaxed_standard and the
+        # audit-path check in _passes_alltrails_post_search_filters) pass raw
+        # fetched page text from _fetch_page_text/_fetch_alltrails_text,
+        # which is URLValidator.get_text's unmodified resp.text -- the same
+        # fetch mechanism the attraction path used before that false
+        # positive was found and fixed. AllTrails pages are React/Next.js
+        # rendered, so their raw (unrendered) HTML is unusually script- and
+        # JSON-hydration-heavy, making incidental non-visible closure-phrase
+        # matches at least as plausible here as on a typical venue site.
+        # (No AllTrails-specific partial-closure exemption is applied here:
+        # unlike the attraction wing/gallery/exhibit case, there is no
+        # confirmed real-world evidence of an analogous partial-closure
+        # pattern on trail pages, so inventing a scope-marker list would be
+        # speculative rather than evidence-based.)
+        lower_text = _strip_non_visible_html_noise(str(text or "")).lower()
         if not lower_text:
             return False
         return any(marker in lower_text for marker in ALLTRAILS_CLOSURE_MARKERS)
