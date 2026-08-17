@@ -4184,6 +4184,118 @@ def test_discover_attractions_trail_like_misclassification_recovers_via_attracti
     assert stats.get("direct_batch_source_locked_no_match", 0) == 0
 
 
+def test_inspiration_point_short_walk_description_is_not_trail_like() -> None:
+    """Regression for dipstick59: real Bryce Canyon "Inspiration Point" (type
+    "viewpoint") rendered unverified with no link ("badge-hike-easy", "⚠
+    Unverified") because its real harvested description ("Accessible via a
+    short walk from the parking lot, this viewpoint provides an elevated
+    look at Bryce Canyon's formations.") tripped the exact same "walk"
+    catch-all false positive already patched once for sibling item "Bryce
+    Point" (dipstick58, commit for
+    test_discover_attractions_trail_like_misclassification_recovers_via_attraction_batch
+    above). Unlike Bryce Point, Inspiration Point's attraction-batch row
+    wasn't picked up by that earlier fallback fix in this real run (the
+    fallback only helps when the item happens to already be present in the
+    harvested attraction-batch rows the fallback checks), so this fixes the
+    root cause directly in _is_trail_like_attraction: a bare "walk" mention
+    only counts as a trail signal when it's in the item's own name (e.g.
+    "Riverside Walk") or co-occurs with real trail-length/difficulty signals
+    -- not when it's a short/brief/easy walk mentioned alongside a parking
+    lot/pullout/overlook/viewpoint cue, which is a non-trail access note.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    assert discoverer._is_trail_like_attraction(
+        "Inspiration Point",
+        "viewpoint",
+        (
+            "Accessible via a short walk from the parking lot, this "
+            "viewpoint provides an elevated look at Bryce Canyon's "
+            "formations. It's a great location for photography."
+        ),
+    ) is False
+
+
+def test_bryce_point_short_walk_description_without_parking_cue_stays_trail_like() -> None:
+    """Companion to the Inspiration Point test above: the root-cause fix must
+    not regress the sibling "Bryce Point" case the earlier fallback fix
+    (dipstick58) was built around. Bryce Point's real description mentions a
+    "short walk" too, but with no parking-lot/pullout/overlook/viewpoint cue
+    alongside it, so it's ambiguous rather than a clear non-trail access
+    note -- it should stay trail_like=True and keep relying on the existing
+    attraction-batch fallback (exercised by
+    test_discover_attractions_trail_like_misclassification_recovers_via_attraction_batch
+    above) rather than being excluded here.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    assert discoverer._is_trail_like_attraction(
+        "Bryce Point",
+        "viewpoint",
+        (
+            "Offering one of the best panoramic views in the park, Bryce "
+            "Point overlooks the main amphitheater. It's accessible via a "
+            "short drive followed by a short walk."
+        ),
+    ) is True
+
+
+def test_discover_attractions_inspiration_point_resolves_directly_without_alltrails_detour() -> None:
+    """End-to-end companion to test_inspiration_point_short_walk_description_is_not_trail_like:
+    with trail_like correctly False, the item should resolve straight through
+    the general attraction direct-batch path to its real harvested NPS URL
+    (https://www.nps.gov/brca/planyourvisit/inspiration.htm, confirmed present
+    in the dipstick59 attraction-batch harvest for Bryce Canyon), without ever
+    touching the AllTrails-only trail path -- which would find nothing, since
+    Inspiration Point isn't a trail, and previously left the item unverified.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._attraction_source = "direct_link_batch"
+
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Inspiration Point",
+                "type": "viewpoint",
+                "description": (
+                    "Accessible via a short walk from the parking lot, this "
+                    "viewpoint provides an elevated look at Bryce Canyon's "
+                    "formations. It's a great location for photography."
+                ),
+            }
+        ]
+    }
+
+    attraction_rows = [
+        {
+            "title": "Inspiration Point",
+            "name": "Inspiration Point",
+            "url": "https://www.nps.gov/brca/planyourvisit/inspiration.htm",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Inspiration+Point+Bryce+Canyon+National+Park+UT",
+            "snippet": "Inspiration Point Source Maps 4.6/5",
+        }
+    ]
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("trail-only AllTrails path should not run for a non-trail viewpoint")
+
+    with patch.object(discoverer, "_search_alltrails_for_trail_from_direct_batch", side_effect=fail_if_called):
+        with patch.object(discoverer, "_search_alltrails_for_trail", side_effect=fail_if_called):
+            with patch.object(
+                discoverer,
+                "_get_attraction_direct_batch_rows_for_destination",
+                return_value=attraction_rows,
+            ):
+                discoverer._discover_attractions(ai, "Bryce Canyon National Park", "brca", "October 19-21, 2026")
+
+    out = ai["top_attractions"][0]
+    assert out["url"] == "https://www.nps.gov/brca/planyourvisit/inspiration.htm"
+    stats = getattr(discoverer, "_decision_stats_by_destination", {}).get("Bryce Canyon National Park", {})
+    assert stats.get("direct_batch_accepted", 0) == 1
+    assert stats.get("trail_like_misclassified_attraction_batch_recovered", 0) == 0
+
+
 def test_discover_attractions_direct_batch_authoritative_uses_item_fanout_when_batch_has_no_match() -> None:
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True

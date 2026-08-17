@@ -11096,7 +11096,49 @@ class URLDiscoverer:
             return True
 
         # Catch common trail phrasing even when type is labeled as generic attraction.
-        return bool(re.search(r"\b(trail|hike|hiking|loop|walk|trek|path|summit)\b", normalized))
+        # "walk" alone is treated separately below: unlike "trail"/"hike"/"trek"/
+        # "path"/"summit"/"loop", it's also common in short access-instruction
+        # phrasing for viewpoints that aren't trails at all (e.g. "Accessible via
+        # a short walk from the parking lot, this viewpoint provides..." --
+        # Bryce Canyon's real "Inspiration Point"). A non-"walk" trail keyword
+        # anywhere in the name+description is still a reliable signal on its own.
+        if re.search(r"\b(trail|hike|hiking|loop|trek|path|summit)\b", normalized):
+            return True
+
+        if not re.search(r"\bwalk\b", normalized):
+            return False
+
+        # "walk" appearing in the item's own name (e.g. "Riverside Walk", "The
+        # Zion Narrows Riverside Walk") names the route itself and is a strong
+        # signal, unlike a description mentioning a walk only in passing.
+        if re.search(r"\bwalk\b", name_l):
+            return True
+
+        # From here, "walk" only appears in the description. That's still a
+        # useful signal for genuine short trails/walks, EXCEPT when it reads as
+        # a mere short access note to a non-trail viewpoint/pullout -- i.e. a
+        # short/brief/easy/quick "walk" or "stroll" mentioned together with a
+        # parking/pullout/overlook/viewpoint cue, and nothing else in the text
+        # (mileage, "trailhead", explicit difficulty language) corroborates an
+        # actual trail. That combination is exactly the false-positive pattern
+        # seen in real Bryce Canyon viewpoint descriptions ("Inspiration
+        # Point": "Accessible via a short walk from the parking lot, this
+        # viewpoint provides an elevated look...").
+        has_trail_corroboration = bool(
+            re.search(r"\d+(\.\d+)?\s*[- ]?\s*miles?\b", normalized)
+            or re.search(r"\b(round[- ]trip|elevation|switchback|difficulty|strenuous|moderate|steep)\b", normalized)
+        )
+        if has_trail_corroboration:
+            return True
+
+        short_walk_access_note = bool(
+            re.search(r"\b(short|brief|quick|easy)\s+(walk|stroll)\b", normalized)
+            and re.search(r"\b(parking (lot|area)|pullout|trailhead lot|overlook|viewpoint)\b", normalized)
+        )
+        if short_walk_access_note:
+            return False
+
+        return True
 
     @staticmethod
     def _attraction_trail_context(attr: dict[str, Any]) -> str:
