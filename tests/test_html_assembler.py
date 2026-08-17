@@ -3816,6 +3816,30 @@ def test_build_attractions_renders_maps_corner_link_when_distinct_from_primary_u
     assert "maps/place/The+Narrows" in html
 
 
+def test_build_attractions_renders_maps_corner_link_when_no_primary_url() -> None:
+    """An item with no verified source at all (the 'Unverified' caution
+    badge case) is exactly where a map icon is most useful, not least --
+    it must not be suppressed just because there's no primary link to
+    compare it against."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Sunrise Point",
+                "type": "attraction",
+                "description": "A viewpoint offering sweeping views of the amphitheater and hoodoos below.",
+                "maps_url": "https://www.google.com/maps/search/?api=1&query=Sunrise+Point+Bryce+Canyon",
+            }
+        ]
+    }
+
+    html = assembler._build_attractions(ai, drives=[], dest_name="Bryce Canyon National Park")
+
+    assert "badge-caution" in html
+    assert 'class="badge badge-map"' in html
+    assert "Sunrise+Point" in html
+
+
 def test_build_attractions_omits_maps_corner_link_when_no_maps_url() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     ai = {
@@ -3883,6 +3907,58 @@ def test_build_attractions_renders_maps_corner_link_for_search_fallback_maps_url
     assert '<a href="https://www.nps.gov' in html
     assert 'class="badge badge-map"' in html
     assert "google.com/maps/search" in html
+
+
+def test_maps_corner_link_html_renders_when_primary_url_is_empty() -> None:
+    """Direct unit test on the helper itself: an empty primary_url (the
+    'Unverified' caution-badge case -- nothing else clickable on the card)
+    must not suppress the map icon. The redundancy checks (identical to
+    primary, primary already a maps URL) only make sense when there IS a
+    primary link; with none, showing the map icon is the single most
+    useful case for this affordance, not a case to exclude."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    item = {"maps_url": "https://www.google.com/maps/search/?api=1&query=Some+Place"}
+
+    html = assembler._maps_corner_link_html(item, "")
+
+    assert 'class="badge badge-map"' in html
+    assert "Some+Place" in html
+
+
+def test_maps_corner_link_html_omits_when_no_maps_url_and_no_primary() -> None:
+    """No maps_url at all -- nothing to show, regardless of primary_url."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    item: dict = {}
+
+    assert assembler._maps_corner_link_html(item, "") == ""
+    assert assembler._maps_corner_link_html(item, "https://example.com") == ""
+
+
+def test_build_restaurants_renders_maps_corner_link_when_no_primary_url() -> None:
+    """A restaurant with no verified source (the 'Unverified' caution badge
+    case) but a real, non-search, non-redundant maps_url must still get the
+    map icon -- there's no primary link for it to be redundant with. A
+    directions-style maps_url is used here specifically because
+    _select_preferred_external_link never promotes it to be the primary
+    link for restaurants (unlike a plain place-style maps_url, which would
+    become the primary link itself and make a second icon redundant)."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "dinner_recommendations": [
+            {
+                "name": "Painted Pony",
+                "maps_url": "https://www.google.com/maps/dir/?api=1&destination=Painted+Pony+St.+George+UT",
+                "cuisine": "American",
+                "description": "Fine dining.",
+            }
+        ]
+    }
+
+    html = assembler._build_restaurants(ai, dest_name="St. George, Utah")
+
+    assert "badge-caution" in html
+    assert 'class="badge badge-map"' in html
+    assert "maps/dir" in html
 
 
 def test_build_restaurants_renders_maps_corner_link_when_distinct_from_primary_url() -> None:

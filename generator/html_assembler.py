@@ -1462,10 +1462,9 @@ class HTMLAssembler:
                         f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{stop_name}</a>'
                         f' <span class="attr-external-link" title="link source">{source_icon}</span>'
                     )
-                    maps_corner_html = self._maps_corner_link_html(stop, url)
                 else:
                     name_html = stop_name
-                    maps_corner_html = ""
+                maps_corner_html = self._maps_corner_link_html(stop, url)
                 # These two values are rendered exactly as extracted, with no
                 # normalization of one-way vs. round-trip vs. loop-back
                 # semantics -- see the detour-semantics note above
@@ -1715,10 +1714,9 @@ class HTMLAssembler:
                     f'<a href="{self._safe_href(url)}" class="attr-link" target="_blank" rel="noopener">{attr_name}</a>'
                     f'<span class="attr-external-link" title="link source">{source_icon}</span>'
                 )
-                maps_corner_html = self._maps_corner_link_html(attr, url)
             else:
                 name_html = attr_name
-                maps_corner_html = ""
+            maps_corner_html = self._maps_corner_link_html(attr, url)
             
             diff = attr.get("difficulty", "")
             dur_raw = str(attr.get("duration", "") or "").strip()
@@ -2227,7 +2225,7 @@ class HTMLAssembler:
             )
 
             desc_html = f'    <span class="rest-desc">{html_escape.escape(desc)}</span>\n' if desc else ""
-            maps_corner_html = self._maps_corner_link_html(rest, url) if url else ""
+            maps_corner_html = self._maps_corner_link_html(rest, url)
             rows.append(
                 f'  <div class="rest-item">\n'
                 f'    <div class="rest-header rest-header-inline">\n'
@@ -2417,17 +2415,23 @@ class HTMLAssembler:
         too meant this affordance almost never rendered on real data (nearly
         every maps_url this pipeline ever attaches *is* exactly this kind of
         search-fallback URL).
+
+        `primary_url` may legitimately be empty (an item with no verified
+        source at all, rendered with the "Unverified" caution badge) -- the
+        redundancy checks above only make sense when there IS a primary link
+        to be redundant with, so an empty `primary_url` skips straight to
+        showing the icon. This is the single most useful case for this
+        affordance: an otherwise-unlinked card that at least gets a map.
         """
         maps_url = self._normalize_external_url(item.get("maps_url", ""))
         if not maps_url:
             return ""
         normalized_primary = self._normalize_external_url(primary_url)
-        if not normalized_primary:
-            return ""
-        if maps_url == normalized_primary:
-            return ""
-        if self._looks_like_maps_url(normalized_primary):
-            return ""
+        if normalized_primary:
+            if maps_url == normalized_primary:
+                return ""
+            if self._looks_like_maps_url(normalized_primary):
+                return ""
         return (
             f' <a href="{self._safe_href(maps_url)}" class="badge badge-map" target="_blank" '
             f'rel="noopener" title="Open in Google Maps" aria-label="Open in Google Maps">🗺️</a>'
