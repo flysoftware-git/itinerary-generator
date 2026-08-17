@@ -8106,8 +8106,24 @@ class URLDiscoverer:
                 row_desc = ""
             existing_desc = str(merged_item.get("description", "") or "").strip()
             if row_desc and row_desc.lower() != row_name.lower():
-                if not existing_desc or existing_desc == fallback_description:
-                    merged_item["description"] = row_desc
+                # The row we just matched is the traveler's actual verified,
+                # source-linked harvest data for this item -- every other field
+                # merged above (rating, votes, price_range, cuisine,
+                # detour_distance_miles/detour_time_minutes, and practical_note,
+                # which is populated from this exact same underlying text) is
+                # already trusted unconditionally from the row. Description must
+                # not be the one field where a stale, unverified pre-harvest AI
+                # guess is allowed to keep overriding it: real dipstick62 bug --
+                # "Little Wild Horse Canyon Trailhead" (a slot-canyon trailhead)
+                # rendered with a pre-existing hallucinated description about
+                # "sweeping views of the Colorado River," and "Wedge Overlook
+                # (San Rafael Swell)" rendered describing "Castleton Tower" (a
+                # real but ~100-mile-distant, unrelated Moab-area landmark) --
+                # while the correct harvested text ("slot canyon hiking access",
+                # "dramatic canyon rim views") silently landed in practical_note
+                # instead, since only practical_note was ever unconditionally
+                # trusted from the row. Prefer the harvested description here too.
+                merged_item["description"] = row_desc
             elif not existing_desc:
                 merged_item["description"] = fallback_description
 

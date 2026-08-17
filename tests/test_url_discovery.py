@@ -5792,6 +5792,80 @@ def test_build_primary_items_from_direct_batch_does_not_synthesize_description_f
     assert "Bistro" not in merged[0]["description"]
 
 
+def test_build_primary_items_from_direct_batch_replaces_stale_hallucinated_description_with_harvest_text() -> None:
+    """Real dipstick62 bug: two real en-route-stop items rendered with
+    descriptions that named the wrong place entirely.
+    "Little Wild Horse Canyon Trailhead" (a real slot-canyon trailhead near
+    Goblin Valley, UT) rendered with "Visit this park for sweeping views of
+    the Colorado River and a dramatic canyon overlook..." -- Little Wild
+    Horse Canyon is nowhere near the Colorado River. "Wedge Overlook (San
+    Rafael Swell)" rendered describing "Castleton Tower", a real but
+    ~100-mile-distant, unrelated Moab-area landmark.
+
+    Root cause, confirmed against the real captured harvest HTML
+    (dev/dev/url_discovery_direct_batch_html/moab.en-route-stop...html from
+    that run): the actual harvested rows for both items carry short, correct
+    descriptions ("slot canyon hiking access", "dramatic canyon rim views").
+    The merge already trusted the row unconditionally for every other field
+    (rating, votes, practical_note -- populated from this exact same
+    underlying text) but kept whatever (unverified, pre-harvest) description
+    an existing item already had, so the hallucinated text survived in
+    `description` while the correct harvested text landed in
+    `practical_note` -- both were rendered side by side. The merge must
+    prefer the harvested description here too, exactly like it already does
+    for practical_note."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    rows = [
+        {
+            "name": "Wedge Overlook (San Rafael Swell)",
+            "title": "Wedge Overlook (San Rafael Swell)",
+            "url": "https://www.blm.gov/visit/wedge-overlook",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Wedge+Overlook+San+Rafael+Swell+Castle+Dale+UT",
+            "description": "dramatic canyon rim views",
+            "practical_note": "dramatic canyon rim views",
+            "detour_distance_miles": 12.0,
+            "detour_time_minutes": 18,
+        },
+        {
+            "name": "Little Wild Horse Canyon Trailhead",
+            "title": "Little Wild Horse Canyon Trailhead",
+            "url": "https://www.blm.gov/visit/little-wild-horse-canyon",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Little+Wild+Horse+Canyon+Trailhead+Hanksville+UT",
+            "description": "slot canyon hiking access",
+            "practical_note": "slot canyon hiking access",
+            "detour_distance_miles": 5.0,
+            "detour_time_minutes": 10,
+        },
+    ]
+    existing = [
+        {
+            "name": "Little Wild Horse Canyon Trailhead",
+            "description": (
+                "Visit this park for sweeping views of the Colorado River and a "
+                "dramatic canyon overlook. It's a great location for photography."
+            ),
+        },
+        {
+            "name": "Wedge Overlook (San Rafael Swell)",
+            "description": "A short pull-off offers views of the Castleton Tower and the surrounding valley.",
+        },
+    ]
+
+    merged = discoverer._build_primary_items_from_direct_batch(
+        rows=rows,
+        existing_items=existing,
+        target_count=2,
+        fallback_description="Optional stop for the inbound transfer leg.",
+        dest_name="Moab",
+    )
+
+    by_name = {item["name"]: item for item in merged}
+    assert by_name["Little Wild Horse Canyon Trailhead"]["description"] == "slot canyon hiking access"
+    assert "Colorado River" not in by_name["Little Wild Horse Canyon Trailhead"]["description"]
+    assert by_name["Wedge Overlook (San Rafael Swell)"]["description"] == "dramatic canyon rim views"
+    assert "Castleton Tower" not in by_name["Wedge Overlook (San Rafael Swell)"]["description"]
+
+
 def test_book_club_bistro_direct_batch_html_renders_clean_name_cuisine_badge_no_duplicate_description() -> None:
     """Full-pipeline regression for dipstick58: the real captured St. George
     direct-batch restaurant HTML row for "Book Club Bistro" must render with
