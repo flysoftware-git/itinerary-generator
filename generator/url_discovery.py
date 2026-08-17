@@ -5491,7 +5491,15 @@ class URLDiscoverer:
         lowered = blob.lower()
         out: dict[str, Any] = {}
 
-        price_match = re.search(r"(?:^|\s)(\${1,4})(?:\s|$)", blob)
+        # Trailing boundary must also accept a comma: the common harvest
+        # format is "Name - 4.7/5, $$$, Cuisine" (comma-delimited metadata,
+        # no space between the price run and the following comma), which
+        # the previous whitespace-or-end-of-string-only boundary silently
+        # failed to match -- confirmed against real dipstick61 output
+        # ("Wood Ash Rye - 4.7/5, $$$, New American", "Cliffside Restaurant
+        # - 4.4/5, $$$, Upscale American") where price_range never got set
+        # despite the source clearly stating it.
+        price_match = re.search(r"(?:^|\s)(\${1,4})(?:\s|,|$)", blob)
         if price_match:
             out["price_range"] = price_match.group(1)
 

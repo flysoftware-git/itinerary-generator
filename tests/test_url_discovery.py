@@ -1283,6 +1283,23 @@ def test_backfill_restaurant_metadata_from_available_text_inferrs_cuisine_and_pr
     assert rest.get("price_range") == "$$"
 
 
+def test_infer_restaurant_metadata_extracts_price_immediately_followed_by_comma() -> None:
+    """dipstick61: the common harvest format is "Name - 4.7/5, $$$, Cuisine"
+    -- the price run has no trailing space before the comma. The prior
+    regex required whitespace-or-end-of-string on both sides, so price_range
+    silently never got set despite 15 real restaurants stating a real price
+    in their raw harvest text (Wood Ash Rye, Cliffside Restaurant, etc.)."""
+    meta = URLDiscoverer._infer_restaurant_metadata_from_text_and_url(
+        "Wood Ash Rye - 4.7/5, $$$, New American", ""
+    )
+    assert meta.get("price_range") == "$$$"
+
+    meta2 = URLDiscoverer._infer_restaurant_metadata_from_text_and_url(
+        "Cliffside Restaurant - 4.4/5, $$$, Upscale American", ""
+    )
+    assert meta2.get("price_range") == "$$$"
+
+
 def test_backfill_restaurant_metadata_does_not_override_existing_fields() -> None:
     rest = {
         "name": "Painted Pony",
