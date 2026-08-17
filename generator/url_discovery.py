@@ -11832,6 +11832,21 @@ class URLDiscoverer:
         stop = {
             "the", "and", "for", "with", "from", "near", "park", "national", "state", "trail",
             "road", "drive", "point", "restaurant", "cafe", "grill", "utah", "colorado", "new", "mexico",
+            # "scenic"/"byway" are generic route-type descriptors, not identifying
+            # words -- the same reason "road"/"drive"/"trail"/"point" are already
+            # excluded above. Without this, an item like "Enchanted Circle Scenic
+            # Byway" only needs 2 of its 4 tokens to overlap a candidate (see
+            # _required_general_token_matches), and "scenic"+"byway" alone are
+            # generic enough to appear in boilerplate copy for almost any other
+            # place near a scenic road, wrongly satisfying that bar without either
+            # of the item's real identifying words ("enchanted"/"circle") ever
+            # matching. Real example (dipstick62): the en-route-stop seed
+            # "Enchanted Circle Scenic Byway" (a real byway near Taos, NM) matched
+            # and linked to "Ouray Hot Springs Pool" -- an unrelated Ouray, CO
+            # attraction whose harvested candidate text mentions a nearby "scenic"
+            # byway (San Juan Skyway) in passing, sharing zero real identity with
+            # the seeded item.
+            "scenic", "byway",
         }
         out: list[str] = []
         seen: set[str] = set()

@@ -1423,6 +1423,83 @@ def test_direct_batch_row_match_strength_rejects_single_shared_word_against_unre
     assert strength == 0
 
 
+def test_direct_batch_row_match_strength_rejects_scenic_byway_boilerplate_overlap() -> None:
+    """Real dipstick62 bug: the en-route-stop seed "Enchanted Circle Scenic
+    Byway" (a real byway near Taos, NM, unrelated to Ouray, CO) rendered
+    linked to "https://ourayhotsprings.com/" -- Ouray Hot Springs Pool, a
+    completely different attraction. Root cause: "scenic" and "byway" are
+    generic route-type descriptors (the same class of word "trail"/"road"/
+    "drive"/"point" are already excluded for), not identifying words. The
+    real harvested row for Ouray Hot Springs Pool mentions being near a
+    "scenic" mountain setting -- sharing just "scenic" with the item name
+    was, before this fix, enough (combined with "byway" also counting as
+    generic boilerplate) to approach the required token-overlap bar without
+    either of the item's real identifying words ("enchanted"/"circle")
+    ever matching. This is the exact real row captured in
+    dev/dev/url_discovery_direct_batch_html/pagosa-springs.en-route-stop...html
+    from that run."""
+    row = {
+        "name": "Ouray Hot Springs Pool",
+        "title": "Ouray Hot Springs Pool",
+        "url": "https://ourayhotsprings.com/",
+        "description": "natural mineral pools in scenic mountain setting",
+        "snippet": (
+            "Ouray Hot Springs Pool - natural mineral pools in scenic mountain "
+            "setting - detour 12 mi / 17 min Links: https://ourayhotsprings.com/ "
+            "https://www.google.com/maps/search/?api=1&query=Ouray+Hot+Springs+Pool+Ouray+CO"
+        ),
+    }
+    strength = URLDiscoverer._direct_batch_row_match_strength(
+        row, "Enchanted Circle Scenic Byway", "Pagosa Springs"
+    )
+    assert strength == 0
+
+
+def test_search_en_route_stop_from_direct_batch_rejects_unrelated_scenic_byway_seed_match() -> None:
+    """Full-path regression for the dipstick62 Ouray Hot Springs Pool
+    mismatch (see test_direct_batch_row_match_strength_rejects_scenic_byway_
+    boilerplate_overlap above): even when the seed's own live page fetch
+    happens to mention "scenic" boilerplate copy, resolving the seed's URL
+    from the real Telluride->Pagosa Springs harvest batch must not return
+    the unrelated Ouray Hot Springs Pool link."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "name": "Treasure Falls",
+            "title": "Treasure Falls",
+            "url": "https://www.fs.usda.gov/recarea/sanjuan/recarea/?recid=43046",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Treasure+Falls+Pagosa+Springs+CO",
+            "snippet": "Treasure Falls - scenic roadside waterfall pullout with short trail - detour 0 mi / 5 min",
+        },
+        {
+            "name": "Ouray Hot Springs Pool",
+            "title": "Ouray Hot Springs Pool",
+            "url": "https://ourayhotsprings.com/",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=Ouray+Hot+Springs+Pool+Ouray+CO",
+            "description": "natural mineral pools in scenic mountain setting",
+            "snippet": (
+                "Ouray Hot Springs Pool - natural mineral pools in scenic mountain "
+                "setting - detour 12 mi / 17 min"
+            ),
+        },
+    ]
+
+    with patch.object(discoverer, "_get_en_route_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(
+            discoverer,
+            "_fetch_page_text",
+            return_value=(True, 200, "Visit Ouray Hot Springs Pool along the scenic San Juan Skyway."),
+        ):
+            url = discoverer._search_en_route_stop_from_direct_batch(
+                "Enchanted Circle Scenic Byway", "Pagosa Springs", "October 26-27, 2026", "Telluride"
+            )
+
+    assert url != "https://ourayhotsprings.com/"
+    assert url is None
+
+
 def test_persistent_cache_round_trips_en_route_geocode_results(tmp_path) -> None:
     """Full-pipeline regression: the en-route geocode cache was in-memory only,
     so every stop got re-geocoded (and re-throttled against Nominatim) on
