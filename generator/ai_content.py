@@ -272,6 +272,30 @@ class AIContentGenerator:
         )
         return duration_minutes > AIContentGenerator._EVENING_MAX_ACTIVITY_MINUTES
 
+    @staticmethod
+    def _pick_unused_focus_name(
+        names: list[str], used: set[str], day_index: int, offset: int = 0
+    ) -> str:
+        """Rotation-order pick from `names` (case-sensitive display names),
+        skipping any whose lowercased form is already in `used`. Falls back
+        to the plain rotation pick (`names[start]`) if every name is already
+        used -- a repeated name is a smaller defect than an empty focus.
+
+        Pulled out of `_inject_travel_realism`'s `_day_focus_name_excluding_used`
+        closure as a plain static method purely so it's directly unit-
+        testable without going through the rest of that function (which has
+        a separate, later pass capable of independently re-deciding the same
+        period's attraction name -- see that closure's own docstring).
+        """
+        if not names:
+            return ""
+        start = (day_index - 1 + offset) % len(names)
+        for step in range(len(names)):
+            candidate = names[(start + step) % len(names)]
+            if candidate.lower() not in used:
+                return candidate
+        return names[start]
+
     def __init__(
         self,
         config_path: Path | str = "config.yaml",
@@ -2232,7 +2256,68 @@ class AIContentGenerator:
                 return ""
             return attraction_names[(day_index - 1 + offset) % len(attraction_names)]
 
+        def _day_focus_name_excluding_used(day_index: int, offset: int = 0) -> str:
+            """Like _day_focus_name, but skips any attraction already present
+            in `used_multi_activity_names` -- the cross-day dedup set that
+            _build_multi_activity_afternoon_summary/_register_attraction_mentions
+            maintain. Falls back to the plain rotation pick if every
+            attraction has already been mentioned somewhere (better a
+            repeated name than an empty focus).
+
+            Exists for the Day2+ "Morning was cloned from Day 1 arrival
+            text" scrub below (the "Start with {name}..." template), which
+            used to call _day_focus_name directly -- pure rotation with no
+            awareness of used_multi_activity_names, so it could pick a name
+            already spoken for by another day's packed Afternoon block or by
+            raw prose _register_attraction_mentions had already registered.
+            Real SW2026-dipstick-era Moab regression: Day 1 Afternoon named
+            "Moab Giants Dinosaur Park" (via the entity-registry substitute
+            path) and Day 3 Morning's scrub independently picked the exact
+            same name via bare rotation, producing two different days both
+            leading with "Moab Giants Dinosaur Park" -- a real gap this
+            closes by consulting the same shared tracking set every other
+            focus-picking path in this function already uses.
+
+            The actual selection logic is promoted to the static
+            _pick_unused_focus_name so it's independently unit-testable
+            without going through the rest of this function -- useful here
+            specifically because a SEPARATE, later pass in this same method
+            (the day-level "recent_focuses" rotation, _pick_non_repeating_focus)
+            unconditionally re-derives every Morning period's attraction name
+            afterward using its own, different, shorter-lookback mechanism,
+            and can (verified empirically, not fixed here -- see
+            _pick_non_repeating_focus's own docstring) still override this
+            pick in the final rendered output for some inputs. That's a
+            distinct, deeper gap than what this function closes; testing the
+            selection logic in isolation avoids the assertion being
+            accidentally coupled to that separate pass's unrelated behavior.
+            """
+            return AIContentGenerator._pick_unused_focus_name(
+                attraction_names, used_multi_activity_names, day_index, offset
+            )
+
         def _pick_non_repeating_focus(day_index: int, offset: int, recent_focuses: list[str]) -> str:
+            # Deliberately does NOT also consult used_multi_activity_names.
+            # Two variants that did were tried and reverted (see git
+            # history): an outright second disqualifier over-constrained the
+            # small-attraction-pool case and broke
+            # test_inject_travel_realism_rotates_focus_to_reduce_adjacent_duplicates;
+            # a softer "prefer unused among already-eligible" tie-break
+            # avoided that regression but introduced a different one on a
+            # separate synthetic small-pool/many-days case. This pass runs
+            # unconditionally over every period regardless of what an
+            # earlier pass (packing, or the arrival-clone "Start with X..."
+            # scrub above -- see _day_focus_name_excluding_used) already set,
+            # using only its own short recent_focuses lookback -- so it can
+            # still independently re-derive a period's attraction focus
+            # without knowing about used_multi_activity_names. This is a
+            # known, narrower residual gap (see docs/design/schedule-
+            # normalization.md), not fully closed here: unifying the two
+            # tracking mechanisms measurably regressed real, existing,
+            # intentional round-robin/reuse behavior in this pass more than
+            # once, so the narrower, verified-safe fix (the scrub's own
+            # pick) was kept instead of a broader change with a demonstrated
+            # regression risk.
             base_focus = _day_focus_name(day_index, offset)
             if not base_focus or len(attraction_names) <= 1:
                 return base_focus
@@ -2622,11 +2707,12 @@ class AIContentGenerator:
                     if low_summary.startswith("reserved for return travel"):
                         continue
                     if label == "Morning" and _is_arrival_logistics_summary(summary):
-                        focus_name = _day_focus_name(day_index)
+                        focus_name = _day_focus_name_excluding_used(day_index)
                         if focus_name:
                             period["summary"] = (
                                 f"Start with {focus_name}, then pivot to a different nearby area before midday crowds."
                             )
+                            used_multi_activity_names.add(focus_name.lower())
                         else:
                             period["summary"] = (
                                 "Start with a different priority trailhead or district than Day 1, "
@@ -2634,24 +2720,29 @@ class AIContentGenerator:
                             )
                     elif label == "Afternoon":
                         if low_summary.startswith("after arrival"):
-                            focus_name = _day_focus_name(day_index, offset=1) or "one nearby highlight"
+                            focus_name = _day_focus_name_excluding_used(day_index, offset=1) or "one nearby highlight"
                             period["summary"] = (
                                 f"After the morning start, allocate this block to {focus_name} "
                                 "and one nearby stop, keeping transfer buffers between activities."
                             )
+                            if focus_name != "one nearby highlight":
+                                used_multi_activity_names.add(focus_name.lower())
                         elif re.search(r"\bcheck[- ]?in\b", low_summary) or re.search(r"\blodging\b", low_summary):
-                            focus_name = _day_focus_name(day_index, offset=1) or "one or two nearby highlights"
+                            focus_name = _day_focus_name_excluding_used(day_index, offset=1) or "one or two nearby highlights"
                             period["summary"] = (
                                 f"After the morning start, focus on {focus_name} "
                                 "and a second nearby stop without repeating Day 1 transfer logistics."
                             )
+                            if focus_name != "one or two nearby highlights":
+                                used_multi_activity_names.add(focus_name.lower())
                     elif _is_arrival_logistics_summary(summary):
-                        focus_name = _day_focus_name(day_index, offset=2)
+                        focus_name = _day_focus_name_excluding_used(day_index, offset=2)
                         if focus_name:
                             period["summary"] = (
                                 f"Keep this block destination-focused around {focus_name} "
                                 "without repeating arrival or check-in logistics."
                             )
+                            used_multi_activity_names.add(focus_name.lower())
                             continue
                         period["summary"] = (
                             "Keep this block destination-focused without repeating arrival or check-in logistics."

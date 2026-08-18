@@ -1698,6 +1698,54 @@ def test_inject_travel_realism_dipstick69_evening_attraction_not_repeated_in_lat
     assert "natural bridge" not in day3_afternoon
 
 
+def test_pick_unused_focus_name_skips_names_already_registered_as_used() -> None:
+    """Real Moab regression this closes: a real published 3-day Moab
+    schedule had Day 1 Afternoon name 'Moab Giants Dinosaur Park' and Day 3
+    Morning independently read 'Start with Moab Giants Dinosaur Park, then
+    pivot to a different nearby area before midday crowds.' -- the SAME
+    attraction, because the Day 2+ 'Morning was cloned from Day 1
+    arrival/check-in text' scrub in _inject_travel_realism (the source of
+    that exact 'Start with {name}, then pivot...' template) picked its
+    focus via bare day-index rotation (_day_focus_name), with no awareness
+    of used_multi_activity_names -- the same cross-day dedup set
+    _register_attraction_mentions and the Afternoon multi-activity packer
+    both already maintained and consulted.
+
+    AIContentGenerator._pick_unused_focus_name is the extracted, directly
+    testable selection logic behind the scrub's fix
+    (_day_focus_name_excluding_used, in _inject_travel_realism). With 2
+    real Moab top_attractions and day_index=3 -- the exact index whose bare
+    rotation formula ((day_index - 1) % len(names)) wraps back around to
+    index 0, reproducing the real collision -- this must skip the
+    already-used name and pick the other real attraction instead.
+    """
+    names = ["Moab Giants Dinosaur Park", "Windows Loop and Turret Arch Trail"]
+    used = {"moab giants dinosaur park"}
+
+    # Sanity check: bare rotation (the pre-fix behavior) really does
+    # reproduce the collision for this day_index/name-count combination.
+    assert names[(3 - 1 + 0) % len(names)] == "Moab Giants Dinosaur Park"
+
+    picked = AIContentGenerator._pick_unused_focus_name(names, used, day_index=3, offset=0)
+    assert picked == "Windows Loop and Turret Arch Trail"
+
+
+def test_pick_unused_focus_name_falls_back_to_repeat_when_pool_exhausted() -> None:
+    """Mirrors this repo's established round-robin philosophy elsewhere
+    (see docs/design/schedule-normalization.md's 'Small-attraction-pool
+    follow-up' -- reconcile_schedule_from_registry tolerates eventual reuse
+    once every real candidate has had a turn, rather than falling back to
+    fully generic filler). When every known attraction is already used,
+    _pick_unused_focus_name must still return a real, named attraction
+    (the plain rotation pick) rather than an empty string -- a repeated
+    real name is a smaller defect than naming nothing at all."""
+    names = ["Moab Giants Dinosaur Park", "Windows Loop and Turret Arch Trail"]
+    used = {"moab giants dinosaur park", "windows loop and turret arch trail"}
+
+    picked = AIContentGenerator._pick_unused_focus_name(names, used, day_index=3, offset=0)
+    assert picked == "Moab Giants Dinosaur Park"  # the bare-rotation fallback, not ""
+
+
 def test_normalize_schedule_dipstick68_leaked_instruction_never_reaches_rendered_evening_text() -> None:
     """Regression grounded in the real SW2026-dipstick68 output for Bryce
     Canyon National Park, Day 2 Evening, exactly as the project owner found
