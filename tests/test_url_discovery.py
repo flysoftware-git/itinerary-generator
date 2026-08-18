@@ -9012,6 +9012,250 @@ def test_has_alltrails_closure_marker_still_detects_real_full_closure():
     ) is True
 
 
+def test_extract_alltrails_geo_from_html_parses_real_json_ld_shape():
+    """Regression grounding: shape verified live against a real, currently-
+    served AllTrails trail page (Hickman Bridge Trail, Capitol Reef,
+    fetched via a real browser session on 2026-08-18). The page carries
+    three ld+json blocks (WebPage, LocalBusiness, BreadcrumbList) -- only
+    the LocalBusiness one has `geo` -- and AllTrails serializes
+    latitude/longitude as JSON *strings*, not numbers, which this must
+    float()-cast rather than reject."""
+    page_html = """
+    <html><head>
+    <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","isAccessibleForFree":false}</script>
+    <script type="application/ld+json">{"@context":"https://schema.org","@type":"LocalBusiness","@id":"/trail/us/utah/hickman-bridge-trail","address":{"@type":"PostalAddress","addressLocality":"Torrey, Utah, United States"},"geo":{"@type":"GeoCoordinates","latitude":"38.28876","longitude":"-111.22765"},"name":"Hickman Bridge Trail","aggregateRating":{"@type":"AggregateRating","ratingValue":4.7,"reviewCount":10913}}</script>
+    <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":"1","name":"United States"}]}</script>
+    </head><body><h1>Hickman Bridge Trail</h1></body></html>
+    """
+    coords = URLDiscoverer._extract_alltrails_geo_from_html(page_html)
+    assert coords == (38.28876, -111.22765)
+
+
+def test_extract_alltrails_geo_from_html_returns_none_without_geo_field():
+    """No ld+json block on the page carries a `geo` field (e.g. a trail page
+    whose LocalBusiness block was stripped or never rendered) -- must return
+    None rather than fabricate a coordinate, and must not crash."""
+    page_html = """
+    <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage"}</script>
+    <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[]}</script>
+    """
+    assert URLDiscoverer._extract_alltrails_geo_from_html(page_html) is None
+
+
+def test_extract_alltrails_geo_from_html_returns_none_on_malformed_json():
+    """A truncated/invalid JSON-LD blob (bot-block interstitial, partial
+    fetch, hand-edited test fixture, etc.) must be skipped, not raise."""
+    page_html = '<script type="application/ld+json">{"@type": "LocalBusiness", "geo": {not valid json</script>'
+    assert URLDiscoverer._extract_alltrails_geo_from_html(page_html) is None
+
+
+def test_extract_alltrails_geo_from_html_returns_none_for_out_of_range_coordinate():
+    """Defensive range check: a malformed geo block that still happens to
+    parse as numbers (e.g. corrupted upstream data) must not be trusted if
+    the values are outside real lat/lng bounds or sit at null-island (0,0)."""
+    page_html = (
+        '<script type="application/ld+json">'
+        '{"@type": "LocalBusiness", "geo": {"@type": "GeoCoordinates", '
+        '"latitude": "0", "longitude": "0"}}'
+        "</script>"
+    )
+    assert URLDiscoverer._extract_alltrails_geo_from_html(page_html) is None
+
+
+def test_extract_alltrails_geo_from_html_returns_none_for_empty_html():
+    assert URLDiscoverer._extract_alltrails_geo_from_html("") is None
+
+
+def test_alltrails_geo_maps_url_builds_coordinate_link_from_fetched_page():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_html = (
+        '<script type="application/ld+json">'
+        '{"@type": "LocalBusiness", "geo": {"@type": "GeoCoordinates", '
+        '"latitude": "38.28876", "longitude": "-111.22765"}}'
+        "</script>"
+    )
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_html)):
+        result = discoverer._alltrails_geo_maps_url(
+            "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail"
+        )
+    assert result == "https://www.google.com/maps/search/?api=1&query=38.28876,-111.22765"
+
+
+def test_alltrails_geo_maps_url_returns_none_when_fetch_fails():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+        result = discoverer._alltrails_geo_maps_url(
+            "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail"
+        )
+    assert result is None
+
+
+def test_alltrails_geo_maps_url_returns_none_for_non_alltrails_url():
+    """This feature must never touch non-AllTrails URLs at all -- assert
+    _fetch_page_text is never even called for one."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    with patch.object(discoverer, "_fetch_page_text") as mock_fetch:
+        result = discoverer._alltrails_geo_maps_url("https://www.nps.gov/zion/index.htm")
+    assert result is None
+    mock_fetch.assert_not_called()
+
+
+def test_audit_attaches_alltrails_geo_coordinate_maps_url_for_accepted_trail() -> None:
+    """End-to-end: an AllTrails trail URL that clears audit_discovered_urls'
+    acceptance gates unchanged gets a real coordinate-based maps_url
+    attached from its own page's JSON-LD geo field, so the existing
+    _maps_corner_link_html render affordance (html_assembler.py) has a
+    genuinely distinct link to show -- previously this maps_url was either
+    absent or equal to the AllTrails url itself, so the map icon never
+    rendered for a trail card at all."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 0
+    discoverer._direct_batch_authoritative = True
+    discoverer._remember_direct_batch_authoritative_url(
+        "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail",
+        "Hickman Bridge Trail",
+    )
+
+    alltrails_page_html = (
+        '<script type="application/ld+json">{"@type":"WebPage"}</script>'
+        '<script type="application/ld+json">'
+        '{"@type": "LocalBusiness", "name": "Hickman Bridge Trail", '
+        '"geo": {"@type": "GeoCoordinates", "latitude": "38.28876", "longitude": "-111.22765"}}'
+        "</script>"
+    )
+
+    trip = {
+        "destinations": [
+            {
+                "id": "capitol-reef",
+                "name": "Capitol Reef National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Hickman Bridge Trail",
+                            "type": "hike",
+                            "description": "A popular natural bridge hike.",
+                            "url": "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, alltrails_page_html)):
+            discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 1
+    attr = attractions[0]
+    assert attr["url"] == "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail"
+    assert attr["maps_url"] == "https://www.google.com/maps/search/?api=1&query=38.28876,-111.22765"
+
+
+def test_audit_leaves_maps_url_untouched_when_alltrails_geo_extraction_fails() -> None:
+    """No JSON-LD geo on the fetched page (e.g. bot-blocked interstitial) --
+    the trail URL is still accepted and kept, but maps_url must be left
+    exactly as whatever the pre-existing behavior already produced (absent
+    here), never a fabricated/estimated link."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 0
+    discoverer._direct_batch_authoritative = True
+    discoverer._remember_direct_batch_authoritative_url(
+        "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail",
+        "Hickman Bridge Trail",
+    )
+
+    trip = {
+        "destinations": [
+            {
+                "id": "capitol-reef",
+                "name": "Capitol Reef National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Hickman Bridge Trail",
+                            "type": "hike",
+                            "description": "A popular natural bridge hike.",
+                            "url": "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+            discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 1
+    attr = attractions[0]
+    assert attr["url"] == "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail"
+    assert "maps_url" not in attr
+
+
+def test_audit_does_not_apply_alltrails_geo_maps_url_to_non_alltrails_attraction() -> None:
+    """This feature is AllTrails-specific: a non-trail, non-AllTrails
+    attraction that already carries its own maps_url (e.g. a plain
+    google-maps-search fallback from upstream discovery) must be completely
+    unaffected. (Note: a *trail-like* item -- name/type implying a hike --
+    with a non-AllTrails URL is rejected by an unrelated, pre-existing audit
+    rule regardless of this feature, so this case deliberately uses a plain
+    museum/visitor-center attraction to isolate the behavior under test.)"""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 0
+    discoverer._direct_batch_authoritative = True
+    discoverer._remember_direct_batch_authoritative_url(
+        "https://www.nps.gov/zion/planyourvisit/human-history-museum.htm",
+        "Zion Human History Museum",
+    )
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Zion Human History Museum",
+                            "type": "attraction",
+                            "description": "Exhibits on the human history of Zion Canyon.",
+                            "url": "https://www.nps.gov/zion/planyourvisit/human-history-museum.htm",
+                            "maps_url": "https://www.google.com/maps/search/?api=1&query=Zion+Human+History+Museum",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(False, "no_validator", "")):
+            discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 1
+    attr = attractions[0]
+    assert attr["url"] == "https://www.nps.gov/zion/planyourvisit/human-history-museum.htm"
+    assert attr["maps_url"] == "https://www.google.com/maps/search/?api=1&query=Zion+Human+History+Museum"
+
+
 def test_alltrails_relevance_ignores_html_comment_closure_noise():
     """Full-path regression: _is_relevant_result must not reject a live,
     open trail page just because a closure phrase appears inside an HTML

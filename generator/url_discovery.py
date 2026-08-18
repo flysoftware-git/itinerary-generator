@@ -2348,6 +2348,29 @@ class URLDiscoverer:
                         else:
                             attr.pop("maps_url", None)
                         self._annotate_registry_url_decision(attr, rendered_url="", rejection_reason="url_rejected")
+                elif cleaned and self._is_alltrails_trail_url(cleaned):
+                    # Accepted-as-is AllTrails trail link (cleared
+                    # _retain_discovered_url unchanged, i.e. this is the point
+                    # where an AllTrails trail URL has fully cleared this
+                    # codebase's acceptance gates). Attach a real
+                    # coordinate-based Google Maps link from the trail's own
+                    # page JSON-LD `geo` field so the card's map icon takes
+                    # the visitor to the actual trailhead rather than back to
+                    # the same AllTrails page. Strictly additive: on any
+                    # extraction failure _alltrails_geo_maps_url returns None
+                    # and maps_url is left exactly as whatever the
+                    # pre-existing fallback logic already produced.
+                    geo_maps_url = self._alltrails_geo_maps_url(cleaned)
+                    if geo_maps_url:
+                        attr["maps_url"] = geo_maps_url
+                        self._log_decision(
+                            kind="attraction",
+                            dest_name=dest_name,
+                            item_name=attr_name,
+                            reason="alltrails_geo_maps_url_attached",
+                            message="attached coordinate-based Google Maps link from AllTrails trail page JSON-LD geo field",
+                            url=geo_maps_url,
+                        )
                 if self._keep_item_if_verified_or_seed(
                     dest, attr, attr_name,
                     is_seed=is_seed,
@@ -7927,6 +7950,99 @@ class URLDiscoverer:
             except (TypeError, ValueError):
                 continue
         return None
+
+    @staticmethod
+    def _extract_alltrails_geo_from_html(html: str) -> tuple[float, float] | None:
+        """Extract a trail's real trailhead coordinate from its own AllTrails
+        page's JSON-LD structured data.
+
+        Verified live against a real, currently-served AllTrails trail page
+        (Hickman Bridge Trail, Capitol Reef, fetched via a real browser
+        session on 2026-08-18) -- AllTrails embeds a
+        `<script type="application/ld+json">` block shaped like
+        `{"@type": "LocalBusiness", "geo": {"@type": "GeoCoordinates",
+        "latitude": "38.28876", "longitude": "-111.22765"}, ...}` alongside
+        two other unrelated ld+json blocks (`WebPage`, `BreadcrumbList`) on
+        the same page. Note AllTrails serializes latitude/longitude as JSON
+        *strings*, not numbers -- this must float()-cast rather than assume a
+        numeric type. Mirrors _extract_restaurant_meta_from_html's
+        JSON-LD-block-scanning pattern (same file, iterate every ld+json
+        block on the page and use whichever one actually has the field we
+        want) but pulls the `geo` field instead of restaurant-specific ones.
+
+        Returns None -- never a fabricated/estimated coordinate -- whenever
+        no block contains a well-formed geo field; callers must leave the
+        pre-existing maps_url behavior completely untouched in that case.
+        """
+        text = str(html or "")
+        if not text:
+            return None
+        for ld_match in re.finditer(
+            r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+            text,
+            re.DOTALL | re.IGNORECASE,
+        ):
+            try:
+                data = json.loads(ld_match.group(1))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            geo = data.get("geo")
+            if not isinstance(geo, dict):
+                continue
+            try:
+                lat = float(geo.get("latitude"))
+                lng = float(geo.get("longitude"))
+            except (TypeError, ValueError):
+                continue
+            # Defensive range/sanity check -- a malformed or truncated
+            # JSON-LD blob could parse into garbage numbers without raising;
+            # never trust an out-of-range or null-island value as real.
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0):
+                continue
+            if lat == 0.0 and lng == 0.0:
+                continue
+            return (lat, lng)
+        return None
+
+    def _alltrails_geo_maps_url(self, url: str) -> str | None:
+        """Real-coordinate Google Maps link for an already-accepted AllTrails
+        trail URL, built from that specific trail's own page JSON-LD `geo`
+        field (see _extract_alltrails_geo_from_html above). This is what
+        actually answers the project owner's ask ("a map link for each
+        AllTrails trail that will take you to the trail") with a link a
+        scraper can follow -- AllTrails' own "Get Directions" button is
+        client-JS-driven with no static href to extract, so the page's own
+        structured geo data is the reliable source, and it is the trail's
+        exact trailhead coordinate rather than a fuzzy name-based geocode.
+
+        Returns None on any fetch or parse failure. Callers must leave
+        whatever maps_url the existing fallback logic already produced
+        completely untouched in that case -- this codebase has a hard rule
+        against inventing URLs/data (see the module docstring), so a failed
+        extraction must never be papered over with a generic search-query
+        link dressed up as a coordinate link.
+
+        Routes through _fetch_page_text, which dispatches AllTrails URLs to
+        _fetch_alltrails_text -- both cache per-URL in memory
+        (_alltrails_fetch_cache) and persist successful fetches to the
+        on-disk cache (_load_persistent_caches' alltrails_fetch_results
+        section), so calling this on an already-accepted trail whose page
+        was already fetched earlier in the same audit_discovered_urls pass
+        (e.g. the trail-miles threshold check just above) or in an earlier
+        run within the cache TTL is a cache hit, not a second live request.
+        """
+        if not url or not self._is_alltrails_trail_url(url):
+            return None
+        ok, _status, text = self._fetch_page_text(url, timeout=8)
+        if not ok or not text:
+            return None
+        coords = self._extract_alltrails_geo_from_html(text)
+        if not coords:
+            return None
+        lat, lng = coords
+        return f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
 
     def _prefer_canonical_alltrails_url(self, url: str | None, item_name: str) -> str | None:
         """Prefer verified canonical AllTrails slug over broader '/via-' variants."""
