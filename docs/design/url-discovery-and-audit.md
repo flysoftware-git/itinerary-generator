@@ -629,6 +629,102 @@ From `config.yaml`:
 
 These gates run before URL discovery for attractions.
 
+## Search-Result Cache Audit
+A same-night cost investigation (see `docs/design/per-day-item-caps.md` for
+the companion item-count side of the same investigation) found real xAI
+billing running well above this app's own cost estimator. Once the
+estimator was fixed to include Grok's per-call web_search tool fee, a real
+run priced out around **$2.46**, of which **~83% (~$2.05) was the tool fee
+itself** (`C:\Temp\RoadTripRuns\SW2026-dipstick73\run-console.log`:
+`grok/grok-4-fast: calls=174 ... est=$2.4366 web_search_calls=411
+tool_fee=$2.0550`). The AllTrails confidence-corroboration searches
+(`alltrails_confidence_corroborated_by_broad_search` /
+`_denied_no_corroboration`, see "AllTrails Confidence Tiers" logic around
+`_promote_alltrails_confidence`) alone accounted for ~51 log entries in one
+real run -- roughly 30% of all Grok calls that run.
+
+### Do the corroboration searches route through the cache?
+Yes, already. Traced the call chain from where those two reasons get logged
+back to their origin:
+- The narrow, metadata-filtered corroboration path
+  (`_get_filtered_alltrails_selection` -> `_search_alltrails_for_trail_filtered`)
+  and the broad fallback path both ultimately call `_search_first`.
+- `_search_first` checks its own in-memory, per-process `_url_cache`
+  (item+dest+site-filter keyed; NOT persisted across separate CLI runs) and
+  otherwise calls `_search_first_strict`, which calls `self._search_cached(full_query, ...)`
+  for every query variant it tries.
+- `_search_cached` (~line 11265) is the full persistent, disk-backed,
+  TTL'd cache described above (`DEFAULT_PERSISTENT_SEARCH_CACHE_TTL_HOURS`).
+
+So there is no bypass at any point in this path -- every corroboration
+search a real run performs is already cache-eligible. No call-site rewiring
+was needed or made.
+
+### Real evidence: intra-run hits confirmed, cross-run hits undermined by a save bug
+Grepping `C:\Temp\RoadTripRuns\SW2026-dipstick68-console.log` for repeated
+corroboration queries within a single run shows the cache working exactly
+as designed intra-run -- e.g. "Navajo Loop Trail" resolved fresh once, then
+a second lookup for the same query later in the same run logged
+`search_cache_hit` instead of another network call.
+
+Cross-run, the picture was worse than expected: consecutive same-manifest
+runs tonight (`SW2026-dipstick69` at 00:29, `SW2026-dipstick70` at 08:57,
+~8.5 hours apart, well inside even the old 72h TTL) showed only a modest
+call-count drop (179 -> 170 grok calls), nowhere near what a warm
+cross-run cache should produce. The cause turned out to be a real bug, not
+a tracing gap: 3 of those 5 consecutive runs (`dipstick69`, `70`, `72`)
+logged `Persistent cache save skipped due to write error` (WinError 32 /
+WinError 2 / Errno 13, all on the shared `.cache/url_discovery/persistent_cache.tmp`
+path) -- meaning those runs' newly-discovered results never reached disk
+for the next run to reuse. Root cause and fix are in `_save_persistent_caches`
+(`generator/url_discovery.py`): destinations are processed concurrently via
+a `ThreadPoolExecutor`, and the periodic mid-run checkpoint save
+(`_mark_persistent_cache_dirty`'s `write_every` threshold) could fire from
+any worker thread, so two threads could race to write/rename the same fixed
+tmp path at once. Fixed with a dedicated lock (not the existing
+`_request_cache_lock`, which at least one call site already holds while
+triggering this save -- see the code comment and the
+`test_save_persistent_caches_does_not_deadlock_when_dirty_mark_holds_request_cache_lock`
+regression test in `tests/test_url_discovery.py`) plus a per-attempt-unique
+tmp filename and a short bounded retry.
+
+### TTL: 72h raised to 168h (7 days)
+`DEFAULT_PERSISTENT_SEARCH_CACHE_TTL_HOURS` was 72h, matching
+`DEFAULT_PERSISTENT_PAGE_TEXT_CACHE_TTL_HOURS` (24h) and
+`DEFAULT_PERSISTENT_VERIFY_CACHE_TTL_HOURS` (12h) in spirit -- all three
+were fairly short. But a search result answers a different, more static
+question than those two: "what URL does this query currently resolve to",
+not "is that page still live." Liveness is already independently
+re-verified on its own, much shorter TTLs (verify=12h, page-text=24h,
+AllTrails-fetch=12h) regardless of how long the search-result mapping
+itself is cached, so raising the search TTL cannot let a closure or dead
+link go undetected any longer than those already allow -- it only avoids
+re-asking the same "which URL is this" question within the same week. This
+mirrors the reasoning already used for the geocode (720h) and Wayback
+(720h) caches just below in this file, which are long-TTL for the same
+reason: querying a genuinely static fact more than once a week is pure
+waste, not freshness. Raised to 168h so a work-week gap between iteration
+sessions doesn't force a full re-search of everything.
+
+One caveat surfaced during this audit: `_save_persistent_caches` re-stamps
+*every* currently-loaded search-result entry with the current save time on
+every save (not just entries freshly fetched that run), because
+`_load_persistent_caches` doesn't carry the original on-disk timestamp
+forward in memory. In practice this means the TTL rarely bites during
+active same-week iteration (any dirty save refreshes the whole cache's
+clock), and only really matters across a gap longer than the TTL with no
+runs in between -- which is exactly the scenario the 168h extension is
+aimed at protecting. This is a pre-existing characteristic of the caching
+mechanism, not something this pass changed or was asked to change.
+
+### What was intentionally left alone
+Per explicit scope for this audit: no new caching infrastructure was built
+(the persistent cache described above already existed and already covers
+the corroboration path), and the intentionally-uncached liveness/freshness
+paths (`_verify_url_cached`, page-text/AllTrails fetch, all with their own
+short, independent TTLs) were left untouched -- those exist specifically to
+catch a page going stale/closed, which is not this audit's concern.
+
 ## Known Failure Modes and Mitigations
 Issue: Valid AllTrails links removed in audit because fetch text is sparse.
 - Mitigation: slug-based retention with soft-404 checks.

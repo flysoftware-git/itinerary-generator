@@ -10,6 +10,13 @@ Restaurant link handling spans two stages:
 
 AI content generation produces restaurant names and descriptions only. URL discovery resolves links afterward.
 
+Before either stage runs, `ai_content.py` now caps how many restaurants are
+even in play: `_apply_manifest_restaurant_target` trims
+`dinner_recommendations` to `restaurants_per_day * day_count` (default
+4/day) as the final step of normalization, before URL discovery ever sees
+the list. See `docs/design/per-day-item-caps.md` for that mechanism; this
+document covers what happens to whichever restaurants survive it.
+
 ## Discovery Strategy
 `URLDiscoverer._discover_restaurants` runs a two-pass search per restaurant:
 
