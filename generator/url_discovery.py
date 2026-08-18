@@ -427,7 +427,36 @@ _GENERIC_ANCHOR_EXCLUDED_TOKENS = frozenset({"canyon"})
 DEFAULT_RESTAURANT_DIRECT_BATCH_MIN_RESULTS = 3
 DEFAULT_EN_ROUTE_DIRECT_BATCH_MIN_RESULTS = 2
 DEFAULT_EN_ROUTE_DETOUR_MAX_MINUTES = 20
-DEFAULT_EN_ROUTE_DETOUR_MAX_MILES = 0.0
+# Was 0.0 -- see the long comment above _en_route_stop_within_threshold's
+# definition for the real-world consequence this had (root-caused via a
+# real published run, Telluride -> Pagosa leg): with this at 0.0, the
+# `max_miles > 0 and miles > max_miles` guard in that method was always
+# False, so a text-mined/harvested detour_distance_miles value -- however
+# large -- could never reject a candidate on distance alone. In practice
+# this mattered a lot: many harvested stop descriptions state a detour
+# distance in miles without also stating a time in minutes (the existing
+# 20-minute cap only fires when `minutes` was actually mined), so distance
+# was frequently the *only* signal available, and it was silently inert.
+# Real casualties from that leg's "Can't-Miss Enroute" list: Dolores River
+# Overlook (49.4 mi), Durango & Silverton Narrow Gauge Railroad Depot
+# (87.3 mi), Animas River Trail (93.2 mi), Mancos State Park (112.9 mi) --
+# all published as "can't-miss" quick side-trips despite being 2+ hours
+# each way off a highway leg.
+# 20.0 miles is chosen to pair with the existing 20-minute cap rather than
+# introduce an unrelated magnitude, and is defensible under either reading
+# of this module's documented, unresolved one-way/round-trip/loop ambiguity
+# for what the mined number even means (see the NOTE above
+# _extract_en_route_detour_minutes_from_text): a 20 mi *round-trip* detour
+# is roughly 20-25 min at a realistic rural-highway-adjacent speed --
+# solidly "quick"; even read as *one-way* (40 mi round trip), it is still
+# under an hour added, matching the project owner's own bar for a
+# "can't-miss" side-trip. Either reading comfortably rejects all four real
+# examples above (49.4-112.9 mi), which is what this fix exists to do.
+# Seeded stops (manifest `en_route_seeds`) are exempt from this cap via
+# `_en_route_stop_within_threshold`'s `seed_threshold_override` -- they
+# still have to clear `_prune_en_route_stops_by_geometry`'s real geocoding/
+# route-proximity checks, just not this distance heuristic.
+DEFAULT_EN_ROUTE_DETOUR_MAX_MILES = 20.0
 DEFAULT_EN_ROUTE_REQUIRE_DETOUR_METADATA = True
 DEFAULT_DIRECT_BATCH_HTML_CAPTURE_ENABLED = True
 DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR = "dev/url_discovery_direct_batch_html"

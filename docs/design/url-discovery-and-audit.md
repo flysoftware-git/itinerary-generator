@@ -529,6 +529,129 @@ secondary_maps_link_when_primary_url_is_maps_fallback`, and
 `test_attach_secondary_maps_link_skips_alltrails_url_directly`
 (`tests/test_url_discovery.py`).
 
+## En-Route Detour Distance Threshold Was Silently Disabled
+Project owner reported a real published run's Telluride -> Pagosa Springs
+leg's "Can't-Miss Enroute" list included Dolores River Overlook (49.4 mi
+detour), Mancos State Park (112.9 mi detour), Durango & Silverton Narrow
+Gauge Railroad Depot (87.3 mi), and Animas River Trail (93.2 mi) -- all
+presented as "can't-miss" quick side-trips despite being multi-hour
+round-trips off a highway leg.
+
+Root cause: `DEFAULT_EN_ROUTE_DETOUR_MAX_MILES` (`generator/url_discovery.py`)
+was `0.0`. `_en_route_stop_within_threshold`'s distance gate is
+`if max_miles > 0 and miles is not None and miles > max_miles: return False,
+"detour_miles_exceeded"` -- with the default at exactly `0.0`, `max_miles > 0`
+is always `False`, so this gate could never reject anything on distance
+alone, for any candidate, in any run that didn't set an explicit
+`url_discovery.en_route_detour_max_miles` override in `config.yaml` (this
+repo's `config.yaml` has none). This has been the behavior since the
+constant was introduced -- not a regression.
+
+The sibling `DEFAULT_EN_ROUTE_DETOUR_MAX_MINUTES` was checked as part of the
+same investigation and found to be **already non-zero** (`20`), and already
+correctly enforced whenever a candidate carries a mined/structured
+`detour_time_minutes` value. It was not the disabled half of this bug. But
+in practice the miles-only gate mattered a great deal on its own: harvested
+en-route-stop descriptions frequently state a detour *distance* in prose
+("... a 49.4 mile detour ...") without also stating a *time*, so
+`detour_time_minutes` is often `None` for exactly the candidates that most
+need gating -- meaning distance was frequently the *only* signal available,
+and it was silently inert. All four real casualties above had a mined
+`detour_distance_miles` but no mined `detour_time_minutes`.
+
+Fix: `DEFAULT_EN_ROUTE_DETOUR_MAX_MILES` raised from `0.0` to `20.0`. Chosen
+to pair with the existing 20-minute default rather than introduce an
+unrelated magnitude, and deliberately defensible under either reading of
+this module's own documented, unresolved one-way/round-trip/loop ambiguity
+for what a mined detour number means (see the long-standing NOTE above
+`_extract_en_route_detour_minutes_from_text`): read as a round trip, 20 mi
+is roughly 20-25 minutes at a realistic rural-highway-adjacent speed --
+solidly "quick"; read as one-way (40 mi round trip), it's still under an
+hour added, matching the project owner's own bar for a "can't-miss"
+side-trip ("Do the time estimates... reflect typical speeds enroute?",
+below). Either reading comfortably rejects all four real examples above
+(49.4-112.9 mi are 2.5x-5.6x over 20 mi even under the more permissive
+one-way reading).
+
+This does not affect manifest `en_route_seeds` (the traveler's own explicit
+picks): `_en_route_stop_within_threshold`'s existing `seed_threshold_override`
+still exempts a seed from this cap (it still has to clear
+`_prune_en_route_stops_by_geometry`'s real geocoding/route-proximity checks,
+unchanged). Non-seed candidates missing *all* detour metadata are still
+rejected by the pre-existing `require_metadata` gate, unaffected by this
+change -- this fix only changes the outcome for candidates that *do* carry a
+real, mined `detour_distance_miles` value exceeding the new cap.
+
+Verification: traced logically against real data rather than a live
+regenerate (no Grok/network credentials available in this working session).
+A new unit test, `test_en_route_stop_within_threshold_uses_real_nonzero_mile_
+default` (`tests/test_url_discovery.py`), exercises the class default
+directly (no per-instance override, matching how a real `URLDiscoverer` is
+constructed) against the four real casualty names/mileages above and
+confirms all four are now rejected with `detour_miles_exceeded`, while a
+genuinely short 3.5 mi detour still passes.
+
+### Detour-time estimate: confirmed flat 60 mph, live-fetch reuse considered and not built
+Project owner also asked: "Do the time estimates (which seem to always be
+@60 mph) reflect typical speeds enroute? Could you extract the info from the
+Google Map link info?"
+
+Confirmed: `_en_route_stop_geometry_grounded_detour_estimate` (used to fill
+in a detour-time estimate when a stop has no mined/AI-provided figure, or to
+correct one that's geometrically impossible per
+`_resolve_en_route_stop_detour_metrics_against_geometry`) uses a flat
+`avg_speed_mph = 60.0` applied to `perpendicular_miles * 2.0 * 1.3`
+(round-trip distance with a real-road inflation factor). This is the same
+flat-speed pattern `_estimate_route_from_haversine` already uses for the
+main leg distance/time -- but that estimate has a live-data escape hatch
+this per-stop one does not: `_update_route_distance_and_time` (called once
+per destination from `_discover_en_route_stops`) live-fetches real Google
+Maps directions HTML for the *overall* origin -> destination leg (via
+`_parse_route_info_from_maps_html`, gated by
+`url_discovery.route_distance_live_fetch_enabled`, default on) and prefers
+that real duration over the Haversine/flat-speed estimate whenever the fetch
+succeeds.
+
+Investigated whether that same live-fetch mechanism could be extended to
+per-stop *detour* time specifically, since the project owner's suggestion is
+a reasonable one and the fetch/parse machinery already exists. Conclusion:
+not a clean, low-risk reuse, for two concrete reasons found during this
+investigation, so it was not built tonight:
+- `_parse_route_info_from_maps_html` answers "what does this one directions
+  URL say", but the *existing* call site only ever builds one directions URL
+  per destination -- the whole origin -> destination leg with up to 8
+  en-route stop names folded in as waypoints of that single route. It has
+  never computed a per-waypoint delta (how much longer the route becomes
+  because of *this specific* stop), which is what a real detour-time figure
+  requires. Getting that would mean synthesizing a *new*, additional
+  directions URL per candidate stop (e.g. stop coordinates as both
+  origin/destination against the nearer leg endpoint, doubled for round
+  trip) and firing a **separate live fetch for each one** -- not reusing the
+  one fetch that already happens per destination.
+- This module's own recent cost investigation
+  (see "Search-Result Cache Audit" below) found a single real run's paid
+  third-party API cost already dominated by per-call fees (~83% of a
+  real run's cost was Grok's web_search tool fee alone), and multiple
+  existing mitigations in this file exist specifically to avoid firing
+  *more* live network calls than necessary (per-domain block cooldowns,
+  the 7-day search-result cache TTL, direct-batch harvest failure
+  cooldowns). Adding one additional live Google-Maps-HTML scrape per
+  en-route stop with a geocode (typically several per destination) runs
+  directly against that established cost discipline, for a metric
+  (detour minutes) that is cosmetic display text, not something that gates
+  inclusion or correctness of the itinerary.
+
+Given that, the flat-60mph detour-time estimate is left as a known,
+documented limitation rather than built out tonight: it is already only a
+*fallback/correction* path (a real mined AI-provided minutes figure is
+preferred when present and not geometrically impossible), and the added
+live-fetch cost/complexity to improve a secondary, non-gating display number
+was judged not worth it in this session. A future pass wanting real
+per-detour timing would need to budget for the extra live fetches
+explicitly (e.g. only for stops actually rendered, with the same domain
+cooldown/caching discipline already applied to the main-leg fetch) rather
+than folding it into this fix.
+
 ## Fail-Closed Policy for Named Entities
 A link is only publishable for a named entity if it is a **deterministic, entity-specific
 target** — one that refers to that single entity and not a list, search query, or area
@@ -626,6 +749,11 @@ From `config.yaml`:
   `false` to always use the Haversine distance/time estimate instead of
   live-scraping Google Maps directions HTML -- the scrape is a pure accuracy
   enhancement on top of an estimate that's already always available)
+- `url_discovery.en_route_detour_max_miles` (default `20.0` -- see "En-Route
+  Detour Distance Threshold Was Silently Disabled" above for why this was
+  `0.0`, i.e. off, until this fix)
+- `url_discovery.en_route_detour_max_minutes` (default `20`; was already
+  non-zero/enforced before this fix)
 
 These gates run before URL discovery for attractions.
 

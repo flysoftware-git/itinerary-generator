@@ -6,7 +6,12 @@ import time
 import pytest
 from unittest.mock import MagicMock, patch
 from threading import Lock
-from generator.url_discovery import URLDiscoverer, _build_query_variants
+from generator.url_discovery import (
+    DEFAULT_EN_ROUTE_DETOUR_MAX_MILES,
+    DEFAULT_EN_ROUTE_DETOUR_MAX_MINUTES,
+    URLDiscoverer,
+    _build_query_variants,
+)
 
 
 def test_build_query_variants_returns_four():
@@ -460,6 +465,44 @@ def test_en_route_stop_within_threshold_seed_override_still_enforces_hard_caps()
     keep, reason = discoverer._en_route_stop_within_threshold(non_seed_missing_metadata)
     assert keep is False
     assert reason == "missing_detour_metadata"
+
+
+def test_en_route_stop_within_threshold_uses_real_nonzero_mile_default():
+    """Regression for the real published Telluride -> Pagosa leg, where
+    DEFAULT_EN_ROUTE_DETOUR_MAX_MILES being 0.0 meant the miles cap could
+    never reject anything: 'Dolores River Overlook' (49.4 mi), 'Durango &
+    Silverton Narrow Gauge Railroad Depot' (87.3 mi), 'Animas River Trail'
+    (93.2 mi), and 'Mancos State Park' (112.9 mi) were all published as
+    "can't-miss" en-route stops despite having only a mined
+    detour_distance_miles (no detour_time_minutes text), so the inert
+    miles-only cap was their sole distance gate. This exercises the class
+    default directly (no per-instance override), matching how a real
+    URLDiscoverer is constructed."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_require_detour_metadata = True
+    discoverer._en_route_detour_max_minutes = DEFAULT_EN_ROUTE_DETOUR_MAX_MINUTES
+    discoverer._en_route_detour_max_miles = DEFAULT_EN_ROUTE_DETOUR_MAX_MILES
+
+    assert DEFAULT_EN_ROUTE_DETOUR_MAX_MILES > 0
+
+    for name, miles in (
+        ("Dolores River Overlook", 49.4),
+        ("Durango & Silverton Narrow Gauge Railroad Depot", 87.3),
+        ("Animas River Trail", 93.2),
+        ("Mancos State Park", 112.9),
+    ):
+        keep, reason = discoverer._en_route_stop_within_threshold(
+            {"name": name, "detour_distance_miles": miles}
+        )
+        assert keep is False, f"{name} ({miles} mi) should have been rejected"
+        assert reason == "detour_miles_exceeded"
+
+    # A genuinely quick, worth-it detour must still survive the new default.
+    keep, reason = discoverer._en_route_stop_within_threshold(
+        {"name": "Roadside Overlook", "detour_distance_miles": 3.5}
+    )
+    assert keep is True
+    assert reason == "ok"
 
 
 def test_discover_en_route_stops_does_not_add_seed_from_a_different_destination():
