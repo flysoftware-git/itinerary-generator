@@ -9663,6 +9663,61 @@ def test_audit_attaches_secondary_maps_link_for_attraction_with_distinct_primary
     )
 
 
+def test_audit_attaches_secondary_maps_link_for_departure_route_option() -> None:
+    """Real bug (published eval run): the "Turquoise Trail National Scenic
+    Byway" departure route option had a real, distinct primary source URL
+    (nsbfoundation.com) but no map-icon badge at all -- unlike en-route
+    stops, attractions, and restaurants, no code path anywhere in this
+    pipeline ever attached a maps_url to a route option. audit_discovered_
+    urls' route_options loop now calls _attach_secondary_maps_link for each
+    option after its primary url is settled, mirroring the attraction/
+    restaurant fix above."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._remember_direct_batch_authoritative_url(
+        "https://nsbfoundation.com/nb/turquoise-trail-national-scenic-byway/",
+        "Turquoise Trail National Scenic Byway",
+    )
+
+    trip = {
+        "destinations": [
+            {
+                "id": "santa-fe",
+                "name": "Santa Fe, New Mexico",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "getting_there": {
+                        "route_options": [
+                            {
+                                "title": "Turquoise Trail National Scenic Byway",
+                                "url": "https://nsbfoundation.com/nb/turquoise-trail-national-scenic-byway/",
+                                "distance_or_duration": "~50 mi total route",
+                                "description": "This scenic byway connects Santa Fe and Albuquerque.",
+                            }
+                        ]
+                    },
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(False, "no_validator", "")):
+            discoverer.audit_discovered_urls(trip)
+
+    options = trip["destinations"][0]["ai_content"]["getting_there"]["route_options"]
+    assert len(options) == 1
+    option = options[0]
+    assert option["url"] == "https://nsbfoundation.com/nb/turquoise-trail-national-scenic-byway/"
+    assert option["maps_url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Turquoise%20Trail%20National%20Scenic%20Byway%20Santa%20Fe%2C%20New%20Mexico"
+    )
+
+
 def test_audit_attaches_secondary_maps_link_for_restaurant_with_distinct_primary_url() -> None:
     """Restaurant mirror of the attraction case above: real dipstick72 data
     showed 0 of 61 restaurant cards ever rendered the map badge.

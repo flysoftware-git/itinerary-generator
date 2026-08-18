@@ -746,6 +746,27 @@ class AIContentGenerator:
                     "validation_status": "accepted",
                 })
                 option["_registry"] = registry_meta
+                # Real bug (published eval run): "Turquoise Trail National
+                # Scenic Byway" rendered as a departure route option labeled
+                # "(50 miles one-way)" -- html_assembler.py wraps this in the
+                # exact same "stop-detour" markup en-route stops use for
+                # "X mi detour off the main route", so it visually reads as
+                # extra detour distance. But this text was never written with
+                # that meaning: it's carried over verbatim from this item's
+                # prior life as a scenic_drives entry, where "one-way" means
+                # "this drive is 50 miles point-to-point, not a round trip" --
+                # a completely different measurement (the scenic drive's own
+                # length) than "detour distance added to a direct route". A
+                # route option is a full alternate path for the WHOLE leg,
+                # not a side trip off it, so reusing detour-style "one-way"
+                # phrasing misrepresents what kind of choice this is. Reframe
+                # the label at the exact point its meaning changes (here,
+                # when it's repurposed into a route option) rather than
+                # leaving stale scenic-drive phrasing to be reinterpreted
+                # under detour framing at render time.
+                dist_text = str(option.get("distance_or_duration", "") or "")
+                if dist_text:
+                    option["distance_or_duration"] = self._reframe_route_option_distance_label(dist_text)
                 key = str(option.get("title", "") or "").strip().lower()
                 if key and key not in seen_titles:
                     merged_options.append(option)
@@ -756,6 +777,41 @@ class AIContentGenerator:
                 getting_there["route_summary"] = f"Departure leg toward {return_name}."
             ai["getting_there"] = getting_there
             last_dest["ai_content"] = ai
+
+    @staticmethod
+    def _reframe_route_option_distance_label(dist_text: str) -> str:
+        """Rewrite a scenic-drive-authored "distance_or_duration" string
+        (e.g. "50 miles one-way", the exact wording
+        prompts/scenic_drives.txt asks the AI for) into an honest
+        route-CHOICE label for use as a departure route option's distance,
+        instead of leaving "one-way" phrasing that reads as en-route-stop
+        detour framing ("X mi detour off the direct route") once rendered
+        inside the same `stop-detour`-styled markup.
+
+        No comparison figure (e.g. "~50 mi vs ~60 mi via the direct
+        interstate") is fabricated here: nothing in this pipeline currently
+        computes a real direct-route distance for this leg to compare
+        against (`getting_there.distance_miles`/`drive_time` are declared in
+        the schema but no code path ever populates them for the departure
+        leg) -- inventing a number would be worse than the vaguer label this
+        produces. If a real comparison distance becomes available upstream
+        in the future, this is the place to use it.
+        """
+        text = str(dist_text or "").strip()
+        if not text:
+            return text
+        match = re.search(r"(\d+(?:\.\d+)?)\s*(?:miles?|mi)\b", text, re.IGNORECASE)
+        if match:
+            miles = match.group(1)
+            if miles.endswith(".0"):
+                miles = miles[:-2]
+            return f"~{miles} mi total route"
+        # Couldn't cleanly extract a numeric mileage from unexpected phrasing
+        # -- fail safe by only stripping the misleading "one-way" qualifier
+        # itself rather than fabricating a rewritten label from text this
+        # method doesn't understand.
+        cleaned = re.sub(r"\s*[,\-–—]?\s*one[\s-]?way\b", "", text, flags=re.IGNORECASE).strip()
+        return cleaned or text
 
     @staticmethod
     def _cap_period_sentences(

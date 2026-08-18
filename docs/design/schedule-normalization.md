@@ -912,6 +912,78 @@ Design intent:
 - Preserve useful departure-route suggestions while preventing them from being
   rendered as in-stay activities.
 
+### Distance-label reframing at reclassification time
+Real bug from a published eval run: the "Turquoise Trail National Scenic
+Byway" departure route option rendered with the label `(50 miles one-way)`.
+`scenic_drives.txt`'s prompt asks the AI for `distance_or_duration` in the
+form `"e.g. '17 miles one-way'"`, meaning "this drive is 50 miles
+point-to-point, not a round trip" -- a description of the scenic drive's own
+length. `_filter_departure_aligned_drives` moves the drive dict into
+`getting_there.route_options` with a plain shallow copy (`option =
+dict(option)`), carrying that field over completely unchanged. But
+`html_assembler.py` renders route options through the same `stop-detour`
+markup en-route stops use for genuine detour framing (`"X mi detour off the
+main route"`), so on the page the label reads as if it's describing extra
+detour distance for a one-way leg. A departure route option is a full
+alternate PATH for the whole leg, not a side detour off it -- reusing
+detour-style "one-way" phrasing for it misrepresents what kind of choice it
+is.
+
+Fix: `_filter_departure_aligned_drives` now calls
+`AIContentGenerator._reframe_route_option_distance_label(dist_text)` on each
+drive's `distance_or_duration` at the exact point it's repurposed into a
+route option, rewriting `"50 miles one-way"` → `"~50 mi total route"`. No
+comparison figure against a "direct route" distance (e.g. `"~50 mi vs ~60 mi
+via the direct interstate"`) is fabricated: `getting_there.distance_miles`/
+`drive_time` are declared in `destination_content.txt`'s schema but no code
+path anywhere in this codebase ever populates them for the departure leg
+(confirmed by grep -- `getting_here.distance_miles` is populated via
+Haversine estimation for the *arrival* leg, but no equivalent exists for
+`getting_there`), so there is no real number available to compare against.
+The reframed label is honestly vaguer rather than precisely wrong. If a real
+comparison distance becomes available upstream in the future,
+`_reframe_route_option_distance_label` is the place to use it. When the text
+doesn't cleanly parse as `"<number> mi(les) ... one-way"`, the fallback path
+only strips the misleading "one-way" qualifier itself rather than
+fabricating a rewritten label from unrecognized phrasing.
+
+Tests: `test_filter_departure_aligned_drives_moves_matching_one_way_drive_to_
+getting_there` (extended), `test_reframe_route_option_distance_label_
+rewrites_one_way_miles`, `test_reframe_route_option_distance_label_handles_
+whole_number_with_decimal`, `test_reframe_route_option_distance_label_falls_
+back_to_stripping_qualifier`, `test_reframe_route_option_distance_label_also_
+normalizes_non_one_way_mileage`, `test_reframe_route_option_distance_label_
+empty_input` (`tests/test_ai_content_normalization.py`).
+
+### Rendering and map-link parity with en-route stops
+Same real bug run surfaced two further gaps specific to the route-option
+render path in `html_assembler.py`'s `_build_getting_there` (a separate code
+path from `_build_getting_here`'s en-route-stop cards, not shared logic):
+
+- The route option's `<a>` tag was missing `target="_blank" rel="noopener"`
+  -- every other external link on the page carries both. Fixed by adding
+  them to the anchor built in `_build_getting_there`'s
+  `renderable_route_options` loop.
+- No route option ever rendered a `badge-map` icon, even when it had a real,
+  distinct primary source URL. `_maps_corner_link_html` (the shared badge
+  renderer, already wired into this same loop via `maps_corner_html =
+  self._maps_corner_link_html(opt, url)`) was never the problem -- it
+  correctly renders the badge whenever `item["maps_url"]` is set. Root cause
+  was upstream: unlike en-route stops (route-waypoint geocoding), attractions,
+  and restaurants (see "Secondary Maps Link for Attractions and Restaurants"
+  in `url-discovery-and-audit.md`), nothing in `generator/url_discovery.py`
+  ever attached a `maps_url` to a `getting_there.route_options` entry.
+  `audit_discovered_urls`'s route-options loop now calls the same
+  `_attach_secondary_maps_link(route_opt, opt_name, dest_name,
+  kind="route_option")` helper used for attractions/restaurants, in a
+  post-loop pass once each option's primary `url` is settled for the run.
+
+Tests: `test_build_getting_there_route_option_link_has_target_and_rel`,
+`test_build_getting_there_route_option_renders_map_badge_when_maps_url_
+present` (`tests/test_html_assembler.py`),
+`test_audit_attaches_secondary_maps_link_for_departure_route_option`
+(`tests/test_url_discovery.py`).
+
 ## Interaction With Other Normalizers
 Schedule normalization runs after:
 - attractions normalization/dedupe

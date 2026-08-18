@@ -803,7 +803,7 @@ class HTMLAssembler:
                 opt = item["opt"]
                 source_icon = self._link_source_icon(url)
                 name_html = (
-                    f'<a href="{self._safe_href(url)}">{html_escape.escape(title)}</a>'
+                    f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{html_escape.escape(title)}</a>'
                     f' <span class="attr-external-link" title="link source">{source_icon}</span>'
                 )
                 maps_corner_html = self._maps_corner_link_html(opt, url)

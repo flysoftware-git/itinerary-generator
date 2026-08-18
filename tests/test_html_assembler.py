@@ -1055,6 +1055,66 @@ def test_build_getting_there_includes_return_anchor_time() -> None:
     assert "Oct 29 2:30 PM" in html
 
 
+def test_build_getting_there_route_option_link_has_target_and_rel() -> None:
+    """Real bug (published eval run): the Turquoise Trail departure route
+    option's <a> tag was missing target="_blank" rel="noopener" -- every
+    other external link on the page carries both. Confirms the route-option
+    render path (a different code path from en-route stops) was fixed to
+    match."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "getting_there": {
+            "route_summary": "Departure leg toward Albuquerque, NM.",
+            "route_options": [
+                {
+                    "title": "Turquoise Trail National Scenic Byway",
+                    "url": "https://nsbfoundation.com/nb/turquoise-trail-national-scenic-byway/",
+                    "distance_or_duration": "~50 mi total route",
+                    "description": "This scenic byway connects Santa Fe and Albuquerque.",
+                }
+            ],
+        }
+    }
+    dest = {"name": "Santa Fe"}
+    trip_meta = {"return": "Albuquerque, NM"}
+
+    html = assembler._build_getting_there(ai, dest, trip_meta)
+
+    assert (
+        '<a href="https://nsbfoundation.com/nb/turquoise-trail-national-scenic-byway/" '
+        'target="_blank" rel="noopener">Turquoise Trail National Scenic Byway</a>' in html
+    )
+    assert "~50 mi total route" in html
+    assert "one-way" not in html
+
+
+def test_build_getting_there_route_option_renders_map_badge_when_maps_url_present() -> None:
+    """Confirms the render side already surfaces maps_url as a badge for
+    route options once it's present -- the real bug was that no code path
+    upstream ever attached one (see url_discovery.py's _attach_secondary_
+    maps_link now being called for route options too)."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {
+        "getting_there": {
+            "route_options": [
+                {
+                    "title": "Turquoise Trail National Scenic Byway",
+                    "url": "https://nsbfoundation.com/nb/turquoise-trail-national-scenic-byway/",
+                    "maps_url": "https://www.google.com/maps/search/?api=1&query=Turquoise+Trail+National+Scenic+Byway",
+                    "distance_or_duration": "~50 mi total route",
+                    "description": "This scenic byway connects Santa Fe and Albuquerque.",
+                }
+            ],
+        }
+    }
+    dest = {"name": "Santa Fe"}
+    trip_meta = {"return": "Albuquerque, NM"}
+
+    html = assembler._build_getting_there(ai, dest, trip_meta)
+
+    assert 'class="badge badge-map"' in html
+
+
 def test_build_restaurants_omits_items_without_a_usable_url() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     html = assembler._build_restaurants(

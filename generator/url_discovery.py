@@ -2662,7 +2662,8 @@ class URLDiscoverer:
                 gh_block["en_route_stops"] = eligible_stops
                 ai["getting_here"] = gh_block
 
-            for route_opt in ai.get("getting_there", {}).get("route_options", []) or []:
+            route_options_list = ai.get("getting_there", {}).get("route_options", []) or []
+            for route_opt in route_options_list:
                 opt_name = str(route_opt.get("title", "") or route_opt.get("name", "") or "")
                 url = str(route_opt.get("url", "") or "").strip()
                 cleaned = self._retain_discovered_url(
@@ -2680,6 +2681,19 @@ class URLDiscoverer:
                     else:
                         route_opt.pop("url", None)
                         self._annotate_registry_url_decision(route_opt, rendered_url="", rejection_reason="url_rejected")
+
+            # Real bug (published eval run): the Turquoise Trail National
+            # Scenic Byway departure route option had a real, distinct
+            # primary source URL (nsbfoundation.com) but no map-icon badge
+            # at all -- unlike en-route stops, attractions, and restaurants,
+            # nothing anywhere in this pipeline ever attached a maps_url to
+            # a route option. See _attach_secondary_maps_link's docstring:
+            # every route option's primary url is now final for this pass,
+            # so attach a distinct map-icon-badge maps_url wherever one is
+            # missing and useful, exactly like attractions/restaurants below.
+            for route_opt in route_options_list:
+                opt_name = str(route_opt.get("title", "") or route_opt.get("name", "") or "")
+                self._attach_secondary_maps_link(route_opt, opt_name, dest_name, kind="route_option")
 
             eligible_restaurants: list[dict[str, Any]] = []
             for rest in ai.get("dinner_recommendations", []) or []:
