@@ -434,6 +434,150 @@ def test_generate_destination_content_strips_markdown_before_url_discovery_would
     assert dest["scenic_drives"][0]["title"] == "Zion Canyon Drive"
 
 
+def test_resolve_grouping_aware_prev_next_names_skips_day_trip_children() -> None:
+    """Regression grounded in the real Sandbox/sw_manifest.yaml shape and a
+    real project owner finding: Moab's own schedule's last evening read
+    'Enjoy a relaxed, local evening; the drive to Arches National Park
+    happens the next morning, not tonight.' Project owner: 'The algorithm
+    for the schedule does not understand the notion of day trips... The
+    scheduler hasn't incorporated the idea of a day trip into its
+    scheduling.'
+
+    Manifest order: Moab (base), Arches National Park (`group_with: moab`,
+    a day trip FROM Moab), Canyonlands National Park (`group_with: moab`,
+    also a day trip FROM Moab), Telluride (the real next destination). The
+    naive "adjacent list entry" resolution this replaced gave Moab's
+    next_destination="Arches National Park" -- wrong on two counts: Arches
+    was already visited as a day trip, and the real next-morning drive is
+    to Telluride. It also gave Canyonlands's previous_destination="Arches
+    National Park", implying a direct Arches-to-Canyonlands drive that
+    never happens (both are day trips FROM the shared Moab lodging)."""
+    destinations = [
+        {"id": "capitolreef", "name": "Capitol Reef National Park"},
+        {"id": "moab", "name": "Moab"},
+        {"id": "arches", "name": "Arches National Park", "group_with": "moab"},
+        {"id": "canyonlands", "name": "Canyonlands National Park", "group_with": "moab"},
+        {"id": "telluride", "name": "Telluride"},
+    ]
+
+    prev_names, next_names = AIContentGenerator._resolve_grouping_aware_prev_next_names(destinations)
+
+    assert prev_names == ["none", "Capitol Reef National Park", "Moab", "Moab", "Moab"]
+    assert next_names == ["Moab", "Telluride", "Telluride", "Telluride", ""]
+
+
+def test_generate_destination_content_moab_gets_telluride_not_arches_as_next_destination() -> None:
+    """Integration-level companion to the direct resolver test above: the
+    real _generate_destination_bundle call for Moab must receive
+    next_destination="Telluride", not "Arches National Park", so
+    _inject_travel_realism's last-evening framing points at the real next
+    relocation destination instead of a grouped day-trip child."""
+    g = _gen_with_bundle_templates()
+    g._llm = type("MockLLM", (), {"provider": "openai"})()
+    g._max_concurrent_destinations = 5
+    calls: dict[str, tuple[str, str]] = {}
+
+    def _fake_bundle(dest: dict, trip_meta: dict, previous_destination: str, next_destination: str) -> dict:
+        calls[dest["name"]] = (previous_destination, next_destination)
+        return {"destination_content": {}, "what_to_know": {}, "scenic_drives": []}
+
+    with patch.object(g, "_generate_destination_bundle", side_effect=_fake_bundle):
+        trip = {
+            "trip": {},
+            "destinations": [
+                {"id": "moab", "name": "Moab", "dates": "October 22-24, 2026"},
+                {"id": "arches", "name": "Arches National Park", "dates": "October 23, 2026", "group_with": "moab"},
+                {
+                    "id": "canyonlands",
+                    "name": "Canyonlands National Park",
+                    "dates": "October 24, 2026",
+                    "group_with": "moab",
+                },
+                {"id": "telluride", "name": "Telluride", "dates": "October 24-26, 2026"},
+            ],
+        }
+        g.generate_destination_content(trip)
+
+    assert calls["Moab"] == ("none", "Telluride")
+    assert calls["Arches National Park"] == ("Moab", "Telluride")
+    assert calls["Canyonlands National Park"] == ("Moab", "Telluride")
+    assert calls["Telluride"] == ("Moab", "")
+
+
+def test_normalize_schedule_moab_day_trip_days_stay_local_only_last_evening_mentions_real_next_destination() -> None:
+    """With next_destination now correctly resolved to "Telluride" (not the
+    "Arches National Park" day-trip child -- see the two tests above), this
+    verifies _inject_travel_realism's existing day-level machinery already
+    produces the two genuinely different behaviors a day-trip stay needs
+    for its own multi-day schedule, once given the right next_destination:
+
+    - Day 2 (the Arches day-trip day, chronologically BEFORE Moab's actual
+      departure) must carry no onward-drive/next-destination language at
+      all -- the traveler returns to the same Moab lodging that night, not
+      Telluride.
+    - Only Day 3 (Moab's genuine last evening before the real relocation)
+      gets the "drive to X next morning" framing, and it must name the real
+      next destination (Telluride), never the day-trip child.
+
+    This is the existing scrub-vs-last-day architecture (unchanged by the
+    grouping fix) verified against the specific real-shaped Moab/Arches/
+    Canyonlands/Telluride data that motivated it.
+    """
+    g = _gen()
+    schedule = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Settle into Moab and explore downtown."},
+                {"period": "Afternoon", "summary": "Visit the Moab Museum."},
+                {"period": "Evening", "summary": "Dinner at a local restaurant."},
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Head out early for the Arches day trip."},
+                {"period": "Afternoon", "summary": "Continue exploring Arches National Park."},
+                {"period": "Evening", "summary": "Return to Moab for dinner."},
+            ],
+        },
+        {
+            "day_label": "Day 3",
+            "periods": [
+                {"period": "Morning", "summary": "Head out early for the Canyonlands day trip."},
+                {"period": "Afternoon", "summary": "Continue exploring Canyonlands National Park."},
+                {"period": "Evening", "summary": "Return to Moab for a final dinner."},
+            ],
+        },
+    ]
+
+    out = g._normalize_schedule(
+        schedule=schedule,
+        restaurants=[{"name": "Moab Kitchen"}, {"name": "Desert Bistro"}],
+        dates="October 22-24, 2026",
+        attractions=[{"name": "Delicate Arch"}, {"name": "Corona Arch Trail"}],
+        getting_here={"drive_time": "2 hr"},
+        previous_destination="Capitol Reef National Park",
+        next_destination="Telluride",
+    )
+
+    day2_evening = out[1]["periods"][2]["summary"].lower()
+    day3_evening = out[2]["periods"][2]["summary"].lower()
+
+    # Day 2 (the Arches day-trip day) stays local -- no mention of the real
+    # next destination, no onward-drive framing, since the traveler returns
+    # to the same Moab lodging that night.
+    assert "telluride" not in day2_evening
+    assert "next morning" not in day2_evening
+
+    # Only Day 3 (Moab's genuine last evening) carries the onward-travel
+    # note, and it must name the real next destination.
+    assert "telluride" in day3_evening
+    assert "next morning" in day3_evening
+    assert "arches" not in day3_evening
+    assert "canyonlands" not in day3_evening
+
+
 def test_enforce_banned_marketing_language_accumulates_across_calls() -> None:
     """Regression (2026-08-15, dipstick56+): main.py calls
     normalize_trip_content (which calls this) twice in a real run -- once
@@ -1218,6 +1362,145 @@ def test_inject_travel_realism_rotates_evening_focus_across_a_multi_day_stay() -
     assert day2_evening != day1_evening
     assert "sunrise point" not in day2_evening
     assert "navajo loop trail" in day2_evening or "queens garden trail" in day2_evening
+
+
+def test_normalize_schedule_dipstick68_leaked_instruction_never_reaches_rendered_evening_text() -> None:
+    """Regression grounded in the real SW2026-dipstick68 output for Bryce
+    Canyon National Park, Day 2 Evening, exactly as the project owner found
+    it: 'Visit Bryce Point for sunset views, then enjoy dinner at Bryce
+    Canyon Pines Restaurant. Choose a different sunset zone or dining pocket
+    than earlier nights.' Their words: 'the first sentence duplicates the
+    prior evening, the second is a silly thing to tell users.'
+
+    _dedupe_schedule_day_content used to append that second sentence
+    (period_variation_suffix['Evening']) directly onto the rendered summary
+    as a stopgap flag for _inject_travel_realism's rotation pass to replace
+    with real content -- but the flag text itself could survive verbatim
+    whenever rotation didn't end up changing that period (here: only one
+    real accepted attraction, Bryce Point, so nothing to rotate the sunset
+    viewpoint to). This exercises the full _normalize_schedule pipeline
+    (not just _dedupe_schedule_day_content in isolation) with that exact
+    real single-attraction, single-restaurant shape -- a genuine dead end
+    for the underlying duplicate -- and asserts the leaked instruction can
+    never appear in the rendered output regardless."""
+    g = _gen()
+    schedule = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Hike the Rim Trail in the cool morning air."},
+                {"period": "Afternoon", "summary": "Explore Inspiration Point overlooks."},
+                {
+                    "period": "Evening",
+                    "summary": "Visit Bryce Point for sunset views, then enjoy dinner at Bryce Canyon Pines Restaurant.",
+                },
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Return to the Rim Trail for a different stretch."},
+                {"period": "Afternoon", "summary": "Revisit Inspiration Point at a different time of day."},
+                {
+                    "period": "Evening",
+                    "summary": "Visit Bryce Point for sunset views, then enjoy dinner at Bryce Canyon Pines Restaurant.",
+                },
+            ],
+        },
+    ]
+
+    out = g._normalize_schedule(
+        schedule=schedule,
+        restaurants=[{"name": "Bryce Canyon Pines Restaurant"}],
+        dates="October 9-11, 2026",
+        attractions=[{"name": "Bryce Point"}],
+        getting_here={"drive_time": "1 hr 45 min"},
+        previous_destination="Zion National Park",
+        next_destination="Capitol Reef National Park",
+    )
+
+    full_text = " ".join(
+        str(period.get("summary", "") or "")
+        for day in out
+        for period in day.get("periods", []) or []
+    ).lower()
+    # The leaked internal instruction must never appear anywhere in
+    # rendered output, no matter which period it would have targeted.
+    assert "choose a different sunset zone" not in full_text
+    assert "dining pocket" not in full_text
+    assert "prioritize a different trailhead" not in full_text
+    assert "shift focus to a different area" not in full_text
+    assert "vary stops and pacing" not in full_text
+    # No private/internal marker keys leak into the returned period dicts.
+    for day in out:
+        for period in day.get("periods", []) or []:
+            assert not any(str(key).startswith("_") for key in period)
+
+    # With genuinely only one real attraction and one real restaurant for
+    # this destination, the underlying Day 1/Day 2 Evening duplicate has no
+    # data left to vary -- an honest, undecorated duplicate is acceptable
+    # (no fragile forced rewrite), as long as it never carries the leaked
+    # instruction sentence.
+    day1_evening = out[0]["periods"][2]["summary"]
+    day2_evening = out[1]["periods"][2]["summary"]
+    assert day1_evening == "Visit Bryce Point for sunset views, then enjoy dinner at Bryce Canyon Pines Restaurant."
+    assert day2_evening == day1_evening
+
+
+def test_normalize_schedule_dipstick68_evening_duplicate_resolves_via_restaurant_rotation_when_possible() -> None:
+    """Companion to the dead-end case above: when a second real restaurant
+    candidate genuinely exists for the destination (unlike the true
+    dipstick68 dead end), the existing restaurant-rotation mechanism
+    (_rotate_restaurant_summary) already resolves the Day 2 Evening
+    duplicate on its own -- and, now that the leaked-instruction suffix is
+    gone entirely, nothing gets appended on top of that already-fixed text
+    either."""
+    g = _gen()
+    schedule = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Hike the Rim Trail in the cool morning air."},
+                {"period": "Afternoon", "summary": "Explore Inspiration Point overlooks."},
+                {
+                    "period": "Evening",
+                    "summary": "Visit Bryce Point for sunset views, then enjoy dinner at Bryce Canyon Pines Restaurant.",
+                },
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Return to the Rim Trail for a different stretch."},
+                {"period": "Afternoon", "summary": "Revisit Inspiration Point at a different time of day."},
+                {
+                    "period": "Evening",
+                    "summary": "Visit Bryce Point for sunset views, then enjoy dinner at Bryce Canyon Pines Restaurant.",
+                },
+            ],
+        },
+    ]
+
+    out = g._normalize_schedule(
+        schedule=schedule,
+        restaurants=[
+            {"name": "Bryce Canyon Pines Restaurant"},
+            {"name": "Bryce Canyon Lodge Dining Room"},
+        ],
+        dates="October 9-11, 2026",
+        attractions=[{"name": "Bryce Point"}],
+        getting_here={"drive_time": "1 hr 45 min"},
+        previous_destination="Zion National Park",
+        next_destination="Capitol Reef National Park",
+    )
+
+    day1_evening = out[0]["periods"][2]["summary"].lower()
+    day2_evening = out[1]["periods"][2]["summary"].lower()
+    assert "choose a different sunset zone" not in day2_evening
+    assert "dining pocket" not in day2_evening
+    assert day2_evening != day1_evening
+    assert "bryce canyon lodge dining room" in day2_evening
+    assert "bryce point" in day2_evening
 
 
 def test_filter_oversized_scenic_drives_removes_full_day_loop() -> None:
