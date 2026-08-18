@@ -3952,6 +3952,66 @@ def test_has_attraction_closure_marker_still_detects_real_full_closure() -> None
     ) is True
 
 
+def test_is_under_construction_page_detects_real_nps_placeholder_text() -> None:
+    """Real bug (Bryce Canyon eval run): "Bryce Canyon Visitor Center" linked
+    to https://www.nps.gov/brca/planyourvisit/visitorcenters.htm, whose
+    entire visible content (confirmed via live fetch) is a placeholder
+    stub, not real visitor-center information. This page is technically
+    live (200 status), on the right domain, and even mentions the
+    destination -- none of the existing checks reason about whether a page
+    actually contains any real content."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "National Park Service. Page In-Progress. This page is currently "
+        "being worked on. Please check back later. Return to NPS home."
+    )
+    assert discoverer._is_under_construction_page(page_text) is True
+
+
+def test_is_under_construction_page_ignores_html_comment_noise() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "Bryce Canyon Visitor Center. Open daily with exhibits, a bookstore, "
+        "and ranger-led programs. "
+        "<!-- old dev note: this section is currently being worked on -->"
+    )
+    assert discoverer._is_under_construction_page(page_text) is False
+
+
+def test_is_under_construction_page_false_on_substantive_content() -> None:
+    """Control: a real, populated page must not be flagged just because it
+    happens to be short or mentions an unrelated future item."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "Bryce Canyon Visitor Center. While at the Visitor Center you will "
+        "want to see our award-winning film, 'A Song of Seasons.' Explore "
+        "our museum exhibits and bookstore. A new exhibit is coming soon."
+    )
+    assert discoverer._is_under_construction_page(page_text) is False
+
+
+def test_relevant_result_rejects_under_construction_placeholder_page() -> None:
+    """End-to-end: _is_relevant_result's general (non-AllTrails) deep-check
+    branch must reject a page whose own text says it's a placeholder, even
+    though it otherwise clears the destination/item token checks (it's a
+    real nps.gov page, on the right park, with the right item name in its
+    URL slug region)."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "Bryce Canyon National Park. Visitor Center. Page In-Progress. "
+        "This page is currently being worked on. Please check back later."
+    )
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_text)):
+        ok = discoverer._is_relevant_result(
+            "https://www.nps.gov/brca/planyourvisit/visitorcenters.htm",
+            "Bryce Canyon Visitor Center",
+            "Bryce Canyon National Park",
+        )
+
+    assert ok is False
+
+
 def test_discover_attractions_real_moifa_html_comment_closure_false_positive_keeps_real_link() -> None:
     """Full-pipeline Part 2 regression using the real evidence from
     link_recall_strategy_experiment.md: the direct-batch harvest found a

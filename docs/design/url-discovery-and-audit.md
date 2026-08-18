@@ -155,6 +155,54 @@ Tests:
 `test_audit_discovered_urls_rejects_wrong_topic_link_for_scenic_drive_overlooks`
 (`tests/test_url_discovery.py`).
 
+Under-construction / placeholder-content detection: real bug from a
+published eval run -- "Bryce Canyon Visitor Center" linked to
+`https://www.nps.gov/brca/planyourvisit/visitorcenters.htm`. Live-fetched
+during investigation, that URL returns HTTP 200 on the correct `nps.gov`
+domain and mentions the destination, so it clears every existing
+liveness/genericness/relevance check -- but its entire visible content is
+"Page In-Progress -- This page is currently being worked on. Please check
+back later." NPS restructures its site often enough that a stub page like
+this can sit at an otherwise perfectly plausible URL indefinitely. This is a
+distinct failure class from everything else in this file: it isn't a dead
+link (`_is_definitively_dead_status`), a closed venue
+(`_has_attraction_closure_marker`), or a generic listing/search page
+(`_is_generic_section_landing_page`, `_is_obviously_generic_url`) -- it's a
+live, on-topic, technically-correct URL with no actual content behind it,
+which none of those checks reason about (they all classify the URL shape or
+the entity's status, never "does this page contain anything real").
+
+`_is_relevant_result`'s general (non-AllTrails) deep-check branch now calls
+`_is_under_construction_page(text)` immediately after a successful fetch,
+before the token-overlap checks -- mirroring `_has_attraction_closure_marker`
+and `_has_alltrails_closure_marker`'s existing marker-list-plus-HTML-noise-
+stripping pattern (`UNDER_CONSTRUCTION_PAGE_MARKERS`, deliberately narrow and
+specific: "page in-progress", "this page is currently being worked on",
+"this page is under construction", "site under construction", "we are
+currently updating this page", "this content is currently unavailable" --
+excludes generic phrases like bare "coming soon", which could plausibly
+appear in passing on an otherwise substantive page). `_is_generic_section_
+landing_page` was not extended for this: it's a pure URL-shape check with no
+page fetch, so it structurally cannot see page content at all -- only the
+deep-check fetch path in `_is_relevant_result` can catch this class of bug.
+
+This is a general detector, not a one-off special case for this single URL:
+any item across any category that routes through the general relevance gate
+(attractions, scenic drives, restaurants, en-route stops, route options,
+events) now gets the same protection. No static URL substitution was made
+for the Bryce Canyon Visitor Center specifically -- there is no manifest/
+config entry hardcoding that URL anywhere in this codebase (it's fully
+discovered at runtime), so the correct fix is this detector catching it on
+the next discovery/audit run, letting the existing search-and-fallback
+machinery find a real page (or fail closed to a maps-search link, which is
+strictly more useful than a placeholder) rather than hand-patching one URL.
+
+Tests: `test_is_under_construction_page_detects_real_nps_placeholder_text`,
+`test_is_under_construction_page_ignores_html_comment_noise`,
+`test_is_under_construction_page_false_on_substantive_content`, and
+`test_relevant_result_rejects_under_construction_placeholder_page`
+(`tests/test_url_discovery.py`).
+
 ## Audit Behavior
 `audit_discovered_urls` re-validates all discovered links and may remove them.
 

@@ -65,6 +65,32 @@ ATTRACTION_CLOSURE_MARKERS = (
     "this place is closed",
     "this business is closed",
 )
+# Real bug (Bryce Canyon eval run): "Bryce Canyon Visitor Center" linked to
+# https://www.nps.gov/brca/planyourvisit/visitorcenters.htm, which passes
+# every existing liveness/relevance/genericness check (200 status, on the
+# right domain, mentions the destination and "visitor center") yet actually
+# renders nothing but "Page In-Progress -- This page is currently being
+# worked on. Please check back later." NPS restructures its site often
+# enough that a stub/placeholder page like this can sit at a perfectly
+# plausible-looking URL indefinitely. None of the existing checks catch this
+# class of page because they all reason about topic/entity relevance or
+# closure status, not "does this page actually contain any real content at
+# all" -- a placeholder is topically on-topic (it IS meant to be the visitor
+# center page, eventually) and not "closed", just empty.
+UNDER_CONSTRUCTION_PAGE_MARKERS = (
+    "page in-progress",
+    "page in progress",
+    "this page is currently being worked on",
+    "this page is under construction",
+    "page under construction",
+    "site under construction",
+    "we are currently updating this page",
+    "this content is currently unavailable",
+    # Deliberately excludes generic phrases like "coming soon" -- too likely
+    # to appear in passing on an otherwise substantive page (e.g. "new
+    # exhibit coming soon") to serve as a reliable whole-page placeholder
+    # signal on their own.
+)
 # A closure marker phrase found on the same page as a mention of one of
 # these sub-part nouns is a signal the closure is scoped to a part of the
 # venue (a wing, an exhibit, a specific gallery) rather than the whole
@@ -11962,6 +11988,8 @@ class URLDiscoverer:
                     return self._candidate_text_matches_item_tokens(candidate, item_tokens)
                 return True
             text = (text or "").lower()
+            if self._is_under_construction_page(text):
+                return False
             if self._is_campground_focused_result_for_noncamping_item(url, item_name, fetched_text=text):
                 return False
             item_tokens = self._significant_tokens(item_name)
@@ -12941,6 +12969,26 @@ class URLDiscoverer:
             # original whole-text behavior.
             return True
         return False
+
+    @staticmethod
+    def _is_under_construction_page(text: str) -> bool:
+        """True when a fetched page's own text says it is a placeholder /
+        stub rather than real content -- e.g. NPS's "Page In-Progress"
+        pages, which pass every other liveness/relevance check (200 status,
+        correct domain, mentions the destination and even the item's own
+        name) because they genuinely are the right, live URL for that
+        entity -- it just isn't populated yet. Real example (Bryce Canyon
+        eval run): "Bryce Canyon Visitor Center" linked to
+        nps.gov/brca/planyourvisit/visitorcenters.htm, whose entire visible
+        content is "Page In-Progress -- This page is currently being worked
+        on. Please check back later." None of the existing generic-URL or
+        closure-marker checks catch this: the URL shape is unremarkable and
+        the page isn't reporting the venue as closed, just empty.
+        """
+        lower_text = _strip_non_visible_html_noise(str(text or "")).lower()
+        if not lower_text:
+            return False
+        return any(marker in lower_text for marker in UNDER_CONSTRUCTION_PAGE_MARKERS)
 
     @staticmethod
     def _is_generic_listing_title(text: str) -> bool:
