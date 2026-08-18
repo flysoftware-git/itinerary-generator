@@ -1447,6 +1447,73 @@ def test_direct_batch_row_match_strength_rejects_single_shared_word_against_unre
     assert strength == 0
 
 
+def test_direct_batch_row_match_strength_rejects_canyon_generic_anchor_overlap() -> None:
+    """Real dipstick67 bug: the seed attraction "Jenny's Canyon Trail" (St.
+    George, Utah) was authoritatively linked to an unrelated direct-batch
+    row for "Entrada at Snow Canyon Golf Course" -- a golf course with
+    nothing to do with the trail. Root cause: after "trail" is dropped as a
+    generic stopword, the item's only remaining significant tokens are
+    "jenny" and "canyon"; the golf course row's blob shares only "canyon"
+    (via "Snow Canyon"), which was enough to reach the weak single-anchor-
+    token match tier (strength 1) purely because "canyon" is >= 5 characters.
+    This is the same generic-word-overlap class as the "scenic"/"byway"
+    fix, except "canyon" is common enough across real, unrelated named
+    places in canyon country (Snow Canyon, Zion Canyon, Bryce Canyon, Red
+    Canyon, ...) that it must not single-handedly justify even the weak
+    match tier. Real evidence: console log line
+    "[attraction-st-george-utah-jenny-s-canyon-trail|reason=
+    direct_batch_selected_authoritative] attraction link (direct-link batch
+    authoritative): Jenny's Canyon Trail -> https://www.google.com/maps/
+    search/?api=1&query=Entrada+at+Snow+Canyon+Golf+Course+St.+George+UT"
+    from the real SW2026-dipstick67 run."""
+    row = {
+        "name": "Entrada at Snow Canyon Golf Course",
+        "title": "Entrada at Snow Canyon Golf Course",
+        "url": "https://www.google.com/maps/search/?api=1&query=Entrada+at+Snow+Canyon+Golf+Course+St.+George+UT",
+        "snippet": (
+            "Entrada at Snow Canyon Golf Course - private golf club Links: "
+            "https://www.google.com/maps/search/?api=1&query=Entrada+at+Snow+Canyon+Golf+Course+St.+George+UT"
+        ),
+    }
+    strength = URLDiscoverer._direct_batch_row_match_strength(
+        row, "Jenny's Canyon Trail", "St. George, Utah"
+    )
+    assert strength == 0
+    assert URLDiscoverer._direct_batch_url_matches_item(
+        row["url"], "Jenny's Canyon Trail", "St. George, Utah"
+    ) is False
+
+
+def test_search_attraction_from_direct_batch_rejects_unrelated_canyon_golf_course() -> None:
+    """Full-path regression for the dipstick67 Jenny's Canyon Trail mismatch
+    (see test_direct_batch_row_match_strength_rejects_canyon_generic_anchor_
+    overlap above): resolving the seed attraction's link from the real St.
+    George direct-batch harvest must not return the unrelated golf course
+    row just because both mention "canyon"."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "name": "Entrada at Snow Canyon Golf Course",
+            "title": "Entrada at Snow Canyon Golf Course",
+            "url": "https://www.google.com/maps/search/?api=1&query=Entrada+at+Snow+Canyon+Golf+Course+St.+George+UT",
+            "snippet": (
+                "Entrada at Snow Canyon Golf Course - private golf club Links: "
+                "https://www.google.com/maps/search/?api=1&query=Entrada+at+Snow+Canyon+Golf+Course+St.+George+UT"
+            ),
+        },
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *a, **k: url):
+            out = discoverer._search_attraction_from_direct_batch(
+                "Jenny's Canyon Trail", "St. George, Utah", "October 17, 2026"
+            )
+
+    assert out is None
+
+
 def test_direct_batch_row_match_strength_rejects_scenic_byway_boilerplate_overlap() -> None:
     """Real dipstick62 bug: the en-route-stop seed "Enchanted Circle Scenic
     Byway" (a real byway near Taos, NM, unrelated to Ouray, CO) rendered

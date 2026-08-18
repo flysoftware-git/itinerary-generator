@@ -392,6 +392,25 @@ DEFAULT_DIRECT_BATCH_GROUP_SIZE = 2
 # Point Overlook") that carry no matching-relevant meaning of their own.
 GENERIC_VIEWPOINT_SUFFIX_TOKENS = frozenset({"overlook", "view", "viewpoint", "vista"})
 _MATCH_STOPWORDS = frozenset({"the", "a", "an", "of", "and", "st"})
+# Landscape/geographic descriptor words that are too common within a single
+# region to serve as the SOLE distinguishing word for the weak single-
+# anchor-token match tier (strength 1) in _direct_batch_row_match_strength /
+# _direct_batch_url_matches_item below -- e.g. "canyon" appears in countless
+# unrelated named places across Utah canyon country ("Snow Canyon", "Zion
+# Canyon", "Bryce Canyon", "Red Canyon", ...). Real dipstick67 bug: the seed
+# attraction "Jenny's Canyon Trail" (St. George) was authoritatively linked
+# to an unrelated direct-batch row for "Entrada at Snow Canyon Golf Course"
+# purely because both share the single generic word "canyon" -- the golf
+# course row had no other token overlap with the trail's name at all. This
+# mirrors the earlier "scenic"/"byway" boilerplate-overlap fix, except
+# "canyon" still legitimately contributes toward the *full* required-
+# overlap match tiers (2/3) above -- e.g. "Zion Canyon Scenic Drive" vs
+# "Zion Canyon Visitor Center" genuinely share both "zion" and "canyon" --
+# so it is only excluded from acting alone as the weak-tier anchor, not
+# stripped from token matching altogether (unlike "scenic"/"byway", which
+# are excluded from _significant_tokens entirely because they never carry
+# real identifying meaning even combined with other words).
+_GENERIC_ANCHOR_EXCLUDED_TOKENS = frozenset({"canyon"})
 DEFAULT_RESTAURANT_DIRECT_BATCH_MIN_RESULTS = 3
 DEFAULT_EN_ROUTE_DIRECT_BATCH_MIN_RESULTS = 2
 DEFAULT_EN_ROUTE_DETOUR_MAX_MINUTES = 20
@@ -12028,7 +12047,10 @@ class URLDiscoverer:
         # short-name anchor fallback below must not treat a shared
         # destination-name word alone as proof of an item match.
         dest_tokens = set(cls._significant_tokens(dest_name)) if dest_name else set()
-        anchor_tokens = [t for t in item_tokens if t not in dest_tokens]
+        anchor_tokens = [
+            t for t in item_tokens
+            if t not in dest_tokens and t not in _GENERIC_ANCHOR_EXCLUDED_TOKENS
+        ]
 
         row_blob = cls._candidate_text_blob(row)
         if len(item_tokens) <= 2 and anchor_tokens:
@@ -12090,7 +12112,10 @@ class URLDiscoverer:
         # appear in almost every candidate URL's address query string, so they
         # must not count as the sole anchor token proving a specific-item match.
         dest_tokens = set(cls._significant_tokens(dest_name)) if dest_name else set()
-        anchor_tokens = [t for t in item_tokens if t not in dest_tokens]
+        anchor_tokens = [
+            t for t in item_tokens
+            if t not in dest_tokens and t not in _GENERIC_ANCHOR_EXCLUDED_TOKENS
+        ]
         if len(item_tokens) <= 2 and anchor_tokens:
             anchor_overlap = sum(1 for token in anchor_tokens if len(token) >= 5 and token in haystack)
             return anchor_overlap >= 1
