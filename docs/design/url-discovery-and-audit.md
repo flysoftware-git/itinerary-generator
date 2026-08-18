@@ -409,6 +409,30 @@ attractions/restaurants never got rating data attached at all.
 	`badge-rating` badge in the renderer (previously restaurant/en-route-stop
 	only).
 
+Issue (Dipstick69): `_geocode_en_route_stop_for_route` took Nominatim's first
+result unconditionally, sanity-checked only by distance from the route
+midpoint. On the St. George -> Zion leg, the en-route stop "Rockville
+Historic District" (a real designation with no distinctly-tagged OSM entry)
+free-text-matched, inside the route viewbox, onto a completely different,
+well-tagged entry named "Grafton Historic DIstrict" -- the real-world
+location of "Grafton Ghost Town", a separate en-route stop on the same leg
+~3 road miles away. Because both names share the generic words
+"historic"/"district", a naive "shares no token" check would not have caught
+it either. The distance check didn't catch it because Grafton sits well
+inside the route viewbox. Consequence: the rendered Google Maps directions
+URL listed "Grafton Ghost Town" as a waypoint twice (once via its own
+name-string fallback, once via Rockville's mis-geocoded coordinates, which
+Google's UI reverse-geocodes back to Grafton).
+- Mitigation: `_geocode_result_name_plausible` compares the query's
+	significant tokens against the result's own `name`/`display_name` after
+	excluding a small set of generic place-designation words ("historic",
+	"district", "downtown", "village", "town", "area", "neighbo(u)rhood") from
+	both sides, requiring the remaining identifying ("anchor") tokens to
+	overlap. A result that fails is skipped (`continue`), not treated as a
+	final failure -- the function keeps trying its other query/viewbox
+	attempts, same as the existing out-of-region rejection.
+
+
 ## Must-See Badge Policy
 The "Must-See" badge is a deterministic, render-time decision -- not the
 LLM's opinion. The model still emits a `must_see` boolean per attraction
