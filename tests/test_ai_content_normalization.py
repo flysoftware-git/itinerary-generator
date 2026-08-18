@@ -532,6 +532,96 @@ def test_resolve_grouping_aware_prev_next_names_skips_day_trip_children() -> Non
     assert next_names == ["Moab", "Telluride", "Telluride", "Telluride", ""]
 
 
+def test_resolve_group_day_trip_names_gives_base_both_children_only() -> None:
+    """Real gap this closes (GH #68 x schedule generation): Moab's own
+    schedule-generation candidate pool (top_attractions) is built purely
+    from Moab's own AI-generated content -- nothing ever merged in Arches
+    National Park's or Canyonlands National Park's names, despite both
+    being real, dated `group_with: moab` day trips FROM Moab. A real
+    published run showed the resulting asymmetry: Canyonlands got one
+    schedule mention (by pure AI-generation luck -- see the docstring on
+    _resolve_group_day_trip_names for the full trace showing that name
+    isn't even present in Moab's own top_attractions), Arches got none at
+    all. _resolve_group_day_trip_names resolves, per destination, which
+    day-trip children's NAMES a base destination should be given as extra
+    nameable candidates -- manifest-only (id/name/group_with), since a
+    grouped child's own AI-generated attractions don't exist yet at the
+    point this is needed (generate_destination_content runs every
+    destination's LLM call in parallel)."""
+    destinations = [
+        {"id": "capitolreef", "name": "Capitol Reef National Park"},
+        {"id": "moab", "name": "Moab"},
+        {"id": "arches", "name": "Arches National Park", "group_with": "moab"},
+        {"id": "canyonlands", "name": "Canyonlands National Park", "group_with": "moab"},
+        {"id": "telluride", "name": "Telluride"},
+    ]
+
+    day_trip_names = AIContentGenerator._resolve_group_day_trip_names(destinations)
+
+    assert day_trip_names == [
+        [],  # Capitol Reef -- ungrouped, no children
+        ["Arches National Park", "Canyonlands National Park"],  # Moab -- the base
+        [],  # Arches -- itself a grouped child, never gets its own siblings
+        [],  # Canyonlands -- same
+        [],  # Telluride -- ungrouped, no children
+    ]
+
+
+def test_inject_travel_realism_moab_schedule_can_name_arches_not_just_canyonlands() -> None:
+    """End-to-end companion to the resolver test above, grounded in the
+    real published-run asymmetry: with only Moab's own real top_attractions
+    (Moab Giants Dinosaur Park, Corona and Bowtie Arch via Corona Arch
+    Trail, Windows Loop and Turret Arch Trail -- the real rendered set for
+    Moab) fed in as `attractions`, and Moab's real day-trip children fed in
+    as `group_day_trip_names`, the day-level Morning/Afternoon/Evening
+    focus rotation (which already rotates among `attractions`) must also be
+    able to land on a day-trip child's own name -- proving the names are
+    genuinely wired into the same rotation mechanism that names real
+    attractions, not merely accepted as an unused parameter."""
+    g = _gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Start at Moab Giants Dinosaur Park for cooler temps."},
+                {"period": "Afternoon", "summary": "Continue at Corona and Bowtie Arch via Corona Arch Trail."},
+                {"period": "Evening", "summary": "Dinner in town."},
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Return to Corona and Bowtie Arch via Corona Arch Trail for photos."},
+                {"period": "Afternoon", "summary": "Hike Moab Giants Dinosaur Park if time allows."},
+                {"period": "Evening", "summary": "Dinner and sunset."},
+            ],
+        },
+    ]
+
+    out = g._inject_travel_realism(
+        days,
+        {"drive_time": "1 hr 45 min"},
+        "Capitol Reef National Park",
+        "Telluride",
+        attractions=[
+            {"name": "Moab Giants Dinosaur Park"},
+            {"name": "Corona and Bowtie Arch via Corona Arch Trail"},
+            {"name": "Windows Loop and Turret Arch Trail"},
+        ],
+        restaurants=[{"name": "Desert Bistro"}, {"name": "Moab Brewery"}],
+        group_day_trip_names=["Arches National Park", "Canyonlands National Park"],
+    )
+
+    all_summaries = " ".join(
+        period["summary"] for day in out for period in day["periods"]
+    ).lower()
+    # At least one of the two real day-trip children must be nameable
+    # somewhere in the rotated schedule -- before this fix, neither name
+    # existed anywhere in `attraction_names`, so the rotation/scrub
+    # mechanisms had structurally zero chance of ever naming either one.
+    assert "arches national park" in all_summaries or "canyonlands national park" in all_summaries
+
+
 def test_generate_destination_content_moab_gets_telluride_not_arches_as_next_destination() -> None:
     """Integration-level companion to the direct resolver test above: the
     real _generate_destination_bundle call for Moab must receive
@@ -543,7 +633,13 @@ def test_generate_destination_content_moab_gets_telluride_not_arches_as_next_des
     g._max_concurrent_destinations = 5
     calls: dict[str, tuple[str, str]] = {}
 
-    def _fake_bundle(dest: dict, trip_meta: dict, previous_destination: str, next_destination: str) -> dict:
+    def _fake_bundle(
+        dest: dict,
+        trip_meta: dict,
+        previous_destination: str,
+        next_destination: str,
+        group_day_trip_names: list | None = None,
+    ) -> dict:
         calls[dest["name"]] = (previous_destination, next_destination)
         return {"destination_content": {}, "what_to_know": {}, "scenic_drives": []}
 

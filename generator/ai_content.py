@@ -350,11 +350,14 @@ class AIContentGenerator:
         per destination — see _generate_destination_bundle)."""
         destinations = trip.get("destinations", [])
         prev_names, next_names = self._resolve_grouping_aware_prev_next_names(destinations)
+        day_trip_names = self._resolve_group_day_trip_names(destinations)
 
         def _one(args: tuple[int, dict]) -> None:
             i, dest = args
             logger.info("Generating AI content for '%s'…", dest["name"])
-            bundle = self._generate_destination_bundle(dest, trip["trip"], prev_names[i], next_names[i])
+            bundle = self._generate_destination_bundle(
+                dest, trip["trip"], prev_names[i], next_names[i], day_trip_names[i]
+            )
             dest["ai_content"] = bundle["destination_content"]
             dest["what_to_know"] = bundle["what_to_know"]
             dest["scenic_drives"] = bundle["scenic_drives"]
@@ -464,6 +467,61 @@ class AIContentGenerator:
             next_names.append(next_name)
 
         return prev_names, next_names
+
+    @staticmethod
+    def _resolve_group_day_trip_names(destinations: list[dict[str, Any]]) -> list[list[str]]:
+        """For each destination, resolve the names of its GH #68 `group_with`
+        day-trip children -- non-empty only for a group BASE entry (one no
+        other entry's `group_with` points at, and which isn't itself
+        grouped), empty for every grouped child and every ungrouped entry
+        with no children.
+
+        Real gap this closes: Moab's own schedule-generation candidate pool
+        (`top_attractions`, threaded into `_inject_travel_realism` as
+        `attractions`/`attraction_names`) is built purely from Moab's own
+        AI-generated content -- nothing merges in Arches/Canyonlands's own
+        attractions or even their names, despite both being real, dated
+        `group_with: moab` day trips FROM Moab. A real published run showed
+        the asymmetry this produces: Canyonlands got one schedule mention
+        ("Start with Canyonlands National Park Island in the Sky...") but
+        Arches got none at all -- traced to the Canyonlands mention being
+        pure AI-generation luck (the LLM's own free-text schedule authoring
+        happened to name it directly; "Canyonlands National Park Island in
+        the Sky" is not present in Moab's own generated `top_attractions`
+        list, so no deterministic mechanism put it there) rather than any
+        real mechanism, meaning Arches had exactly the same (zero) chance of
+        being named and simply didn't get the same luck.
+
+        This can only resolve manifest-level facts (id/name/group_with),
+        never AI-generated content -- `generate_destination_content` runs
+        every destination's LLM call in parallel with no cross-destination
+        ordering (mirrors why `_resolve_grouping_aware_prev_next_names`
+        above is manifest-only too), so a grouped child's own generated
+        `top_attractions` does not exist yet at the point this needs to feed
+        into the base's own generation call. Giving `_inject_travel_realism`
+        the day-trip children's real NAMES (always known statically from the
+        manifest) is enough to let the existing focus-rotation mechanisms
+        name them deliberately instead of relying on AI luck.
+        """
+        children_by_base: dict[str, list[str]] = {}
+        for dest in destinations:
+            if not isinstance(dest, dict):
+                continue
+            base_id = group_base_id(dest)
+            if not base_id:
+                continue
+            name = str(dest.get("name", "") or "").strip()
+            if name:
+                children_by_base.setdefault(base_id, []).append(name)
+
+        out: list[list[str]] = []
+        for dest in destinations:
+            if not isinstance(dest, dict) or is_grouped(dest):
+                out.append([])
+                continue
+            dest_id = str(dest.get("id", "") or "")
+            out.append(list(children_by_base.get(dest_id, [])))
+        return out
 
     # Marketing-cliché phrases banned from generated prose (system_prompt.txt's
     # "Avoid without exception" list, kept in sync with prompts/scenic_drives.txt's
@@ -1052,7 +1110,12 @@ class AIContentGenerator:
 
     @_retry_transient_llm_errors
     def _generate_destination_bundle(
-        self, dest: dict[str, Any], trip_meta: dict[str, Any], prev: str, next_dest: str
+        self,
+        dest: dict[str, Any],
+        trip_meta: dict[str, Any],
+        prev: str,
+        next_dest: str,
+        group_day_trip_names: list[str] | None = None,
     ) -> dict[str, Any]:
         seeds = dest.get("seeds", [])
         destination_prompt = self._dest_template.format(
@@ -1139,6 +1202,7 @@ class AIContentGenerator:
                 trip_meta,
                 prev,
                 next_dest,
+                group_day_trip_names,
             ),
             "what_to_know": self._normalize_what_to_know(what_to_know, dest),
             "scenic_drives": scenic_drives,
@@ -1216,6 +1280,7 @@ class AIContentGenerator:
         trip_meta: dict[str, Any],
         previous_destination: str,
         next_destination: str,
+        group_day_trip_names: list[str] | None = None,
     ) -> dict[str, Any]:
         seed_names = [str(s or "").strip() for s in (dest.get("seeds", []) or []) if str(s or "").strip()]
         payload["expected_environment"] = self._normalize_environment(
@@ -1278,6 +1343,7 @@ class AIContentGenerator:
             str(dest.get("schedule_start_time", "") or "").strip(),
             trip_meta.get("default_daily_activity_hours", 5),
             dest.get("daily_activity_hours", None),
+            group_day_trip_names,
         )
         return payload
 
@@ -1781,6 +1847,7 @@ class AIContentGenerator:
         destination_day_start_time: str = "",
         default_daily_activity_hours: Any = 5,
         destination_daily_activity_hours: Any = None,
+        group_day_trip_names: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         getting_here = getting_here or {}
         restaurant_names = [r.get("name", "") for r in restaurants if r.get("name")]
@@ -1846,6 +1913,7 @@ class AIContentGenerator:
                 default_daily_activity_hours,
                 destination_daily_activity_hours,
                 restaurants=restaurants,
+                group_day_trip_names=group_day_trip_names,
             )
 
         if isinstance(schedule, dict):
@@ -1874,6 +1942,7 @@ class AIContentGenerator:
                     default_daily_activity_hours,
                     destination_daily_activity_hours,
                     restaurants=restaurants,
+                    group_day_trip_names=group_day_trip_names,
                 )
 
         return []
@@ -1993,6 +2062,7 @@ class AIContentGenerator:
         default_daily_activity_hours: Any = 5,
         destination_daily_activity_hours: Any = None,
         restaurants: list[dict[str, Any]] | None = None,
+        group_day_trip_names: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         if not days:
             return days
@@ -2220,6 +2290,30 @@ class AIContentGenerator:
                 continue
             seen_attraction_names.add(key)
             attraction_names.append(name)
+
+        # GH #68 grouped day-trip children (e.g. Arches/Canyonlands,
+        # `group_with: moab`) have their OWN top_attractions list, but
+        # nothing merges it into the group base's own schedule candidate
+        # pool -- Moab's `attractions` above is only ever Moab's own
+        # AI-generated top_attractions. Real published-run asymmetry this
+        # caused: Canyonlands got one schedule mention ("Start with
+        # Canyonlands National Park Island in the Sky...") purely because
+        # the LLM's own free-text schedule authoring happened to name it
+        # directly (that exact name is NOT present anywhere in Moab's own
+        # top_attractions, so no deterministic mechanism produced it) --
+        # Arches had the same zero real chance of being named and simply
+        # didn't get the same luck. Adding each day-trip child's own NAME
+        # (not its attractions -- those don't exist yet at this stage; see
+        # _resolve_group_day_trip_names) as a nameable candidate gives the
+        # existing focus-rotation/scrub mechanisms above and below a real,
+        # deliberate chance to mention every real day trip, not just
+        # whichever one the model happened to know about unprompted.
+        for child_name in group_day_trip_names or []:
+            name = str(child_name or "").strip()
+            key = name.lower()
+            if name and key not in seen_attraction_names:
+                seen_attraction_names.add(key)
+                attraction_names.append(name)
 
         def _register_attraction_mentions(day: dict[str, Any]) -> None:
             """Seed `used_multi_activity_names` from any attraction name
