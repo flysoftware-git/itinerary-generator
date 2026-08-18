@@ -2335,8 +2335,10 @@ def main(
 
     _run_quality_gate(trip, output_file)
 
-    estimated_cost = summarize_from_usage(trip.get("_meta", {}).get("llm", {}).get("usage", {}))
-    usage_models = trip.get("_meta", {}).get("llm", {}).get("usage", {}).get("models", [])
+    llm_usage = trip.get("_meta", {}).get("llm", {}).get("usage", {})
+    estimated_cost = summarize_from_usage(llm_usage)
+    tool_call_cost = float(llm_usage.get("total_tool_call_cost_usd", 0.0) or 0.0)
+    usage_models = llm_usage.get("models", [])
     if usage_models:
         cost_summary_model = "+".join(
             f"{row.get('provider')}/{row.get('model')}" for row in usage_models
@@ -2348,14 +2350,21 @@ def main(
         manifest_path=manifest,
         estimated_usd=estimated_cost,
         environment=environment_selected,
+        tool_call_cost_usd=tool_call_cost,
     )
     if usage_models:
         click.echo("  Usage breakdown by provider/model:")
         for row in usage_models:
+            tool_calls = row.get("tool_calls", 0)
+            tool_suffix = (
+                f" web_search_calls={tool_calls} tool_fee=${row.get('tool_call_cost_usd', 0.0):.4f}"
+                if tool_calls
+                else ""
+            )
             click.echo(
                 f"    - {row.get('provider')}/{row.get('model')}: "
                 f"calls={row.get('calls', 0)} tokens={row.get('total_tokens', 0)} "
-                f"est=${row.get('estimated_cost_usd', 0.0):.4f}"
+                f"est=${row.get('estimated_cost_usd', 0.0):.4f}{tool_suffix}"
             )
     runtime_metrics["gate_a"] = _build_gate_a_metrics(
         trip=trip,

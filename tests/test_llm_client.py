@@ -59,6 +59,69 @@ def test_estimate_cost_has_a_real_entry_for_claude_sonnet_5() -> None:
     assert cost != 0.0
 
 
+def test_add_folds_web_search_tool_call_fee_into_total_estimated_cost() -> None:
+    """Regression for the real cost-attribution gap this fix closes: both xAI
+    ($5/1000 web_search calls) and OpenAI ($10/1000) bill the search tool
+    SEPARATELY from token usage, per actual invocation -- previously
+    UsageTracker.add() had no parameter for this at all, so every dipstick
+    run's [LLM-COST] summary silently omitted it (real xAI billing ~$5/day
+    vs. this estimator's ~$0.40/run). grok:grok-4-fast has no token pricing
+    match against 0 tokens, so this isolates the tool-call fee cleanly."""
+    tracker = UsageTracker()
+    tracker.add(
+        provider="grok",
+        model="grok-4-fast",
+        operation="url_discovery:search",
+        prompt_tokens=0,
+        completion_tokens=0,
+        tool_calls=2,
+    )
+    summary = tracker.summary()
+    # 2 calls * $5.00 / 1000 = $0.01
+    assert summary["total_estimated_cost_usd"] == 0.01
+    assert summary["total_tool_call_cost_usd"] == 0.01
+    assert summary["models"][0]["tool_calls"] == 2
+    assert summary["models"][0]["tool_call_cost_usd"] == 0.01
+
+
+def test_add_combines_token_cost_and_tool_call_fee_for_openai() -> None:
+    """OpenAI's rate ($10/1000 calls) differs from xAI's ($5/1000) -- the fee
+    must be looked up per-provider, not a single blended constant, and must
+    add on top of (not replace) the existing token-based cost."""
+    tracker = UsageTracker()
+    tracker.add(
+        provider="openai",
+        model="gpt-4.1-mini",
+        operation="openai_search:search",
+        prompt_tokens=1_000_000,
+        completion_tokens=0,
+        tool_calls=1000,
+    )
+    summary = tracker.summary()
+    # token cost: 1M input tokens * $0.40/MTok = $0.40
+    # tool fee: 1000 calls * $10.00/1000 = $10.00
+    assert summary["total_tool_call_cost_usd"] == 10.00
+    assert summary["total_estimated_cost_usd"] == 10.40
+
+
+def test_add_defaults_tool_calls_to_zero_no_fee_when_omitted() -> None:
+    """Every existing caller of add() that doesn't pass tool_calls (content
+    generation via generate_json, non-search chat completions) must keep
+    costing exactly as before this fix -- no fee appears from thin air."""
+    tracker = UsageTracker()
+    tracker.add(
+        provider="openai",
+        model="gpt-4o-mini",
+        operation="destination_content:zion",
+        prompt_tokens=1000,
+        completion_tokens=500,
+    )
+    summary = tracker.summary()
+    assert summary["models"][0]["tool_calls"] == 0
+    assert summary["models"][0]["tool_call_cost_usd"] == 0.0
+    assert summary["total_tool_call_cost_usd"] == 0.0
+
+
 def test_generate_json_uses_exact_cache_for_repeated_identical_requests() -> None:
     client = _make_client()
     calls = {"count": 0}
