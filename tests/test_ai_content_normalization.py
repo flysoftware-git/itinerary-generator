@@ -2056,6 +2056,69 @@ def test_normalize_schedule_dipstick68_evening_duplicate_resolves_via_restaurant
     assert "bryce point" in day2_evening
 
 
+def test_normalize_schedule_restaurant_rotation_substitutes_dining_phrasing_not_appends() -> None:
+    """Real bug: Bryce Canyon Day 2 Evening rendered "Consider dining at the
+    Bryce Canyon Pines Restaurant, known for its homemade pies and hearty
+    meals. Plan dinner at Ruby's Inn Cowboy Buffet & Grill." -- two
+    contradictory restaurants in one evening. Root cause: the AI's own text
+    used "dining", not the literal word "dinner" _rotate_restaurant_summary
+    checked for, and used no "dine/eat at X" verb phrase either, so its
+    existing-mention detection missed a real, complete dinner
+    recommendation and fell through to blindly appending a second one. The
+    day-assigned restaurant should replace the already-named one, not pile
+    on top of it, regardless of the exact verb phrasing the AI chose."""
+    g = _gen()
+    schedule = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Explore the Rim Trail at sunrise."},
+                {"period": "Afternoon", "summary": "Visit Inspiration Point."},
+                {"period": "Evening", "summary": "Watch the sunset from Bryce Point, then head back to town."},
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Hike the Navajo Loop Trail."},
+                {"period": "Afternoon", "summary": "Revisit Inspiration Point at a different time of day."},
+                {
+                    "period": "Evening",
+                    "summary": (
+                        "Consider dining at the Bryce Canyon Pines Restaurant, "
+                        "known for its homemade pies and hearty meals."
+                    ),
+                },
+            ],
+        },
+    ]
+
+    out = g._normalize_schedule(
+        schedule=schedule,
+        restaurants=[
+            {"name": "Bryce Canyon Pines Restaurant"},
+            {"name": "Ruby's Inn Cowboy Buffet & Grill"},
+        ],
+        dates="October 9-11, 2026",
+        attractions=[{"name": "Bryce Point"}],
+        getting_here={"drive_time": "1 hr 45 min"},
+        previous_destination="Zion National Park",
+        next_destination="Capitol Reef National Park",
+    )
+
+    day2_evening = out[1]["periods"][2]["summary"]
+    # Never both restaurants in the same evening.
+    assert not ("bryce canyon pines restaurant" in day2_evening.lower() and "ruby's inn" in day2_evening.lower())
+    # The day-2-assigned restaurant (round-robin index 1 of 2) should
+    # replace the already-named one in place, not get appended as a second
+    # sentence -- the rest of the original text (the "known for its
+    # homemade pies..." clause) is preserved, just naming the correct
+    # rotated restaurant.
+    assert "ruby's inn cowboy buffet & grill" in day2_evening.lower()
+    assert "bryce canyon pines restaurant" not in day2_evening.lower()
+    assert "Plan dinner at" not in day2_evening
+
+
 def test_filter_oversized_scenic_drives_removes_full_day_loop() -> None:
     g = _gen()
     g._config = {"url_discovery": {"max_scenic_drive_miles": 150}}

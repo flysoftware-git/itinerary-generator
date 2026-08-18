@@ -2652,16 +2652,35 @@ class AIContentGenerator:
             if not text or not restaurant_name:
                 return text
             low = text.lower()
+            if restaurant_name.lower() in low:
+                # Already names the day-assigned restaurant somewhere in the
+                # sentence -- nothing to add or fix.
+                return text
+
+            # Real dipstick bug: this function used to only recognize an
+            # existing dinner mention via the literal word "dinner" or the
+            # narrow "dine/eat at X" verb pattern. Real AI-generated text
+            # read "Consider dining at the Bryce Canyon Pines Restaurant,
+            # known for its homemade pies and hearty meals." -- "dining",
+            # not "dinner", and no "dine/eat at" verb phrase -- so neither
+            # check matched, this fell through to the blind-append case
+            # below, and the rendered Evening period read "Consider dining
+            # at the Bryce Canyon Pines Restaurant... Plan dinner at Ruby's
+            # Inn Cowboy Buffet & Grill." -- two contradictory restaurants
+            # in one evening. Detect an existing mention of ANY of this
+            # destination's own real restaurant candidates (not just literal
+            # "dinner" wording, and not just the one restaurant_name being
+            # rotated in) and substitute it for the day-assigned restaurant
+            # -- matching this function's own original intent (see the
+            # "stale/mismatched mention" case this replaces) regardless of
+            # what verb phrasing surrounds the name.
+            for other_name in restaurant_names:
+                if not other_name or other_name.lower() == restaurant_name.lower():
+                    continue
+                if re.search(re.escape(other_name), text, re.IGNORECASE):
+                    return re.sub(re.escape(other_name), restaurant_name, text, count=1, flags=re.IGNORECASE)
+
             if "dinner" in low:
-                # Normalize all dinner mentions to the day-assigned restaurant --
-                # but skip if that name is already present anywhere in the
-                # sentence (e.g. "Head to Red Fort Cuisine for dinner...").
-                # Otherwise this duplicates the name ("Head to Red Fort Cuisine
-                # for dinner at Red Fort Cuisine"). If a DIFFERENT restaurant
-                # name is present (e.g. a stale/mismatched mention), the
-                # substitution below still corrects it as intended.
-                if restaurant_name.lower() in low:
-                    return text
                 return re.sub(
                     r"dinner(?:\s+at\s+[^.,;]+)?",
                     f"dinner at {restaurant_name}",
@@ -2669,20 +2688,6 @@ class AIContentGenerator:
                     count=1,
                     flags=re.IGNORECASE,
                 )
-            if re.search(rf"\b(dine|eat)\s+at\s+{re.escape(restaurant_name.lower())}\b", low):
-                return re.sub(
-                    rf"\s*Plan dinner at\s+{re.escape(restaurant_name)}\.?\s*$",
-                    "",
-                    text,
-                    flags=re.IGNORECASE,
-                ).strip()
-            if restaurant_name.lower() in low and re.search(r"\b(dine|eat)\b", low):
-                return re.sub(
-                    r"\s*Plan dinner at\s+[^.]+\.?\s*$",
-                    "",
-                    text,
-                    flags=re.IGNORECASE,
-                ).strip()
             if low.startswith("reserved for return travel") or "onward drive" in low:
                 return text
             return f"{text} Plan dinner at {restaurant_name}."
