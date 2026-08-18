@@ -18,7 +18,10 @@ Confirmed real Sonnet 5 pricing, fixed a silent $0.00 cost-estimator bug,
 capped search rounds per call, and added a `--search-provider` CLI flag
 for clean single-provider comparison runs (§10). Half-open circuit-breaker recovery implemented
 and test-covered (§7). OpenAI/Gemini capability follow-up remains open
-(tracked via the same probe, not yet separately scoped).
+(tracked via the same probe, not yet separately scoped). Instrumented the
+web_search tool-invocation fee itself (§12) -- the cost component §10 first
+identified as untracked ($10/1000 searches for Claude) turned out to apply
+to Grok and OpenAI too, and is now folded into every run's cost estimate.
 
 ## 0. Why this investigation started
 
@@ -678,3 +681,152 @@ real seconds before the breaker even accumulated enough failures to trip.
 Lowered to 60s. Not yet backed by real single-round timing data at the
 new call shape — revisit with real numbers once a few runs have gone
 through it, per the comment left in `claude_search.py`.
+
+## 12. web_search tool-invocation fee was untracked for Grok and OpenAI too (2026-08-17)
+
+Direct continuation of §10's finding. §10 established that Claude's
+web_search tool is billed *separately* from tokens ($10/1000 searches) and
+that `UsageTracker` had no field for it at all. That gap wasn't
+Claude-specific: both production search providers (`grok_search.py`,
+`openai_search.py`) hit the exact same `/v1/responses` + `web_search` tool
+shape and are billed the same way by their own platforms --
+**xAI $5.00 per 1,000 web_search calls, OpenAI $10.00 per 1,000** -- and
+critically, **per actual invocation, not per logical API call**: a single
+`/v1/responses` call's agentic search loop can fire `web_search` more than
+once internally, each billed separately. The user confirmed real xAI
+billing (~$5/day) running well above what this app's own `[LLM-COST]`
+summary reported (~$0.40/run) -- this section closes that gap for the two
+providers actually in production use.
+
+### 12.1 Verified real field shapes (live calls, not docs alone)
+
+Docs research suggested xAI exposes an aggregate count and OpenAI exposes
+per-invocation `output` items; both were confirmed against real API
+responses (single trivial "current weather in Paris" query, `web_search`
+tool granted, 2026-08-17) rather than trusted blindly:
+
+- **xAI** (`grok-4-fast`, `/v1/responses`, streaming): the `response.completed`
+  event's `response.usage` object carries an aggregate count directly --
+  `usage.server_side_tool_usage_details.web_search_calls` (an int; the
+  sibling `usage.num_server_side_tools_used` matches it exactly). A single
+  real query that needed two search rounds returned `web_search_calls: 2`,
+  concretely demonstrating the "per invocation, not per call" billing unit
+  the user described. Full observed usage object:
+  `{input_tokens, input_tokens_details, output_tokens, output_tokens_details,
+  total_tokens, num_sources_used, num_server_side_tools_used, cost_in_usd_ticks,
+  server_side_tool_usage_details: {web_search_calls, x_search_calls,
+  code_interpreter_calls, ...}, context_details}`. (`cost_in_usd_ticks` looks
+  like it could be xAI's own authoritative cost figure, but its unit isn't
+  documented anywhere found during this investigation -- not relied on here.)
+- **OpenAI** (`gpt-4.1-mini`, `/v1/responses`, streaming): **no equivalent
+  aggregate field exists**. The real `usage` object is only
+  `{input_tokens, input_tokens_details, output_tokens, output_tokens_details,
+  total_tokens}` -- confirming the docs-research uncertainty flagged before
+  this investigation started. Each invocation instead surfaces as its own
+  `response.web_search_call.completed` SSE event during the stream (one
+  event per call) and as a `{"type": "web_search_call", ...}` item in the
+  final `output` array -- both counted identically in the one real call made
+  (1 event, 1 output item, 1 search). `openai_search.py` counts the SSE
+  events directly (not the final output array) so a count is still available
+  even if a stream is retried mid-flight.
+- **Claude**: NOT verified live this pass -- `ANTHROPIC_API_KEY` in
+  `C:\Dev\Sandbox\.env` hit the identical "credit balance is too low" error
+  documented in §4.1/§9, still unresolved. `claude_search.py`'s
+  `ClaudeSearch` therefore still does not pass a `tool_calls` count into
+  `UsageTracker.add()` -- `llm_client.py`'s pricing-table comment for
+  `claude-sonnet-5` is updated to say so explicitly rather than continuing
+  to describe a blended "OpenAI-and-Claude" gap that's now only true for
+  Claude. (Public Anthropic Messages API docs describe a
+  `usage.server_tool_use.web_search_requests` field of the same shape as
+  xAI's; wire this up the same way as Grok once billing is unblocked and
+  that field is confirmed against a real response, not assumed.)
+
+### 12.2 What was built
+
+`generator/llm_client.py`: `UsageRecord` gained `tool_calls`/`tool_call_cost_usd`
+fields; `UsageTracker.add()` gained a `tool_calls: int = 0` parameter (default
+preserves every existing caller's behavior exactly -- no fee appears unless a
+caller explicitly passes a count). New `DEFAULT_TOOL_CALL_PRICING_USD_PER_1000
+= {"grok": 5.00, "openai": 10.00}`, keyed by **provider**, not model, since
+xAI and OpenAI both price `web_search` identically across every model on
+their own platform (confirmed against both providers' pricing docs -- this
+is a platform-level tool fee, not a per-model token rate). `_estimate_tool_call_cost`
+computes the fee; `add()` folds it into the record's `estimated_cost_usd`
+(so every existing summer of that field -- `main.py`'s stage-cost breakdown,
+`report_writer.py`, the `[LLM-COST]` total -- picks it up with no further
+changes) while also exposing the token-cost/tool-fee split separately
+(`tool_calls`, `tool_call_cost_usd` on both the per-model `summary()` bucket
+and a new top-level `total_tool_call_cost_usd`) so the printed summary can
+show both components distinctly rather than only a blended total.
+
+`generator/costs.py`: `print_cost_summary` gained a `tool_call_cost_usd`
+parameter and now prints `token usage $X + web_search tool fees $Y` instead
+of the old single blended "Estimated USD" figure with a label that no longer
+told the whole story.
+
+`generator/grok_search.py`: `_record_responses_usage` reads
+`usage["server_side_tool_usage_details"]["web_search_calls"]` and passes it
+through as `tool_calls`.
+
+`generator/openai_search.py`: `_post_responses_streaming_with_retries`'s
+return signature grew a third element (web_search-call count, counted from
+`response.web_search_call.completed` SSE events during the same streaming
+loop that already reads `response.output_text.delta`/`response.completed`);
+both call sites (`chat_completion`, `_openai_search`) thread it through
+`_record_responses_usage`, which grew a matching `web_search_calls`
+parameter.
+
+`main.py`'s per-provider `[LLM-COST]` usage-breakdown line now appends
+`web_search_calls=N tool_fee=$X` whenever a bucket has a nonzero tool-call
+count.
+
+Tests: `test_add_folds_web_search_tool_call_fee_into_total_estimated_cost`,
+`test_add_combines_token_cost_and_tool_call_fee_for_openai`,
+`test_add_defaults_tool_calls_to_zero_no_fee_when_omitted` in
+`tests/test_llm_client.py`; `test_chat_completion_live_search_tracks_web_search_call_count`
+in `tests/test_grok_search.py` (realistic mocked
+`server_side_tool_usage_details` usage shape, matching the live-verified
+field names above); `test_chat_completion_tracks_web_search_call_count_from_completed_events`
+in `tests/test_openai_search.py` (mocked `response.web_search_call.completed`
+SSE events, since OpenAI's usage object has no aggregate count to mock
+instead). Full suite: 1118 passing (was 1113 before this change).
+
+### 12.3 Estimated real-world impact
+
+Dipstick70's actual `[LLM-COST]` summary (run before this fix,
+`C:\Temp\RoadTripRuns\SW2026-dipstick70\run-console.log`):
+
+```
+grok/grok-4-fast: calls=170 tokens=1505378 est=$0.3720
+openai/gpt-4o-mini-2024-07-18: calls=18 tokens=92654 est=$0.0239
+                                                   total: $0.3959
+```
+
+That run predates this fix, so it never captured a `web_search_calls` count
+and there is no way to reconstruct the *exact* figure from its stored
+artifacts (the per-destination/category capture files under
+`url_discovery_direct_batch_html/` record the harvested rows, not the tool's
+internal search-round count). All 170 of the `grok` bucket's calls are
+`GrokSearch` calls (that provider is only ever constructed as a search
+client in this codebase), so every one of them is `web_search`-tool-eligible.
+Using the one confirmed real data point available (the live 2026-08-17
+probe: 2 search rounds for a single open-ended query) as a rough per-call
+rate, and allowing that dipstick70's direct-batch harvest prompts (asking
+for up to 12 items per destination/category, a heavier retrieval task than
+the probe's single-fact query) plausibly need at least as many rounds:
+
+| Assumption | web_search_calls | Tool fee (170 × N ÷ 1000 × $5.00) | Corrected total |
+|---|---|---|---|
+| 1 call/request (floor) | 170 | $0.85 | **$1.25** (3.1x) |
+| 2 calls/request (probe-observed rate) | 340 | $1.70 | **$2.10** (5.2x) |
+| 3 calls/request (heavier batch retrieval) | 510 | $2.55 | **$2.95** (7.5x) |
+
+This is a reasoned estimate, not a reconstruction of dipstick70's actual
+spend -- the point it demonstrates is qualitative and already matches the
+user's real billing complaint: the previously-invisible tool fee is not a
+rounding error on top of the token estimate, it plausibly *dominates* it
+(3x-7.5x the token-only figure at the sampled rate range), which is
+consistent with real xAI billing (~$5/day) running well above what the
+token-only estimator reported (~$0.40/run). The next real dipstick run
+under this fix will report the actual `web_search_calls`/`tool_fee` figures
+directly instead of requiring this kind of after-the-fact estimation.
