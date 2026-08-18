@@ -202,6 +202,59 @@ A configurable frozenset of known-invalid AllTrails URL slugs, populated from
 - Intended for slugs that return 404/redirect-to-different-entity in browser but
   return 403 to bots, making automated detection impossible.
 
+## AllTrails Trailhead Geo Maps Link
+Project owner ask: "a map link for each AllTrails trail that will take you to
+the trail" — AllTrails' own "Get Directions" button is client-JS-driven with no
+static `href` a fetch-based pipeline can follow, so the trail page's own
+structured data is used instead.
+
+Verified live (2026-08-18, via a real browser session against
+`https://www.alltrails.com/trail/us/utah/hickman-bridge-trail`): AllTrails
+embeds a `<script type="application/ld+json">` block shaped like
+`{"@type": "LocalBusiness", "geo": {"@type": "GeoCoordinates", "latitude":
+"38.28876", "longitude": "-111.22765"}, ...}` alongside two unrelated ld+json
+blocks (`WebPage`, `BreadcrumbList`) on the same page. AllTrails serializes
+`latitude`/`longitude` as JSON *strings*, not numbers. This coordinate is the
+trailhead itself (AllTrails' own listed location for the trail), which is more
+precise than a name-based geocode and does not depend on the page's
+JS-rendered "Get Directions" control.
+
+Implementation:
+- `_extract_alltrails_geo_from_html(html)` (`generator/url_discovery.py`)
+  scans every `ld+json` block on a fetched AllTrails page for one with a
+  `geo` dict, `float()`-casts `latitude`/`longitude`, and range/null-island
+  sanity-checks the result. Mirrors `_extract_restaurant_meta_from_html`'s
+  scan-every-block pattern for restaurant JSON-LD.
+- `_alltrails_geo_maps_url(url)` fetches the page via `_fetch_page_text`
+  (which dispatches AllTrails URLs to `_fetch_alltrails_text`) and builds
+  `https://www.google.com/maps/search/?api=1&query=<lat>,<lng>` — the same
+  coordinate-query URL convention already used for en-route stops'
+  `geocode_lat`/`geocode_lng`-based `maps_url` (see `_discover_en_route_stops`).
+- Wired into `audit_discovered_urls`'s `top_attractions` loop at the point
+  where an AllTrails trail URL clears `_retain_discovered_url` **unchanged**
+  (`cleaned == url`) — i.e. only after the URL has already passed every
+  existing acceptance gate (slug match, relevance, closure-marker check,
+  miles threshold, etc.), never as part of deciding whether to accept it.
+- Fails closed on any extraction failure (blocked fetch, missing/malformed
+  JSON-LD, out-of-range coordinate): `maps_url` is left exactly as whatever
+  the pre-existing fallback logic already produced (often absent for a trail
+  item, since the "no discovered URL" `maps_url = url` fallback only fires
+  when there is no accepted URL at all). Never a fabricated or generic
+  search-query link dressed up as a coordinate link, per this module's
+  no-invented-data rule.
+- Caching: both `_fetch_page_text`/`_fetch_alltrails_text` already cache
+  per-URL in memory (`_alltrails_fetch_cache`) and persist successful
+  fetches to the on-disk cache (`_load_persistent_caches`'
+  `alltrails_fetch_results` section), so this geo lookup piggybacks on
+  whatever fetch already happened earlier for the same URL in the same
+  audit pass (e.g. the trail-miles threshold check) or in an earlier run —
+  it does not add a second live network request in the common case.
+- Rendering requires no changes: `html_assembler.py`'s existing
+  `_maps_corner_link_html` already renders a map-pin badge whenever an item
+  carries a `maps_url` distinct from its primary `url` — previously an
+  AllTrails trail item typically had no `maps_url` at all (or one equal to
+  its own page URL), so the badge never appeared for a trail card.
+
 ## Fail-Closed Policy for Named Entities
 A link is only publishable for a named entity if it is a **deterministic, entity-specific
 target** — one that refers to that single entity and not a list, search query, or area
