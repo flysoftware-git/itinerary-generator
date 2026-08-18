@@ -263,8 +263,29 @@
       .practical-note { font-size: 0.82rem; color: #7c6a55; font-style: italic; }
       .drive-pill { cursor: pointer; color: var(--terracotta); text-decoration: underline; font-weight: 700; }
       .drive-pill:hover { color: #a0533a; }
-      .attr-external-link { color: #8B6347; font-size: 0.8rem; font-weight: 600; text-decoration: none; margin-left: 0.45rem; }
-      .attr-external-link:hover { text-decoration: underline; }
+      /* "link source" indicator (opens the item's primary/canonical link --
+         an official site, NPS page, AllTrails page, or occasionally a maps
+         link when that IS the only link available) vs. .badge-map below (a
+         distinct, always-secondary "also open this in Google Maps" corner
+         badge). Project owner feedback (Belly of the Dragon card and
+         others): these read as visually indistinguishable at a glance.
+         Root cause traced to the real rendered markup/CSS, not a literal
+         icon collision: both use emoji glyphs chosen deliberately in
+         _link_source_icon/html_assembler.py (a Maps link source correctly
+         shows the same map glyph as a Maps corner badge, since both really
+         do open a map), but before this fix .attr-external-link had no
+         background/border/badge shape at all -- just a bare 0.8rem colored
+         emoji character (and CSS `color` does not apply to emoji glyphs in
+         any browser, so that styling had zero visible effect on the icon
+         itself). .badge-map, by contrast, already got the full pill
+         treatment (background+border+padding via .badge). Giving
+         .attr-external-link the same pill treatment, in a deliberately
+         different (warm) color from .badge-map's (cool blue), makes the two
+         reliably tellable apart across cards even before parsing the tiny
+         glyph inside: a warm tan pill always means "primary source link",
+         a blue pill always means "secondary open-in-maps corner badge". */
+      .attr-external-link { display: inline-flex; align-items: center; background: #f3e8db; color: #6b4a2b; border: 1px solid #e3cfae; border-radius: 9999px; padding: 2px 9px; font-size: 0.82rem; font-weight: 600; text-decoration: none; margin-left: 0.45rem; line-height: 1.5; }
+      .attr-external-link:hover { background: #e9d9c0; text-decoration: none; }
       .badge-map { background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; text-decoration: none; cursor: pointer; }
       .badge-map:hover { background: #bae6fd; }
       .badge-hike-strenuous { background: #fee2e2; color: #991b1b; font-size: 0.75rem; }

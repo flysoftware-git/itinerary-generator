@@ -730,6 +730,58 @@ the first place before touching it -- not available in this session without
 API credentials. Left as a known follow-up rather than risked as a
 same-night change to a widely-shared code path.
 
+## Map-Link vs. Source-Link Icon Distinguishability
+Project owner, re: the "Belly of the Dragon" en-route-stop card and others:
+"the icons... indicating link to Map not source, and the links to the Map
+are indistinguishable, make the map a link that looks like a map, not a
+camera."
+
+Checked the real rendered markup/CSS before assuming a code-level icon swap
+was needed (per this task's own steer -- these are legitimately two
+different roles, not an accidental literal duplicate). Two distinct
+mechanisms render a small map-related icon on the same card type:
+- `.attr-external-link` (`_link_source_icon`, `html_assembler.py`): the
+  "link source" indicator next to an item's primary link. Returns 🗺️
+  specifically when the primary link itself resolves to a Google Maps URL
+  (a real, correct case: an en-route stop with no distinct source page gets
+  a maps-search query as its only link, e.g. "Red Hollow Canyon" and "Belly
+  of the Dragon" in the real reference run), and 🔗 otherwise.
+- `.badge-map` (`_maps_corner_link_html`): the always-secondary "also open
+  in Google Maps" corner badge, shown only when `maps_url` is genuinely
+  distinct from the primary link (so it never doubles up with the case
+  above on the same card).
+
+Both correctly avoid rendering twice on one card. But the real CSS
+(`templates/v2.5_template.html`) showed a concrete, fixable reason they're
+hard to tell apart at a glance across *different* cards: `.badge-map`
+already had full pill styling (`background`/`border`/`padding`, inherited
+from the shared `.badge` base class), while `.attr-external-link` had none
+at all -- just a bare `0.8rem` colored-text span. Since CSS `color` has no
+effect on an emoji glyph's rendering in any browser, that styling was
+entirely invisible on the icon itself: the "link source" icon was, in
+effect, an unstyled, small, boundary-less emoji character floating in text,
+while the map corner badge was a clearly-bounded colored pill. That
+asymmetry -- not a literal shared icon -- is the most likely real source of
+"indistinguishable": one icon reads as a deliberate UI element, the other
+doesn't read as anything in particular at small size.
+
+Fix: gave `.attr-external-link` the same pill treatment `.badge-map` already
+had (background, border, rounded corners, slightly larger `0.82rem`), in a
+deliberately different color from `.badge-map`'s cool blue -- a warm tan
+(`#f3e8db` / `#6b4a2b` / `#e3cfae`) consistent with this template's existing
+canyon/terracotta palette. The two are now reliably tellable apart by
+container color/shape alone, before a reader even has to parse the tiny
+glyph inside: a blue pill always means "secondary open-in-maps corner
+badge", a tan pill always means "primary source link" (which, correctly,
+sometimes itself displays the map glyph when that primary link IS a maps
+link -- an accurate, not confusing, indication once the two badge families
+are visually distinct).
+
+`templates/checksums.txt`'s stored SHA-256 for `v2.5_template.html` was
+regenerated to match (the frozen-template checksum test,
+`test_template_checksum_matches_stored_hash`, intentionally hard-fails any
+undocumented template edit).
+
 ## Fail-Closed Policy for Named Entities
 A link is only publishable for a named entity if it is a **deterministic, entity-specific
 target** — one that refers to that single entity and not a list, search query, or area
