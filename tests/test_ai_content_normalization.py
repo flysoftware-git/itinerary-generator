@@ -562,6 +562,96 @@ def test_resolve_grouping_aware_prev_next_names_skips_day_trip_children() -> Non
     assert next_names == ["Moab", "Telluride", "Telluride", "Telluride", ""]
 
 
+def test_resolve_group_day_trip_names_gives_base_both_children_only() -> None:
+    """Real gap this closes (GH #68 x schedule generation): Moab's own
+    schedule-generation candidate pool (top_attractions) is built purely
+    from Moab's own AI-generated content -- nothing ever merged in Arches
+    National Park's or Canyonlands National Park's names, despite both
+    being real, dated `group_with: moab` day trips FROM Moab. A real
+    published run showed the resulting asymmetry: Canyonlands got one
+    schedule mention (by pure AI-generation luck -- see the docstring on
+    _resolve_group_day_trip_names for the full trace showing that name
+    isn't even present in Moab's own top_attractions), Arches got none at
+    all. _resolve_group_day_trip_names resolves, per destination, which
+    day-trip children's NAMES a base destination should be given as extra
+    nameable candidates -- manifest-only (id/name/group_with), since a
+    grouped child's own AI-generated attractions don't exist yet at the
+    point this is needed (generate_destination_content runs every
+    destination's LLM call in parallel)."""
+    destinations = [
+        {"id": "capitolreef", "name": "Capitol Reef National Park"},
+        {"id": "moab", "name": "Moab"},
+        {"id": "arches", "name": "Arches National Park", "group_with": "moab"},
+        {"id": "canyonlands", "name": "Canyonlands National Park", "group_with": "moab"},
+        {"id": "telluride", "name": "Telluride"},
+    ]
+
+    day_trip_names = AIContentGenerator._resolve_group_day_trip_names(destinations)
+
+    assert day_trip_names == [
+        [],  # Capitol Reef -- ungrouped, no children
+        ["Arches National Park", "Canyonlands National Park"],  # Moab -- the base
+        [],  # Arches -- itself a grouped child, never gets its own siblings
+        [],  # Canyonlands -- same
+        [],  # Telluride -- ungrouped, no children
+    ]
+
+
+def test_inject_travel_realism_moab_schedule_can_name_arches_not_just_canyonlands() -> None:
+    """End-to-end companion to the resolver test above, grounded in the
+    real published-run asymmetry: with only Moab's own real top_attractions
+    (Moab Giants Dinosaur Park, Corona and Bowtie Arch via Corona Arch
+    Trail, Windows Loop and Turret Arch Trail -- the real rendered set for
+    Moab) fed in as `attractions`, and Moab's real day-trip children fed in
+    as `group_day_trip_names`, the day-level Morning/Afternoon/Evening
+    focus rotation (which already rotates among `attractions`) must also be
+    able to land on a day-trip child's own name -- proving the names are
+    genuinely wired into the same rotation mechanism that names real
+    attractions, not merely accepted as an unused parameter."""
+    g = _gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Start at Moab Giants Dinosaur Park for cooler temps."},
+                {"period": "Afternoon", "summary": "Continue at Corona and Bowtie Arch via Corona Arch Trail."},
+                {"period": "Evening", "summary": "Dinner in town."},
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Return to Corona and Bowtie Arch via Corona Arch Trail for photos."},
+                {"period": "Afternoon", "summary": "Hike Moab Giants Dinosaur Park if time allows."},
+                {"period": "Evening", "summary": "Dinner and sunset."},
+            ],
+        },
+    ]
+
+    out = g._inject_travel_realism(
+        days,
+        {"drive_time": "1 hr 45 min"},
+        "Capitol Reef National Park",
+        "Telluride",
+        attractions=[
+            {"name": "Moab Giants Dinosaur Park"},
+            {"name": "Corona and Bowtie Arch via Corona Arch Trail"},
+            {"name": "Windows Loop and Turret Arch Trail"},
+        ],
+        restaurants=[{"name": "Desert Bistro"}, {"name": "Moab Brewery"}],
+        group_day_trip_names=["Arches National Park", "Canyonlands National Park"],
+    )
+
+    all_summaries = " ".join(
+        period["summary"] for day in out for period in day["periods"]
+    ).lower()
+    # At least one of the two real day-trip children must be nameable
+    # somewhere in the rotated schedule -- before this fix, neither name
+    # existed anywhere in `attraction_names`, so the rotation/scrub
+    # mechanisms had structurally zero chance of ever naming either one.
+    assert "arches national park" in all_summaries or "canyonlands national park" in all_summaries
+
+
 def test_generate_destination_content_moab_gets_telluride_not_arches_as_next_destination() -> None:
     """Integration-level companion to the direct resolver test above: the
     real _generate_destination_bundle call for Moab must receive
@@ -573,7 +663,13 @@ def test_generate_destination_content_moab_gets_telluride_not_arches_as_next_des
     g._max_concurrent_destinations = 5
     calls: dict[str, tuple[str, str]] = {}
 
-    def _fake_bundle(dest: dict, trip_meta: dict, previous_destination: str, next_destination: str) -> dict:
+    def _fake_bundle(
+        dest: dict,
+        trip_meta: dict,
+        previous_destination: str,
+        next_destination: str,
+        group_day_trip_names: list | None = None,
+    ) -> dict:
         calls[dest["name"]] = (previous_destination, next_destination)
         return {"destination_content": {}, "what_to_know": {}, "scenic_drives": []}
 
@@ -1773,6 +1869,54 @@ def test_inject_travel_realism_dipstick69_evening_attraction_not_repeated_in_lat
     assert "natural bridge" not in day3_afternoon
 
 
+def test_pick_unused_focus_name_skips_names_already_registered_as_used() -> None:
+    """Real Moab regression this closes: a real published 3-day Moab
+    schedule had Day 1 Afternoon name 'Moab Giants Dinosaur Park' and Day 3
+    Morning independently read 'Start with Moab Giants Dinosaur Park, then
+    pivot to a different nearby area before midday crowds.' -- the SAME
+    attraction, because the Day 2+ 'Morning was cloned from Day 1
+    arrival/check-in text' scrub in _inject_travel_realism (the source of
+    that exact 'Start with {name}, then pivot...' template) picked its
+    focus via bare day-index rotation (_day_focus_name), with no awareness
+    of used_multi_activity_names -- the same cross-day dedup set
+    _register_attraction_mentions and the Afternoon multi-activity packer
+    both already maintained and consulted.
+
+    AIContentGenerator._pick_unused_focus_name is the extracted, directly
+    testable selection logic behind the scrub's fix
+    (_day_focus_name_excluding_used, in _inject_travel_realism). With 2
+    real Moab top_attractions and day_index=3 -- the exact index whose bare
+    rotation formula ((day_index - 1) % len(names)) wraps back around to
+    index 0, reproducing the real collision -- this must skip the
+    already-used name and pick the other real attraction instead.
+    """
+    names = ["Moab Giants Dinosaur Park", "Windows Loop and Turret Arch Trail"]
+    used = {"moab giants dinosaur park"}
+
+    # Sanity check: bare rotation (the pre-fix behavior) really does
+    # reproduce the collision for this day_index/name-count combination.
+    assert names[(3 - 1 + 0) % len(names)] == "Moab Giants Dinosaur Park"
+
+    picked = AIContentGenerator._pick_unused_focus_name(names, used, day_index=3, offset=0)
+    assert picked == "Windows Loop and Turret Arch Trail"
+
+
+def test_pick_unused_focus_name_falls_back_to_repeat_when_pool_exhausted() -> None:
+    """Mirrors this repo's established round-robin philosophy elsewhere
+    (see docs/design/schedule-normalization.md's 'Small-attraction-pool
+    follow-up' -- reconcile_schedule_from_registry tolerates eventual reuse
+    once every real candidate has had a turn, rather than falling back to
+    fully generic filler). When every known attraction is already used,
+    _pick_unused_focus_name must still return a real, named attraction
+    (the plain rotation pick) rather than an empty string -- a repeated
+    real name is a smaller defect than naming nothing at all."""
+    names = ["Moab Giants Dinosaur Park", "Windows Loop and Turret Arch Trail"]
+    used = {"moab giants dinosaur park", "windows loop and turret arch trail"}
+
+    picked = AIContentGenerator._pick_unused_focus_name(names, used, day_index=3, offset=0)
+    assert picked == "Moab Giants Dinosaur Park"  # the bare-rotation fallback, not ""
+
+
 def test_normalize_schedule_dipstick68_leaked_instruction_never_reaches_rendered_evening_text() -> None:
     """Regression grounded in the real SW2026-dipstick68 output for Bryce
     Canyon National Park, Day 2 Evening, exactly as the project owner found
@@ -2548,6 +2692,72 @@ def test_normalize_what_to_know_does_not_require_or_emit_legacy_weather_photo_fi
     assert normalized["local_customs"] == "Respect shuttle lines."
 
 
+def test_normalize_what_to_know_suppresses_generic_boilerplate_for_grouped_day_trip_child() -> None:
+    """Real GH #68 evidence (project owner: 'The "what to know" about Day
+    Trips does not need the repetitive [generic boilerplate] if it is just
+    duplicates earlier direction in Moab, just offer unique comments to
+    that locality'): a real published run's What to Know cards for Moab,
+    Arches National Park (`group_with: moab`), and Canyonlands National
+    Park (`group_with: moab`) each independently generated the SAME six
+    categories with substantively identical (not verbatim-identical, so
+    the pre-existing exact-string _deduplicate_cross_destination_what_to_know
+    never caught it) generic seasonal-desert-park advice -- e.g. Arches and
+    Canyonlands both independently said 'Early morning and late afternoon
+    provide the best light/lighting for photography' for best_times_of_day.
+
+    For a grouped child, local_customs/best_times_of_day/
+    safety_considerations/crowd_patterns/local_etiquette must be left empty
+    (not filled with yet another boilerplate fallback sentence) so the
+    renderer (html_assembler.py's _build_intro_note, which already skips
+    empty fields) simply omits them -- summary and transportation_quirks
+    are kept since real data showed those are the two categories that can
+    carry genuinely site-specific content (e.g. a park-specific access/
+    facilities note)."""
+    g = _gen()
+    payload = {
+        "summary": "Arches National Park in late October features cool temperatures and fewer visitors.",
+        "local_customs": "Respect wildlife and maintain a safe distance from animals encountered along trails.",
+        "best_times_of_day": "Early morning and late afternoon provide the best light for photography.",
+        "transportation_quirks": "Parking can fill up quickly at popular trailheads, so plan to arrive early.",
+        "safety_considerations": "Stay hydrated and watch for sudden weather changes, especially in the fall.",
+        "crowd_patterns": "Expect fewer crowds compared to summer, but popular areas can still be busy.",
+        "local_etiquette": "Leave no trace; pack out all trash and stay on designated trails.",
+    }
+    dest = {
+        "id": "arches",
+        "name": "Arches National Park",
+        "dates": "October 23, 2026",
+        "group_with": "moab",
+    }
+
+    normalized = g._normalize_what_to_know(payload, dest)
+
+    assert normalized["summary"] == payload["summary"]
+    assert normalized["transportation_quirks"] == payload["transportation_quirks"]
+    assert normalized["local_customs"] == ""
+    assert normalized["best_times_of_day"] == ""
+    assert normalized["safety_considerations"] == ""
+    assert normalized["crowd_patterns"] == ""
+    assert normalized["local_etiquette"] == ""
+
+
+def test_normalize_what_to_know_keeps_full_boilerplate_for_ungrouped_base_destination() -> None:
+    """Companion to the suppression test above: Moab itself (no
+    `group_with`) is the group base, not a grouped child -- it must keep
+    the full six-category card exactly as before this fix, since it has no
+    other destination's card to defer to."""
+    g = _gen()
+    payload = {
+        "summary": "Moab in October offers a pleasant climate for outdoor activities.",
+    }
+    dest = {"id": "moab", "name": "Moab", "dates": "October 22-24, 2026"}
+
+    normalized = g._normalize_what_to_know(payload, dest)
+
+    for key in ("local_customs", "best_times_of_day", "safety_considerations", "crowd_patterns", "local_etiquette"):
+        assert normalized[key].strip() != ""
+
+
 def test_render_prompt_template_replaces_known_tokens_only() -> None:
     g = _gen()
     template = (
@@ -2710,3 +2920,84 @@ def test_inject_travel_realism_leaves_evening_unchanged_when_no_unsuitable_venue
     )
 
     assert updated[0]["periods"][2]["summary"] == "Enjoy dinner at The Shed, then a sunset walk around the plaza."
+
+
+def test_parse_duration_minutes_handles_real_badge_formats() -> None:
+    """Grounded against real `badge-duration` strings observed in a real
+    published run's HTML (C:\\Users\\...\\eval\\index.html) rather than an
+    assumed single format: plain ranges with a hyphen or an en-dash, both
+    'hr(s)'/'hour(s)' and 'min(s)'/'minute(s)' unit spellings, a bare
+    single value, and trailing free text like 'round-trip' after the unit."""
+    assert AIContentGenerator._parse_duration_minutes("30 min") == 30
+    assert AIContentGenerator._parse_duration_minutes("1 hr") == 60
+    assert AIContentGenerator._parse_duration_minutes("1-2 hours") == 90
+    assert AIContentGenerator._parse_duration_minutes("4\u20138 hrs round-trip") == 360
+    assert AIContentGenerator._parse_duration_minutes("1.5\u20132 hrs round-trip") == 105
+    assert AIContentGenerator._parse_duration_minutes("") == 0
+
+
+def test_is_evening_unsuitable_duration_flags_multi_hour_hikes_only() -> None:
+    """Real example that motivated this (project owner: 'Are these
+    estimates being really factored in?'): a previous run's Evening period
+    suggested 'The Narrows' -- a real Zion hike whose own duration badge,
+    elsewhere on the same real published page, reads '4\u20138 hrs
+    round-trip'. That is a genuine multi-hour undertaking, not something to
+    start after dinner. A short, evening-compatible activity (e.g. a 30-45
+    minute sunset viewpoint) must NOT be flagged just for having a
+    duration field at all."""
+    assert AIContentGenerator._is_evening_unsuitable_duration(
+        {"name": "The Narrows", "duration": "4\u20138 hrs round-trip"}
+    )
+    assert not AIContentGenerator._is_evening_unsuitable_duration(
+        {"name": "Sunset Point", "duration": "30 min"}
+    )
+    assert not AIContentGenerator._is_evening_unsuitable_duration(
+        {"name": "Canyon Overlook Trail", "duration": "1-2 hours"}
+    )
+    # No duration data at all must never be treated as "too long" --
+    # _parse_duration_minutes returns 0 for an empty/missing field, which
+    # is not > the threshold.
+    assert not AIContentGenerator._is_evening_unsuitable_duration({"name": "Unknown Spot"})
+
+
+def test_inject_travel_realism_strips_multi_hour_hike_mention_from_evening_schedule() -> None:
+    """Real motivating pattern (this specific line may not reproduce
+    identically run to run, but the underlying issue is real -- see the
+    project owner's question 'Are these estimates being really factored
+    in?'): an Evening period naming 'The Narrows', a real Zion hike whose
+    own duration is '4-8 hours round-trip' elsewhere in the same real
+    output -- physically not something to start after dinner. Reuses the
+    same evening-unsuitable-venue strip/fallback mechanism (previously
+    duration-blind) rather than a separate new pass."""
+    g = _gen()
+    days = [{
+        "day_label": "Day 1",
+        "periods": [
+            {"period": "Morning", "summary": "Start early at Angels Landing before the heat builds."},
+            {"period": "Afternoon", "summary": "Cool off at the Zion Human History Museum exhibits."},
+            {
+                "period": "Evening",
+                "summary": "Enjoy dinner at Zion Pizza. Head into The Narrows for an evening hike.",
+            },
+        ],
+    }]
+    attractions = [
+        {"name": "Angels Landing", "type": "hike", "duration": "4-5 hours"},
+        {"name": "The Narrows", "type": "hike", "duration": "4-8 hrs round-trip"},
+    ]
+
+    updated = g._inject_travel_realism(
+        days,
+        {},
+        "Capitol Reef National Park",
+        "Bryce Canyon National Park",
+        attractions=attractions,
+        restaurants=[{"name": "Zion Pizza"}],
+    )
+
+    evening_summary = updated[0]["periods"][2]["summary"]
+    assert "The Narrows" not in evening_summary
+    assert "Zion Pizza" in evening_summary
+    # Morning is untouched -- a multi-hour hike is a perfectly realistic
+    # Morning pick; only Evening candidacy is affected.
+    assert "Angels Landing" in updated[0]["periods"][0]["summary"]

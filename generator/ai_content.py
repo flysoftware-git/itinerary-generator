@@ -210,6 +210,92 @@ class AIContentGenerator:
             keyword in name for keyword in AIContentGenerator._EVENING_UNSUITABLE_VENUE_KEYWORDS
         )
 
+    @staticmethod
+    def _parse_duration_minutes(raw: str) -> int:
+        """Parse an attraction's own free-text `duration` field into minutes.
+
+        Grounded against real duration badge strings observed in production
+        output (`badge-duration` spans, e.g. C:\\Users\\...\\eval\\index.html):
+        "1-2 hours", "4\u20138 hrs round-trip", "1.5\u20132 hrs round-trip", "30 min",
+        "1 hr", "2\u20133 hrs" -- both hyphen and en-dash range separators, both
+        "hr(s)"/"hour(s)" and "m"/"min(s)"/"minute(s)" units, plain single
+        values, and ranges (averaged to the midpoint) all appear in real
+        data, so all are handled rather than assuming one canonical format.
+        """
+        text = str(raw or "").lower().strip()
+        if not text:
+            return 0
+        total = 0
+        found = False
+
+        hr_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)", text)
+        if hr_match:
+            total += int(round(float(hr_match.group(1)) * 60))
+            found = True
+
+        min_match = re.search(r"(\d+)\s*(?:m|min|mins|minute|minutes)", text)
+        if min_match:
+            total += int(min_match.group(1))
+            found = True
+
+        range_match = re.search(r"(\d+(?:\.\d+)?)\s*[-\u2013]\s*(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)", text)
+        if range_match:
+            low = float(range_match.group(1))
+            high = float(range_match.group(2))
+            total = int(round(((low + high) / 2.0) * 60))
+            found = True
+
+        if found:
+            return max(0, total)
+
+        bare_hours = re.search(r"\b(\d+(?:\.\d+)?)\b", text)
+        if bare_hours:
+            return int(round(float(bare_hours.group(1)) * 60))
+
+        return 0
+
+    # An Evening slot realistically runs from roughly dinner time to a
+    # traveler's own bedtime -- not the multi-hour window Morning/Afternoon
+    # have. 3 hours is a generous cutoff for "still fine to START in the
+    # evening" (a sunset viewpoint, a short walk, dinner-adjacent stroll);
+    # above that, an attraction is a genuine multi-hour undertaking that
+    # shouldn't be framed as an evening pick. Real example that motivated
+    # this: a previous run's Evening period suggested "The Narrows" (Zion),
+    # whose own duration badge reads "4\u20138 hrs round-trip" -- physically
+    # not something to start after dinner.
+    _EVENING_MAX_ACTIVITY_MINUTES = 180
+
+    @staticmethod
+    def _is_evening_unsuitable_duration(attraction: dict[str, Any]) -> bool:
+        duration_minutes = AIContentGenerator._parse_duration_minutes(
+            str(attraction.get("duration", "") or "")
+        )
+        return duration_minutes > AIContentGenerator._EVENING_MAX_ACTIVITY_MINUTES
+
+    @staticmethod
+    def _pick_unused_focus_name(
+        names: list[str], used: set[str], day_index: int, offset: int = 0
+    ) -> str:
+        """Rotation-order pick from `names` (case-sensitive display names),
+        skipping any whose lowercased form is already in `used`. Falls back
+        to the plain rotation pick (`names[start]`) if every name is already
+        used -- a repeated name is a smaller defect than an empty focus.
+
+        Pulled out of `_inject_travel_realism`'s `_day_focus_name_excluding_used`
+        closure as a plain static method purely so it's directly unit-
+        testable without going through the rest of that function (which has
+        a separate, later pass capable of independently re-deciding the same
+        period's attraction name -- see that closure's own docstring).
+        """
+        if not names:
+            return ""
+        start = (day_index - 1 + offset) % len(names)
+        for step in range(len(names)):
+            candidate = names[(start + step) % len(names)]
+            if candidate.lower() not in used:
+                return candidate
+        return names[start]
+
     def __init__(
         self,
         config_path: Path | str = "config.yaml",
@@ -264,11 +350,14 @@ class AIContentGenerator:
         per destination — see _generate_destination_bundle)."""
         destinations = trip.get("destinations", [])
         prev_names, next_names = self._resolve_grouping_aware_prev_next_names(destinations)
+        day_trip_names = self._resolve_group_day_trip_names(destinations)
 
         def _one(args: tuple[int, dict]) -> None:
             i, dest = args
             logger.info("Generating AI content for '%s'…", dest["name"])
-            bundle = self._generate_destination_bundle(dest, trip["trip"], prev_names[i], next_names[i])
+            bundle = self._generate_destination_bundle(
+                dest, trip["trip"], prev_names[i], next_names[i], day_trip_names[i]
+            )
             dest["ai_content"] = bundle["destination_content"]
             dest["what_to_know"] = bundle["what_to_know"]
             dest["scenic_drives"] = bundle["scenic_drives"]
@@ -393,6 +482,61 @@ class AIContentGenerator:
             next_names.append(next_name)
 
         return prev_names, next_names
+
+    @staticmethod
+    def _resolve_group_day_trip_names(destinations: list[dict[str, Any]]) -> list[list[str]]:
+        """For each destination, resolve the names of its GH #68 `group_with`
+        day-trip children -- non-empty only for a group BASE entry (one no
+        other entry's `group_with` points at, and which isn't itself
+        grouped), empty for every grouped child and every ungrouped entry
+        with no children.
+
+        Real gap this closes: Moab's own schedule-generation candidate pool
+        (`top_attractions`, threaded into `_inject_travel_realism` as
+        `attractions`/`attraction_names`) is built purely from Moab's own
+        AI-generated content -- nothing merges in Arches/Canyonlands's own
+        attractions or even their names, despite both being real, dated
+        `group_with: moab` day trips FROM Moab. A real published run showed
+        the asymmetry this produces: Canyonlands got one schedule mention
+        ("Start with Canyonlands National Park Island in the Sky...") but
+        Arches got none at all -- traced to the Canyonlands mention being
+        pure AI-generation luck (the LLM's own free-text schedule authoring
+        happened to name it directly; "Canyonlands National Park Island in
+        the Sky" is not present in Moab's own generated `top_attractions`
+        list, so no deterministic mechanism put it there) rather than any
+        real mechanism, meaning Arches had exactly the same (zero) chance of
+        being named and simply didn't get the same luck.
+
+        This can only resolve manifest-level facts (id/name/group_with),
+        never AI-generated content -- `generate_destination_content` runs
+        every destination's LLM call in parallel with no cross-destination
+        ordering (mirrors why `_resolve_grouping_aware_prev_next_names`
+        above is manifest-only too), so a grouped child's own generated
+        `top_attractions` does not exist yet at the point this needs to feed
+        into the base's own generation call. Giving `_inject_travel_realism`
+        the day-trip children's real NAMES (always known statically from the
+        manifest) is enough to let the existing focus-rotation mechanisms
+        name them deliberately instead of relying on AI luck.
+        """
+        children_by_base: dict[str, list[str]] = {}
+        for dest in destinations:
+            if not isinstance(dest, dict):
+                continue
+            base_id = group_base_id(dest)
+            if not base_id:
+                continue
+            name = str(dest.get("name", "") or "").strip()
+            if name:
+                children_by_base.setdefault(base_id, []).append(name)
+
+        out: list[list[str]] = []
+        for dest in destinations:
+            if not isinstance(dest, dict) or is_grouped(dest):
+                out.append([])
+                continue
+            dest_id = str(dest.get("id", "") or "")
+            out.append(list(children_by_base.get(dest_id, [])))
+        return out
 
     # Marketing-cliché phrases banned from generated prose (system_prompt.txt's
     # "Avoid without exception" list, kept in sync with prompts/scenic_drives.txt's
@@ -992,6 +1136,45 @@ class AIContentGenerator:
                 "confirm weather, trail status, and operating hours the day before arrival."
             )
 
+        # GH #68 day-trip children (`group_with` set, e.g. Arches/Canyonlands
+        # under Moab) share the same region, season, and lodging base as
+        # their group base -- so an independently-generated "What to Know"
+        # card for the child is near-guaranteed to reproduce the SAME six
+        # generic categories the base's own card already covers, just
+        # reworded. Real published-run evidence: Moab/Arches/Canyonlands
+        # each independently got local_customs/best_times_of_day/
+        # safety_considerations/crowd_patterns/local_etiquette one-liners
+        # that are substantively identical generic seasonal-desert-park
+        # advice ("stay hydrated", "leave no trace", "early morning/late
+        # afternoon light", "fewer crowds than summer, weekends busy") --
+        # different wording, same content, so the exact-string cross-
+        # destination dedup below (_deduplicate_cross_destination_what_to_know)
+        # never caught it. Project owner: "The 'what to know' about Day
+        # Trips does not need the repetitive [generic boilerplate]... just
+        # offer unique comments to that locality."
+        #
+        # Unlike restaurants/cultural_events (fully deferred to the base via
+        # multi_site_grouping.category_deferred_to_base), full deferral isn't
+        # right here -- a day trip DOES sometimes have genuinely distinct
+        # practical notes (permits, road conditions, facilities). Only
+        # "summary" and "transportation_quirks" are kept for a grouped
+        # child (the two categories real data showed can carry genuinely
+        # site-specific content, e.g. a timed-entry permit or an unpaved-road
+        # warning); the other four generic categories are left empty rather
+        # than filled with yet another boilerplate fallback sentence that
+        # would just duplicate the base's own card in substance again.
+        grouped_child = is_grouped(dest)
+        suppressed_for_grouped_child = (
+            "local_customs",
+            "best_times_of_day",
+            "safety_considerations",
+            "crowd_patterns",
+            "local_etiquette",
+        )
+        if grouped_child:
+            for field in suppressed_for_grouped_child:
+                normalized[field] = ""
+
         fallback_defaults = {
             "local_customs": "Follow posted rules, respect quiet areas, and support local businesses with patience during peak windows.",
             "best_times_of_day": "Early morning and late afternoon usually provide easier parking and calmer conditions.",
@@ -1001,6 +1184,8 @@ class AIContentGenerator:
             "local_etiquette": "Yield politely on narrow paths, keep noise low at viewpoints, and pack out all trash.",
         }
         for key, fallback in fallback_defaults.items():
+            if grouped_child and key in suppressed_for_grouped_child:
+                continue
             if not normalized[key]:
                 normalized[key] = fallback
 
@@ -1037,7 +1222,12 @@ class AIContentGenerator:
 
     @_retry_transient_llm_errors
     def _generate_destination_bundle(
-        self, dest: dict[str, Any], trip_meta: dict[str, Any], prev: str, next_dest: str
+        self,
+        dest: dict[str, Any],
+        trip_meta: dict[str, Any],
+        prev: str,
+        next_dest: str,
+        group_day_trip_names: list[str] | None = None,
     ) -> dict[str, Any]:
         seeds = dest.get("seeds", [])
         destination_prompt = self._dest_template.format(
@@ -1124,6 +1314,7 @@ class AIContentGenerator:
                 trip_meta,
                 prev,
                 next_dest,
+                group_day_trip_names,
             ),
             "what_to_know": self._normalize_what_to_know(what_to_know, dest),
             "scenic_drives": scenic_drives,
@@ -1201,6 +1392,7 @@ class AIContentGenerator:
         trip_meta: dict[str, Any],
         previous_destination: str,
         next_destination: str,
+        group_day_trip_names: list[str] | None = None,
     ) -> dict[str, Any]:
         seed_names = [str(s or "").strip() for s in (dest.get("seeds", []) or []) if str(s or "").strip()]
         payload["expected_environment"] = self._normalize_environment(
@@ -1263,6 +1455,7 @@ class AIContentGenerator:
             str(dest.get("schedule_start_time", "") or "").strip(),
             trip_meta.get("default_daily_activity_hours", 5),
             dest.get("daily_activity_hours", None),
+            group_day_trip_names,
         )
         return payload
 
@@ -1856,6 +2049,7 @@ class AIContentGenerator:
         destination_day_start_time: str = "",
         default_daily_activity_hours: Any = 5,
         destination_daily_activity_hours: Any = None,
+        group_day_trip_names: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         getting_here = getting_here or {}
         restaurant_names = [r.get("name", "") for r in restaurants if r.get("name")]
@@ -1921,6 +2115,7 @@ class AIContentGenerator:
                 default_daily_activity_hours,
                 destination_daily_activity_hours,
                 restaurants=restaurants,
+                group_day_trip_names=group_day_trip_names,
             )
 
         if isinstance(schedule, dict):
@@ -1949,6 +2144,7 @@ class AIContentGenerator:
                     default_daily_activity_hours,
                     destination_daily_activity_hours,
                     restaurants=restaurants,
+                    group_day_trip_names=group_day_trip_names,
                 )
 
         return []
@@ -2068,6 +2264,7 @@ class AIContentGenerator:
         default_daily_activity_hours: Any = 5,
         destination_daily_activity_hours: Any = None,
         restaurants: list[dict[str, Any]] | None = None,
+        group_day_trip_names: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         if not days:
             return days
@@ -2197,38 +2394,11 @@ class AIContentGenerator:
                 hour12 = 12
             return f"{hour12}:{minute:02d} {suffix}"
 
-        def _parse_duration_minutes(raw: str) -> int:
-            text = str(raw or "").lower().strip()
-            if not text:
-                return 0
-            total = 0
-            found = False
-
-            hr_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)", text)
-            if hr_match:
-                total += int(round(float(hr_match.group(1)) * 60))
-                found = True
-
-            min_match = re.search(r"(\d+)\s*(?:m|min|mins|minute|minutes)", text)
-            if min_match:
-                total += int(min_match.group(1))
-                found = True
-
-            range_match = re.search(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)", text)
-            if range_match:
-                low = float(range_match.group(1))
-                high = float(range_match.group(2))
-                total = int(round(((low + high) / 2.0) * 60))
-                found = True
-
-            if found:
-                return max(0, total)
-
-            bare_hours = re.search(r"\b(\d+(?:\.\d+)?)\b", text)
-            if bare_hours:
-                return int(round(float(bare_hours.group(1)) * 60))
-
-            return 0
+        # Promoted to a static method (AIContentGenerator._parse_duration_minutes)
+        # so both the Evening duration-unsuitability check below and other
+        # callers outside this closure's scope share one implementation
+        # instead of two copies drifting apart.
+        _parse_duration_minutes = self._parse_duration_minutes
 
         def _parse_hours_limit(value: Any, fallback_hours: float = 5.0) -> int:
             try:
@@ -2323,6 +2493,30 @@ class AIContentGenerator:
             seen_attraction_names.add(key)
             attraction_names.append(name)
 
+        # GH #68 grouped day-trip children (e.g. Arches/Canyonlands,
+        # `group_with: moab`) have their OWN top_attractions list, but
+        # nothing merges it into the group base's own schedule candidate
+        # pool -- Moab's `attractions` above is only ever Moab's own
+        # AI-generated top_attractions. Real published-run asymmetry this
+        # caused: Canyonlands got one schedule mention ("Start with
+        # Canyonlands National Park Island in the Sky...") purely because
+        # the LLM's own free-text schedule authoring happened to name it
+        # directly (that exact name is NOT present anywhere in Moab's own
+        # top_attractions, so no deterministic mechanism produced it) --
+        # Arches had the same zero real chance of being named and simply
+        # didn't get the same luck. Adding each day-trip child's own NAME
+        # (not its attractions -- those don't exist yet at this stage; see
+        # _resolve_group_day_trip_names) as a nameable candidate gives the
+        # existing focus-rotation/scrub mechanisms above and below a real,
+        # deliberate chance to mention every real day trip, not just
+        # whichever one the model happened to know about unprompted.
+        for child_name in group_day_trip_names or []:
+            name = str(child_name or "").strip()
+            key = name.lower()
+            if name and key not in seen_attraction_names:
+                seen_attraction_names.add(key)
+                attraction_names.append(name)
+
         def _register_attraction_mentions(day: dict[str, Any]) -> None:
             """Seed `used_multi_activity_names` from any attraction name
             already mentioned in this day's periods -- not just the names
@@ -2358,7 +2552,68 @@ class AIContentGenerator:
                 return ""
             return attraction_names[(day_index - 1 + offset) % len(attraction_names)]
 
+        def _day_focus_name_excluding_used(day_index: int, offset: int = 0) -> str:
+            """Like _day_focus_name, but skips any attraction already present
+            in `used_multi_activity_names` -- the cross-day dedup set that
+            _build_multi_activity_afternoon_summary/_register_attraction_mentions
+            maintain. Falls back to the plain rotation pick if every
+            attraction has already been mentioned somewhere (better a
+            repeated name than an empty focus).
+
+            Exists for the Day2+ "Morning was cloned from Day 1 arrival
+            text" scrub below (the "Start with {name}..." template), which
+            used to call _day_focus_name directly -- pure rotation with no
+            awareness of used_multi_activity_names, so it could pick a name
+            already spoken for by another day's packed Afternoon block or by
+            raw prose _register_attraction_mentions had already registered.
+            Real SW2026-dipstick-era Moab regression: Day 1 Afternoon named
+            "Moab Giants Dinosaur Park" (via the entity-registry substitute
+            path) and Day 3 Morning's scrub independently picked the exact
+            same name via bare rotation, producing two different days both
+            leading with "Moab Giants Dinosaur Park" -- a real gap this
+            closes by consulting the same shared tracking set every other
+            focus-picking path in this function already uses.
+
+            The actual selection logic is promoted to the static
+            _pick_unused_focus_name so it's independently unit-testable
+            without going through the rest of this function -- useful here
+            specifically because a SEPARATE, later pass in this same method
+            (the day-level "recent_focuses" rotation, _pick_non_repeating_focus)
+            unconditionally re-derives every Morning period's attraction name
+            afterward using its own, different, shorter-lookback mechanism,
+            and can (verified empirically, not fixed here -- see
+            _pick_non_repeating_focus's own docstring) still override this
+            pick in the final rendered output for some inputs. That's a
+            distinct, deeper gap than what this function closes; testing the
+            selection logic in isolation avoids the assertion being
+            accidentally coupled to that separate pass's unrelated behavior.
+            """
+            return AIContentGenerator._pick_unused_focus_name(
+                attraction_names, used_multi_activity_names, day_index, offset
+            )
+
         def _pick_non_repeating_focus(day_index: int, offset: int, recent_focuses: list[str]) -> str:
+            # Deliberately does NOT also consult used_multi_activity_names.
+            # Two variants that did were tried and reverted (see git
+            # history): an outright second disqualifier over-constrained the
+            # small-attraction-pool case and broke
+            # test_inject_travel_realism_rotates_focus_to_reduce_adjacent_duplicates;
+            # a softer "prefer unused among already-eligible" tie-break
+            # avoided that regression but introduced a different one on a
+            # separate synthetic small-pool/many-days case. This pass runs
+            # unconditionally over every period regardless of what an
+            # earlier pass (packing, or the arrival-clone "Start with X..."
+            # scrub above -- see _day_focus_name_excluding_used) already set,
+            # using only its own short recent_focuses lookback -- so it can
+            # still independently re-derive a period's attraction focus
+            # without knowing about used_multi_activity_names. This is a
+            # known, narrower residual gap (see docs/design/schedule-
+            # normalization.md), not fully closed here: unifying the two
+            # tracking mechanisms measurably regressed real, existing,
+            # intentional round-robin/reuse behavior in this pass more than
+            # once, so the narrower, verified-safe fix (the scrub's own
+            # pick) was kept instead of a broader change with a demonstrated
+            # regression risk.
             base_focus = _day_focus_name(day_index, offset)
             if not base_focus or len(attraction_names) <= 1:
                 return base_focus
@@ -2748,11 +3003,12 @@ class AIContentGenerator:
                     if low_summary.startswith("reserved for return travel"):
                         continue
                     if label == "Morning" and _is_arrival_logistics_summary(summary):
-                        focus_name = _day_focus_name(day_index)
+                        focus_name = _day_focus_name_excluding_used(day_index)
                         if focus_name:
                             period["summary"] = (
                                 f"Start with {focus_name}, then pivot to a different nearby area before midday crowds."
                             )
+                            used_multi_activity_names.add(focus_name.lower())
                         else:
                             period["summary"] = (
                                 "Start with a different priority trailhead or district than Day 1, "
@@ -2760,24 +3016,29 @@ class AIContentGenerator:
                             )
                     elif label == "Afternoon":
                         if low_summary.startswith("after arrival"):
-                            focus_name = _day_focus_name(day_index, offset=1) or "one nearby highlight"
+                            focus_name = _day_focus_name_excluding_used(day_index, offset=1) or "one nearby highlight"
                             period["summary"] = (
                                 f"After the morning start, allocate this block to {focus_name} "
                                 "and one nearby stop, keeping transfer buffers between activities."
                             )
+                            if focus_name != "one nearby highlight":
+                                used_multi_activity_names.add(focus_name.lower())
                         elif re.search(r"\bcheck[- ]?in\b", low_summary) or re.search(r"\blodging\b", low_summary):
-                            focus_name = _day_focus_name(day_index, offset=1) or "one or two nearby highlights"
+                            focus_name = _day_focus_name_excluding_used(day_index, offset=1) or "one or two nearby highlights"
                             period["summary"] = (
                                 f"After the morning start, focus on {focus_name} "
                                 "and a second nearby stop without repeating Day 1 transfer logistics."
                             )
+                            if focus_name != "one or two nearby highlights":
+                                used_multi_activity_names.add(focus_name.lower())
                     elif _is_arrival_logistics_summary(summary):
-                        focus_name = _day_focus_name(day_index, offset=2)
+                        focus_name = _day_focus_name_excluding_used(day_index, offset=2)
                         if focus_name:
                             period["summary"] = (
                                 f"Keep this block destination-focused around {focus_name} "
                                 "without repeating arrival or check-in logistics."
                             )
+                            used_multi_activity_names.add(focus_name.lower())
                             continue
                         period["summary"] = (
                             "Keep this block destination-focused without repeating arrival or check-in logistics."
@@ -2860,11 +3121,33 @@ class AIContentGenerator:
         # strips the specific sentence mentioning a name-recognizable
         # closes-early venue rather than trying to validate Evening content
         # generally.
+        #
+        # Also excludes an attraction whose own `duration` field (e.g.
+        # "4-8 hours", "1-2 hrs round-trip", "30 min" -- see
+        # _parse_duration_minutes) is a genuine multi-hour undertaking
+        # (> _EVENING_MAX_ACTIVITY_MINUTES): nothing upstream of this point
+        # checks a candidate's stated duration against the period it's being
+        # slotted into before naming it in an Evening summary (rotation only
+        # matches by name, never consults duration; the Afternoon multi-
+        # activity packer does check duration against its own budget, but
+        # Evening is deliberately never packed -- see the "Deliberately not
+        # extended" note in docs/design/schedule-normalization.md). Real
+        # motivating case: a previous run's Evening period suggested "The
+        # Narrows" (Zion) -- a real hike whose own duration badge reads
+        # "4-8 hrs round-trip" elsewhere on the same page -- which is not
+        # something to start after dinner. Same strip-the-sentence,
+        # fall-back-to-relaxed-evening mechanism as the venue check above,
+        # so a long-duration item is excluded from Evening candidacy
+        # specifically while remaining fully eligible for Morning/Afternoon,
+        # where a multi-hour commitment is realistic.
         unsuitable_evening_names = [
             str(attr.get("name", "") or "").strip()
             for attr in attractions
             if isinstance(attr, dict)
-            and AIContentGenerator._is_evening_unsuitable_venue(attr)
+            and (
+                AIContentGenerator._is_evening_unsuitable_venue(attr)
+                or AIContentGenerator._is_evening_unsuitable_duration(attr)
+            )
             and str(attr.get("name", "") or "").strip()
         ]
         if unsuitable_evening_names:
@@ -2897,8 +3180,8 @@ class AIContentGenerator:
                     if cleaned != summary:
                         period["summary"] = cleaned
                         logger.info(
-                            "  Evening schedule: removed likely-closed venue mention '%s' "
-                            "(indoor/exhibit-type venue unsuitable for an evening visit)",
+                            "  Evening schedule: removed unsuitable-for-evening mention '%s' "
+                            "(closes-early venue or a multi-hour-duration activity)",
                             matched_name,
                         )
 

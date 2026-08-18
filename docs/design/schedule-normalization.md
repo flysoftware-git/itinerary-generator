@@ -448,6 +448,43 @@ resolving here:
   and this section's model doesn't exist in code yet either — sequencing
   which lands first affects how much rework the second one needs.
 
+**Grouped-child "What to Know" boilerplate (2026-08-18 fix, adjacent to
+schedule generation but not the schedule itself).** Not the
+`possible_daily_schedule` mechanism this document otherwise covers, but
+investigated and fixed in the same pass since it's the same GH #68
+grouped-destination content-quality concern: a grouped child's `what_to_know`
+card (`_normalize_what_to_know`, `generator/ai_content.py`) was
+independently AI-generated per destination exactly like a base entry's,
+with no deferral at all. Real published-run evidence: Moab, Arches
+National Park, and Canyonlands National Park each independently produced
+the same six categories (local customs / best times of day /
+transportation quirks / safety / crowd patterns / local etiquette) with
+substantively identical (not verbatim-identical, so the pre-existing
+exact-string `_deduplicate_cross_destination_what_to_know` never caught
+it) generic seasonal-desert-park advice — e.g. Arches and Canyonlands
+both independently said "Early morning and late afternoon provide the
+best light/lighting for photography." Project owner: "The 'what to know'
+about Day Trips does not need the repetitive [generic boilerplate]...
+just offer unique comments to that locality."
+
+Unlike restaurants/cultural_events (fully deferred to the group base via
+`multi_site_grouping.category_deferred_to_base` — an entire category
+skipped at generation time), full deferral isn't right for `what_to_know`:
+a day trip can have genuinely distinct practical notes (permits, road
+conditions, facilities) the base's own card wouldn't cover. Fixed instead
+at the field level: for a grouped child (`is_grouped(dest)`),
+`local_customs`/`best_times_of_day`/`safety_considerations`/
+`crowd_patterns`/`local_etiquette` are left empty rather than filled with
+yet another boilerplate fallback sentence when the AI's own text is
+empty or generic; `summary` and `transportation_quirks` are kept, since
+real data showed those are the two categories most likely to carry
+genuinely site-specific content. `html_assembler.py`'s `_build_intro_note`
+already skips empty fields when rendering the card, so no renderer change
+was needed. Verified by
+`tests/test_ai_content_normalization.py::test_normalize_what_to_know_suppresses_generic_boilerplate_for_grouped_day_trip_child`
+and
+`::test_normalize_what_to_know_keeps_full_boilerplate_for_ungrouped_base_destination`.
+
 ### Relationship to Side Trips (GH #3)
 
 Added 2026-08-16, following a design discussion with the project owner
@@ -770,6 +807,61 @@ v2.1 activity-budget behavior:
 	anywhere on an earlier day -- packed or raw prose -- is excluded from
 	every later day's pack. Verified by
 	`tests/test_ai_content_normalization.py::test_inject_travel_realism_dipstick69_evening_attraction_not_repeated_in_later_day_afternoon_pack`.
+- **Cross-day dedup guard, arrival-clone Morning scrub follow-up (fixed
+	2026-08-18, real Moab regression).** The two fixes above closed the gap
+	for the Afternoon packer's own picks and for raw AI-authored prose in
+	ANY period -- but a THIRD, independent code path still bypassed
+	`used_multi_activity_names` entirely: the "Day 2+ Morning was cloned
+	from Day 1 arrival/check-in text" scrub (`_inject_travel_realism`, the
+	block starting "Expanded multi-day schedules can accidentally clone Day
+	1 arrival/check-in text into later mornings") -- the source of the
+	literal `"Start with {name}, then pivot to a different nearby area
+	before midday crowds."` template. Real published-run Moab output: Day 1
+	Afternoon named "Moab Giants Dinosaur Park" and Day 3 Morning
+	independently read "Start with Moab Giants Dinosaur Park, then pivot to
+	a different nearby area before midday crowds." -- the same attraction,
+	because this scrub picked its focus via bare day-index rotation
+	(`_day_focus_name`) with zero awareness of `used_multi_activity_names`.
+	Fixed: this scrub (and its Afternoon/other-period siblings in the same
+	block) now calls `_day_focus_name_excluding_used`, which skips any name
+	already in `used_multi_activity_names` and registers whatever it picks
+	back into that same set -- the actual selection logic is a new, directly
+	unit-testable static method, `AIContentGenerator._pick_unused_focus_name`,
+	promoted out of the closure specifically so it can be verified without
+	depending on the rest of `_inject_travel_realism`. Verified by
+	`tests/test_ai_content_normalization.py::test_pick_unused_focus_name_skips_names_already_registered_as_used`
+	and
+	`::test_pick_unused_focus_name_falls_back_to_repeat_when_pool_exhausted`.
+
+	**Known residual gap, investigated but not closed here.** A separate,
+	later pass in the same function -- the day-level Morning/Afternoon/
+	Evening rotation (`_pick_non_repeating_focus`, driven by its own short
+	`recent_focuses` lookback, not `used_multi_activity_names`) -- runs
+	unconditionally over every period afterward and can still independently
+	re-derive a Morning period's attraction name, overriding what the scrub
+	above just set. Verified empirically (not just by inspection): sweeping
+	~120 synthetic multi-day/multi-attraction configurations through both
+	the pre-fix and post-fix code found ZERO cases where the scrub fix
+	alone changed the final rendered Morning text -- the later rotation
+	pass's own pick wins every time a period's text names a known
+	attraction, which the scrub always leaves it doing. Two attempts to
+	also make that later pass respect `used_multi_activity_names` were
+	tried and reverted: an outright second disqualifier (on top of
+	`recent_focuses`) over-constrained the small-attraction-pool case and
+	broke
+	`test_inject_travel_realism_rotates_focus_to_reduce_adjacent_duplicates`;
+	a softer "prefer an unused candidate among those already eligible"
+	tie-break avoided that specific regression (and did produce real,
+	verified end-to-end improvements in several swept configurations) but
+	introduced a DIFFERENT regression in two other synthetic small-pool,
+	many-days configurations. Given the demonstrated regression risk to
+	real, existing, intentional round-robin/reuse test coverage, the
+	narrower fix (the scrub's own pick) was kept rather than the broader,
+	imperfect one. This is a genuine architectural overlap between multiple
+	independent focus-rotation mechanisms in `_inject_travel_realism`, not
+	something to silently claim as fully solved -- flagging for whoever
+	picks this up next, alongside the "Known gap" note below about
+	cross-destination schedule-text dedup.
 - **One major destination per block guard** (fixed -- same dipstick62 report:
 	"Moab Giants Dinosaur Park (1h 30m), Canyonlands National Park (1h 30m),
 	Arches National Park (1h 30m)" packed into a single time block, ignoring
@@ -797,6 +889,58 @@ v2.1 activity-budget behavior:
 	them -- a separate, larger effort, not covered here. The "one major
 	destination per block" guard above is a deliberately narrow, cheap
 	partial mitigation, not a substitute for that.
+
+## Evening Duration Cross-Check
+
+Before this fix, nothing in schedule generation compared a candidate
+attraction's own stated `duration` against the time-of-day period it was
+being slotted into. The Afternoon multi-activity packer
+(`_build_multi_activity_afternoon_summary`) implicitly filters by
+duration via its own budget math (`if duration_minutes > remaining:
+continue`), but Evening picks -- via the day-level focus rotation
+(`_pick_non_repeating_focus`) or untouched raw AI prose -- had no such
+check at all, and Morning/Afternoon/Evening's raw AI-authored text was
+never cross-checked against duration either. Project owner: "Are these
+estimates being really factored in?" Real motivating pattern (this
+specific string may not reproduce identically run to run, but the
+underlying gap is real): a previous run's Evening period suggested "The
+Narrows" -- a real Zion hike whose own duration badge elsewhere on the
+same real published page reads "4-8 hrs round-trip" -- physically not
+something to start after dinner.
+
+**Fixed (2026-08-18)** by extending the pre-existing closes-early-venue
+mechanism (`_is_evening_unsuitable_venue` -- strips the specific sentence
+naming a museum/discovery-site/visitor-center from an Evening summary and
+falls back to a relaxed-evening sentence if nothing else survives) with a
+parallel duration check, `_is_evening_unsuitable_duration`, rather than
+building a second, separate Evening-scrubbing pass:
+- `_parse_duration_minutes` (promoted to a static method so it's directly
+  testable and shared, not duplicated) parses an attraction's `duration`
+  field. Grounded against real `badge-duration` strings observed in
+  production output rather than one assumed format: `"1-2 hours"`,
+  `"4-8 hrs round-trip"`, `"1.5-2 hrs round-trip"`, `"30 min"`, `"1 hr"` --
+  both hyphen and en-dash range separators, both `hr(s)`/`hour(s)` and
+  `m`/`min(s)`/`minute(s)` unit spellings, a bare single value, and
+  trailing free text after the unit are all handled. A range is averaged
+  to its midpoint (e.g. `"4-8 hrs"` -> 360 minutes).
+- `_EVENING_MAX_ACTIVITY_MINUTES = 180` (3 hours) is the cutoff for "still
+  fine to start in the evening" (a sunset viewpoint, a short walk,
+  dinner-adjacent stroll) versus a genuine multi-hour undertaking. Missing
+  or unparseable duration data (`_parse_duration_minutes` returns `0`) is
+  never treated as "too long" -- absence of data must never gate content.
+- An attraction failing either the venue check OR the duration check is
+  added to the same `unsuitable_evening_names` list the existing
+  strip-the-sentence/fall-back-to-relaxed-evening mechanism already
+  consumes, so a long-duration item is excluded from Evening candidacy
+  specifically while remaining fully eligible for Morning/Afternoon,
+  where a multi-hour commitment is realistic (Morning is the "Deliberately
+  not extended" period noted above for the *packer*, but is untouched by
+  this Evening-only check).
+
+Verified by
+`tests/test_ai_content_normalization.py::test_parse_duration_minutes_handles_real_badge_formats`,
+`::test_is_evening_unsuitable_duration_flags_multi_hour_hikes_only`, and
+`::test_inject_travel_realism_strips_multi_hour_hike_mention_from_evening_schedule`.
 
 ## Reserved Travel Windows
 The scheduler now reserves specific windows for transportation at trip boundaries.
@@ -892,6 +1036,52 @@ Verified by
 `::test_generate_destination_content_moab_gets_telluride_not_arches_as_next_destination`,
 and
 `::test_normalize_schedule_moab_day_trip_days_stay_local_only_last_evening_mentions_real_next_destination`.
+
+**GH #68 grouped day trips never got a real chance to be named in the
+base's own schedule (2026-08-18 fix, real Moab regression).** The
+`previous_destination`/`next_destination` fix above only changes
+*framing* language (does the schedule correctly say "the drive happens
+tomorrow" and name the right relocation target) -- it does nothing about
+whether the base destination's own schedule *content* ever names its
+day-trip children at all. Investigated before fixing, per the project
+owner's report ("Moab's schedule never mentions Arches, only
+Canyonlands"): traced how Moab's own schedule-generation candidate pool
+(`top_attractions`, threaded into `_inject_travel_realism` as
+`attraction_names`) gets built, and confirmed it is Moab's own
+AI-generated `top_attractions` ONLY -- nothing anywhere merges in a
+grouped child's own attraction list, or even its name. Real evidence
+this is a genuine gap, not a false alarm: Moab's real rendered
+`top_attractions` (Moab Giants Dinosaur Park, Corona and Bowtie Arch via
+Corona Arch Trail, Windows Loop and Turret Arch Trail) contains neither
+"Canyonlands National Park" nor "Arches National Park" as an entry, yet
+the real published schedule named "Canyonlands National Park Island in
+the Sky" once (Day 2 Morning) -- meaning that one real mention was pure
+AI-generation luck from the LLM's own free-text schedule authoring, not
+the product of any deterministic mechanism. Arches had exactly the same
+(zero) structural chance of being named and simply didn't get the same
+luck.
+
+Fixed with a new `_resolve_group_day_trip_names` helper
+(`generator/ai_content.py`, alongside `_resolve_grouping_aware_prev_next_names`),
+manifest-only by necessity: `generate_destination_content` runs every
+destination's LLM call in parallel with no cross-destination ordering,
+so a grouped child's own AI-generated attractions don't exist yet at the
+point the base's own generation call needs this (same constraint that
+keeps `_resolve_grouping_aware_prev_next_names` manifest-only). For each
+group base entry, it resolves the plain NAMES of its `group_with`
+children from the manifest; threaded through
+`_generate_destination_bundle` -> `_normalize_destination_content` ->
+`_normalize_schedule` -> `_inject_travel_realism` as
+`group_day_trip_names`, where those names are merged into the same
+`attraction_names` candidate pool the existing focus-rotation/scrub
+mechanisms already draw from (Morning/Afternoon/Evening rotation, the
+Afternoon multi-activity packer, the arrival-clone scrub above) -- so
+every real day trip now has a genuine, deliberate chance to be named,
+not just whichever one the model happened to already know about.
+Verified by
+`tests/test_ai_content_normalization.py::test_resolve_group_day_trip_names_gives_base_both_children_only`
+and
+`::test_inject_travel_realism_moab_schedule_can_name_arches_not_just_canyonlands`.
 
 Design intent:
 - Prevent unrealistic booking of activities in boundary windows where travel
