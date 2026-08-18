@@ -652,6 +652,84 @@ explicitly (e.g. only for stops actually rendered, with the same domain
 cooldown/caching discipline already applied to the main-leg fetch) rather
 than folding it into this fix.
 
+## En-Route Stop Maps-Link Specificity
+Project owner: "several are GPS coordinates, others aren't good match (like
+Red Hollow Canyon, which falls back to a Map link for the primary, but not
+one specific to that location). Happens for other enroutes as well."
+
+Checked first whether en-route stops get an equivalent of the "Secondary
+Maps Link for Attractions and Restaurants" fix above at all: they don't need
+one for the *missing-badge* problem that fix solves -- en-route stops
+already unconditionally get a `maps_url` assigned during discovery (from
+route-waypoint geocoding, or a query-text fallback when ungeocoded) *before*
+their `url` field is even decided, which is in fact the reason that fix
+above was scoped to attractions/restaurants only (see that section). So the
+gap here is different: not a missing badge, but low **specificity** of the
+maps link/query itself when no real, distinct source page was found and a
+Google Maps search query becomes the stop's link.
+
+Traced a real, concrete asymmetry in `_retain_discovered_url`
+(`generator/url_discovery.py`): when a Google Maps search-classed URL is
+rebuilt to escape the `url_policy_mode: enforce` blocklist (the
+`allow_google_maps_search=True` path, originally added for a different bug
+-- see the "Real dipstick67 bug" comment at that call site), the rebuild
+used the *generic* `_maps_fallback_query_text(item_name, dest_name)`
+builder for every kind, including en-route stops. That builder deliberately
+omits the destination whenever the item name alone already "looks
+location-qualified" (contains a comma, a state name, "national park", etc.)
+or shares a token with the destination -- a sensible heuristic for an
+attraction/restaurant that lives *inside* the destination, but wrong for an
+en-route stop, which lives along the leg *between* two places and has no
+such association. The practical effect: two en-route stops going through
+the exact same rebuild code could end up with inconsistently-qualified
+queries purely based on their own name's shape (e.g. whether it happens to
+contain a comma), not on whether the query was actually specific enough --
+one gets `"{item} {destination}"`, the other gets just `"{item}"`.
+
+Fix: for `kind in {"en-route stop", "en_route_stop"}`, that rebuild now uses
+`_en_route_maps_fallback_query_text(item_name, "", dest_name)` instead --
+the existing, en-route-specific query builder already used for every other
+en-route maps-fallback query in this file, which unconditionally appends
+"near {dest}" whenever the destination isn't already present in the query.
+Reuses an existing helper rather than adding new logic, and satisfies the
+"at minimum, a maps-search query that includes the stop's own name" bar
+project-owner-requested, now consistently also including the destination
+for extra disambiguation.
+
+Also extended the same rebuild-instead-of-reject leniency
+(`allow_google_maps_search=True`) to `_discover_en_route_stops`'s
+"preserve existing direct-batch-provided `url`" call site. Before this fix,
+that call site had no such leniency, so a harvest row whose own `url` field
+was itself an AI-authored Google Maps search link (whatever raw query text
+the model wrote) was simply *rejected* outright under `enforce` mode --
+discarding the stop's only link and forcing a fresh, possibly-failing
+re-search -- rather than being repaired the way
+`_search_en_route_stop_from_direct_batch`'s own per-candidate evaluation a
+few hundred lines below already repairs the same shape of URL. Now both
+places apply the identical fix-up.
+
+Tests: `test_retain_discovered_url_rebuilds_en_route_maps_search_query_with_
+destination` and `test_discover_en_route_stops_rebuilds_bad_query_existing_
+maps_url_instead_of_discarding` (`tests/test_url_discovery.py`).
+
+### Known, deeper gap found but not fixed tonight
+While tracing how a raw, un-rebuilt Google Maps query could still reach
+final published output despite the `enforce`-mode policy blocklist,
+`_retain_discovered_url` was found to have an early-return leniency,
+`if self._direct_batch_is_authoritative() and self._is_remembered_direct_
+batch_authoritative_url(url, item_name): return url`, that returns the URL
+**completely unchanged** the moment it matches a previously-"remembered"
+authoritative direct-batch URL for that item name -- bypassing every
+downstream check in the function, including the query-rebuild fix above and
+the policy blocklist itself. This is a genuinely different, broader
+mechanism (applies to every kind, not just en-route stops, and exists to let
+an already-vetted URL skip re-verification cheaply on a later lookup for the
+same item) and changing it safely would need a live repro to confirm which
+call path actually "remembers" an unrebuilt Maps URL for an en-route stop in
+the first place before touching it -- not available in this session without
+API credentials. Left as a known follow-up rather than risked as a
+same-night change to a widely-shared code path.
+
 ## Fail-Closed Policy for Named Entities
 A link is only publishable for a named entity if it is a **deterministic, entity-specific
 target** — one that refers to that single entity and not a list, search query, or area

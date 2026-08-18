@@ -3221,7 +3221,31 @@ class URLDiscoverer:
                     # used everywhere else a google_maps_search fallback URL is
                     # constructed from scratch -- item_name + dest_name, with no
                     # redundant state/zip suffix.
-                    rebuilt_query = self._maps_fallback_query_text(item_name, dest_name)
+                    #
+                    # En-route stops are a real, separately-documented case of
+                    # this same problem (project owner: "Red Hollow Canyon...
+                    # falls back to a Map link for the primary, but not one
+                    # specific to that location"). The plain
+                    # `_maps_fallback_query_text` builder used above omits the
+                    # destination whenever the item name alone already looks
+                    # "location-qualified" (contains a state name, "national
+                    # park", etc.) or shares a token with the destination --
+                    # heuristics tuned for attractions/restaurants, which live
+                    # *inside* the destination itself. An en-route stop lives
+                    # along the leg *between* two places and has no such
+                    # association, so the same heuristic firing here produces
+                    # an inconsistently under-qualified query purely based on
+                    # the stop's own name shape, not on whether the query is
+                    # actually specific enough. `_en_route_maps_fallback_query_text`
+                    # is the existing, en-route-specific variant (already used
+                    # for every other en-route maps fallback query built
+                    # elsewhere in this file) that unconditionally appends
+                    # "near {dest}" whenever the destination isn't already
+                    # present -- reused here rather than duplicated.
+                    if kind in {"en-route stop", "en_route_stop"}:
+                        rebuilt_query = self._en_route_maps_fallback_query_text(item_name, "", dest_name)
+                    else:
+                        rebuilt_query = self._maps_fallback_query_text(item_name, dest_name)
                     if rebuilt_query:
                         url = f"https://www.google.com/maps/search/?api=1&query={quote(rebuilt_query)}"
                 logger.info(
@@ -10177,6 +10201,20 @@ class URLDiscoverer:
                         dest_name,
                         allow_alltrails=False,
                         kind="en_route_stop",
+                        # See item2 fix note (docs/design/url-discovery-and-
+                        # audit.md, "En-Route Stop Maps-Link Specificity"):
+                        # a direct-batch row's own `url` field is sometimes
+                        # itself an AI-authored Google Maps search link with
+                        # whatever raw query text the model wrote (e.g. just
+                        # the bare item name, no destination). Without this,
+                        # such a link is flatly rejected here (a real stop
+                        # loses its only link) instead of being rebuilt with
+                        # this module's own controlled, always-destination-
+                        # qualified query text -- the same leniency
+                        # `_search_en_route_stop_from_direct_batch`'s own
+                        # per-candidate check already grants a few hundred
+                        # lines below, now applied uniformly here too.
+                        allow_google_maps_search=True,
                     )
                     if cleaned_existing:
                         stop["url"] = cleaned_existing
