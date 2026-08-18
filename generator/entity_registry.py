@@ -426,6 +426,25 @@ def reconcile_schedule_from_registry(reconciled_trip: dict[str, Any], registry: 
                     if _schedule_summary_mentions_entity(existing_summary, name):
                         usage_count[name.lower()] = usage_count.get(name.lower(), 0) + 1
 
+        # Real dipstick70 bug: a candidate the AI's own untouched text never
+        # happens to mention anywhere (organic usage_count stays 0) becomes a
+        # permanent "least-used" magnet for every substitution across the
+        # whole multi-day schedule -- picking it once only raises it to 1,
+        # which still ties-or-beats every other candidate that started at 2+
+        # from genuine organic mentions elsewhere. Real case: Bryce's "Navajo
+        # Loop and Queens Garden Trail" got substituted into BOTH Day 1 and
+        # Day 2 Evening verbatim ("Wrap the day with Navajo Loop and Queens
+        # Garden Trail before dinner near your base.") because every other
+        # real attraction was already organically named elsewhere in the
+        # schedule and so outranked it on usage_count alone. Track how many
+        # times a name has been chosen AS A SUBSTITUTE separately, and
+        # minimize THAT first -- so a candidate already used once as a
+        # substitute yields to any candidate not yet substituted at all,
+        # regardless of organic-mention count. usage_count remains the
+        # tie-breaker among untried candidates (same "spread reuse evenly"
+        # intent as before).
+        substitute_count: dict[str, int] = {name.lower(): 0 for name in candidate_names}
+
         for day in schedule:
             if not isinstance(day, dict):
                 continue
@@ -450,10 +469,21 @@ def reconcile_schedule_from_registry(reconciled_trip: dict[str, Any], registry: 
                 label = str(period.get("period", "") or "").strip().lower()
                 eligible = [name for name in candidate_names if name.lower() not in day_used_lower]
                 pool = eligible or candidate_names
-                substitute = min(pool, key=lambda name: usage_count.get(name.lower(), 0)) if pool else ""
+                substitute = (
+                    min(
+                        pool,
+                        key=lambda name: (
+                            substitute_count.get(name.lower(), 0),
+                            usage_count.get(name.lower(), 0),
+                        ),
+                    )
+                    if pool
+                    else ""
+                )
                 if substitute and label in _CONCRETE_SUBSTITUTE_BY_PERIOD:
                     period["summary"] = _CONCRETE_SUBSTITUTE_BY_PERIOD[label].format(name=substitute)
                     usage_count[substitute.lower()] = usage_count.get(substitute.lower(), 0) + 1
+                    substitute_count[substitute.lower()] = substitute_count.get(substitute.lower(), 0) + 1
                     day_used_lower.add(substitute.lower())
                 else:
                     period["summary"] = _SCHEDULE_FALLBACK_BY_PERIOD.get(label, _SCHEDULE_FALLBACK_GENERIC)

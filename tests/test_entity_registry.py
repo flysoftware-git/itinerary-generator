@@ -499,3 +499,84 @@ def test_reconcile_trip_from_registry_leaves_deferred_cultural_events_empty() ->
     assert moab_events["has_events"] is False
     assert moab_events["ambient_scene"] == "Moab has a laid-back cultural scene in October."
     assert moab_events["events"] == []
+
+
+def test_reconcile_schedule_from_registry_does_not_repeat_same_substitute_across_days() -> None:
+    """Regression (real dipstick70 bug): a candidate attraction the AI's own
+    untouched schedule text never happens to mention anywhere (organic
+    usage_count stays 0) became a permanent "least-used" magnet for every
+    registry-driven substitution across a multi-day schedule -- picking it
+    once only raised its usage_count to 1, which still tied-or-beat every
+    other real candidate that started higher from genuine organic mentions
+    elsewhere. Real case: Bryce Canyon's "Navajo Loop and Queens Garden
+    Trail" got substituted into BOTH Day 1 Evening and Day 2 Evening
+    verbatim ("Wrap the day with Navajo Loop and Queens Garden Trail before
+    dinner near your base.") even though 4 other real, distinct attractions
+    were available and never used as a substitute at all.
+    """
+    trip = {
+        "destinations": [
+            {
+                "id": "bryce",
+                "name": "Bryce Canyon National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {"name": "Sunrise Point", "type": "viewpoint", "url": "https://example.com/sunrise"},
+                        {"name": "Navajo Loop Trail", "type": "hike", "url": "https://example.com/navajo"},
+                        {
+                            "name": "Navajo Loop and Queens Garden Trail",
+                            "type": "hike",
+                            "url": "https://example.com/combo",
+                        },
+                        {"name": "Paria View", "type": "viewpoint", "url": "https://example.com/paria"},
+                        {"name": "Bryce Canyon Scenic Drive", "type": "drive", "url": "https://example.com/drive"},
+                        {
+                            "name": "Fairyland Point",
+                            "type": "viewpoint",
+                            "url": "https://example.com/fairyland",
+                            "_registry": {"validation_status": "rejected", "rejection_reasons": ["dead_link"]},
+                        },
+                    ],
+                    "possible_daily_schedule": [
+                        {
+                            "day_label": "Day 1",
+                            "periods": [
+                                {"period": "Morning", "summary": "Arrive and check in. Head to Sunrise Point."},
+                                {
+                                    "period": "Afternoon",
+                                    "summary": "Consider Sunrise Point and Navajo Loop Trail, or Paria View.",
+                                },
+                                {
+                                    "period": "Evening",
+                                    "summary": "Watch sunset from Fairyland Point before dinner near your base.",
+                                },
+                            ],
+                        },
+                        {
+                            "day_label": "Day 2",
+                            "periods": [
+                                {"period": "Morning", "summary": "Start with Navajo Loop Trail."},
+                                {"period": "Afternoon", "summary": "Spend the afternoon at Bryce Canyon Scenic Drive."},
+                                {
+                                    "period": "Evening",
+                                    "summary": "Return to Fairyland Point for one more look before dinner near your base.",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            }
+        ]
+    }
+
+    registry = build_entity_registry(trip)
+    reconciled = reconcile_trip_from_registry(trip, registry)
+    reconcile_schedule_from_registry(reconciled, registry)
+
+    schedule = reconciled["destinations"][0]["ai_content"]["possible_daily_schedule"]
+    day1_evening = schedule[0]["periods"][2]["summary"]
+    day2_evening = schedule[1]["periods"][2]["summary"]
+
+    assert "fairyland point" not in day1_evening.lower()
+    assert "fairyland point" not in day2_evening.lower()
+    assert day1_evening != day2_evening
