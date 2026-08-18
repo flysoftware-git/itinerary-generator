@@ -70,6 +70,14 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                     "type": "number",
                     "description": "Optional default target number of attractions to keep per destination-day when ranking candidates.",
                 },
+                "restaurants_per_day": {
+                    "type": "number",
+                    "description": "Optional default target number of dinner_recommendations to keep per destination-day when ranking candidates. Mirrors attractions_per_day.",
+                },
+                "en_route_stops_per_day": {
+                    "type": "number",
+                    "description": "Optional default target number of en-route stops to keep per destination-day (scaled by the ARRIVING destination's day count, not the drive itself) when trimming candidates. Mirrors attractions_per_day.",
+                },
                 "has_high_clearance_vehicle": {
                     "type": "boolean",
                     "description": "Optional traveler vehicle declaration. When explicitly set to "
@@ -143,6 +151,14 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                     "attractions_per_day": {
                         "type": "number",
                         "description": "Optional destination-specific target number of attractions to keep per destination-day when ranking candidates.",
+                    },
+                    "restaurants_per_day": {
+                        "type": "number",
+                        "description": "Optional destination-specific target number of dinner_recommendations to keep per destination-day when ranking candidates. Mirrors attractions_per_day.",
+                    },
+                    "en_route_stops_per_day": {
+                        "type": "number",
+                        "description": "Optional destination-specific target number of en-route stops to keep per destination-day when trimming candidates. Mirrors attractions_per_day.",
                     },
                     "lodging": {
                         "type": "object",
