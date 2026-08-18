@@ -344,6 +344,93 @@ Implementation notes:
   window) — Wayback is purely an on-failure fallback, verified to add no
   extra call when the direct fetch already succeeds.
 
+### dipstick72: the Wayback fallback itself still fired zero times in production (real root cause + fix)
+
+The Wayback fallback above shipped, passed every unit test, AND was
+live-verified (17/19 real trails had a working snapshot). It was merged.
+The very next fresh production run (dipstick72, 20 real AllTrails
+attractions) still showed the feature fire **zero** times — same signature
+as dipstick71 before the fix (no `alltrails_geo_maps_url_attached` log
+line anywhere, no exception, `run-console.log` just stops after the
+attraction's URL is accepted). Re-reading the calling code
+(`audit_discovered_urls`'s `top_attractions` loop) found nothing wrong: the
+`elif cleaned and self._is_alltrails_trail_url(cleaned): geo_maps_url =
+self._alltrails_geo_maps_url(cleaned)` wiring was — and still is —
+correct. The bug was not in this module's own logic at all.
+
+Root cause, found only by live reproduction (a standalone script calling
+`_alltrails_geo_maps_url` with a real `URLValidator` and real network
+access against dipstick72's actual trail URLs — see
+`_fetch_wayback_alltrails_text`'s docstring for the full account): the
+Wayback fallback's lookup step called `https://archive.org/wayback/
+available?url=<trail-url>` — a **separate, low-quota archive.org host**
+from the CDX search / snapshot-playback host (`web.archive.org`) used
+everywhere else in this fallback. Under real, moderate production request
+volume that endpoint returns HTTP 429 for extended stretches with no
+code-side retry: a clean, correctly-paced (1 req/sec, single process) run
+against all 20 real dipstick72 trail URLs got **429 on 20/20**, and
+isolated single lookups kept 429ing for 60+ seconds afterwards. Because
+`_fetch_wayback_alltrails_text` fails closed *silently* by design (matching
+`_alltrails_geo_maps_url`'s own "never fabricate a link" contract), a 429
+that outlasts a destination's ~20-second audit pass zeroes out every trail
+in it with **zero trace in the logs** — exactly the dipstick72 signature.
+The feature's own unit tests never caught this because all of them mock
+`_fetch_page_text`/`_fetch_wayback_alltrails_text` directly and never make
+a real request to archive.org.
+
+Fix: `_fetch_wayback_alltrails_text` now looks up snapshots via the Wayback
+Machine's **CDX Server API** (`https://web.archive.org/cdx/search/cdx?url=
+<trail-url>&output=json&filter=statuscode:200&limit=-5`) instead of the
+`archive.org/wayback/available` helper. Live-reproduced in the same window
+as the 429s above: while the availability helper was sustained-429ing, the
+CDX endpoint kept answering with real 200s and correct data for the exact
+same trail URLs — confirming it is a genuinely separate host/quota, not
+just a lucky retry. CDX also lets the query filter to `statuscode:200`
+directly (the old availability API's "closest" snapshot could hand back an
+archived DataDome block page — reproduced live: a `web.archive.org/web/
+2024/<trail-url>` redirect landed on a 2025-08-11 snapshot that was itself
+a captured 403 block page, not real content) and take the most recent
+matching row (`limit=-N` returns oldest-first, so `rows[-1]` is newest).
+
+Two smaller, evidence-backed resilience additions from the same live
+testing session:
+- **One retry on a transient failure** (429, 5xx, or a read timeout) after
+  a short pause, for both the CDX call and the snapshot fetch. Observed
+  live: a request that 429s or times out often succeeds on a plain retry
+  moments later — archive.org's flakiness here comes in short (seconds-
+  long) bursts, not sustained outages, so a single retry meaningfully
+  raises the real-world success rate. A non-transient failure (no
+  snapshot, invalid URL) is not retried.
+- **Longer timeout for the snapshot fetch specifically** (20s, up from the
+  8s used for the direct AllTrails fetch): the archived HTML served through
+  `web.archive.org`'s playback proxy is a large page (~1.1-1.2MB) and was
+  live-observed to occasionally need more than 8s to arrive even when the
+  fetch was going to succeed. An 8s timeout was silently turning a slow
+  success into a failure indistinguishable from "no snapshot."
+- **Failure-path logging**: the `audit_discovered_urls` call site now logs
+  a `alltrails_geo_maps_url_unavailable` decision (informational only, does
+  not touch `url`/`maps_url`) whenever `_alltrails_geo_maps_url` returns
+  `None` for an accepted trail. Previously this path logged nothing at all
+  on failure, which is exactly why dipstick72's regression needed a live
+  reproduction script instead of a `run-console.log` grep to diagnose.
+
+Live end-to-end re-verification (2026-08-18, real network, real trail
+URLs, no mocks) against the same URLs dipstick72 actually failed on:
+Double Arch Trail → `(38.68828, -109.53838)`; Mesa Arch → `(38.38909,
+-109.86796)` — the identical coordinate the original pre-merge live
+verification found; Windows Loop and Turret Arch Trail → `(38.68716,
+-109.53672)`; Corona and Bowtie Arch Trail → `(38.57446, -109.63238)`.
+Hickman Bridge Trail still correctly fails closed (its newest archived
+snapshot, re-checked live via CDX, is still 2023-07-10 — before AllTrails'
+JSON-LD rollout, matching the pre-existing documented limitation above,
+not a regression).
+
+Residual risk: this remains a dependency on a third-party archive
+service's real-time availability. The CDX host/retry/longer-timeout
+changes measurably reduce — they do not eliminate — the chance of a
+transient archive.org hiccup zeroing out a run's Wayback fallback; the
+fail-closed, unfabricated-link guarantee is unaffected either way.
+
 ## Fail-Closed Policy for Named Entities
 A link is only publishable for a named entity if it is a **deterministic, entity-specific
 target** — one that refers to that single entity and not a list, search query, or area
