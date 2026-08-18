@@ -2382,6 +2382,27 @@ class URLDiscoverer:
                             message="attached coordinate-based Google Maps link from AllTrails trail page JSON-LD geo field",
                             url=geo_maps_url,
                         )
+                    else:
+                        # Visibility fix (2026-08-18): previously this branch
+                        # logged nothing at all on failure, which is exactly
+                        # why dipstick72's real 0/20-fires-in-production
+                        # regression (root cause: archive.org's wayback
+                        # availability lookup 429ing under ordinary request
+                        # volume -- see _fetch_wayback_alltrails_text's
+                        # docstring) was invisible in run-console.log and
+                        # needed a live reproduction script to diagnose
+                        # instead of a log grep. Strictly informational --
+                        # does not touch maps_url/url, matches the
+                        # fail-closed contract documented on
+                        # _alltrails_geo_maps_url.
+                        self._log_decision(
+                            kind="attraction",
+                            dest_name=dest_name,
+                            item_name=attr_name,
+                            reason="alltrails_geo_maps_url_unavailable",
+                            message="no coordinate-based Google Maps link attached: direct fetch and Wayback Machine fallback both failed to yield a usable JSON-LD geo field",
+                            url="",
+                        )
                 if self._keep_item_if_verified_or_seed(
                     dest, attr, attr_name,
                     is_seed=is_seed,
@@ -7722,7 +7743,15 @@ class URLDiscoverer:
             return None
         ok, _status, text = self._fetch_page_text(url, timeout=8)
         if not ok or not text:
-            ok, _status, text = self._fetch_wayback_alltrails_text(url, timeout=8)
+            # A longer timeout than the direct-fetch path above: archive.org's
+            # web.archive.org playback proxy is noticeably slower than a
+            # normal site fetch for a ~1-1.2MB archived AllTrails page (live-
+            # reproduced 2026-08-18 -- an 8s timeout genuinely wasn't enough
+            # some of the time and turned a slow-but-real snapshot fetch into
+            # a silent failure indistinguishable from "no snapshot"). 20s
+            # still fails fast relative to how rare this path's own retry
+            # already makes a *permanent* miss.
+            ok, _status, text = self._fetch_wayback_alltrails_text(url, timeout=20)
             if not ok or not text:
                 return None
         coords = self._extract_alltrails_geo_from_html(text)
@@ -11952,19 +11981,59 @@ class URLDiscoverer:
     def _fetch_wayback_alltrails_text(self, url: str, timeout: int = 8) -> tuple[bool, int | str, str]:
         """Fallback for _alltrails_geo_maps_url when a direct AllTrails fetch
         is bot-blocked (see _fetch_alltrails_text's own comment on
-        DataDome): looks up the closest archived snapshot of `url` via the
-        Wayback Machine's free, no-auth CDX availability API and fetches
-        that snapshot's HTML instead. archive.org's own crawler isn't the
+        DataDome): looks up the most recent good archived snapshot of `url`
+        via the Wayback Machine's CDX Server API and fetches that
+        snapshot's HTML instead. archive.org's own crawler isn't the
         automated traffic DataDome is trying to block, and it stores the
         ORIGINAL page HTML (including JSON-LD) at crawl time.
 
-        Verified live (2026-08-18): `https://archive.org/wayback/available
-        ?url=<trail-url>` returns `{"archived_snapshots": {"closest":
-        {"available": true, "status": "200", "url": "http://web.archive.org
-        /web/<timestamp>/<original-url>"}}}` when a snapshot exists, or an
-        empty `archived_snapshots: {}` dict when none does. Checked against
-        all 19 real AllTrails trail URLs from a real production run
-        (dipstick71): 17/19 had an available snapshot.
+        ROOT CAUSE of dipstick72's 0/20 fires (found 2026-08-18 by live
+        reproduction against real trail URLs, not by re-reading the code):
+        this originally called the single-URL `https://archive.org/wayback
+        /available?url=<trail-url>` "availability" helper API. That
+        endpoint is a *shared, low-quota* archive.org service (a different
+        host/service than the CDX search below) that returns HTTP 429 for
+        long stretches under completely ordinary, humble request volumes --
+        reproduced live: a clean, correctly-1-req/sec-paced, single-process
+        run against all 20 real dipstick72 trail URLs got 429 on all 20/20,
+        and even isolated single lookups kept 429ing for 60+ seconds
+        straight afterwards with no code-side retry. Nothing in this
+        module's call path raises or logs on that failure (by design, this
+        function fails closed silently, and _alltrails_geo_maps_url's own
+        contract is "return None on any fetch failure, leave maps_url
+        alone") -- so a 429 that lasts the entire ~20-second span of a
+        destination's real audit pass silently zeroes out every single
+        item, with no exception and no log line anywhere. That is exactly
+        the dipstick72 signature: 0/20 fires, no "wayback" string anywhere
+        in run-console.log, no traceback. The feature's own unit tests
+        never caught this because every one of them mocks _fetch_page_text/
+        _fetch_wayback_alltrails_text directly and never makes a real
+        request to archive.org at all (see test_url_discovery.py's
+        test_alltrails_geo_maps_url_* tests).
+
+        Fix: use the Wayback Machine's CDX Server API
+        (`https://web.archive.org/cdx/search/cdx`) instead -- confirmed
+        live to be a separate host/quota from the `archive.org/wayback/
+        available` endpoint above: while `archive.org/wayback/available`
+        was mid-429 (reproduced continuously for 60+ seconds), the CDX
+        endpoint answered every query with a real 200 and correct snapshot
+        data, for the exact same trail URLs, in the exact same window. CDX
+        also lets the query filter to `statuscode:200` and take the most
+        recent matching snapshot directly (`limit=-N`, ascending by
+        timestamp) -- strictly better than the old availability API's
+        "closest" snapshot, which could hand back an archived DataDome
+        block page (also reproduced live: a `web.archive.org/web/2024/
+        <url>` redirect landed on a 2025-08-11 snapshot that was itself a
+        403 bot-block capture, not real trail content).
+
+        Live-verified end-to-end via this exact path (2026-08-18, CDX +
+        snapshot fetch + _extract_alltrails_geo_from_html, real network,
+        no mocks): Double Arch Trail (Moab) -> (38.68828, -109.53838);
+        Mesa Arch (Moab) -> (38.38909, -109.86796) -- the identical
+        coordinate the original live-verification agent found before this
+        feature was merged, confirming the extraction logic itself was
+        always correct and only the availability lookup was the failure
+        point.
 
         A trail recrawled recently by archive.org (2024 onward, based on
         spot checks) carries the SAME `<script type="application/ld+json">`
@@ -11978,22 +12047,26 @@ class URLDiscoverer:
         that will not yield a coordinate through this path. That is a
         fail-closed miss, not a bug, per this module's no-invented-data
         rule: _extract_alltrails_geo_from_html is reused as-is rather than
-        adding a second, microdata-specific parser for it.
+        adding a second, microdata-specific parser for it. The
+        `statuscode:200` CDX filter reduces how often this happens (an old
+        DataDome-blocked-at-crawl-time snapshot is excluded outright), but
+        a genuinely old good snapshot can still predate the JSON-LD
+        rollout.
 
         Deliberately does NOT route through _fetch_page_text/
-        _fetch_alltrails_text: both archive.org URLs used here (the
-        availability API call and the snapshot URL itself) contain the
-        literal substrings "alltrails.com" and "/trail/" (the original
-        AllTrails URL is embedded in each), so _is_alltrails_trail_url's
-        plain substring check would misroute them into AllTrails' own
-        request-pacing/block-cooldown state even though the actual HTTP
-        request goes to a completely different host (archive.org /
-        web.archive.org) -- and this fallback specifically runs right after
-        a direct AllTrails fetch just failed, i.e. exactly when that
-        cooldown is most likely to be active. Goes straight to
-        _fetch_page_text_uncached instead, with its own independent
-        cache/pacing/persistence (_wayback_fetch_cache, mirroring
-        _alltrails_fetch_cache's shape and persistence pattern).
+        _fetch_alltrails_text: both archive.org URLs used here (the CDX
+        query and the snapshot URL itself) contain the literal substrings
+        "alltrails.com" and "/trail/" (the original AllTrails URL is
+        embedded in each), so _is_alltrails_trail_url's plain substring
+        check would misroute them into AllTrails' own request-pacing/
+        block-cooldown state even though the actual HTTP request goes to a
+        completely different host (archive.org / web.archive.org) -- and
+        this fallback specifically runs right after a direct AllTrails
+        fetch just failed, i.e. exactly when that cooldown is most likely
+        to be active. Goes straight to _fetch_page_text_uncached instead,
+        with its own independent cache/pacing/persistence
+        (_wayback_fetch_cache, mirroring _alltrails_fetch_cache's shape and
+        persistence pattern).
         """
         if not hasattr(self, "_wayback_fetch_cache"):
             self._wayback_fetch_cache = {}
@@ -12011,7 +12084,7 @@ class URLDiscoverer:
             if cached is not None:
                 return cached
 
-            def _paced_fetch(target_url: str) -> tuple[bool, int | str, str]:
+            def _single_fetch(target_url: str) -> tuple[bool, int | str, str]:
                 if delay_seconds > 0:
                     last_request = float(getattr(self, "_wayback_last_request_ts", 0.0) or 0.0)
                     elapsed = time.monotonic() - last_request
@@ -12020,26 +12093,72 @@ class URLDiscoverer:
                 self._wayback_last_request_ts = time.monotonic()
                 return self._fetch_page_text_uncached(target_url, timeout=timeout)
 
-            availability_url = f"https://archive.org/wayback/available?url={quote(url, safe=':/')}"
-            ok, status, body = _paced_fetch(availability_url)
+            def _paced_fetch(target_url: str) -> tuple[bool, int | str, str]:
+                # One retry on a transient-looking failure (429, 5xx, or a
+                # read timeout) after a short pause -- live-reproduced
+                # 2026-08-18: archive.org's web.archive.org host (both the
+                # CDX search above and the snapshot playback below) goes
+                # through short stretches of 429s/timeouts that clear up
+                # within seconds on their own (a request that 429s can
+                # succeed on a plain retry moments later; a request that
+                # read-timed-out at 8s can succeed well within a second
+                # retry). A single retry is cheap insurance against exactly
+                # that pattern without turning a real, durable failure (no
+                # snapshot, invalid URL) into a slow one.
+                result = _single_fetch(target_url)
+                ok, status, _text = result
+                if ok:
+                    return result
+                transient = status == 429 or (isinstance(status, int) and status >= 500) or (
+                    isinstance(status, str) and "timed out" in status.lower()
+                )
+                if not transient:
+                    return result
+                time.sleep(2.0)
+                return _single_fetch(target_url)
+
+            # CDX Server API, not the archive.org/wayback/available helper --
+            # see this function's docstring for the live-reproduced evidence
+            # that the availability helper is a separate, much lower-quota
+            # host/service that 429s under ordinary production request
+            # volume while CDX keeps working. limit=-5 asks for (up to) the
+            # 5 most recent statuscode:200 snapshots, returned oldest-first,
+            # so rows[-1] is the newest usable one -- newer snapshots are
+            # both more likely to carry the JSON-LD geo block (see docstring)
+            # and less likely to be stale trail data.
+            cdx_url = (
+                "https://web.archive.org/cdx/search/cdx?url="
+                f"{quote(url, safe=':/')}&output=json&filter=statuscode:200&limit=-5"
+            )
+            ok, status, body = _paced_fetch(cdx_url)
 
             snapshot_url = ""
             if ok and body:
                 try:
-                    payload = json.loads(body)
+                    rows = json.loads(body)
                 except (json.JSONDecodeError, TypeError):
-                    payload = None
-                if isinstance(payload, dict):
-                    closest = (payload.get("archived_snapshots") or {}).get("closest")
-                    if isinstance(closest, dict) and closest.get("available"):
-                        snapshot_url = str(closest.get("url") or "").strip()
+                    rows = None
+                if isinstance(rows, list) and len(rows) >= 2 and isinstance(rows[0], list):
+                    header = rows[0]
+                    try:
+                        ts_idx = header.index("timestamp")
+                        orig_idx = header.index("original")
+                    except ValueError:
+                        ts_idx = orig_idx = -1
+                    if ts_idx >= 0 and orig_idx >= 0:
+                        last_row = rows[-1]
+                        if isinstance(last_row, list) and len(last_row) > max(ts_idx, orig_idx):
+                            timestamp = str(last_row[ts_idx] or "").strip()
+                            original = str(last_row[orig_idx] or "").strip()
+                            if timestamp and original:
+                                snapshot_url = f"https://web.archive.org/web/{timestamp}/{original}"
 
             if not snapshot_url:
-                # No archived snapshot (or the availability lookup itself
-                # failed) -- cache the miss in memory for this run only
-                # (never persisted to disk, see _save_persistent_caches),
-                # since it may be a transient archive.org hiccup rather than
-                # a durable "never archived" answer.
+                # No archived snapshot (or the CDX lookup itself failed) --
+                # cache the miss in memory for this run only (never
+                # persisted to disk, see _save_persistent_caches), since it
+                # may be a transient archive.org hiccup rather than a
+                # durable "never archived" answer.
                 result: tuple[bool, int | str, str] = (False, status if not ok else "no_snapshot", "")
                 self._wayback_fetch_cache[url] = result
                 self._mark_persistent_cache_dirty()

@@ -9106,30 +9106,52 @@ def test_alltrails_geo_maps_url_does_not_call_wayback_when_direct_fetch_succeeds
 
 
 def test_fetch_wayback_alltrails_text_success_shape():
-    """Grounded in the real archive.org availability response shape
-    (verified live 2026-08-18 for
-    alltrails.com/trail/us/utah/hickman-bridge-trail) and a real recent
-    (2026-01-08) archived snapshot's JSON-LD geo block (american-samoa/
-    tutuila/lower-sauma-ridge-trail) -- mocks both the CDX availability API
-    call and the archived-snapshot HTML fetch."""
+    """Grounded in the real Wayback CDX Server API response shape (verified
+    live 2026-08-18 for alltrails.com/trail/us/utah/mesa-arch:
+    `https://web.archive.org/cdx/search/cdx?url=...&output=json&filter=
+    statuscode:200&limit=-5` returns a JSON array whose first row is the
+    column header and whose LAST row (limit=-N returns oldest-first) is the
+    most recent statuscode:200 snapshot) and a real recent (2026-01-08)
+    archived snapshot's JSON-LD geo block (american-samoa/tutuila/
+    lower-sauma-ridge-trail) -- mocks both the CDX call and the
+    archived-snapshot HTML fetch.
+
+    dipstick72 root cause (2026-08-18): this used to call the single-URL
+    `archive.org/wayback/available` helper API, which was live-reproduced
+    429ing under ordinary production request volume (all 20/20 real trail
+    lookups from a real run got 429, and isolated retries kept 429ing for
+    60+ seconds) while the CDX API used here, live-reproduced in the same
+    window against the same real trail URLs, kept returning real 200s --
+    a separate, more generous host/quota. See
+    _fetch_wayback_alltrails_text's docstring for the full writeup."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     trail_url = "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail"
     snapshot_url = (
-        "http://web.archive.org/web/20230710204311/"
+        "https://web.archive.org/web/20260108000000/"
         "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail"
     )
-    availability_body = json.dumps(
-        {
-            "url": "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail",
-            "archived_snapshots": {
-                "closest": {
-                    "status": "200",
-                    "available": True,
-                    "url": snapshot_url,
-                    "timestamp": "20230710204311",
-                }
-            },
-        }
+    cdx_body = json.dumps(
+        [
+            ["urlkey", "timestamp", "original", "mimetype", "statuscode", "digest", "length"],
+            [
+                "com,alltrails)/trail/us/utah/hickman-bridge-trail",
+                "20230710204311",
+                "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail",
+                "text/html",
+                "200",
+                "OLDDIGEST",
+                "36694",
+            ],
+            [
+                "com,alltrails)/trail/us/utah/hickman-bridge-trail",
+                "20260108000000",
+                "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail",
+                "text/html",
+                "200",
+                "NEWDIGEST",
+                "152257",
+            ],
+        ]
     )
     archived_html = (
         '<script type="application/ld+json">'
@@ -9139,8 +9161,8 @@ def test_fetch_wayback_alltrails_text_success_shape():
     )
 
     def fake_fetch_uncached(url, timeout=8):
-        if "archive.org/wayback/available" in url:
-            return (True, 200, availability_body)
+        if "web.archive.org/cdx/search/cdx" in url:
+            return (True, 200, cdx_body)
         if url == snapshot_url:
             return (True, 200, archived_html)
         raise AssertionError(f"unexpected URL fetched: {url}")
@@ -9159,34 +9181,84 @@ def test_fetch_wayback_alltrails_text_success_shape():
 
 
 def test_fetch_wayback_alltrails_text_no_snapshot_available():
-    """A trail never archived by the Wayback Machine -- the real API shape
-    for "no snapshot" is an empty `archived_snapshots: {}` dict (no
-    `closest` key at all). Must return a graceful empty result, not raise."""
+    """A trail never archived by the Wayback Machine -- the real CDX API
+    shape for "no snapshot" is a JSON array with only the header row (or an
+    empty array). Must return a graceful empty result, not raise."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     trail_url = "https://www.alltrails.com/trail/us/nowhere/never-archived-trail"
-    availability_body = json.dumps(
-        {"url": "https://www.alltrails.com/trail/us/nowhere/never-archived-trail", "archived_snapshots": {}}
-    )
+    cdx_body = json.dumps([["urlkey", "timestamp", "original", "mimetype", "statuscode", "digest", "length"]])
 
     with patch.object(
-        discoverer, "_fetch_page_text_uncached", return_value=(True, 200, availability_body)
+        discoverer, "_fetch_page_text_uncached", return_value=(True, 200, cdx_body)
     ) as mock_fetch:
         ok, status, text = discoverer._fetch_wayback_alltrails_text(trail_url, timeout=8)
     assert ok is False
     assert text == ""
-    # Only the availability lookup should have fired -- no snapshot URL to fetch.
+    # Only the CDX lookup should have fired -- no snapshot URL to fetch.
     mock_fetch.assert_called_once()
 
 
-def test_fetch_wayback_alltrails_text_availability_lookup_failure():
-    """archive.org itself unreachable/erroring -- must fail closed, not
-    crash, and not fabricate a snapshot URL."""
+def test_fetch_wayback_alltrails_text_cdx_lookup_failure():
+    """archive.org itself unreachable/erroring with a non-transient error --
+    must fail closed, not crash, and not fabricate a snapshot URL."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     trail_url = "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail"
-    with patch.object(discoverer, "_fetch_page_text_uncached", return_value=(False, "timeout", "")):
+    with patch.object(discoverer, "_fetch_page_text_uncached", return_value=(False, "invalid_url", "")):
         ok, status, text = discoverer._fetch_wayback_alltrails_text(trail_url, timeout=8)
     assert ok is False
     assert text == ""
+
+
+def test_fetch_wayback_alltrails_text_retries_once_on_transient_429_then_succeeds():
+    """dipstick72's real production failure mode, reproduced live 2026-08-18:
+    archive.org's wayback endpoints intermittently 429 (or read-timeout) for
+    a matter of seconds and then serve a normal 200 on the very next
+    attempt. A single retry after a short pause turns that transient blip
+    into a success instead of a silent, permanent miss for that item."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    trail_url = "https://www.alltrails.com/trail/us/utah/mesa-arch"
+    snapshot_url = "https://web.archive.org/web/20251119122301/https://www.alltrails.com/trail/us/utah/mesa-arch"
+    cdx_body = json.dumps(
+        [
+            ["urlkey", "timestamp", "original", "mimetype", "statuscode", "digest", "length"],
+            [
+                "com,alltrails)/trail/us/utah/mesa-arch",
+                "20251119122301",
+                "https://www.alltrails.com/trail/us/utah/mesa-arch",
+                "text/html",
+                "200",
+                "DIGEST",
+                "152149",
+            ],
+        ]
+    )
+    archived_html = (
+        '<script type="application/ld+json">'
+        '{"@type": "LocalBusiness", "geo": {"@type": "GeoCoordinates", '
+        '"latitude": "38.38909", "longitude": "-109.86796"}}'
+        "</script>"
+    )
+
+    call_count = {"cdx": 0}
+
+    def fake_fetch_uncached(url, timeout=8):
+        if "web.archive.org/cdx/search/cdx" in url:
+            call_count["cdx"] += 1
+            if call_count["cdx"] == 1:
+                return (False, 429, "")
+            return (True, 200, cdx_body)
+        if url == snapshot_url:
+            return (True, 200, archived_html)
+        raise AssertionError(f"unexpected URL fetched: {url}")
+
+    with patch.object(discoverer, "_fetch_page_text_uncached", side_effect=fake_fetch_uncached), patch(
+        "generator.url_discovery.time.sleep"
+    ):
+        ok, status, text = discoverer._fetch_wayback_alltrails_text(trail_url, timeout=8)
+    assert ok is True
+    coords = URLDiscoverer._extract_alltrails_geo_from_html(text)
+    assert coords == (38.38909, -109.86796)
+    assert call_count["cdx"] == 2
 
 
 def test_audit_attaches_alltrails_geo_coordinate_maps_url_for_accepted_trail() -> None:
