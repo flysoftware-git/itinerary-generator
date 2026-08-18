@@ -6,7 +6,12 @@ import time
 import pytest
 from unittest.mock import MagicMock, patch
 from threading import Lock
-from generator.url_discovery import URLDiscoverer, _build_query_variants
+from generator.url_discovery import (
+    DEFAULT_EN_ROUTE_DETOUR_MAX_MILES,
+    DEFAULT_EN_ROUTE_DETOUR_MAX_MINUTES,
+    URLDiscoverer,
+    _build_query_variants,
+)
 
 
 def test_build_query_variants_returns_four():
@@ -460,6 +465,44 @@ def test_en_route_stop_within_threshold_seed_override_still_enforces_hard_caps()
     keep, reason = discoverer._en_route_stop_within_threshold(non_seed_missing_metadata)
     assert keep is False
     assert reason == "missing_detour_metadata"
+
+
+def test_en_route_stop_within_threshold_uses_real_nonzero_mile_default():
+    """Regression for the real published Telluride -> Pagosa leg, where
+    DEFAULT_EN_ROUTE_DETOUR_MAX_MILES being 0.0 meant the miles cap could
+    never reject anything: 'Dolores River Overlook' (49.4 mi), 'Durango &
+    Silverton Narrow Gauge Railroad Depot' (87.3 mi), 'Animas River Trail'
+    (93.2 mi), and 'Mancos State Park' (112.9 mi) were all published as
+    "can't-miss" en-route stops despite having only a mined
+    detour_distance_miles (no detour_time_minutes text), so the inert
+    miles-only cap was their sole distance gate. This exercises the class
+    default directly (no per-instance override), matching how a real
+    URLDiscoverer is constructed."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_require_detour_metadata = True
+    discoverer._en_route_detour_max_minutes = DEFAULT_EN_ROUTE_DETOUR_MAX_MINUTES
+    discoverer._en_route_detour_max_miles = DEFAULT_EN_ROUTE_DETOUR_MAX_MILES
+
+    assert DEFAULT_EN_ROUTE_DETOUR_MAX_MILES > 0
+
+    for name, miles in (
+        ("Dolores River Overlook", 49.4),
+        ("Durango & Silverton Narrow Gauge Railroad Depot", 87.3),
+        ("Animas River Trail", 93.2),
+        ("Mancos State Park", 112.9),
+    ):
+        keep, reason = discoverer._en_route_stop_within_threshold(
+            {"name": name, "detour_distance_miles": miles}
+        )
+        assert keep is False, f"{name} ({miles} mi) should have been rejected"
+        assert reason == "detour_miles_exceeded"
+
+    # A genuinely quick, worth-it detour must still survive the new default.
+    keep, reason = discoverer._en_route_stop_within_threshold(
+        {"name": "Roadside Overlook", "detour_distance_miles": 3.5}
+    )
+    assert keep is True
+    assert reason == "ok"
 
 
 def test_discover_en_route_stops_does_not_add_seed_from_a_different_destination():
@@ -4931,6 +4974,53 @@ def test_generic_section_landing_page_catches_tripadvisor_things_to_do_listing()
     )
 
 
+def test_retain_discovered_url_rebuilds_en_route_maps_search_query_with_destination():
+    """Item 2 fix (project owner: "Red Hollow Canyon...falls back to a Map
+    link for the primary, but not one specific to that location", other
+    en-route stops affected too): when an en-route stop's Google Maps search
+    URL gets rebuilt (allow_google_maps_search=True, the leniency
+    `_search_en_route_stop_from_direct_batch` already grants its own
+    candidates), the rebuild must always end up with a destination-qualified
+    query -- not just whatever the plain `_maps_fallback_query_text` builder
+    would produce, which omits the destination whenever the item name alone
+    looks "location-qualified" (e.g. contains a comma). That heuristic is
+    tuned for attractions/restaurants that live inside the destination; an
+    en-route stop lives along the leg between two places and always benefits
+    from an explicit destination anchor in its fallback query, which is
+    exactly what `_en_route_maps_fallback_query_text` (already used
+    everywhere else in this file for en-route fallback queries) guarantees.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+
+    # "Sunrise Point, Utah" looks location-qualified to the generic builder
+    # (comma) -- that builder alone would drop the destination entirely.
+    bad_query_url = "https://www.google.com/maps/search/?api=1&query=Sunrise+Point"
+    out = discoverer._retain_discovered_url(
+        bad_query_url,
+        "Sunrise Point, Utah",
+        "Bryce Canyon National Park",
+        allow_alltrails=False,
+        kind="en_route_stop",
+        allow_google_maps_search=True,
+    )
+    assert out != ""
+    assert out != bad_query_url
+    assert "Sunrise+Point" in out or "Sunrise%20Point" in out
+    assert "Bryce" in out, out
+
+    # The hyphenated "en-route stop" spelling must behave identically.
+    out2 = discoverer._retain_discovered_url(
+        bad_query_url,
+        "Sunrise Point, Utah",
+        "Bryce Canyon National Park",
+        allow_alltrails=False,
+        kind="en-route stop",
+        allow_google_maps_search=True,
+    )
+    assert "Bryce" in out2, out2
+
+
 def test_retain_discovered_url_rejects_tripadvisor_listing_for_en_route_stop_kind():
     """Regression: _retain_discovered_url's generic-section-landing-page gate
     only checked kind in {"generic", "attraction", "en-route stop",
@@ -5029,6 +5119,49 @@ def test_discover_en_route_stops_direct_batch_discards_stale_tripadvisor_listing
         "Chimney_Rock_National_Monument-Pagosa_Springs_Colorado.html"
     )
     batch_search.assert_called_once()
+    fallback_search.assert_not_called()
+
+
+def test_discover_en_route_stops_rebuilds_bad_query_existing_maps_url_instead_of_discarding():
+    """Item 2 fix, companion to the TripAdvisor-listing test above: an
+    en-route stop's existing (harvest-provided) `url` can itself be an
+    AI-authored Google Maps search link carrying whatever raw query text the
+    model wrote -- e.g. just the bare item name, missing destination
+    context (project owner's real "Red Hollow Canyon" example). Before this
+    fix, `_discover_en_route_stops`'s existing-url preservation call to
+    `_retain_discovered_url` did not pass `allow_google_maps_search=True`,
+    so a blocked-class Maps-search URL was simply rejected outright in
+    enforce mode -- discarding the stop's only link and forcing a fresh
+    (possibly failing) re-search -- instead of being repaired the same way
+    `_search_en_route_stop_from_direct_batch`'s own per-candidate check
+    already repairs one. Now it must be rebuilt with a controlled,
+    destination-qualified query and kept, without triggering the two
+    fallback searches at all.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._en_route_source = "direct_link_batch"
+    discoverer._url_policy_mode = "enforce"
+
+    ai = {
+        "getting_here": {
+            "en_route_stops": [
+                {
+                    "name": "Red Hollow Canyon",
+                    "url": "https://www.google.com/maps/search/?api=1&query=Red+Hollow+Canyon",
+                    "detour_time_minutes": 15,
+                }
+            ]
+        }
+    }
+
+    with patch.object(discoverer, "_search_en_route_stop_from_direct_batch") as batch_search:
+        with patch.object(discoverer, "_search_first") as fallback_search:
+            discoverer._discover_en_route_stops(ai, "Bryce Canyon National Park", origin_name="Zion National Park")
+
+    stop = ai["getting_here"]["en_route_stops"][0]
+    assert stop["url"] != "https://www.google.com/maps/search/?api=1&query=Red+Hollow+Canyon"
+    assert "Bryce" in stop["url"], stop["url"]
+    batch_search.assert_not_called()
     fallback_search.assert_not_called()
 
 
