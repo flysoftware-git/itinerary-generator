@@ -4967,6 +4967,41 @@ def test_alltrails_slug_matches_item_rejects_off_by_one_trail_swap():
     )
 
 
+def test_alltrails_slug_matches_item_rejects_combined_trail_slug():
+    """Real dipstick69 bug: Bryce Canyon's 'Navajo Loop Trail' (a real ~1.3
+    mile loop, per the AI's own description) token-overlap-matched
+    'navajo-loop-trail-to-peekaboo-loop' -- a real but different, ~5.3 mile
+    COMBINED trail joining Navajo Loop with Peekaboo Loop -- because
+    'navajo'/'loop'/'trail' are all subset tokens of the slug. The rendered
+    card ended up linking its "1.3 mile loop" description to a page
+    describing a 5.3-mile route. AllTrails' own naming convention marks a
+    joined/combined route with a '-to-' segment; that must be rejected
+    unless the item's own name also legitimately describes a combined route."""
+    assert not URLDiscoverer._alltrails_slug_matches_item(
+        "https://www.alltrails.com/trail/us/utah/navajo-loop-trail-to-peekaboo-loop",
+        "Navajo Loop Trail",
+    )
+
+
+def test_alltrails_slug_matches_item_accepts_standalone_trail_slug():
+    """Companion positive control: the same trail's own standalone slug (no
+    '-to-' combinator) must still be accepted."""
+    assert URLDiscoverer._alltrails_slug_matches_item(
+        "https://www.alltrails.com/trail/us/utah/navajo-loop-trail",
+        "Navajo Loop Trail",
+    )
+
+
+def test_alltrails_slug_matches_item_allows_combined_slug_when_item_itself_says_to():
+    """When the trip owner's own seed name legitimately describes a combined
+    route (contains the word 'to'), a matching '-to-' slug must not be
+    rejected purely for containing that convention."""
+    assert URLDiscoverer._alltrails_slug_matches_item(
+        "https://www.alltrails.com/trail/us/utah/navajo-loop-trail-to-peekaboo-loop",
+        "Navajo Loop Trail to Peekaboo Loop",
+    )
+
+
 
 def test_search_attraction_direct_batch_authoritative_prefers_item_specific_url_over_generic_landing_page():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)

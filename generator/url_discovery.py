@@ -12085,7 +12085,8 @@ class URLDiscoverer:
         item_tokens = cls._significant_tokens(item_name)
         if not item_tokens:
             return True
-        slug = unquote(urlparse(url).path.rsplit("/", 1)[-1]).replace("-", " ")
+        raw_slug = unquote(urlparse(url).path.rsplit("/", 1)[-1]).lower()
+        slug = raw_slug.replace("-", " ")
         slug_tokens = cls._significant_tokens(slug)
         if not slug_tokens:
             return False
@@ -12094,6 +12095,19 @@ class URLDiscoverer:
         overlap = len(item_set & slug_set)
         required = cls._required_alltrails_token_matches(len(item_tokens))
         if overlap < required:
+            return False
+
+        # AllTrails' own naming convention for a joined/combined route is
+        # "trail-a-to-trail-b" (real dipstick69 case: Bryce Canyon's "Navajo
+        # Loop Trail", a real ~1.3mi loop, token-overlap-matched the slug
+        # "navajo-loop-trail-to-peekaboo-loop" because "navajo"/"loop"/"trail"
+        # are all subset tokens of it -- even though that page is actually a
+        # different, ~5.3mi combined route through two joined trails, a real
+        # distance mismatch against the item's own stated length). A trip
+        # owner's own seed name can legitimately describe a combined route
+        # (e.g. "Bear Lake to Emerald Lake"), so only reject when the item
+        # name itself doesn't already contain "to".
+        if "-to-" in raw_slug and not re.search(r"\bto\b", (item_name or "").lower()):
             return False
 
         # Use raw tokens for trail/loop: _significant_tokens excludes them as stop words

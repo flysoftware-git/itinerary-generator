@@ -433,6 +433,22 @@ Google's UI reverse-geocodes back to Grafton).
 	attempts, same as the existing out-of-region rejection.
 
 
+Issue (Dipstick69): `_alltrails_slug_matches_item` (used by every AllTrails
+acceptance path, including `_search_alltrails_for_seed_relaxed`) does pure
+token-overlap matching, so a slug with extra trail-name content beyond the
+item's own tokens still passes as long as the item's tokens are a subset.
+Bryce Canyon's "Navajo Loop Trail" (~1.3mi loop) matched
+`navajo-loop-trail-to-peekaboo-loop` -- a real but different, ~5.3mi combined
+route joining two trails -- because "navajo"/"loop"/"trail" are all present
+in the slug. The rendered card's own "1.3 mile loop" description ended up
+hyperlinked to a page describing a 5.3-mile route.
+- Mitigation: a slug containing AllTrails' "-to-" combined-route naming
+	convention (`trail-a-to-trail-b`) is now rejected unless the item's own
+	name also contains the word "to" (i.e. the trip owner's own seed
+	legitimately describes a combined route). Fixed centrally in
+	`_alltrails_slug_matches_item` rather than only in the seed-relaxed path,
+	since every one of its ~10 call sites shares the same false-positive risk.
+
 ## Must-See Badge Policy
 The "Must-See" badge is a deterministic, render-time decision -- not the
 LLM's opinion. The model still emits a `must_see` boolean per attraction
