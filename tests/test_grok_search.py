@@ -570,6 +570,51 @@ def test_chat_completion_live_search_tracks_usage_with_responses_token_fields() 
     tracker.add.assert_called_once()
     assert tracker.add.call_args.kwargs["prompt_tokens"] == 100
     assert tracker.add.call_args.kwargs["completion_tokens"] == 50
+    assert tracker.add.call_args.kwargs["tool_calls"] == 0
+
+
+def test_chat_completion_live_search_tracks_web_search_call_count() -> None:
+    """xAI bills its server-side web_search tool separately from tokens
+    ($5/1000 calls), per actual invocation -- a single /v1/responses call's
+    agentic search loop can fire web_search more than once. Confirmed live
+    2026-08-17 against the real endpoint: a single query needing two search
+    rounds returned usage == {..., "num_server_side_tools_used": 2,
+    "server_side_tool_usage_details": {"web_search_calls": 2, ...}}. This is
+    the exact real-cost gap behind the user's ~$5/day-vs-~$0.40/run
+    discrepancy -- UsageTracker.add() must receive this count, not silently
+    drop it."""
+    tracker = MagicMock()
+    gs = GrokSearch(api_key="test", model="test", usage_tracker=tracker)
+    fake_response = _make_streaming_response(
+        _responses_stream_lines(
+            "<ul></ul>",
+            usage={
+                "input_tokens": 6291,
+                "output_tokens": 750,
+                "total_tokens": 7041,
+                "num_server_side_tools_used": 2,
+                "server_side_tool_usage_details": {
+                    "web_search_calls": 2,
+                    "x_search_calls": 0,
+                    "code_interpreter_calls": 0,
+                    "file_search_calls": 0,
+                    "mcp_calls": 0,
+                    "document_search_calls": 0,
+                    "image_generation_calls": 0,
+                },
+            },
+        )
+    )
+    session = MagicMock()
+    session.post.return_value = fake_response
+    gs._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    gs.chat_completion(system_prompt="sys", user_prompt="u", live_search=True)
+
+    tracker.add.assert_called_once()
+    assert tracker.add.call_args.kwargs["tool_calls"] == 2
+    assert tracker.add.call_args.kwargs["prompt_tokens"] == 6291
+    assert tracker.add.call_args.kwargs["provider"] == "grok"
 
 
 def test_chat_completion_live_search_false_still_uses_chat_completions_endpoint() -> None:

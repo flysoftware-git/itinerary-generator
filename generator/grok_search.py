@@ -273,13 +273,27 @@ class GrokSearch:
             return
         prompt_tokens = int(usage.get("input_tokens", 0) or 0)
         completion_tokens = int(usage.get("output_tokens", 0) or 0)
-        if prompt_tokens or completion_tokens:
+        # xAI bills its server-side web_search tool separately from tokens
+        # ($5.00 per 1,000 calls -- see llm_client.py's
+        # DEFAULT_TOOL_CALL_PRICING_USD_PER_1000), per actual invocation, not
+        # per /v1/responses call: a single call's agentic search loop can
+        # fire web_search more than once. Confirmed live (2026-08-17) against
+        # the real endpoint -- a single query needing two search rounds
+        # returned usage == {..., "num_server_side_tools_used": 2,
+        # "server_side_tool_usage_details": {"web_search_calls": 2, ...}}.
+        # Before this, UsageTracker had no field for this count at all, so
+        # every dipstick run's [LLM-COST] summary silently omitted this real
+        # cost component.
+        tool_usage_details = usage.get("server_side_tool_usage_details") or {}
+        web_search_calls = int(tool_usage_details.get("web_search_calls", 0) or 0) if isinstance(tool_usage_details, dict) else 0
+        if prompt_tokens or completion_tokens or web_search_calls:
             self._usage_tracker.add(
                 provider="grok",
                 model=self._model,
                 operation=f"{self._usage_operation_prefix}:{operation_suffix}",
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                tool_calls=web_search_calls,
             )
 
     def chat_completion(
