@@ -787,6 +787,62 @@ Intermediate destinations:
   the LLM's own text may have introduced (2026-08-17 fix — see Case 4
   above).
 
+**GH #68 grouping-aware `previous_destination`/`next_destination` (2026-08-18
+fix):** `previous_destination`/`next_destination` feed both of the rules
+above, and until this fix were resolved purely from adjacent-entry list
+position (`prev_names = ["none"] + [d["name"] for d in destinations[:-1]]`,
+`next_names = [d["name"] for d in destinations[1:]] + [""]`) with zero
+awareness of GH #68 `group_with` grouped children (day trips from a shared
+physical base, not real relocation stops). Real regression:
+`Sandbox/sw_manifest.yaml` lists Moab, then Arches National Park
+(`group_with: moab`), then Canyonlands National Park (`group_with: moab`),
+then Telluride. Moab's own last evening got `next_destination="Arches
+National Park"` (the literal next list entry), producing "Enjoy a relaxed,
+local evening; the drive to Arches National Park happens the next morning,
+not tonight." — wrong on two counts: Arches was already visited as a day
+trip that stay, and the real next-morning drive is to Telluride. Project
+owner: "The algorithm for the schedule does not understand the notion of
+day trips... The scheduler hasn't incorporated the idea of a day trip into
+its scheduling." Canyonlands's own `previous_destination` had the mirror
+problem: resolved to "Arches National Park" (the literal prior list entry),
+implying a direct Arches-to-Canyonlands drive that never happens -- both
+are day trips FROM the same Moab lodging.
+
+Fixed in `generate_destination_content` via a new
+`_resolve_grouping_aware_prev_next_names` helper (`generator/ai_content.py`),
+using `generator/multi_site_grouping.py`'s `group_base_id` (the same helper
+`url_discovery.py`/`manifest_parser.py`/`html_assembler.py` already share
+for GH #68 resolution, rather than a fifth independent implementation):
+- Previous-side resolution mirrors `url_discovery.py`'s established
+  `last_physical_base` pattern (used there for per-destination "getting
+  here" origin/distance resolution): a grouped entry's previous destination
+  is always its group base; an ungrouped entry's previous destination is
+  the most recent *other* ungrouped destination, never a grouped sibling of
+  the immediately preceding cluster.
+- Next-side resolution is the forward analog (no prior precedent existed
+  for this direction): for each destination, scan forward past every
+  subsequent entry that shares its "cluster" (its own `group_with` base id
+  if grouped, otherwise its own id) and return the first entry in a
+  different cluster. Moab, Arches, and Canyonlands all correctly resolve to
+  the same real next destination (Telluride) regardless of how many
+  day-trip siblings sit between them in the flat list.
+
+This only changes *which* name reaches `_inject_travel_realism` as
+`next_destination`/`previous_destination` -- the existing day-level
+scrub-vs-last-day machinery documented above (earlier days scrubbed of
+onward-drive mentions, only `days[-1]` gets the "next morning" framing)
+needed no changes: once `next_destination` is the real relocation target,
+a day-trip day (chronologically before the group's actual departure, e.g.
+Moab's Arches day) is already correctly left local-only by the existing
+scrub pass (it's never `days[-1]`), while only Moab's genuine last evening
+(the day after the last day-trip child, immediately before the real drive
+to Telluride) gets the onward-travel note, correctly naming Telluride.
+Verified by
+`tests/test_ai_content_normalization.py::test_resolve_grouping_aware_prev_next_names_skips_day_trip_children`,
+`::test_generate_destination_content_moab_gets_telluride_not_arches_as_next_destination`,
+and
+`::test_normalize_schedule_moab_day_trip_days_stay_local_only_last_evening_mentions_real_next_destination`.
+
 Design intent:
 - Prevent unrealistic booking of activities in boundary windows where travel
   logistics dominate.

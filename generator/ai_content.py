@@ -16,6 +16,7 @@ from typing import Any
 import requests
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient, LLMCircuitOpenError
+from generator.multi_site_grouping import group_base_id
 
 logger = logging.getLogger(__name__)
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -200,8 +201,7 @@ class AIContentGenerator:
         'what_to_know', and 'scenic_drives' in-place (one combined LLM call
         per destination — see _generate_destination_bundle)."""
         destinations = trip.get("destinations", [])
-        prev_names = ["none"] + [d["name"] for d in destinations[:-1]]
-        next_names = [d["name"] for d in destinations[1:]] + [""]
+        prev_names, next_names = self._resolve_grouping_aware_prev_next_names(destinations)
 
         def _one(args: tuple[int, dict]) -> None:
             i, dest = args
@@ -224,6 +224,98 @@ class AIContentGenerator:
 
     def generate_all(self, trip: dict[str, Any]) -> None:
         self.generate_destination_content(trip)
+
+    @staticmethod
+    def _resolve_grouping_aware_prev_next_names(
+        destinations: list[dict[str, Any]],
+    ) -> tuple[list[str], list[str]]:
+        """Resolve each destination's previous/next destination NAME for
+        schedule-realism framing (_normalize_schedule -> _inject_travel_realism),
+        skipping over GH #68 `group_with` grouped children (day trips from a
+        shared physical base) so they're never mistaken for a real relocation.
+
+        Real regression: Sandbox/sw_manifest.yaml lists Moab, then Arches
+        National Park (`group_with: moab`, a day trip FROM Moab), then
+        Canyonlands National Park (`group_with: moab`, also a day trip FROM
+        Moab), then Telluride (the real next destination). The naive
+        "adjacent list entry" resolution this replaced gave Moab's own last
+        evening `next_destination="Arches National Park"`, producing
+        "the drive to Arches National Park happens the next morning, not
+        tonight" -- flatly wrong on two counts: Arches was already visited
+        as a day trip, and the real next-morning drive is to Telluride, not
+        back to Arches. Project owner: "the algorithm for the schedule does
+        not understand the notion of day trips... The scheduler hasn't
+        incorporated the idea of a day trip into its scheduling."
+
+        Previous-side resolution mirrors url_discovery.py's established
+        `last_physical_base` pattern (used there for per-destination
+        "getting here" origin/distance resolution) for consistency: a
+        grouped entry's previous destination is always its group base
+        (Arches/Canyonlands's previous destination is "Moab", not whichever
+        grouped sibling happens to sit before it in list order); an
+        ungrouped entry's previous destination is the most recent *other*
+        ungrouped destination, never a grouped sibling of the immediately
+        preceding cluster.
+
+        Next-side resolution is the forward analog with no existing
+        precedent to mirror: for each destination, scan forward past every
+        subsequent entry that belongs to the same "cluster" (its own
+        `group_with` base id if grouped, otherwise its own id) and return
+        the first entry that belongs to a different cluster. This
+        correctly gives Moab (and Arches, and Canyonlands) all the same
+        real next destination (Telluride) regardless of how many day-trip
+        siblings sit between them and it in the flat list.
+        """
+        prev_names: list[str] = []
+        next_names: list[str] = []
+
+        dest_by_id: dict[str, dict[str, Any]] = {
+            str(d.get("id", "") or ""): d
+            for d in destinations
+            if isinstance(d, dict) and str(d.get("id", "") or "")
+        }
+
+        def _cluster_id(dest: dict[str, Any], index: int) -> str:
+            base_id = group_base_id(dest) if isinstance(dest, dict) else ""
+            if base_id:
+                return base_id
+            own_id = str(dest.get("id", "") or "") if isinstance(dest, dict) else ""
+            # A destination without an "id" field can never legitimately be
+            # the group_with target of another entry (nothing could
+            # reference it), so a per-index fallback here is always safe --
+            # it can never falsely collide with a real base id string.
+            return own_id or f"__no_id_{index}__"
+
+        last_physical_base_name = "none"
+        for idx, dest in enumerate(destinations):
+            if not isinstance(dest, dict):
+                prev_names.append(last_physical_base_name)
+                next_names.append("")
+                continue
+
+            base_id = group_base_id(dest)
+            base_dest = dest_by_id.get(base_id) if base_id else None
+            if base_dest is not None:
+                prev_names.append(str(base_dest.get("name", "") or ""))
+            elif idx > 0:
+                prev_names.append(last_physical_base_name)
+            else:
+                prev_names.append("none")
+            if base_id == "":
+                last_physical_base_name = str(dest.get("name", "") or "")
+
+            own_cluster = _cluster_id(dest, idx)
+            next_name = ""
+            for later_idx in range(idx + 1, len(destinations)):
+                later = destinations[later_idx]
+                if not isinstance(later, dict):
+                    continue
+                if _cluster_id(later, later_idx) != own_cluster:
+                    next_name = str(later.get("name", "") or "")
+                    break
+            next_names.append(next_name)
+
+        return prev_names, next_names
 
     # Marketing-cliché phrases banned from generated prose (system_prompt.txt's
     # "Avoid without exception" list, kept in sync with prompts/scenic_drives.txt's

@@ -434,6 +434,150 @@ def test_generate_destination_content_strips_markdown_before_url_discovery_would
     assert dest["scenic_drives"][0]["title"] == "Zion Canyon Drive"
 
 
+def test_resolve_grouping_aware_prev_next_names_skips_day_trip_children() -> None:
+    """Regression grounded in the real Sandbox/sw_manifest.yaml shape and a
+    real project owner finding: Moab's own schedule's last evening read
+    'Enjoy a relaxed, local evening; the drive to Arches National Park
+    happens the next morning, not tonight.' Project owner: 'The algorithm
+    for the schedule does not understand the notion of day trips... The
+    scheduler hasn't incorporated the idea of a day trip into its
+    scheduling.'
+
+    Manifest order: Moab (base), Arches National Park (`group_with: moab`,
+    a day trip FROM Moab), Canyonlands National Park (`group_with: moab`,
+    also a day trip FROM Moab), Telluride (the real next destination). The
+    naive "adjacent list entry" resolution this replaced gave Moab's
+    next_destination="Arches National Park" -- wrong on two counts: Arches
+    was already visited as a day trip, and the real next-morning drive is
+    to Telluride. It also gave Canyonlands's previous_destination="Arches
+    National Park", implying a direct Arches-to-Canyonlands drive that
+    never happens (both are day trips FROM the shared Moab lodging)."""
+    destinations = [
+        {"id": "capitolreef", "name": "Capitol Reef National Park"},
+        {"id": "moab", "name": "Moab"},
+        {"id": "arches", "name": "Arches National Park", "group_with": "moab"},
+        {"id": "canyonlands", "name": "Canyonlands National Park", "group_with": "moab"},
+        {"id": "telluride", "name": "Telluride"},
+    ]
+
+    prev_names, next_names = AIContentGenerator._resolve_grouping_aware_prev_next_names(destinations)
+
+    assert prev_names == ["none", "Capitol Reef National Park", "Moab", "Moab", "Moab"]
+    assert next_names == ["Moab", "Telluride", "Telluride", "Telluride", ""]
+
+
+def test_generate_destination_content_moab_gets_telluride_not_arches_as_next_destination() -> None:
+    """Integration-level companion to the direct resolver test above: the
+    real _generate_destination_bundle call for Moab must receive
+    next_destination="Telluride", not "Arches National Park", so
+    _inject_travel_realism's last-evening framing points at the real next
+    relocation destination instead of a grouped day-trip child."""
+    g = _gen_with_bundle_templates()
+    g._llm = type("MockLLM", (), {"provider": "openai"})()
+    g._max_concurrent_destinations = 5
+    calls: dict[str, tuple[str, str]] = {}
+
+    def _fake_bundle(dest: dict, trip_meta: dict, previous_destination: str, next_destination: str) -> dict:
+        calls[dest["name"]] = (previous_destination, next_destination)
+        return {"destination_content": {}, "what_to_know": {}, "scenic_drives": []}
+
+    with patch.object(g, "_generate_destination_bundle", side_effect=_fake_bundle):
+        trip = {
+            "trip": {},
+            "destinations": [
+                {"id": "moab", "name": "Moab", "dates": "October 22-24, 2026"},
+                {"id": "arches", "name": "Arches National Park", "dates": "October 23, 2026", "group_with": "moab"},
+                {
+                    "id": "canyonlands",
+                    "name": "Canyonlands National Park",
+                    "dates": "October 24, 2026",
+                    "group_with": "moab",
+                },
+                {"id": "telluride", "name": "Telluride", "dates": "October 24-26, 2026"},
+            ],
+        }
+        g.generate_destination_content(trip)
+
+    assert calls["Moab"] == ("none", "Telluride")
+    assert calls["Arches National Park"] == ("Moab", "Telluride")
+    assert calls["Canyonlands National Park"] == ("Moab", "Telluride")
+    assert calls["Telluride"] == ("Moab", "")
+
+
+def test_normalize_schedule_moab_day_trip_days_stay_local_only_last_evening_mentions_real_next_destination() -> None:
+    """With next_destination now correctly resolved to "Telluride" (not the
+    "Arches National Park" day-trip child -- see the two tests above), this
+    verifies _inject_travel_realism's existing day-level machinery already
+    produces the two genuinely different behaviors a day-trip stay needs
+    for its own multi-day schedule, once given the right next_destination:
+
+    - Day 2 (the Arches day-trip day, chronologically BEFORE Moab's actual
+      departure) must carry no onward-drive/next-destination language at
+      all -- the traveler returns to the same Moab lodging that night, not
+      Telluride.
+    - Only Day 3 (Moab's genuine last evening before the real relocation)
+      gets the "drive to X next morning" framing, and it must name the real
+      next destination (Telluride), never the day-trip child.
+
+    This is the existing scrub-vs-last-day architecture (unchanged by the
+    grouping fix) verified against the specific real-shaped Moab/Arches/
+    Canyonlands/Telluride data that motivated it.
+    """
+    g = _gen()
+    schedule = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Settle into Moab and explore downtown."},
+                {"period": "Afternoon", "summary": "Visit the Moab Museum."},
+                {"period": "Evening", "summary": "Dinner at a local restaurant."},
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Head out early for the Arches day trip."},
+                {"period": "Afternoon", "summary": "Continue exploring Arches National Park."},
+                {"period": "Evening", "summary": "Return to Moab for dinner."},
+            ],
+        },
+        {
+            "day_label": "Day 3",
+            "periods": [
+                {"period": "Morning", "summary": "Head out early for the Canyonlands day trip."},
+                {"period": "Afternoon", "summary": "Continue exploring Canyonlands National Park."},
+                {"period": "Evening", "summary": "Return to Moab for a final dinner."},
+            ],
+        },
+    ]
+
+    out = g._normalize_schedule(
+        schedule=schedule,
+        restaurants=[{"name": "Moab Kitchen"}, {"name": "Desert Bistro"}],
+        dates="October 22-24, 2026",
+        attractions=[{"name": "Delicate Arch"}, {"name": "Corona Arch Trail"}],
+        getting_here={"drive_time": "2 hr"},
+        previous_destination="Capitol Reef National Park",
+        next_destination="Telluride",
+    )
+
+    day2_evening = out[1]["periods"][2]["summary"].lower()
+    day3_evening = out[2]["periods"][2]["summary"].lower()
+
+    # Day 2 (the Arches day-trip day) stays local -- no mention of the real
+    # next destination, no onward-drive framing, since the traveler returns
+    # to the same Moab lodging that night.
+    assert "telluride" not in day2_evening
+    assert "next morning" not in day2_evening
+
+    # Only Day 3 (Moab's genuine last evening) carries the onward-travel
+    # note, and it must name the real next destination.
+    assert "telluride" in day3_evening
+    assert "next morning" in day3_evening
+    assert "arches" not in day3_evening
+    assert "canyonlands" not in day3_evening
+
+
 def test_enforce_banned_marketing_language_accumulates_across_calls() -> None:
     """Regression (2026-08-15, dipstick56+): main.py calls
     normalize_trip_content (which calls this) twice in a real run -- once
