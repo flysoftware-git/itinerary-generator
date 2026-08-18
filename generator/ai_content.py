@@ -2207,14 +2207,60 @@ class AIContentGenerator:
                 re.search(r"\b(arrive|arrival|drive|driving|route|i-\d+|us-\d+)\b", existing_morning_summary, re.IGNORECASE)
             )
             if drive_minutes > 0:
+                arrival_minutes = effective_start_minutes + drive_minutes
+                arrival_label = _format_minutes_as_time(arrival_minutes)
                 if not morning_already_arrival_aware:
-                    arrival_minutes = effective_start_minutes + drive_minutes
-                    arrival_label = _format_minutes_as_time(arrival_minutes)
                     _set_period_summary(
                         first,
                         "Morning",
                         f"Travel from {previous_destination} (depart around {_format_minutes_as_time(effective_start_minutes)}); arrival around {arrival_label}.",
                     )
+                else:
+                    # The AI already narrated arrival itself (that's what
+                    # morning_already_arrival_aware means), so the branch
+                    # above intentionally leaves this text alone rather than
+                    # overwriting it with the generic "Travel from X..."
+                    # framing -- but the AI's own text can still claim a
+                    # specific, time-sensitive activity ("morning views") the
+                    # actual computed arrival time makes implausible. Real
+                    # SW2026-dipstick69 regression, Bryce Canyon arriving from
+                    # Zion (135 min drive): "Arrive at Bryce Canyon National
+                    # Park and check in to your lodging. After settling in,
+                    # head to Sunrise Point for morning views of the canyon."
+                    # Computed arrival (10:00 AM day-start + 135 min drive) is
+                    # 12:15 PM -- already past the late-morning cutoff below,
+                    # so "morning views" immediately after arriving and
+                    # settling in is not physically possible. Mirrors the
+                    # heavy-activity-after-travel guard a few lines up
+                    # (_is_heavy_activity_block): only the false time-of-day
+                    # claim is corrected, keeping the real attraction mention
+                    # (Sunrise Point) and the AI's own arrival framing intact
+                    # rather than reverting to generic filler.
+                    morning_activity_claim = bool(
+                        re.search(r"\bmorning\b", existing_morning_summary, re.IGNORECASE)
+                    ) and bool(
+                        re.search(
+                            r"\b(head(?:s|ing)?\s+to|visit(?:ing)?|watch(?:ing)?|catch(?:ing)?|"
+                            r"enjoy(?:ing)?|explor\w*|hikes?|hiking|tour(?:ing)?|see|views?)\b",
+                            existing_morning_summary,
+                            re.IGNORECASE,
+                        )
+                    )
+                    late_morning_cutoff_minutes = 11 * 60
+                    if morning_activity_claim and arrival_minutes > late_morning_cutoff_minutes:
+                        corrected = re.sub(
+                            r"\bmorning\s+(views?|light|hues?|hike|walk|visit|hours?|glow)\b",
+                            r"\1",
+                            existing_morning_summary,
+                            flags=re.IGNORECASE,
+                        )
+                        if corrected == existing_morning_summary:
+                            corrected = re.sub(r"\bmorning\b", "", existing_morning_summary, flags=re.IGNORECASE)
+                        corrected = re.sub(r"\s{2,}", " ", corrected).strip()
+                        corrected = re.sub(r"\s+([.,])", r"\1", corrected)
+                        if corrected and corrected.lower() != existing_morning_summary.lower():
+                            corrected = f"{corrected.rstrip('.')} (realistic arrival is closer to {arrival_label})."
+                            _set_period_summary(first, "Morning", corrected)
                 # The activity budget represents willingness/time to spend on
                 # activities in a normal full day -- on an arrival day, the
                 # drive itself eats directly into that allotment rather than

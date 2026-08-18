@@ -190,6 +190,72 @@ def test_inject_travel_realism_no_leading_colon_when_arrival_already_present() -
     assert "arrive at bryce canyon and settle in." in first_summary.lower()
 
 
+def test_inject_travel_realism_corrects_implausible_morning_activity_claim_on_arrival_day() -> None:
+    """Regression grounded in real SW2026-dipstick69 output, Bryce Canyon
+    National Park Day 1 (arrival day from Zion, 2 hr 15 min / 135 min
+    drive): 'Arrive at Bryce Canyon National Park and check in to your
+    lodging. After settling in, head to Sunrise Point for morning views of
+    the canyon.' The AI's own Morning text already narrates arrival
+    (morning_already_arrival_aware), so the deterministic 'Travel from
+    X...arrival around Y' override never fires -- but the same sentence
+    also claims a 'morning views' activity that the actual computed
+    arrival time (10:00 AM default day start + 135 min drive = 12:15 PM)
+    makes physically impossible: you cannot catch morning views at a
+    viewpoint you don't reach until just after noon.
+
+    The real attraction mention (Sunrise Point) and the AI's own arrival/
+    check-in narration must survive -- only the false time-of-day claim is
+    corrected, per this codebase's established preference for keeping
+    real, specific AI-authored content over generic filler.
+    """
+    g = _gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {
+                    "period": "Morning",
+                    "summary": (
+                        "Arrive at Bryce Canyon National Park and check in to your lodging. "
+                        "After settling in, head to Sunrise Point for morning views of the canyon."
+                    ),
+                },
+                {"period": "Afternoon", "summary": "Explore the visitor center."},
+                {"period": "Evening", "summary": "Dinner in town."},
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Free morning."},
+                {"period": "Afternoon", "summary": "Free afternoon."},
+                {"period": "Evening", "summary": "Dinner in town."},
+            ],
+        },
+    ]
+
+    out = g._inject_travel_realism(
+        days,
+        {"drive_time": "2 hrs 15 min"},
+        "Zion National Park",
+        "Capitol Reef National Park",
+        default_day_start_time="10:00 AM",
+    )
+
+    morning_summary = out[0]["periods"][0]["summary"].lower()
+
+    # The false, physically-impossible claim must be gone.
+    assert "morning views" not in morning_summary
+    # The AI's own real content -- arrival/check-in narration and the real
+    # attraction name -- must survive; this is a targeted correction, not a
+    # rewrite into generic filler.
+    assert "arrive at bryce canyon national park" in morning_summary
+    assert "check in to your lodging" in morning_summary
+    assert "sunrise point" in morning_summary
+    # The corrected text is honest about when arrival actually happens.
+    assert "12:15 pm" in morning_summary
+
+
 def test_build_trip_timing_context_includes_lodging_checkin_anchor() -> None:
     lines = AIContentGenerator._build_trip_timing_context(
         trip_meta={"departure": "Las Vegas", "departure_datetime": "2026-10-07 08:30"},
