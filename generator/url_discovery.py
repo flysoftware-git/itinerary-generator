@@ -2106,6 +2106,91 @@ class URLDiscoverer:
                 dest.pop("_en_route_origin_lng", None)
         self._save_persistent_caches()
 
+    def _attach_secondary_maps_link(
+        self, item: dict[str, Any], item_name: str, dest_name: str, kind: str
+    ) -> None:
+        """Attach a distinct, additive Google-Maps-search `maps_url` to an
+        attraction/restaurant that already has a real, distinct primary
+        source URL, so `_maps_corner_link_html` (html_assembler.py) has a
+        genuinely distinct link to surface as the card's map-icon badge.
+
+        Real production data (dipstick72, a full validation run) showed 0 of
+        50 attraction cards and 0 of 61 restaurant cards ever rendered that
+        badge, even though the render-side machinery is fully wired up and
+        does work for en-route stops on the very same page (39 badge-map
+        occurrences there). Root cause traced through this file: en-route
+        stops always get an unconditional maps_url assigned from
+        route-waypoint geocoding (or a query-text fallback when no geocode)
+        *before* their `url` field is even decided -- see the
+        `has_precise_geocode` block a few hundred lines below, in the
+        en-route-stop resolution loop. Attractions and restaurants have no
+        equivalent step: every `attr["maps_url"] = ...` / `rest["maps_url"]
+        = ...` assignment in `_discover_attractions`/`_discover_restaurants`
+        and in this method's own per-item loops only fires in the "no real
+        source URL was found, a maps-search URL became the PRIMARY url
+        itself" paths (where maps_url is deliberately set equal to url --
+        `_maps_corner_link_html` correctly treats that as redundant and
+        suppresses the badge). Restaurant discovery goes further and
+        actively does `rest.pop("maps_url", None)` in every branch that
+        finds a real, distinct URL (Google Maps place, TripAdvisor, official
+        site, direct-batch row). Net effect: whenever a genuinely useful
+        distinct primary link was found, no code path ever attached a
+        separate maps_url alongside it, so the badge had nothing to show.
+
+        Called once per item, after `audit_discovered_urls` has already
+        settled on that item's final `url` for this pass (mirrors where the
+        AllTrails coordinate-geo maps_url hook is inserted, just below, for
+        the same "url already final" reason). Purely additive:
+          - Skipped entirely when there's no primary url (an item with no
+            verified source keeps whatever its own fail-closed logic upstream
+            already decided -- e.g. category-style-activity/ambiguous-
+            geography/policy-enforce omissions -- untouched).
+          - Skipped for AllTrails trail urls: those get their own
+            coordinate-based hook (`_alltrails_geo_maps_url`) with its own
+            fail-closed/logging contract; duplicating a text-query fallback
+            on top of (or instead of) that would blur which mechanism is
+            responsible for a trail card's map link.
+          - Skipped when the url's own policy class is already a Google Maps
+            search/directions link -- that IS the "no real source, maps
+            became primary" case this fix must not touch.
+          - Skipped whenever `item["maps_url"]` is already non-empty, so an
+            item that picked up a maps_url from any other mechanism (existing
+            direct-batch row data, the AllTrails geo hook, a pre-existing
+            fallback) is never double-processed or overwritten.
+
+        Attractions/restaurants carry no geocode data at this point in the
+        pipeline (only en-route stops get route-waypoint geocoding), so
+        unlike the AllTrails geo hook's coordinate link, the only honest
+        option here is the same name+destination Google-Maps-search-query
+        convention `_maps_fallback_query_text` already builds everywhere
+        else in this file.
+        """
+        url = str(item.get("url", "") or "").strip()
+        if not url:
+            return
+        if self._is_alltrails_trail_url(url):
+            return
+        if self._classify_url_policy_class(url) in {"google_maps_search", "google_maps_dir"}:
+            return
+        if str(item.get("maps_url", "") or "").strip():
+            return
+        query_text = self._maps_fallback_query_text(item_name, dest_name)
+        if not query_text:
+            return
+        fallback_url = f"https://www.google.com/maps/search/?api=1&query={quote(query_text)}"
+        item["maps_url"] = fallback_url
+        self._log_decision(
+            kind=kind,
+            dest_name=dest_name,
+            item_name=item_name,
+            reason="secondary_maps_link_attached",
+            message=(
+                "attached name+destination Google Maps search link alongside "
+                "distinct primary source URL, for the map-icon badge"
+            ),
+            url=fallback_url,
+        )
+
     def audit_discovered_urls(self, trip: dict[str, Any]) -> None:
         """Strip low-confidence discovered URLs before HTML assembly.
 
@@ -2416,6 +2501,14 @@ class URLDiscoverer:
             if len(eligible_attractions) != len(ai.get("top_attractions", []) or []):
                 ai["top_attractions"] = eligible_attractions
 
+            # See _attach_secondary_maps_link's docstring: every attraction's
+            # primary url is now final for this pass, so attach a distinct
+            # map-icon-badge maps_url wherever one is missing and useful.
+            for attr in eligible_attractions:
+                self._attach_secondary_maps_link(
+                    attr, str(attr.get("name", "") or ""), dest_name, kind="attraction"
+                )
+
             # Collect attraction URLs for PR-004: drive URL dedup
             attraction_urls: set[str] = {
                 str(a.get("url", "") or "").strip()
@@ -2562,6 +2655,14 @@ class URLDiscoverer:
                     eligible_restaurants.append(rest)
             if len(eligible_restaurants) != len(ai.get("dinner_recommendations", []) or []):
                 ai["dinner_recommendations"] = eligible_restaurants
+
+            # See _attach_secondary_maps_link's docstring: every restaurant's
+            # primary url is now final for this pass, so attach a distinct
+            # map-icon-badge maps_url wherever one is missing and useful.
+            for rest in eligible_restaurants:
+                self._attach_secondary_maps_link(
+                    rest, str(rest.get("name", "") or ""), dest_name, kind="restaurant"
+                )
 
             for drive in dest.get("scenic_drives", []) or []:
                 drive_name = str(drive.get("title", "") or "")
