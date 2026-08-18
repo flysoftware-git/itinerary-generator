@@ -1061,6 +1061,80 @@ def test_inject_travel_realism_rotates_focus_to_reduce_adjacent_duplicates() -> 
     assert "bryce point" in day2_morning or "navajo loop trail" in day2_morning
 
 
+def test_inject_travel_realism_rotates_evening_focus_across_a_multi_day_stay() -> None:
+    """Regression grounded in the project owner's real review finding
+    ('still repetition in evenings across days') and the real SW2026-
+    dipstick67 output for Bryce Canyon National Park: Day 1 and Day 2
+    Evening both read 'Enjoy a sunset from Sunrise Point...' -- byte-
+    identical apart from the dinner restaurant, which already rotates.
+
+    Morning and Afternoon periods already rotate which attraction they
+    name across days (see test_inject_travel_realism_rotates_focus_to_
+    reduce_adjacent_duplicates above) so a multi-day stay doesn't repeat
+    the same highlight -- Evening had no equivalent rotation, only the
+    dinner restaurant varied while the pre-dinner activity clause stayed
+    fixed to whichever attraction the source schedule happened to name."""
+    g = _gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Start at Navajo Loop Trail for cooler temps."},
+                {"period": "Afternoon", "summary": "Continue at Queens Garden Trail."},
+                {
+                    "period": "Evening",
+                    "summary": "Enjoy a sunset from Sunrise Point. Afterward, have dinner at Bryce Canyon Lodge Restaurant.",
+                },
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Return to Queens Garden Trail for photos."},
+                {"period": "Afternoon", "summary": "Hike Navajo Loop Trail if time allows."},
+                {
+                    "period": "Evening",
+                    "summary": "Enjoy a sunset from Sunrise Point. Afterward, have dinner at Bryce Canyon Lodge Restaurant.",
+                },
+            ],
+        },
+        {
+            "day_label": "Day 3",
+            "periods": [
+                {"period": "Morning", "summary": "Explore Navajo Loop Trail once more."},
+                {"period": "Afternoon", "summary": "Relax at Queens Garden Trail."},
+                {
+                    "period": "Evening",
+                    "summary": "Enjoy a sunset from Sunrise Point. Afterward, have dinner at Bryce Canyon Lodge Restaurant.",
+                },
+            ],
+        },
+    ]
+
+    out = g._inject_travel_realism(
+        days,
+        {"drive_time": "1 hr 45 min"},
+        "Page",
+        "Capitol Reef National Park",
+        attractions=[
+            {"name": "Navajo Loop Trail"},
+            {"name": "Queens Garden Trail"},
+            {"name": "Sunrise Point"},
+        ],
+        restaurants=[{"name": "Bryce Canyon Lodge Restaurant"}, {"name": "The Pizza Place"}],
+    )
+
+    day1_evening = out[0]["periods"][2]["summary"].lower()
+    day2_evening = out[1]["periods"][2]["summary"].lower()
+    assert "sunrise point" in day1_evening
+    # Day 2's evening must name a different attraction than Day 1's --
+    # not just a different restaurant -- to actually fix the repetition
+    # rather than just varying the dinner half of the sentence.
+    assert day2_evening != day1_evening
+    assert "sunrise point" not in day2_evening
+    assert "navajo loop trail" in day2_evening or "queens garden trail" in day2_evening
+
+
 def test_filter_oversized_scenic_drives_removes_full_day_loop() -> None:
     g = _gen()
     g._config = {"url_discovery": {"max_scenic_drive_miles": 150}}

@@ -2190,6 +2190,25 @@ class AIContentGenerator:
                             low_summary = summary.lower()
                             recent_focuses.append(focus.lower())
 
+                    elif label == "Evening":
+                        # Morning/Afternoon already rotate which attraction
+                        # they name across days (above) so a multi-day stay
+                        # doesn't repeat the same highlight; Evening had no
+                        # equivalent, so the pre-dinner activity clause (e.g.
+                        # "Enjoy a sunset from X") could name the same X on
+                        # every night of a stay while only the dinner
+                        # restaurant rotated below. Apply the same
+                        # non-repeating rotation here, offset past the
+                        # Morning/Afternoon picks for the same day so all
+                        # three periods prefer distinct attractions.
+                        focus = _pick_non_repeating_focus(day_index, offset=2, recent_focuses=recent_focuses[-2:])
+                        if focus:
+                            updated = _replace_first_attraction_mention(summary, focus)
+                            period["summary"] = updated
+                            summary = updated
+                            low_summary = summary.lower()
+                            recent_focuses.append(focus.lower())
+
                     if len(recent_focuses) > 6:
                         recent_focuses = recent_focuses[-6:]
 

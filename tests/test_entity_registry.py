@@ -358,3 +358,90 @@ def test_reconcile_schedule_from_registry_afternoon_names_a_real_substitute_not_
     assert "corona arch trail" not in afternoon
     assert "focus on currently eligible nearby highlights" not in afternoon
     assert "dead horse point state park" in afternoon
+
+
+def test_reconcile_schedule_from_registry_reuses_real_attractions_when_pool_is_small() -> None:
+    """Regression grounded in the real SW2026-dipstick67 output for Bryce
+    Canyon National Park: three periods (Day 1 Morning, Day 2 Afternoon,
+    Day 3 Morning) named a since-rejected attraction and needed a
+    substitute. Only three real accepted attractions exist for the
+    destination, and each one already legitimately appears once elsewhere
+    in the schedule's untouched periods (Day 1 Evening, Day 2 Morning, Day
+    2 Evening) -- exactly like a real multi-day stay with a small
+    attraction pool.
+
+    The old reconciler treated 'already mentioned anywhere in the
+    schedule' as permanently unavailable for substitution, so by the time
+    it reached the first blocked period every real candidate was already
+    marked used and it fell through to the fully generic 'currently
+    eligible' filler for all three -- even though naming a real,
+    already-elsewhere-mentioned attraction again would have been strictly
+    more informative and is exactly what the rest of the schedule already
+    does naturally (the untouched periods reuse nothing here, but the
+    pipeline elsewhere tolerates a highlight like a sunset viewpoint being
+    named on more than one evening of a stay). The fix spreads reuse
+    round-robin by least-used candidate instead of refusing reuse
+    outright, only forbidding a duplicate within the same day."""
+    trip = {
+        "destinations": [
+            {
+                "id": "bryce",
+                "name": "Bryce Canyon National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Rainbow Point",
+                            "type": "viewpoint",
+                            "url": "https://example.com/rainbow-point",
+                            "_registry": {"validation_status": "rejected", "rejection_reasons": ["url_rejected"]},
+                        },
+                        {"name": "Sunrise Point", "type": "viewpoint"},
+                        {"name": "Navajo Loop Trail", "type": "hike"},
+                        {"name": "Queens Garden Trail", "type": "hike"},
+                    ],
+                    "possible_daily_schedule": [
+                        {
+                            "day_label": "Day 1",
+                            "periods": [
+                                {"period": "Morning", "summary": "Start with Rainbow Point sunrise views."},
+                                {"period": "Afternoon", "summary": "Relax in town."},
+                                {"period": "Evening", "summary": "Watch the sunset from Sunrise Point."},
+                            ],
+                        },
+                        {
+                            "day_label": "Day 2",
+                            "periods": [
+                                {"period": "Morning", "summary": "Hike Navajo Loop Trail."},
+                                {"period": "Afternoon", "summary": "Return to Rainbow Point for photos."},
+                                {"period": "Evening", "summary": "Stroll Queens Garden Trail before dinner."},
+                            ],
+                        },
+                        {
+                            "day_label": "Day 3",
+                            "periods": [
+                                {"period": "Morning", "summary": "Explore Rainbow Point again."},
+                                {"period": "Afternoon", "summary": "Free time in town."},
+                                {"period": "Evening", "summary": "Dinner in town."},
+                            ],
+                        },
+                    ],
+                },
+            }
+        ]
+    }
+
+    registry = build_entity_registry(trip)
+    reconciled = reconcile_trip_from_registry(trip, registry)
+    reconcile_schedule_from_registry(reconciled, registry)
+
+    schedule = reconciled["destinations"][0]["ai_content"]["possible_daily_schedule"]
+    day1_morning = schedule[0]["periods"][0]["summary"].lower()
+    day2_afternoon = schedule[1]["periods"][1]["summary"].lower()
+    day3_morning = schedule[2]["periods"][0]["summary"].lower()
+
+    for text in (day1_morning, day2_afternoon, day3_morning):
+        assert "rainbow point" not in text
+        assert "currently eligible" not in text
+        assert any(
+            name in text for name in ("sunrise point", "navajo loop trail", "queens garden trail")
+        ), text
