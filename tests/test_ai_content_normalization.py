@@ -710,6 +710,187 @@ def test_manifest_attraction_target_keeps_seeded_names_in_output() -> None:
     assert "Sunrise Point" in names
 
 
+def test_resolve_attraction_target_default_is_four_per_day() -> None:
+    """Cost-reduction pass: attractions' default per-day cap was raised from
+    2 to 4 so all three item types (attractions/restaurants/en-route stops)
+    share the same uniform ceiling. See docs/design/per-day-item-caps.md."""
+    g = _gen()
+    assert g._resolve_attraction_target({}, {}) == 4
+
+
+def test_resolve_attraction_target_destination_override_wins_over_trip() -> None:
+    g = _gen()
+    assert g._resolve_attraction_target({"attractions_per_day": 2}, {"attractions_per_day": 6}) == 2
+
+
+def test_manifest_attraction_target_scales_with_bryce_canyon_three_day_stay() -> None:
+    """Grounded in the real sw_manifest.yaml Bryce Canyon National Park entry
+    (a 3-day stay, 'October 19-21, 2026'): at the new default of 4/day, up to
+    12 attractions should survive instead of the old 2/day * 3 = 6 ceiling."""
+    g = _gen()
+    items = [
+        {"name": f"Attraction {i}", "type": "attraction", "rating": 4.9 - i * 0.05, "votes": 100, "must_see": False}
+        for i in range(15)
+    ]
+
+    out = g._apply_manifest_attraction_target(
+        items, dates="October 19-21, 2026", attractions_per_day=g._resolve_attraction_target({}, {})
+    )
+
+    assert len(out) == 12
+
+
+def test_manifest_attraction_target_scales_with_st_george_one_day_stopover() -> None:
+    """Grounded in the real sw_manifest.yaml St. George, Utah entry (a 1-day
+    stopover, 'October 17, 2026'): at the new default of 4/day, up to 4
+    attractions should survive instead of the old 2/day * 1 = 2 ceiling."""
+    g = _gen()
+    items = [
+        {"name": f"Attraction {i}", "type": "attraction", "rating": 4.9 - i * 0.05, "votes": 100, "must_see": False}
+        for i in range(8)
+    ]
+
+    out = g._apply_manifest_attraction_target(
+        items, dates="October 17, 2026", attractions_per_day=g._resolve_attraction_target({}, {})
+    )
+
+    assert len(out) == 4
+
+
+def test_resolve_restaurant_target_default_is_four_per_day() -> None:
+    g = _gen()
+    assert g._resolve_restaurant_target({}, {}) == 4
+
+
+def test_resolve_restaurant_target_destination_override_wins_over_trip() -> None:
+    g = _gen()
+    assert g._resolve_restaurant_target({"restaurants_per_day": 2}, {"restaurants_per_day": 6}) == 2
+
+
+def test_resolve_restaurant_target_falls_back_to_trip_value() -> None:
+    g = _gen()
+    assert g._resolve_restaurant_target({}, {"restaurants_per_day": 5}) == 5
+
+
+def test_manifest_restaurant_target_prefers_highest_rated_candidates() -> None:
+    g = _gen()
+    items = [
+        {"name": "Lower-rated Spot", "cuisine": "American", "rating": 4.1, "votes": 40},
+        {"name": "Top Pick", "cuisine": "Italian", "rating": 4.9, "votes": 300},
+        {"name": "Mid-tier Diner", "cuisine": "Thai", "rating": 4.5, "votes": 120},
+        {"name": "Backup Grill", "cuisine": "Steakhouse", "rating": 4.3, "votes": 90},
+    ]
+
+    out = g._apply_manifest_restaurant_target(items, dates="October 7-8, 2026", restaurants_per_day=1)
+
+    assert [item["name"] for item in out] == ["Top Pick", "Mid-tier Diner"]
+
+
+def test_manifest_restaurant_target_keeps_protected_names_in_output() -> None:
+    g = _gen()
+    items = [
+        {"name": "Other Spot", "rating": 4.9, "votes": 200},
+        {"name": "Second Spot", "rating": 4.8, "votes": 180},
+        {"name": "Traveler's Pick", "rating": 3.9, "votes": 10},
+    ]
+
+    out = g._apply_manifest_restaurant_target(
+        items,
+        dates="October 7-8, 2026",
+        restaurants_per_day=1,
+        protected_names=["Traveler's Pick"],
+    )
+
+    names = [item["name"] for item in out]
+    assert "Traveler's Pick" in names
+
+
+def test_manifest_restaurant_target_scales_with_santa_fe_two_day_stay() -> None:
+    """Grounded in the real sw_manifest.yaml Santa Fe entry (a 2-day stay,
+    'October 27-29, 2026' spans 3 calendar days in that manifest, but this
+    uses a plain 2-day range to keep the assertion focused on the day-count
+    formula itself: 4/day * 2 days = 8)."""
+    g = _gen()
+    items = [
+        {"name": f"Restaurant {i}", "cuisine": "American", "rating": 4.9 - i * 0.05, "votes": 50}
+        for i in range(12)
+    ]
+
+    out = g._apply_manifest_restaurant_target(items, dates="October 27-28, 2026", restaurants_per_day=4)
+
+    assert len(out) == 8
+
+
+def test_resolve_enroute_target_default_is_four_per_day() -> None:
+    g = _gen()
+    assert g._resolve_enroute_target({}, {}) == 4
+
+
+def test_resolve_enroute_target_destination_override_wins_over_trip() -> None:
+    g = _gen()
+    assert g._resolve_enroute_target({"en_route_stops_per_day": 1}, {"en_route_stops_per_day": 6}) == 1
+
+
+def test_manifest_enroute_target_preserves_relative_order_when_trimming() -> None:
+    """En-route stops have no rating/votes/must_see signal to rank on (see
+    _apply_manifest_enroute_target's docstring), so trimming must be a
+    stable truncation of the existing order, not a re-sort."""
+    g = _gen()
+    stops = [{"name": f"Stop {i}"} for i in range(6)]
+
+    out = g._apply_manifest_enroute_target(stops, dates="October 17, 2026", en_route_stops_per_day=4)
+
+    assert [s["name"] for s in out] == ["Stop 0", "Stop 1", "Stop 2", "Stop 3"]
+
+
+def test_manifest_enroute_target_keeps_seeded_stops_regardless_of_cap() -> None:
+    """A manifest en_route_seeds entry (the traveler's own explicit pick)
+    must survive the cap even if it would otherwise be trimmed."""
+    g = _gen()
+    stops = [{"name": f"Stop {i}"} for i in range(5)] + [{"name": "Traveler's En-Route Pick"}]
+
+    out = g._apply_manifest_enroute_target(
+        stops,
+        dates="October 17, 2026",
+        en_route_stops_per_day=4,
+        protected_names=["Traveler's En-Route Pick"],
+    )
+
+    names = [s["name"] for s in out]
+    assert "Traveler's En-Route Pick" in names
+    assert len(out) == 4
+
+
+def test_manifest_enroute_target_scales_with_day_count() -> None:
+    g = _gen()
+    stops = [{"name": f"Stop {i}"} for i in range(10)]
+
+    one_day = g._apply_manifest_enroute_target(stops, dates="October 17, 2026", en_route_stops_per_day=4)
+    three_day = g._apply_manifest_enroute_target(stops, dates="October 19-21, 2026", en_route_stops_per_day=4)
+
+    assert len(one_day) == 4
+    assert len(three_day) == 10  # capped at min(len(stops), 4*3=12) -> all 10 survive
+
+
+def test_normalize_getting_here_applies_enroute_cap_and_preserves_seed() -> None:
+    """Integration-level check that _normalize_getting_here (called from
+    _normalize_destination_content at the correct pre-schedule point, unlike
+    the restaurant path before this fix) wires dest/trip_meta through to the
+    new en-route cap."""
+    g = _gen()
+    getting_here = {
+        "drive_time": "45 min",
+        "en_route_stops": [{"name": f"Stop {i}"} for i in range(6)] + [{"name": "Seeded Overlook"}],
+    }
+    dest = {"name": "Moab", "en_route_seeds": ["Seeded Overlook"]}
+
+    out = g._normalize_getting_here(getting_here, "Moab", dates="October 17, 2026", trip_meta={}, dest=dest)
+
+    names = [s["name"] for s in out["en_route_stops"]]
+    assert "Seeded Overlook" in names
+    assert len(names) == 4
+
+
 from generator.ai_content import AIContentGenerator
 
 
@@ -1979,6 +2160,98 @@ def test_normalize_destination_content_preserves_seeded_angels_landing_through_e
 
     names = [str(a.get("name", "")) for a in out.get("top_attractions", [])]
     assert any("angels landing" == n.lower() for n in names)
+
+
+def test_normalize_destination_content_trims_restaurants_before_schedule_generation() -> None:
+    """Ordering-fix regression test: restaurant per-day capping must happen
+    BEFORE _normalize_schedule runs, exactly like attractions already do.
+
+    Before this fix, _normalize_schedule (which uses whatever restaurant
+    list it's handed to fill in an unnamed 'dinner' mention -- see its
+    clean_text() closure) was called with the UN-trimmed dinner_recommendations
+    list, and restaurants were only capped afterward. That meant the schedule
+    could end up referencing a restaurant that the cap then dropped from the
+    final dinner_recommendations output -- an itinerary naming a dinner spot
+    that doesn't appear anywhere else in the rendered page.
+
+    This spies on _normalize_schedule to capture exactly which restaurant
+    list it was actually called with, and asserts it's identical (same
+    names, same order, same length) to the final, capped
+    dinner_recommendations output -- proving the two can never disagree.
+
+    Grounded in the real sw_manifest.yaml St. George, Utah entry: a 1-day
+    stopover ('October 17, 2026'), so the default 4/day cap should trim the
+    8 candidate restaurants down to 4.
+    """
+    g = _gen()
+    g._weather_cache = {}
+    g._get_monthly_temperature_normals = lambda _lat, _lng, _month: None
+
+    captured: dict[str, list[str]] = {}
+
+    def _spy_normalize_schedule(schedule, restaurants, *args, **kwargs):
+        captured["restaurant_names"] = [r.get("name") for r in restaurants]
+        return []
+
+    g._normalize_schedule = _spy_normalize_schedule
+
+    restaurants = [
+        {"name": f"Restaurant {i}", "cuisine": "American", "rating": 4.9 - i * 0.05, "votes": 50}
+        for i in range(8)
+    ]
+    payload = {
+        "expected_environment": {},
+        "getting_here": {},
+        "top_attractions": [],
+        "possible_daily_schedule": {},
+        "dinner_recommendations": restaurants,
+    }
+    dest = {"name": "St. George, Utah", "dates": "October 17, 2026"}
+
+    out = g._normalize_destination_content(
+        payload,
+        dates=dest["dates"],
+        dest=dest,
+        trip_meta={},
+        previous_destination="none",
+        next_destination="Zion National Park",
+    )
+
+    final_names = [r.get("name") for r in out["dinner_recommendations"]]
+    assert captured["restaurant_names"] == final_names
+    assert len(final_names) == 4
+
+
+def test_normalize_destination_content_scales_restaurants_with_bryce_canyon_three_day_stay() -> None:
+    """Grounded in the real sw_manifest.yaml Bryce Canyon National Park entry
+    (a 3-day stay, 'October 19-21, 2026'): 4/day * 3 days = 12 restaurants
+    should survive out of a larger candidate pool."""
+    g = _gen()
+    g._weather_cache = {}
+    g._get_monthly_temperature_normals = lambda _lat, _lng, _month: None
+
+    payload = {
+        "expected_environment": {},
+        "getting_here": {},
+        "top_attractions": [],
+        "possible_daily_schedule": {},
+        "dinner_recommendations": [
+            {"name": f"Restaurant {i}", "cuisine": "American", "rating": 4.9 - i * 0.02, "votes": 50}
+            for i in range(20)
+        ],
+    }
+    dest = {"name": "Bryce Canyon National Park", "dates": "October 19-21, 2026"}
+
+    out = g._normalize_destination_content(
+        payload,
+        dates=dest["dates"],
+        dest=dest,
+        trip_meta={},
+        previous_destination="St. George, Utah",
+        next_destination="Capitol Reef National Park",
+    )
+
+    assert len(out["dinner_recommendations"]) == 12
 
 
 def test_normalize_getting_here_returns_normalized_dict() -> None:

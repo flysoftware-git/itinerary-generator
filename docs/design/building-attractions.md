@@ -61,8 +61,17 @@ In other words:
 Expected quantity is 6-8 attractions per destination from prompt guidance.
 
 Important nuance:
-- The code does not currently enforce a strict post-normalization minimum or maximum.
-- De-duplication and en-route pruning can reduce final count below the prompt target.
+- The code does not enforce a post-normalization *minimum* -- de-duplication
+  and en-route pruning can still reduce final count below the prompt target.
+- The code does enforce a post-normalization *maximum*: `_apply_manifest_attraction_target`
+  caps the final list at `attractions_per_day * day_count` (default 4/day,
+  configurable via the manifest `attractions_per_day` field), applied after
+  de-duplication/en-route pruning and before URL discovery ever runs, since
+  URL discovery only searches whatever this list hands it. Manifest-seeded
+  attractions are always preserved regardless of the cap. See
+  `docs/design/per-day-item-caps.md` for the full design (this cap now
+  applies uniformly to restaurants and en-route stops too, not just
+  attractions).
 
 ## Key Implementation Locations
 - Prompt contract for attraction quantity and must-see constraints:

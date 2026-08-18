@@ -1140,6 +1140,9 @@ class AIContentGenerator:
         payload["getting_here"] = self._normalize_getting_here(
             payload.get("getting_here", {}),
             dest.get("name", ""),
+            dates=dates,
+            trip_meta=trip_meta,
+            dest=dest,
         )
         normalized_attractions = self._normalize_attractions(payload.get("top_attractions", []))
         normalized_attractions = self._ensure_seed_attractions(normalized_attractions, seed_names)
@@ -1153,6 +1156,23 @@ class AIContentGenerator:
             dates=dates,
             attractions_per_day=self._resolve_attraction_target(dest, trip_meta),
             protected_names=seed_names,
+        )
+        # Restaurant normalization+capping must run BEFORE _normalize_schedule
+        # below, exactly like attractions above -- _normalize_schedule reads
+        # whatever list it's handed as its dinner-naming source, so if this ran
+        # after (as it originally did), the schedule would reference dinner
+        # spots the per-day cap was about to trim back out. Attractions never
+        # had this bug because they were already trimmed before the schedule
+        # call; restaurants are reordered here to match. See
+        # docs/design/per-day-item-caps.md.
+        normalized_restaurants = self._normalize_restaurants(
+            payload.get("dinner_recommendations", []),
+            trip_meta.get("budget"),
+        )
+        payload["dinner_recommendations"] = self._apply_manifest_restaurant_target(
+            normalized_restaurants,
+            dates=dates,
+            restaurants_per_day=self._resolve_restaurant_target(dest, trip_meta),
         )
         payload["possible_daily_schedule"] = self._normalize_schedule(
             payload.get("possible_daily_schedule", {}),
@@ -1172,10 +1192,6 @@ class AIContentGenerator:
             str(dest.get("schedule_start_time", "") or "").strip(),
             trip_meta.get("default_daily_activity_hours", 5),
             dest.get("daily_activity_hours", None),
-        )
-        payload["dinner_recommendations"] = self._normalize_restaurants(
-            payload.get("dinner_recommendations", []),
-            trip_meta.get("budget"),
         )
         return payload
 
@@ -1287,7 +1303,15 @@ class AIContentGenerator:
 
         return self._normalize_attractions(out)
 
-    def _normalize_getting_here(self, getting_here: Any, dest_name: str) -> dict[str, Any]:
+    def _normalize_getting_here(
+        self,
+        getting_here: Any,
+        dest_name: str,
+        *,
+        dates: str = "",
+        trip_meta: dict[str, Any] | None = None,
+        dest: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if not isinstance(getting_here, dict):
             return {}
         out = dict(getting_here)
@@ -1301,10 +1325,118 @@ class AIContentGenerator:
             if item.get("detour_time_minutes") in (None, ""):
                 item["detour_time_minutes"] = 0
             normalized_stops.append(item)
-        out["en_route_stops"] = normalized_stops
+        seed_names = [
+            str(s or "").strip()
+            for s in ((dest or {}).get("en_route_seeds", []) or [])
+            if str(s or "").strip()
+        ]
+        out["en_route_stops"] = self._apply_manifest_enroute_target(
+            normalized_stops,
+            dates=dates,
+            en_route_stops_per_day=self._resolve_enroute_target(dest or {}, trip_meta or {}),
+            protected_names=seed_names,
+        )
         if not out.get("route_summary") and out.get("drive_time"):
             out["route_summary"] = f"Arrival leg into {dest_name} typically takes about {out.get('drive_time')}."
         return out
+
+    def _resolve_enroute_target(self, dest: dict[str, Any], trip_meta: dict[str, Any]) -> int:
+        """En-route-stop counterpart to `_resolve_attraction_target`/
+        `_resolve_restaurant_target` -- same manifest-config precedence and
+        default of 4/day. See docs/design/per-day-item-caps.md for why a
+        per-destination-day basis was kept here too, even though en-route
+        stops belong to the single drive INTO a destination rather than the
+        stay itself.
+        """
+        default_target = 4
+        trip_value = trip_meta.get("en_route_stops_per_day") if isinstance(trip_meta, dict) else None
+        dest_value = dest.get("en_route_stops_per_day") if isinstance(dest, dict) else None
+        candidate = dest_value if dest_value is not None else trip_value
+        try:
+            parsed = int(candidate)
+        except (TypeError, ValueError):
+            parsed = default_target
+        if parsed < 1:
+            parsed = default_target
+        return parsed
+
+    def _apply_manifest_enroute_target(
+        self,
+        stops: list[dict[str, Any]],
+        *,
+        dates: str,
+        en_route_stops_per_day: int,
+        protected_names: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """En-route-stop counterpart to `_apply_manifest_attraction_target`:
+        same day-count-aware target formula and the same never-evict-a-
+        manifest-seed guarantee (here, `en_route_seeds` rather than `seeds`).
+
+        Day-count basis, and why it was kept despite the conceptual mismatch:
+        an en-route stop belongs to the single drive INTO this destination,
+        which happens once no matter how many days the traveler then stays --
+        so "days at the destination" isn't a perfect scaling proxy for "how
+        many detours are worth offering on this one drive" the way it is for
+        attractions/restaurants consumed throughout the stay. A distance- or
+        drive-time-scaled basis would be conceptually cleaner, but
+        `getting_here.distance_miles`/`drive_time` are themselves AI-guessed
+        (see `_override_grouped_child_distance_from_geocode` above for a real
+        case of that guess being wildly wrong) and normalization runs before
+        any geocode-based correction, so building a cap on top of a number
+        already documented as unreliable here would trade one weak proxy for
+        another, shakier one. Day-count is kept as the uniform, already-
+        validated basis per the project owner's explicit ask for a uniform
+        "4 items/day" ceiling across all three item types; in practice a
+        longer multi-destination leg is also plausibly correlated with a
+        longer stay at the destination it delivers you to, so it is not a
+        pure mismatch either.
+
+        Scoring, like restaurants, has no must_see/rating/votes signal to
+        rank on (`getting_here.en_route_stops` schema in
+        prompts/destination_content.txt has no such fields) -- but unlike
+        restaurants there's also no name-alphabetical fallback that means
+        anything to a traveler driving a specific route in a specific
+        direction. Rather than fabricate a ranking heuristic from data that
+        carries no real quality signal, the AI's/upstream normalization's
+        existing relative order is preserved (a stable truncation): seeded
+        stops are pulled to the front and always survive, non-seeded stops
+        keep their original relative order and are simply cut off at the
+        target count.
+        """
+        if not isinstance(stops, list):
+            return []
+        if not stops:
+            return []
+
+        protected = {
+            self._canonical_seed_name(str(name or ""))
+            for name in (protected_names or [])
+            if self._canonical_seed_name(str(name or ""))
+        }
+
+        if protected:
+            protected_items = [
+                item for item in stops
+                if isinstance(item, dict)
+                and self._canonical_seed_name(str(item.get("name", "") or "")) in protected
+            ]
+            remaining = [
+                item for item in stops
+                if isinstance(item, dict)
+                and self._canonical_seed_name(str(item.get("name", "") or "")) not in protected
+            ]
+        else:
+            protected_items = []
+            remaining = [item for item in stops if isinstance(item, dict)]
+
+        day_count = max(1, self._infer_day_count(dates))
+        target = max(1, int(en_route_stops_per_day) * day_count)
+        if len(stops) <= target:
+            return stops
+
+        selected = list(protected_items)
+        selected.extend(remaining[: max(0, target - len(selected))])
+        return selected
 
     def _override_grouped_child_distance_from_geocode(self, trip: dict[str, Any]) -> None:
         """Replace a grouped child's AI-guessed getting_here distance/time
@@ -2689,7 +2821,13 @@ class AIContentGenerator:
             return None
 
     def _resolve_attraction_target(self, dest: dict[str, Any], trip_meta: dict[str, Any]) -> int:
-        default_target = 2
+        # Cost-reduction pass (see docs/design/per-day-item-caps.md): raised from 2
+        # to 4 so attractions share the same uniform "4 items/day" ceiling as the
+        # new restaurant and en-route-stop caps below -- url_discovery only ever
+        # searches whatever ai_content.py hands it, so a lower per-type ceiling
+        # here is what actually keeps the number of paid Grok web_search calls
+        # down, not a change anywhere in url_discovery.py itself.
+        default_target = 4
         trip_value = trip_meta.get("attractions_per_day") if isinstance(trip_meta, dict) else None
         dest_value = dest.get("attractions_per_day") if isinstance(dest, dict) else None
         candidate = dest_value if dest_value is not None else trip_value
@@ -2840,6 +2978,98 @@ class AIContentGenerator:
             )
         )
         return normalized
+
+    def _resolve_restaurant_target(self, dest: dict[str, Any], trip_meta: dict[str, Any]) -> int:
+        """Restaurant counterpart to `_resolve_attraction_target` -- same
+        manifest-config precedence (destination overrides trip, both optional),
+        same default of 4/day. See docs/design/per-day-item-caps.md.
+        """
+        default_target = 4
+        trip_value = trip_meta.get("restaurants_per_day") if isinstance(trip_meta, dict) else None
+        dest_value = dest.get("restaurants_per_day") if isinstance(dest, dict) else None
+        candidate = dest_value if dest_value is not None else trip_value
+        try:
+            parsed = int(candidate)
+        except (TypeError, ValueError):
+            parsed = default_target
+        if parsed < 1:
+            parsed = default_target
+        return parsed
+
+    def _apply_manifest_restaurant_target(
+        self,
+        restaurants: list[dict[str, Any]],
+        *,
+        dates: str,
+        restaurants_per_day: int,
+        protected_names: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Restaurant counterpart to `_apply_manifest_attraction_target`: same
+        day-count-aware target formula (`restaurants_per_day * day_count`,
+        1-5 days via `_infer_day_count`) and the same never-evict-a-protected-
+        name guarantee.
+
+        Scoring differs from attractions out of necessity, not choice: the
+        `dinner_recommendations` schema (prompts/destination_content.txt) has
+        no `must_see`/`rating`/`votes` fields the way `top_attractions` does,
+        so there is no quality signal to rank on here beyond whatever the AI
+        happens to attach. Rank by rating/votes when present (gracefully
+        degrading to 0 when absent, same as attractions), then break ties by
+        name for a deterministic, reproducible trim rather than depending on
+        dict/list ordering.
+
+        `protected_names` exists for structural symmetry with the attraction
+        path (and so a future `dest.get("dinner_seeds")`-style manifest field
+        could plug in without changing this function), but nothing in the
+        manifest schema seeds restaurants today -- unlike `seeds`/
+        `en_route_seeds`, there is no traveler-facing restaurant-seed
+        concept, so callers currently pass no protected names here.
+        """
+        if not isinstance(restaurants, list):
+            return []
+        if not restaurants:
+            return []
+
+        protected = {
+            self._canonical_restaurant_name(str(name or ""))
+            for name in (protected_names or [])
+            if self._canonical_restaurant_name(str(name or ""))
+        }
+
+        def score(item: dict[str, Any]) -> tuple[float, int, str]:
+            name = str(item.get("name", "") or "")
+            rating = self._coerce_float(item.get("rating"))
+            if rating is None:
+                rating = 0.0
+            votes = item.get("votes")
+            try:
+                vote_count = int(votes)
+            except (TypeError, ValueError):
+                vote_count = 0
+            return (-rating, -vote_count, name.lower())
+
+        ranked = sorted(restaurants, key=score)
+        if protected:
+            protected_items = [
+                item for item in ranked
+                if self._canonical_restaurant_name(str(item.get("name", "") or "")) in protected
+            ]
+            remaining = [
+                item for item in ranked
+                if self._canonical_restaurant_name(str(item.get("name", "") or "")) not in protected
+            ]
+        else:
+            protected_items = []
+            remaining = ranked
+
+        day_count = max(1, self._infer_day_count(dates))
+        target = max(1, int(restaurants_per_day) * day_count)
+        if len(ranked) <= target:
+            return ranked
+
+        selected = list(protected_items)
+        selected.extend(remaining[: max(0, target - len(selected))])
+        return selected
 
     @staticmethod
     def _normalize_url_candidates(raw: Any) -> list[str]:
