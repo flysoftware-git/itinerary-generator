@@ -2030,6 +2030,36 @@ class AIContentGenerator:
             seen_attraction_names.add(key)
             attraction_names.append(name)
 
+        def _register_attraction_mentions(day: dict[str, Any]) -> None:
+            """Seed `used_multi_activity_names` from any attraction name
+            already mentioned in this day's periods -- not just the names
+            _build_multi_activity_afternoon_summary picked itself (that
+            path already self-registers via the `used_multi_activity_names.
+            update(...)` call inside it).
+
+            The gap this closes: raw AI-authored prose for a period the
+            packer never touches (most commonly Evening, e.g. "Watch the
+            sunset from Natural Bridge...") names a real attraction through
+            a completely different code path, so without this the packer
+            has no way to know that name is already spoken for. Real
+            SW2026-dipstick69 regression, Bryce Canyon National Park: Day 1
+            Evening named "Natural Bridge" for sunset viewing, then Day 2
+            Afternoon's capacity-aware packer named it again as one of
+            several afternoon options -- a traveler who saw it Day 1 evening
+            has no reason to see it suggested again Day 2. Called for
+            days[0] before the Day 2+ packing loop starts, and for each day
+            again right after that day is packed, so every later day's call
+            sees every attraction mentioned anywhere (any period) on every
+            earlier day, not just the ones the packer itself placed.
+            """
+            for period in day.get("periods", []) or []:
+                summary = str(period.get("summary", "") or "")
+                if not summary:
+                    continue
+                for name in attraction_names:
+                    if name and re.search(re.escape(name), summary, re.IGNORECASE):
+                        used_multi_activity_names.add(name.lower())
+
         def _day_focus_name(day_index: int, offset: int = 0) -> str:
             if not attraction_names:
                 return ""
@@ -2212,6 +2242,13 @@ class AIContentGenerator:
         # index offsets which attractions are considered first so consecutive
         # days don't greedily pick the identical set.
         if len(days) > 1 and attractions:
+            # Seed the cross-day dedup set with every attraction already
+            # named anywhere in Day 1 (all periods, not just the Afternoon
+            # block the arrival-day packer above may have set) before the
+            # Day 2+ packer runs, so a name only ever mentioned in raw
+            # AI-authored prose (e.g. an Evening sunset sentence) is still
+            # excluded from later days -- see _register_attraction_mentions.
+            _register_attraction_mentions(days[0])
             for day_index, day in enumerate(days[1:], start=2):
                 if not (day.get("periods", []) or []):
                     continue
@@ -2222,6 +2259,11 @@ class AIContentGenerator:
                 )
                 if packed:
                     _set_period_summary(day, "Afternoon", packed)
+                # Register this day's own remaining periods too (e.g. its
+                # raw Morning/Evening text) so the *next* day's packer call
+                # also excludes any name only ever mentioned in prose, not
+                # just names this loop itself packed.
+                _register_attraction_mentions(day)
 
         _protected_departure_period: dict[str, Any] | None = None
         if is_last_destination:

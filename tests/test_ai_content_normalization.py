@@ -1364,6 +1364,93 @@ def test_inject_travel_realism_rotates_evening_focus_across_a_multi_day_stay() -
     assert "navajo loop trail" in day2_evening or "queens garden trail" in day2_evening
 
 
+def test_inject_travel_realism_dipstick69_evening_attraction_not_repeated_in_later_day_afternoon_pack() -> None:
+    """Regression grounded in real SW2026-dipstick69 output, Bryce Canyon
+    National Park's 3-day schedule (project owner-flagged): Day 1 Evening
+    read 'Watch the sunset from Natural Bridge, experiencing the changing
+    colors of the canyon. Enjoy dinner at Bryce Canyon Pines Restaurant for
+    a local meal.' -- then Day 2 Afternoon's capacity-aware packer named
+    Natural Bridge again: 'Consider one or more of the following, within
+    about 1h 30m: Natural Bridge (30m), Inspiration Point (30m), Bryce
+    Point (30m). Keep transfer/parking buffers between stops.' A traveler
+    who already saw Natural Bridge Day 1 evening has no reason to see it
+    suggested again Day 2.
+
+    The pre-existing `used_multi_activity_names` cross-day dedup set (see
+    test_inject_travel_realism_moab_schedule_avoids_repeats_and_multi_park_
+    blocks above) only ever gets populated when _build_multi_activity_
+    afternoon_summary itself picks a name -- Day 1's raw AI-authored
+    Evening prose names Natural Bridge through a completely different code
+    path that never touches that set, so the Day 2+ packer had no way to
+    know it was already used.
+    """
+    g = _gen()
+    days = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Arrive at Bryce Canyon and check in to your lodging."},
+                {"period": "Afternoon", "summary": "Settle in and explore the visitor center."},
+                {
+                    "period": "Evening",
+                    "summary": (
+                        "Watch the sunset from Natural Bridge, experiencing the changing "
+                        "colors of the canyon. Enjoy dinner at Bryce Canyon Pines Restaurant "
+                        "for a local meal."
+                    ),
+                },
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Free morning to explore."},
+                {"period": "Afternoon", "summary": "Old afternoon text."},
+                {"period": "Evening", "summary": "Dinner in town."},
+            ],
+        },
+        {
+            "day_label": "Day 3",
+            "periods": [
+                {"period": "Morning", "summary": "Free morning to explore."},
+                {"period": "Afternoon", "summary": "Old afternoon text."},
+                {"period": "Evening", "summary": "Dinner in town."},
+            ],
+        },
+    ]
+    # Real Bryce Canyon top_attractions shape from dipstick69's output.
+    attractions = [
+        {"name": "Sunrise Point", "duration": "30 min"},
+        {"name": "Inspiration Point", "duration": "30 min"},
+        {"name": "Natural Bridge", "duration": "30 min"},
+        {"name": "Bryce Point", "duration": "30 min"},
+    ]
+
+    out = g._inject_travel_realism(
+        days,
+        getting_here={},  # isolate Day 2+ capacity-aware packing from the arrival-day drive discount
+        previous_destination="Zion National Park",
+        next_destination="Capitol Reef National Park",
+        attractions=attractions,
+        default_daily_activity_hours=5,
+    )
+
+    day1_evening = out[0]["periods"][2]["summary"].lower()
+    day2_afternoon = out[1]["periods"][1]["summary"].lower()
+    day3_afternoon = out[2]["periods"][1]["summary"].lower()
+
+    # Sanity check: the fixture actually reproduces the scenario -- Day 1
+    # evening still names Natural Bridge, and Day 2 actually got a
+    # capacity-aware pack (not left untouched for some unrelated reason).
+    assert "natural bridge" in day1_evening
+    assert "consider one or more of the following" in day2_afternoon
+
+    # The actual bug: Natural Bridge must not be packed into any later
+    # day's Afternoon block once it's already been named on an earlier day.
+    assert "natural bridge" not in day2_afternoon
+    assert "natural bridge" not in day3_afternoon
+
+
 def test_normalize_schedule_dipstick68_leaked_instruction_never_reaches_rendered_evening_text() -> None:
     """Regression grounded in the real SW2026-dipstick68 output for Bryce
     Canyon National Park, Day 2 Evening, exactly as the project owner found
