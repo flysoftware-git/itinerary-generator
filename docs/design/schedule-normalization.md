@@ -506,12 +506,30 @@ the project owner's "generic filler instead of concrete attraction
 allocation" complaint (not an LLM prompt-echo; the phrase is a Python
 literal in `_SCHEDULE_FALLBACK_BY_PERIOD`, never present in any
 `ai_content.py` prompt template). Fixed: the pass now looks for an
-unblocked, not-yet-mentioned-elsewhere attraction from the destination's own
-(already-reconciled) `top_attractions` and re-anchors the period's text to
-name it concretely; the fully generic fallback is now reserved for the case
-where truly nothing real is left to substitute (verified by
+unblocked attraction from the destination's own (already-reconciled)
+`top_attractions` and re-anchors the period's text to name it concretely;
+the fully generic fallback is now reserved for the case where truly nothing
+real is left to substitute (verified by
 `tests/test_entity_registry.py::test_reconcile_schedule_from_registry_afternoon_names_a_real_substitute_not_generic_filler`
 and the adjacent threshold-demoted-mention test).
+
+**Small-attraction-pool follow-up (2026-08-17):** the initial version above
+preferred a candidate "not yet mentioned elsewhere" in the schedule, and
+once a candidate was mentioned anywhere it was permanently excluded from
+substitution. Real SW2026-dipstick67 output for Bryce Canyon National Park
+showed this was too strict: a 3-day stay with only three real accepted
+attractions had each of them legitimately named once in an untouched
+period, which exhausted the candidate pool before the first blocked period
+was even reached — every one of the three blocked periods fell through to
+the fully generic filler despite three real attractions existing to name.
+Fixed: candidate selection is now round-robin by least-used count rather
+than a one-shot "used/unused" flag — a candidate can be reused across
+different days once every candidate has had a turn, matching how the rest
+of the schedule already tolerates a highlight (e.g. a sunset viewpoint)
+being named on more than one day of a stay. The only hard exclusion left is
+within the same day, so one day's Morning and Afternoon are never
+substituted with the same attraction. Verified by
+`tests/test_entity_registry.py::test_reconcile_schedule_from_registry_reuses_real_attractions_when_pool_is_small`.
 
 Inputs include:
 - raw schedule payload from model output
@@ -577,6 +595,28 @@ Rationalization requirement:
 - For multi-day destinations, each day must contain at least one substantive
 	differentiator from prior days (distinct area, activity focus, or transfer duty).
 - Cosmetic wording changes alone do not satisfy differentiation quality.
+
+**Attraction-focus rotation (day-level allocation pass, in
+`_inject_travel_realism`):** separately from the exact-text dedup above,
+each day's Morning and Afternoon period gets its named attraction rotated
+via `_pick_non_repeating_focus`/`_replace_first_attraction_mention` so a
+multi-day stay doesn't name the same highlight in the same period slot two
+days running -- this is a text substitution (swap which known attraction
+name appears in the sentence), not a rewrite of the surrounding prose.
+
+Evening was excluded from this rotation until 2026-08-17: only the dinner
+restaurant half of the Evening sentence rotated
+(`_rotate_restaurant_summary`), while the pre-dinner activity clause (e.g.
+"Enjoy a sunset from X") stayed fixed to whatever attraction the source
+schedule happened to name. Real SW2026-dipstick67 output showed this as
+near-duplicate (not exact-duplicate) Evening text across a multi-day Bryce
+Canyon stay: "Enjoy a sunset from Sunrise Point. Afterward, have dinner at
+Bryce Canyon Lodge Restaurant." on Day 1 vs "...dinner at The Pizza Place."
+on Day 2 -- different restaurant, same attraction, so the exact-match dedup
+above never caught it. Fixed: Evening now gets the same
+`_pick_non_repeating_focus` rotation as Morning/Afternoon, offset so all
+three periods of a day prefer distinct attractions. Verified by
+`tests/test_ai_content_normalization.py::test_inject_travel_realism_rotates_evening_focus_across_a_multi_day_stay`.
 
 Known gap (not addressed here): no cross-destination schedule-text dedup
 exists. Cross-destination dedup exists for scenic drives, what_to_know, and

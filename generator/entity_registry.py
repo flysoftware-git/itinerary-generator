@@ -379,9 +379,7 @@ def reconcile_schedule_from_registry(reconciled_trip: dict[str, Any], registry: 
         # reconciliation for this destination (present in the already-
         # filtered top_attractions list) and aren't themselves blocked --
         # e.g. a soft-demoted trail stays "accepted" but is still excluded
-        # here via blocked_lower. Seeded against any names the schedule
-        # already mentions elsewhere so a substitution doesn't duplicate an
-        # attraction that legitimately appears in another period/day.
+        # here via blocked_lower.
         top_attractions = ai.get("top_attractions", []) if isinstance(ai.get("top_attractions", []), list) else []
         candidate_names = [
             name
@@ -390,7 +388,22 @@ def reconcile_schedule_from_registry(reconciled_trip: dict[str, Any], registry: 
             )
             if name and name.lower() not in blocked_lower
         ]
-        used_candidate_names: set[str] = set()
+        # Usage is tracked as a count, not a one-shot boolean: a small
+        # destination can easily have only 2-3 real attractions to cover
+        # 6+ schedule periods across a multi-day stay, and the rest of the
+        # pipeline already tolerates naming the same attraction more than
+        # once across different days/periods (e.g. a recurring "sunset from
+        # X" evening beat). Refusing to ever reuse a candidate once it's
+        # been named anywhere meant a small attraction pool got exhausted
+        # after 1-2 substitutions, and every period after that fell all the
+        # way back to the fully generic "currently eligible" filler even
+        # though real, nameable attractions still existed. Round-robin by
+        # least-used instead: always prefer a name over the generic phrase,
+        # and spread reuse evenly rather than concentrating it or refusing
+        # it outright. The only hard rule is no duplicate within the SAME
+        # day (day_used_lower below), so one day's Morning and Afternoon
+        # don't end up naming the same place twice.
+        usage_count: dict[str, int] = {name.lower(): 0 for name in candidate_names}
         for day in schedule:
             if not isinstance(day, dict):
                 continue
@@ -400,12 +413,21 @@ def reconcile_schedule_from_registry(reconciled_trip: dict[str, Any], registry: 
                 existing_summary = str(period.get("summary", "") or "")
                 for name in candidate_names:
                     if _schedule_summary_mentions_entity(existing_summary, name):
-                        used_candidate_names.add(name.lower())
+                        usage_count[name.lower()] = usage_count.get(name.lower(), 0) + 1
 
         for day in schedule:
             if not isinstance(day, dict):
                 continue
             periods = day.get("periods", []) if isinstance(day.get("periods", []), list) else []
+            day_used_lower: set[str] = set()
+            for period in periods:
+                if not isinstance(period, dict):
+                    continue
+                existing_summary = str(period.get("summary", "") or "")
+                for name in candidate_names:
+                    if _schedule_summary_mentions_entity(existing_summary, name):
+                        day_used_lower.add(name.lower())
+
             for period in periods:
                 if not isinstance(period, dict):
                     continue
@@ -415,12 +437,12 @@ def reconcile_schedule_from_registry(reconciled_trip: dict[str, Any], registry: 
                 if not any(_schedule_summary_mentions_entity(summary, name) for name in blocked_names):
                     continue
                 label = str(period.get("period", "") or "").strip().lower()
-                substitute = next(
-                    (name for name in candidate_names if name.lower() not in used_candidate_names),
-                    "",
-                )
+                eligible = [name for name in candidate_names if name.lower() not in day_used_lower]
+                pool = eligible or candidate_names
+                substitute = min(pool, key=lambda name: usage_count.get(name.lower(), 0)) if pool else ""
                 if substitute and label in _CONCRETE_SUBSTITUTE_BY_PERIOD:
                     period["summary"] = _CONCRETE_SUBSTITUTE_BY_PERIOD[label].format(name=substitute)
-                    used_candidate_names.add(substitute.lower())
+                    usage_count[substitute.lower()] = usage_count.get(substitute.lower(), 0) + 1
+                    day_used_lower.add(substitute.lower())
                 else:
                     period["summary"] = _SCHEDULE_FALLBACK_BY_PERIOD.get(label, _SCHEDULE_FALLBACK_GENERIC)
