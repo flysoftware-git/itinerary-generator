@@ -431,6 +431,104 @@ changes measurably reduce — they do not eliminate — the chance of a
 transient archive.org hiccup zeroing out a run's Wayback fallback; the
 fail-closed, unfabricated-link guarantee is unaffected either way.
 
+## Secondary Maps Link for Attractions and Restaurants
+Project owner ask: "add Google Maps links to attraction cards and restaurant
+cards that are available but are not used because of source links used
+instead. Add the other link behind a small map icon placed with other badges
+when the link is available." `html_assembler.py`'s `_maps_corner_link_html`
+already implements the render side of exactly this — a small `🗺️` badge that
+surfaces `item["maps_url"]` alongside a card's primary link — and is wired
+into route options, en-route stops, attractions, and restaurants alike. But a
+real validation run (dipstick72, `C:\Temp\RoadTripRuns\SW2026-dipstick72\
+dev\index.html`) showed **0 of 50** real attraction cards and **0 of 61**
+real restaurant cards ever rendered it, despite 49/50 attractions and 61/61
+restaurants carrying a real, distinct primary source URL (nps.gov pages,
+official restaurant sites, TripAdvisor, etc.). En-route stops and route
+options rendered the badge correctly on the same page (39 total `badge-map`
+occurrences, all attributable to those two sections) — this was a gap
+specific to attractions/restaurants, not a rendering bug.
+
+Root cause, traced through `generator/url_discovery.py`: unlike en-route
+stops — which always get an unconditional `maps_url` assigned from
+route-waypoint geocoding, or a query-text fallback when ungeocoded, *before*
+their `url` field is even decided (see the `has_precise_geocode` block in the
+en-route-stop resolution loop, `_discover_en_route_stops`) — attractions and
+restaurants had no equivalent step. Every pre-existing `attr["maps_url"] =
+...` / `rest["maps_url"] = ...` assignment in `_discover_attractions`,
+`_discover_restaurants`, and `audit_discovered_urls`'s own per-item loops
+only fires in the "no real source URL was found at all, a maps-search URL
+became the PRIMARY url itself" paths (`attr["maps_url"] = attr["url"]`),
+which `_maps_corner_link_html` correctly treats as redundant and suppresses
+(no separate badge needed when the primary link IS already the maps link).
+`_discover_restaurants` goes further and actively does
+`rest.pop("maps_url", None)` in every branch that finds a real, distinct URL
+(Google Maps place, TripAdvisor, official site, direct-batch row match).
+Net effect: whenever a genuinely useful distinct primary link was found for
+an attraction or restaurant, no code path ever attached a separate
+`maps_url` alongside it, so the badge had nothing to show — a real, common
+case, not an edge case (the AllTrails geo-maps-link feature documented above
+covers only the narrower AllTrails-trail sub-case, and was never intended to
+cover plain attractions/restaurants).
+
+Fix: `_attach_secondary_maps_link(item, item_name, dest_name, kind)`
+(`generator/url_discovery.py`, defined just above `audit_discovered_urls`),
+called once per item from two new post-loop passes at the end of
+`audit_discovered_urls`'s `top_attractions` and `dinner_recommendations`
+handling — i.e. only after that pass has already settled each item's final
+`url` for this run, the same reason the AllTrails geo hook is inserted at a
+"URL already final" point rather than during initial discovery. It attaches
+`item["maps_url"] = f"https://www.google.com/maps/search/?api=1&query=
+{quote(_maps_fallback_query_text(item_name, dest_name))}"` — reusing the
+same name+destination Google-Maps-search-query convention already used
+throughout this file (`_maps_fallback_query_text`, also the basis for
+`_en_route_maps_fallback_query_text`) — when, and only when:
+- `item["url"]` is non-empty (an item with no verified source at all keeps
+  whatever its own fail-closed logic upstream already decided — e.g.
+  category-style-activity, ambiguous-geography, or policy-enforce
+  omissions — untouched; those are deliberate "no map either" decisions,
+  not part of this gap);
+- the url is not an AllTrails trail URL (out of scope here — AllTrails
+  trails get their own coordinate-based `_alltrails_geo_maps_url` hook with
+  its own fail-closed/logging contract documented above; duplicating a
+  text-query fallback on top of or instead of that would blur which
+  mechanism is responsible for a trail card's map link);
+- the url's own policy class (`_classify_url_policy_class`) is not itself
+  `google_maps_search`/`google_maps_dir` — that IS the "no real source,
+  maps became primary" case this fix must not touch;
+- `item["maps_url"]` is not already non-empty — so an item that picked up a
+  maps_url from any other mechanism (existing direct-batch row data, the
+  AllTrails geo hook, a pre-existing fallback) is never double-processed or
+  overwritten.
+
+Coordinate-based links were considered (mirroring `_alltrails_geo_maps_url`'s
+pattern) but ruled out for the general case: attractions and restaurants
+carry no geocode data anywhere in this pipeline (`geocode_lat`/`geocode_lng`
+is set only for en-route stops, via route-waypoint geocoding) — a
+name+destination search-query link is the only honest option available at
+this point, consistent with `_maps_corner_link_html`'s own docstring, which
+already treats a search-query `maps_url` as a useful secondary "locate on a
+map" convenience even though `_select_preferred_external_link` keeps that
+same URL class out of the *primary* link slot.
+
+Purely additive: the already-accepted primary `url` field is never read
+except to gate on, and is never modified, replaced, or downgraded by this
+method for any item.
+
+Verified against real dipstick72 production data (offline replay of
+`audit_discovered_urls` using the real item names and real primary URLs
+extracted from that run's `index.html`, e.g. "Zion Canyon Visitor Center" →
+`https://www.nps.gov/places/zion-canyon-visitor-center.htm` and "Rib & Chop
+House" → `https://ribandchophouse.com/st-george-utah/`): every such item now
+gets a distinct `maps_url` attached while its original primary `url` is left
+byte-for-byte unchanged, and `_build_attractions`/`_build_restaurants` now
+render `class="badge badge-map"` for them where they previously rendered
+nothing. Tests: `test_audit_attaches_secondary_maps_link_for_attraction_
+with_distinct_primary_url`, `test_audit_attaches_secondary_maps_link_for_
+restaurant_with_distinct_primary_url`, `test_audit_does_not_attach_
+secondary_maps_link_when_primary_url_is_maps_fallback`, and
+`test_attach_secondary_maps_link_skips_alltrails_url_directly`
+(`tests/test_url_discovery.py`).
+
 ## Fail-Closed Policy for Named Entities
 A link is only publishable for a named entity if it is a **deterministic, entity-specific
 target** — one that refers to that single entity and not a list, search query, or area

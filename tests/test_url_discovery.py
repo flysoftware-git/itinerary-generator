@@ -9417,6 +9417,185 @@ def test_audit_does_not_apply_alltrails_geo_maps_url_to_non_alltrails_attraction
     assert attr["maps_url"] == "https://www.google.com/maps/search/?api=1&query=Zion+Human+History+Museum"
 
 
+def test_audit_attaches_secondary_maps_link_for_attraction_with_distinct_primary_url() -> None:
+    """Real gap confirmed on dipstick72 production output: 0 of 50 real
+    attraction cards rendered the map-icon badge even though many had a
+    real, distinct primary source URL (NPS pages, official sites, etc).
+    Root cause: no code path in _discover_attractions/audit_discovered_urls
+    ever attached a maps_url alongside an accepted real primary URL --
+    every existing `attr["maps_url"] = ...` assignment only fires in the
+    "no real source found, maps-search URL became the primary url itself"
+    paths. This attraction (a plain museum, not trail-like, not AllTrails,
+    with a real nps.gov page and no pre-existing maps_url at all) is the
+    common case that previously got nothing; it must now get an additive,
+    distinct name+destination Google Maps search link so the existing
+    _maps_corner_link_html badge affordance has something to show."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 0
+    discoverer._direct_batch_authoritative = True
+    discoverer._remember_direct_batch_authoritative_url(
+        "https://www.nps.gov/zion/planyourvisit/human-history-museum.htm",
+        "Zion Human History Museum",
+    )
+
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Zion Human History Museum",
+                            "type": "attraction",
+                            "description": "Exhibits on the human history of Zion Canyon.",
+                            "url": "https://www.nps.gov/zion/planyourvisit/human-history-museum.htm",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(False, "no_validator", "")):
+            discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 1
+    attr = attractions[0]
+    assert attr["url"] == "https://www.nps.gov/zion/planyourvisit/human-history-museum.htm"
+    assert attr["maps_url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Zion%20Human%20History%20Museum"
+    )
+
+
+def test_audit_attaches_secondary_maps_link_for_restaurant_with_distinct_primary_url() -> None:
+    """Restaurant mirror of the attraction case above: real dipstick72 data
+    showed 0 of 61 restaurant cards ever rendered the map badge.
+    _discover_restaurants actively does `rest.pop("maps_url", None)` in
+    every branch that finds a real, distinct URL (Google Maps place,
+    TripAdvisor, official site, direct-batch row) -- so by the time
+    audit_discovered_urls runs, a restaurant with a genuinely useful
+    primary link has no maps_url at all. This must now get one attached."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._remember_direct_batch_authoritative_url(
+        "https://www.thebitandspur.com/",
+        "The Bit and Spur Restaurant",
+    )
+
+    trip = {
+        "destinations": [
+            {
+                "id": "springdale",
+                "name": "Springdale, Utah",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [
+                        {
+                            "name": "The Bit and Spur Restaurant",
+                            "url": "https://www.thebitandspur.com/",
+                        }
+                    ],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(False, "no_validator", "")):
+            discoverer.audit_discovered_urls(trip)
+
+    restaurants = trip["destinations"][0]["ai_content"]["dinner_recommendations"]
+    assert len(restaurants) == 1
+    rest = restaurants[0]
+    assert rest["url"] == "https://www.thebitandspur.com/"
+    assert rest["maps_url"] == (
+        "https://www.google.com/maps/search/?api=1&query="
+        "The%20Bit%20and%20Spur%20Restaurant%20Springdale%2C%20Utah"
+    )
+
+
+def test_audit_does_not_attach_secondary_maps_link_when_primary_url_is_maps_fallback() -> None:
+    """The other half of the same fix: when no real source URL was ever
+    found and a maps-search URL became the primary url itself (the
+    pre-existing, already-correct behavior for both attractions and
+    restaurants), the new secondary-maps-link logic must NOT fire --
+    _maps_corner_link_html already suppresses the badge in this case
+    (maps_url == primary_url would be redundant), and attaching a second,
+    different maps-search link here would be actively wrong: it would
+    make the corner-link badge point somewhere different from the card's
+    own primary link for no reason."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 0
+    discoverer._direct_batch_authoritative = True
+
+    maps_fallback_url = "https://www.google.com/maps/search/?api=1&query=Some+Obscure+Overlook+Zion+National+Park"
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "seeds": ["Some Obscure Overlook"],
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Some Obscure Overlook",
+                            "type": "attraction",
+                            "description": "A viewpoint with no dedicated page.",
+                            "url": maps_fallback_url,
+                            "maps_url": maps_fallback_url,
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(False, "no_validator", "")):
+            discoverer.audit_discovered_urls(trip)
+
+    attractions = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert len(attractions) == 1
+    attr = attractions[0]
+    assert attr["url"] == maps_fallback_url
+    assert attr["maps_url"] == maps_fallback_url
+
+
+def test_attach_secondary_maps_link_skips_alltrails_url_directly() -> None:
+    """Unit-level guard on _attach_secondary_maps_link itself: AllTrails
+    trail URLs are explicitly out of scope for this generic fallback --
+    they have their own dedicated coordinate-based hook
+    (_alltrails_geo_maps_url) with its own fail-closed/logging contract a
+    few lines above this method's call site, and duplicating a text-query
+    fallback on top of (or instead of) that would blur which mechanism is
+    responsible for a trail card's map link."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    item = {
+        "name": "Hickman Bridge Trail",
+        "url": "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail",
+    }
+
+    discoverer._attach_secondary_maps_link(
+        item, "Hickman Bridge Trail", "Capitol Reef National Park", kind="attraction"
+    )
+
+    assert "maps_url" not in item
+
+
 def test_alltrails_relevance_ignores_html_comment_closure_noise():
     """Full-path regression: _is_relevant_result must not reject a live,
     open trail page just because a closure phrase appears inside an HTML
