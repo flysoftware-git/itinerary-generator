@@ -8697,6 +8697,87 @@ def test_alltrails_relevance_rejects_closed_trail_candidate_snippet_when_fetch_b
     assert ok is False
 
 
+def test_has_alltrails_closure_marker_ignores_html_comment_noise():
+    """Regression for the same false-positive class as
+    test_has_attraction_closure_marker_ignores_html_comment_noise: AllTrails
+    trail pages are fetched via the identical raw-HTML path
+    (_fetch_alltrails_text -> _fetch_page_text_uncached ->
+    URLValidator.get_text -> unmodified resp.text), so a closure phrase left
+    in a non-visible HTML comment (e.g. stale dev/CMS markup) must not be
+    read as evidence the trail itself is closed.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "<html><head></head><body>"
+        "<h1>Navajo Loop Trail</h1>"
+        "<p>A popular 1.3 mile loop trail near Bryce Canyon City, Utah.</p>"
+        "<!-- Note for editors: the connector spur to Tunnel View was "
+        "temporarily closed due to rockfall last season, now reopened. -->"
+        "<p>Rated moderate. Dogs not allowed.</p>"
+        "</body></html>"
+    )
+    assert discoverer._has_alltrails_closure_marker(page_text) is False
+
+
+def test_has_alltrails_closure_marker_ignores_script_json_noise():
+    """Same false-positive class as the HTML-comment case above, but for
+    <script> content: AllTrails is a React/Next.js site, so its raw
+    (unrendered) HTML is unusually likely to carry inline JSON hydration
+    state -- e.g. data for a "nearby trails" widget -- that can mention an
+    unrelated trail's closure without the page's own trail being closed.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "<html><head>"
+        "<script>window.__NEXT_DATA__ = {\"nearbyTrails\": ["
+        "{\"name\": \"Peekaboo Loop Trail\", \"status\": \"trail is closed\"}"
+        "]};</script>"
+        "</head><body>"
+        "<h1>Navajo Loop Trail</h1>"
+        "<p>A popular 1.3 mile loop trail near Bryce Canyon City, Utah.</p>"
+        "</body></html>"
+    )
+    assert discoverer._has_alltrails_closure_marker(page_text) is False
+
+
+def test_has_alltrails_closure_marker_still_detects_real_full_closure():
+    """Control for the comment/script-stripping fix: a real, visible closure
+    notice with no comment/script noise involved must still be detected."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    assert discoverer._has_alltrails_closure_marker(
+        "Navajo Loop Trail. This trail is closed due to rockfall damage."
+    ) is True
+
+
+def test_alltrails_relevance_ignores_html_comment_closure_noise():
+    """Full-path regression: _is_relevant_result must not reject a live,
+    open trail page just because a closure phrase appears inside an HTML
+    comment on that page (see test_has_alltrails_closure_marker_ignores_html_comment_noise
+    for the underlying unit case)."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+
+    page_text = (
+        "<html><body><h1>Navajo Loop Trail</h1>"
+        "<p>A popular 1.3 mile loop trail near Bryce Canyon City, Utah.</p>"
+        "<!-- temporarily closed due to rockfall last season, now reopened -->"
+        "</body></html>"
+    )
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_text)):
+        ok = discoverer._is_relevant_result(
+            "https://www.alltrails.com/trail/us/utah/navajo-loop-trail",
+            "Navajo Loop Trail",
+            "Bryce Canyon National Park",
+            candidate={
+                "name": "Navajo Loop Trail",
+                "snippet": "Popular Bryce trail",
+            },
+        )
+
+    assert ok is True
+
+
 def test_alltrails_relevance_does_not_reject_generic_marketing_phrase_only():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._url_validator = MagicMock()
