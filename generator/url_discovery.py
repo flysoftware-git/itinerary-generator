@@ -2897,6 +2897,26 @@ class URLDiscoverer:
         blocked = policy_class in blocked_classes
         if blocked and policy_mode == "enforce":
             if allow_google_maps_search and policy_class in {"google_maps_search", "google_maps_dir"}:
+                if policy_class == "google_maps_search" and item_name:
+                    # Real dipstick67 bug: the direct-batch harvest is AI-authored
+                    # HTML, and its embedded Google Maps search links carry
+                    # whatever query text the model happened to write -- e.g.
+                    # "Sunrise Point Bryce Canyon National Park UT". Reproduced
+                    # live: that exact query returns a multi-result disambiguation
+                    # list (Sunrise Point tied against the unrelated, similarly-
+                    # named "Sunset Point" and an out-of-state "Sunrise Point"
+                    # cliff), because Google's parser treats the trailing bare
+                    # state code as broadening the search rather than pinning it.
+                    # Dropping the "UT" and keeping the same item+destination
+                    # text resolves straight to the single correct place. Rather
+                    # than trust arbitrary AI-authored query text verbatim,
+                    # rebuild it here with the same controlled builder already
+                    # used everywhere else a google_maps_search fallback URL is
+                    # constructed from scratch -- item_name + dest_name, with no
+                    # redundant state/zip suffix.
+                    rebuilt_query = self._maps_fallback_query_text(item_name, dest_name)
+                    if rebuilt_query:
+                        url = f"https://www.google.com/maps/search/?api=1&query={quote(rebuilt_query)}"
                 logger.info(
                     "URL policy exception for direct-batch harvest [%s] for %s '%s' (%s): %s",
                     policy_class,

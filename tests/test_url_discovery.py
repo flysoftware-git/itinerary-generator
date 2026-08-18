@@ -11779,6 +11779,14 @@ def test_retain_url_rejects_google_maps_search_for_named_waypoint_in_enforce_mod
 
 
 def test_retain_url_allows_google_maps_search_for_direct_batch_harvest_only():
+    """The policy exception still accepts a direct-batch-harvested
+    google_maps_search URL -- but see
+    test_retain_url_rebuilds_ai_authored_google_maps_search_query_dropping_
+    state_suffix below: the query text itself is now rebuilt via the
+    controlled _maps_fallback_query_text builder (item_name + dest_name,
+    %20-quoted) rather than trusted verbatim, so this fixture's already-
+    item+dest-ordered, no-extra-suffix query round-trips to the same text
+    modulo quoting style."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._url_policy_mode = "enforce"
     discoverer._url_policy_blocked_classes = {"google_maps_search"}
@@ -11794,7 +11802,45 @@ def test_retain_url_allows_google_maps_search_for_direct_batch_harvest_only():
         kind="attraction",
         allow_google_maps_search=True,
     )
-    assert result == url
+    assert result == (
+        "https://www.google.com/maps/search/?api=1&query=Canyon%20Overlook%20Trail%20Zion%20National%20Park"
+    )
+
+
+def test_retain_url_rebuilds_ai_authored_google_maps_search_query_dropping_state_suffix() -> None:
+    """Real dipstick67 bug: the direct-batch harvest's own AI-authored Google
+    Maps search link for "Sunrise Point" (Bryce Canyon National Park) was
+    "https://www.google.com/maps/search/?api=1&query=Sunrise+Point+Bryce+
+    Canyon+National+Park+UT" -- accepted verbatim through the
+    google_maps_search policy exception. Reproduced live in a real browser:
+    that exact query (with the trailing bare "UT") returns a multi-result
+    disambiguation list matching the user's complaint ("Sunrise point is
+    opening to a broad range of options") -- Sunrise Point tied against the
+    unrelated, similarly-named "Sunset Point" and an out-of-state "Sunrise
+    Point" cliff. Dropping just the trailing state code (same item+destination
+    text otherwise) resolves straight to the single correct place. The fix
+    rebuilds the query via the same controlled _maps_fallback_query_text
+    builder used everywhere else, instead of trusting the AI-harvested query
+    text verbatim."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_search"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+
+    url = "https://www.google.com/maps/search/?api=1&query=Sunrise+Point+Bryce+Canyon+National+Park+UT"
+    result = discoverer._retain_discovered_url(
+        url,
+        "Sunrise Point",
+        "Bryce Canyon National Park",
+        allow_alltrails=False,
+        kind="attraction",
+        allow_google_maps_search=True,
+    )
+    assert result == (
+        "https://www.google.com/maps/search/?api=1&query=Sunrise%20Point%20Bryce%20Canyon%20National%20Park"
+    )
+    assert "UT" not in result
 
 
 def test_retain_discovered_url_rejects_alltrails_trail_when_post_constraints_fail() -> None:
