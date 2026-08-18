@@ -513,3 +513,101 @@ destinations:
     parser = ManifestParser()
     with pytest.raises(Exception):
         parser.load(str(f))
+
+
+def test_yaml_syntax_error_gives_clean_line_column_message(tmp_path):
+    """Regression: a real manifest with one destination's `dates:` key
+    indented one space deeper than its siblings previously surfaced as a raw
+    Python traceback bottoming out in PyYAML's internal composer/parser
+    frames, with no indication which manifest line to look at. Real example
+    hit twice in one session against C:\\Dev\\Sandbox\\Croatia_manifest.yaml."""
+    manifest_content = """
+trip:
+  title: "Test"
+  subtitle: "Test"
+  theme_color: "#123456"
+destinations:
+  - id: bled
+    name: "Bled, Slovenia"
+     dates: "October 10-11, 2027"
+"""
+    f = tmp_path / "bad_indent.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(f))
+    message = str(exc_info.value)
+    assert "YAML syntax error" in message
+    assert str(f) in message
+    assert "line 9" in message
+    # Must NOT be a raw jsonschema/PyYAML repr with internal frame noise.
+    assert "Traceback" not in message
+    assert "composer.py" not in message
+
+
+def test_schema_error_names_destination_not_just_index(tmp_path):
+    """Regression: jsonschema.ValidationError's default str() embeds the
+    entire sub-schema being validated against (every property's full
+    description text included) as library-author context -- a real user
+    hitting a missing required field saw several hundred lines of schema
+    dump for one missing 'planning_links' field. The clean message should
+    name the destination by its own id, not just a bare numeric index, and
+    must not include the schema dump."""
+    manifest_content = """
+trip:
+  title: "Test"
+  subtitle: "Test trip"
+  theme_color: "#000000"
+destinations:
+  - id: ljubljana
+    name: "Ljubljana, Slovenia"
+    dates: "October 7-9, 2027"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+  - id: kotor
+    name: "Kotor, Montenegro"
+    dates: "October 21-22, 2027"
+"""
+    f = tmp_path / "missing_planning_links.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(f))
+    message = str(exc_info.value)
+    assert "destinations[1]" in message
+    assert "kotor" in message
+    assert "'planning_links' is a required property" in message
+    # Must NOT be the raw jsonschema dump (which includes every property's
+    # own description text, e.g. this unrelated field's help text).
+    assert "GH #68" not in message
+    assert len(message.splitlines()) == 1
+
+
+def test_schema_error_id_pattern_names_destination_by_its_own_id(tmp_path):
+    """A second real bug hit in the same session: destination ids were
+    capitalized (e.g. 'Kotor'), failing the schema's lowercase-only id
+    pattern. The failing value itself (the bad id) should still be
+    findable in the message even though the destination's own 'id' field
+    is exactly what's invalid."""
+    manifest_content = """
+trip:
+  title: "Test"
+  subtitle: "Test trip"
+  theme_color: "#000000"
+destinations:
+  - id: Kotor
+    name: "Kotor, Montenegro"
+    dates: "October 21-22, 2027"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+"""
+    f = tmp_path / "bad_id_case.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(f))
+    message = str(exc_info.value)
+    assert "destinations[0]" in message
+    assert "does not match" in message

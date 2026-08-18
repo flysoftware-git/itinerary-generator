@@ -241,7 +241,10 @@ class ManifestParser:
     def parse(self, manifest_path: Path | str) -> dict[str, Any]:
         manifest_path = Path(manifest_path)
         logger.info("Parsing manifest: %s", manifest_path)
-        data: dict[str, Any] = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        try:
+            data: dict[str, Any] = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            raise ValueError(self._format_yaml_error(manifest_path, exc)) from exc
         self._validate_schema(data)
         self._validate_seeds(data)
         self._validate_en_route_seeds(data)
@@ -259,7 +262,63 @@ class ManifestParser:
         return self.parse(manifest_path)
 
     def _validate_schema(self, data: dict[str, Any]) -> None:
-        jsonschema.validate(instance=data, schema=MANIFEST_SCHEMA)
+        try:
+            jsonschema.validate(instance=data, schema=MANIFEST_SCHEMA)
+        except jsonschema.exceptions.ValidationError as exc:
+            raise ValueError(self._format_schema_error(data, exc)) from exc
+
+    @staticmethod
+    def _format_yaml_error(manifest_path: Path, exc: "yaml.YAMLError") -> str:
+        # PyYAML's MarkedYAMLError (the common case -- syntax errors) carries
+        # .problem_mark with a real line/column; a bare YAMLError (rarer --
+        # e.g. a duplicate-key or scanner-level failure without a mark) does
+        # not, so fall back to str(exc) rather than assume the attribute
+        # exists. Deliberately drops PyYAML's own multi-paragraph message
+        # (which repeats the same line/column info twice, once for the error
+        # itself and once for its "context") down to one clean line -- the
+        # full traceback a user previously saw here bottomed out at internal
+        # PyYAML frames (composer.py, parser.py, ...) with no indication
+        # which manifest line to look at without reading the exception text
+        # closely.
+        mark = getattr(exc, "problem_mark", None)
+        problem = getattr(exc, "problem", None) or str(exc).splitlines()[0]
+        if mark is not None:
+            return (
+                f"YAML syntax error in {manifest_path}, line {mark.line + 1}, "
+                f"column {mark.column + 1}: {problem}"
+            )
+        return f"YAML syntax error in {manifest_path}: {problem}"
+
+    @staticmethod
+    def _format_schema_error(data: dict[str, Any], exc: jsonschema.exceptions.ValidationError) -> str:
+        # jsonschema.ValidationError's default str() embeds the entire
+        # sub-schema it was validating against (sometimes hundreds of lines,
+        # every property's description text included) as context for
+        # library authors -- exc.message is the same short, human-readable
+        # sentence ("'planning_links' is a required property") without that
+        # dump. exc.absolute_path is a deque of keys/indices from the
+        # document root to the failing node; walking it against the actual
+        # manifest data (not just printing raw indices) lets the message
+        # name the destination by its own id/name when the failure is
+        # inside a destinations[] entry, which is the overwhelmingly common
+        # case and the one a bare "destinations[6]" index doesn't help a
+        # human locate quickly in a 50-destination manifest.
+        path = list(exc.absolute_path)
+        location = "manifest"
+        if len(path) >= 2 and path[0] == "destinations" and isinstance(path[1], int):
+            destinations = data.get("destinations", []) if isinstance(data, dict) else []
+            idx = path[1]
+            dest = destinations[idx] if isinstance(destinations, list) and idx < len(destinations) else {}
+            dest_id = dest.get("id") if isinstance(dest, dict) else None
+            dest_name = dest.get("name") if isinstance(dest, dict) else None
+            label = dest_id or dest_name or f"index {idx}"
+            location = f"destinations[{idx}] ('{label}')"
+            remaining = path[2:]
+            if remaining:
+                location += " → " + ".".join(str(p) for p in remaining)
+        elif path:
+            location = ".".join(str(p) for p in path)
+        return f"Manifest validation failed at {location}: {exc.message}"
 
     def _validate_seeds(self, data: dict[str, Any]) -> None:
         for dest in data.get("destinations", []):

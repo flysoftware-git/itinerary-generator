@@ -1852,7 +1852,12 @@ def main(
     click.echo("Stage 1/6 — Parsing manifest…")
     from generator.parser import ManifestParser
     parser = ManifestParser()
-    trip = parser.load(manifest)
+    try:
+        trip = parser.load(manifest)
+    except ValueError as exc:
+        click.echo(f"  ERROR: {exc}", err=True)
+        _finalize_run("input_error", 1, str(exc))
+        sys.exit(1)
     stripped_seed_count = _strip_destination_seeds(trip) if noseed else 0
     if noseed:
         click.echo(f"   Seeds    : disabled for this run ({stripped_seed_count} seed(s) ignored)")
