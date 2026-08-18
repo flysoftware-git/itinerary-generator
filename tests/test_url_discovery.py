@@ -7796,6 +7796,127 @@ def test_retain_url_preserves_multi_token_en_route_stop_row_matched_candidate() 
     assert out == "https://www.blm.gov/visit/corona-arch-trail"
 
 
+def test_retain_url_rejects_redirect_to_generic_hub_page_for_en_route_stop() -> None:
+    """Regression for dipstick69: the en-route stop "Poshuouinge Pueblo Ruins"
+    (Santa Fe leg, via Pagosa Springs) was linked to
+    fs.usda.gov/recarea/carson/recarea/?recid=44248 -- a URL whose distinguishing
+    ?recid= query param made it look item-specific, so it passed
+    _is_generic_section_landing_page's pure URL-string check and was then accepted
+    via the direct-batch row-matched leniency path. Live-fetch (2026-08-18)
+    confirmed this exact URL 301-redirects to fs.usda.gov/r03/carson/recreation, a
+    generic Carson National Forest recreation hub with zero mentions of
+    "Poshuouinge" anywhere on the page -- and that final path's own last segment
+    ("recreation") isn't even in _is_generic_section_landing_page's generic_sections
+    set, so the fix must fall back to checking whether the item's own name actually
+    appears in the fetched page text, not just re-run the URL-string heuristic
+    unchanged. The row-matched leniency must not treat a redirect target as
+    automatically trustworthy just because the original URL string looked specific."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._fetch_final_url_cache = {}
+    original_url = "https://www.fs.usda.gov/recarea/carson/recarea/?recid=44248"
+    final_url = "http://www.fs.usda.gov/r03/carson/recreation"
+    candidate = {
+        "name": "Poshuouinge Pueblo Ruins",
+        "title": "Poshuouinge Pueblo Ruins",
+        "url": original_url,
+        "snippet": "Poshuouinge Pueblo Ruins ancestral pueblo site near Abiquiu.",
+    }
+    generic_hub_text = (
+        "Carson National Forest Recreation. Explore trails, campgrounds, and "
+        "scenic areas throughout the forest. Plan your visit today."
+    )
+
+    def fake_fetch_page_text(url, timeout=8):
+        discoverer._fetch_final_url_cache[url] = final_url
+        return True, 200, generic_hub_text
+
+    with patch.object(discoverer, "_fetch_page_text", side_effect=fake_fetch_page_text):
+        out = discoverer._retain_discovered_url(
+            original_url,
+            "Poshuouinge Pueblo Ruins",
+            "Santa Fe",
+            allow_alltrails=False,
+            kind="en-route stop",
+            candidate=candidate,
+        )
+
+    assert out == ""
+
+
+def test_retain_url_preserves_row_matched_candidate_when_redirect_target_still_mentions_item() -> None:
+    """Companion to the dipstick69 regression above: a redirect alone must not be
+    treated as automatically disqualifying. If the page the URL actually resolves
+    to still names the item, the row-matched leniency should still preserve it --
+    the new check is about relevance at the final destination, not about punishing
+    redirects in general."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._fetch_final_url_cache = {}
+    original_url = "https://www.blm.gov/visit/corona-arch-old-slug"
+    final_url = "https://www.blm.gov/visit/corona-arch-trail"
+    candidate = {
+        "name": "Corona Arch",
+        "title": "Corona Arch Trailhead",
+        "url": original_url,
+        "snippet": "Corona Arch is a popular hiking destination near Moab, Utah.",
+    }
+    item_specific_text = "Corona Arch Trail is a moderate 2.4 mile hike to the iconic Corona Arch near Moab."
+
+    def fake_fetch_page_text(url, timeout=8):
+        discoverer._fetch_final_url_cache[url] = final_url
+        return True, 200, item_specific_text
+
+    with patch.object(discoverer, "_fetch_page_text", side_effect=fake_fetch_page_text):
+        out = discoverer._retain_discovered_url(
+            original_url,
+            "Corona Arch",
+            "Canyonlands National Park",
+            allow_alltrails=False,
+            kind="en-route stop",
+            candidate=candidate,
+        )
+
+    assert out == original_url
+
+
+def test_retain_url_rejects_redirect_to_generic_hub_page_for_restaurant() -> None:
+    """Same redirect-genericness gap as dipstick69, but exercised through the
+    restaurant-specific 'item-matched authoritative direct-batch URL' leniency
+    block, which is a separate code path from the attraction/en-route-stop/
+    restaurant block above (it fetches and returns independently) and had the
+    same gap: it fetched the page (for the dead-status check) but never asked
+    whether the fetch's own final URL was still about this restaurant."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._fetch_final_url_cache = {}
+    original_url = "https://www.example-inn.com/spotted-dog-cafe/"
+    final_url = "https://www.example-inn.com/dining/"
+    candidate = {
+        "name": "Spotted Dog Cafe",
+        "title": "Spotted Dog Cafe",
+        "url": original_url,
+        "snippet": "Spotted Dog Cafe 4.6/5 $$$",
+    }
+    generic_dining_text = "Dining at Example Inn. Explore our restaurants and eateries. Make a reservation today."
+
+    def fake_fetch_page_text(url, timeout=8):
+        discoverer._fetch_final_url_cache[url] = final_url
+        return True, 200, generic_dining_text
+
+    with patch.object(discoverer, "_fetch_page_text", side_effect=fake_fetch_page_text):
+        out = discoverer._retain_discovered_url(
+            original_url,
+            "Spotted Dog Cafe",
+            "Zion National Park",
+            allow_alltrails=False,
+            kind="restaurant",
+            candidate=candidate,
+        )
+
+    assert out == ""
+
+
 def test_retain_url_rejects_matched_restaurant_row_with_unresolvable_domain() -> None:
     """A URL whose domain fails DNS resolution entirely is at least as dead as an
     explicit 404, and must not be published just because the fetch failure came

@@ -2727,7 +2727,7 @@ class URLDiscoverer:
                 # doesn't exist at all). Relevance leniency is not a liveness
                 # exemption -- a matched row pointing at a domain that fails to
                 # resolve is not "close enough", it is a broken link.
-                ok, fetch_status, _ = self._fetch_page_text(url, timeout=8)
+                ok, fetch_status, fetch_text = self._fetch_page_text(url, timeout=8)
                 if (
                     not ok
                     and self._is_definitively_dead_status(fetch_status)
@@ -2740,6 +2740,19 @@ class URLDiscoverer:
                         dest_name or "unknown destination",
                         url,
                         fetch_status,
+                    )
+                    return ""
+                redirect_target = self._redirect_target_lacks_item_relevance(
+                    url, item_name, dest_name, self._significant_tokens(item_name), kind, fetch_text
+                )
+                if redirect_target:
+                    logger.info(
+                        "Rejected item-matched authoritative direct-batch URL for %s '%s' (%s): redirects to generic page %s -> %s",
+                        kind,
+                        item_name or "unknown",
+                        dest_name or "unknown destination",
+                        url,
+                        redirect_target,
                     )
                     return ""
                 logger.info(
@@ -2870,7 +2883,7 @@ class URLDiscoverer:
                 and not self._candidate_mentions_conflicting_destination(candidate, dest_name, item_name=item_name)
                 and self._direct_batch_row_matches_item(candidate, item_name, dest_name)
             ):
-                ok, status, _ = self._fetch_page_text(url, timeout=8)
+                ok, status, fetch_text = self._fetch_page_text(url, timeout=8)
                 if (
                     not ok
                     and self._is_definitively_dead_status(status)
@@ -2904,6 +2917,20 @@ class URLDiscoverer:
                     (len(item_tokens) <= 1 or is_multi_token_en_route_stop)
                     and self._candidate_text_matches_item_tokens(candidate, item_tokens)
                 ):
+                    redirect_target = self._redirect_target_lacks_item_relevance(
+                        url, item_name, dest_name, item_tokens, kind, fetch_text
+                    )
+                    if redirect_target:
+                        logger.info(
+                            "Rejected direct-batch %s %s '%s' (%s): redirects to generic page %s -> %s",
+                            "row-matched en-route stop" if is_multi_token_en_route_stop else "single-token item",
+                            kind,
+                            item_name or "unknown",
+                            dest_name or "unknown destination",
+                            url,
+                            redirect_target,
+                        )
+                        return ""
                     logger.info(
                         "Preserved direct-batch %s %s '%s' (%s): %s",
                         "row-matched en-route stop" if is_multi_token_en_route_stop else "single-token item",
@@ -11700,6 +11727,50 @@ class URLDiscoverer:
             return True
 
         return False
+
+    def _redirect_target_lacks_item_relevance(
+        self,
+        original_url: str,
+        item_name: str,
+        dest_name: str,
+        item_tokens: list[str],
+        kind: str,
+        fetched_text: str = "",
+    ) -> str:
+        """Return the final redirect URL if it looks like a generic hub page
+        unrelated to the specific item, else "" (no redirect, or redirect
+        target still looks item-specific).
+
+        Real dipstick69 bug: the en-route stop "Poshuouinge Pueblo Ruins" was
+        linked to fs.usda.gov/recarea/carson/recarea/?recid=44248 -- a URL
+        whose distinguishing ?recid= query param made it LOOK item-specific,
+        which is exactly why it sailed through _is_generic_section_landing_page
+        (pure URL-string/path-segment matching) and then through the
+        direct-batch row-matched leniency path below. Live-fetch confirmed
+        it 301-redirects to fs.usda.gov/r03/carson/recreation -- a generic
+        Carson National Forest recreation hub with zero mentions of
+        "Poshuouinge" anywhere on the page. Notably, that final path's last
+        segment ("recreation") isn't even in _is_generic_section_landing_page's
+        generic_sections set, so reapplying that check unchanged to the final
+        URL string would NOT have caught this specific real case -- the one
+        signal that reliably does is the page's own fetched text (already
+        captured by _fetch_page_text, which follows the redirect itself and
+        returns the final destination's body): if the item's own name never
+        appears on the page the URL actually resolves to, the URL is not
+        item-specific no matter how its original path looked.
+        """
+        final_url = getattr(self, "_fetch_final_url_cache", {}).get(original_url)
+        if not final_url or final_url == original_url:
+            return ""
+        if kind == "restaurant":
+            redirect_generic = self._is_generic_restaurant_landing_url(
+                final_url, item_name, dest_name, item_tokens=item_tokens
+            )
+        else:
+            redirect_generic = self._is_generic_section_landing_page(final_url)
+        if not redirect_generic and fetched_text:
+            redirect_generic = not self._text_matches_item_tokens(fetched_text.lower(), item_tokens)
+        return final_url if redirect_generic else ""
 
     def _is_relevant_result(
         self,
