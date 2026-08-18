@@ -2030,6 +2030,36 @@ class AIContentGenerator:
             seen_attraction_names.add(key)
             attraction_names.append(name)
 
+        def _register_attraction_mentions(day: dict[str, Any]) -> None:
+            """Seed `used_multi_activity_names` from any attraction name
+            already mentioned in this day's periods -- not just the names
+            _build_multi_activity_afternoon_summary picked itself (that
+            path already self-registers via the `used_multi_activity_names.
+            update(...)` call inside it).
+
+            The gap this closes: raw AI-authored prose for a period the
+            packer never touches (most commonly Evening, e.g. "Watch the
+            sunset from Natural Bridge...") names a real attraction through
+            a completely different code path, so without this the packer
+            has no way to know that name is already spoken for. Real
+            SW2026-dipstick69 regression, Bryce Canyon National Park: Day 1
+            Evening named "Natural Bridge" for sunset viewing, then Day 2
+            Afternoon's capacity-aware packer named it again as one of
+            several afternoon options -- a traveler who saw it Day 1 evening
+            has no reason to see it suggested again Day 2. Called for
+            days[0] before the Day 2+ packing loop starts, and for each day
+            again right after that day is packed, so every later day's call
+            sees every attraction mentioned anywhere (any period) on every
+            earlier day, not just the ones the packer itself placed.
+            """
+            for period in day.get("periods", []) or []:
+                summary = str(period.get("summary", "") or "")
+                if not summary:
+                    continue
+                for name in attraction_names:
+                    if name and re.search(re.escape(name), summary, re.IGNORECASE):
+                        used_multi_activity_names.add(name.lower())
+
         def _day_focus_name(day_index: int, offset: int = 0) -> str:
             if not attraction_names:
                 return ""
@@ -2177,14 +2207,60 @@ class AIContentGenerator:
                 re.search(r"\b(arrive|arrival|drive|driving|route|i-\d+|us-\d+)\b", existing_morning_summary, re.IGNORECASE)
             )
             if drive_minutes > 0:
+                arrival_minutes = effective_start_minutes + drive_minutes
+                arrival_label = _format_minutes_as_time(arrival_minutes)
                 if not morning_already_arrival_aware:
-                    arrival_minutes = effective_start_minutes + drive_minutes
-                    arrival_label = _format_minutes_as_time(arrival_minutes)
                     _set_period_summary(
                         first,
                         "Morning",
                         f"Travel from {previous_destination} (depart around {_format_minutes_as_time(effective_start_minutes)}); arrival around {arrival_label}.",
                     )
+                else:
+                    # The AI already narrated arrival itself (that's what
+                    # morning_already_arrival_aware means), so the branch
+                    # above intentionally leaves this text alone rather than
+                    # overwriting it with the generic "Travel from X..."
+                    # framing -- but the AI's own text can still claim a
+                    # specific, time-sensitive activity ("morning views") the
+                    # actual computed arrival time makes implausible. Real
+                    # SW2026-dipstick69 regression, Bryce Canyon arriving from
+                    # Zion (135 min drive): "Arrive at Bryce Canyon National
+                    # Park and check in to your lodging. After settling in,
+                    # head to Sunrise Point for morning views of the canyon."
+                    # Computed arrival (10:00 AM day-start + 135 min drive) is
+                    # 12:15 PM -- already past the late-morning cutoff below,
+                    # so "morning views" immediately after arriving and
+                    # settling in is not physically possible. Mirrors the
+                    # heavy-activity-after-travel guard a few lines up
+                    # (_is_heavy_activity_block): only the false time-of-day
+                    # claim is corrected, keeping the real attraction mention
+                    # (Sunrise Point) and the AI's own arrival framing intact
+                    # rather than reverting to generic filler.
+                    morning_activity_claim = bool(
+                        re.search(r"\bmorning\b", existing_morning_summary, re.IGNORECASE)
+                    ) and bool(
+                        re.search(
+                            r"\b(head(?:s|ing)?\s+to|visit(?:ing)?|watch(?:ing)?|catch(?:ing)?|"
+                            r"enjoy(?:ing)?|explor\w*|hikes?|hiking|tour(?:ing)?|see|views?)\b",
+                            existing_morning_summary,
+                            re.IGNORECASE,
+                        )
+                    )
+                    late_morning_cutoff_minutes = 11 * 60
+                    if morning_activity_claim and arrival_minutes > late_morning_cutoff_minutes:
+                        corrected = re.sub(
+                            r"\bmorning\s+(views?|light|hues?|hike|walk|visit|hours?|glow)\b",
+                            r"\1",
+                            existing_morning_summary,
+                            flags=re.IGNORECASE,
+                        )
+                        if corrected == existing_morning_summary:
+                            corrected = re.sub(r"\bmorning\b", "", existing_morning_summary, flags=re.IGNORECASE)
+                        corrected = re.sub(r"\s{2,}", " ", corrected).strip()
+                        corrected = re.sub(r"\s+([.,])", r"\1", corrected)
+                        if corrected and corrected.lower() != existing_morning_summary.lower():
+                            corrected = f"{corrected.rstrip('.')} (realistic arrival is closer to {arrival_label})."
+                            _set_period_summary(first, "Morning", corrected)
                 # The activity budget represents willingness/time to spend on
                 # activities in a normal full day -- on an arrival day, the
                 # drive itself eats directly into that allotment rather than
@@ -2212,6 +2288,13 @@ class AIContentGenerator:
         # index offsets which attractions are considered first so consecutive
         # days don't greedily pick the identical set.
         if len(days) > 1 and attractions:
+            # Seed the cross-day dedup set with every attraction already
+            # named anywhere in Day 1 (all periods, not just the Afternoon
+            # block the arrival-day packer above may have set) before the
+            # Day 2+ packer runs, so a name only ever mentioned in raw
+            # AI-authored prose (e.g. an Evening sunset sentence) is still
+            # excluded from later days -- see _register_attraction_mentions.
+            _register_attraction_mentions(days[0])
             for day_index, day in enumerate(days[1:], start=2):
                 if not (day.get("periods", []) or []):
                     continue
@@ -2222,6 +2305,11 @@ class AIContentGenerator:
                 )
                 if packed:
                     _set_period_summary(day, "Afternoon", packed)
+                # Register this day's own remaining periods too (e.g. its
+                # raw Morning/Evening text) so the *next* day's packer call
+                # also excludes any name only ever mentioned in prose, not
+                # just names this loop itself packed.
+                _register_attraction_mentions(day)
 
         _protected_departure_period: dict[str, Any] | None = None
         if is_last_destination:
