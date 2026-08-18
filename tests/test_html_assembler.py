@@ -3336,6 +3336,30 @@ def test_build_nav_tabs_omits_grouped_entries_entirely() -> None:
     assert 'data-tab="section-canyonlands"' not in html
 
 
+def test_build_nav_tabs_numbers_stay_sequential_after_grouped_entries() -> None:
+    """Regression: a real trip (St. George, Zion, Bryce, Capitol Reef, Moab,
+    Arches[grouped], Canyonlands[grouped], Telluride, ...) rendered nav-tab
+    labels "1, 2, 3, 4, 5, 8, 9, 10" -- jumping straight from 5 to 8 once
+    the two grouped day-trip children (original indices 5 and 6) were
+    correctly skipped from getting their own tab, but the surviving tabs'
+    displayed number was still each destination's original full-list index
+    rather than its position among only the rendered tabs. The overview map
+    is unaffected by this fix and deliberately keeps numbering every
+    physical stop including day trips (see this function's docstring) --
+    only the nav menu's own internal numbering needed to be self-consistent."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = _moab_group_destinations() + [
+        {"id": "telluride", "name": "Telluride"},
+        {"id": "santafe", "name": "Santa Fe"},
+    ]
+    html = assembler._build_nav_tabs(destinations, {})
+
+    assert "1 · Moab" in html
+    assert "2 · Telluride" in html
+    assert "3 · Santa Fe" in html
+    assert "4 ·" not in html
+
+
 def test_build_nav_tabs_ungrouped_destinations_render_flat() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     destinations = [

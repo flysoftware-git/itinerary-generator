@@ -380,9 +380,9 @@ class HTMLAssembler:
         """
         gmaps_url = self._build_google_maps_url(destinations, trip_meta)
 
-        def _tab_label(i: int, dest: dict[str, Any]) -> str:
+        def _tab_label(display_number: int, dest: dict[str, Any]) -> str:
             short = dest["name"].replace(" National Park", "").replace(" State Park", "").split(",")[0].strip()
-            return f"{i + 1} · {short}"
+            return f"{display_number} · {short}"
 
         # Map each group base id -> its grouped children, in original
         # destination order, regardless of where they fall in the list.
@@ -393,13 +393,24 @@ class HTMLAssembler:
                 children_by_base.setdefault(base_id, []).append((i, dest))
         grouped_indices = {i for children in children_by_base.values() for i, _ in children}
 
+        # Numbering the surviving tab by its ORIGINAL full-destinations index
+        # (real dipstick bug: a real trip with 2 grouped day-trip children
+        # produced tabs "1, 2, 3, 4, 5, 8, 9, 10" -- jumping straight from 5
+        # to 8 once indices 5/6 were skipped) confuses the menu's own
+        # internal count, even though it's already intentionally decoupled
+        # from the overview map's marker numbers (see this function's
+        # docstring: "each nav entry no longer maps 1:1 to a numbered map
+        # marker" was accepted deliberately when grouped children were
+        # dropped from the nav). Count only tabs actually rendered here.
         tabs = []
+        display_number = 0
         for i, dest in enumerate(destinations):
             if i in grouped_indices:
                 continue  # no nav entry -- content lives nested in its base's section
+            display_number += 1
             active = ' active' if i == 0 else ''
             dest_id = dest["id"]  # use manifest id directly
-            label = _tab_label(i, dest)
+            label = _tab_label(display_number, dest)
             tabs.append(f'<button class="tab-btn{active}" data-tab="section-{dest_id}">{label}</button>')
         tabs.append(
             f'<a href="{gmaps_url}" target="_blank" rel="noopener" class="map-tab-btn">'
