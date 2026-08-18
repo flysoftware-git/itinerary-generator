@@ -269,6 +269,12 @@ url_discovery:
   alltrails_min_confidence_for_publish: "medium"
   alltrails_request_delay_seconds: 0.8
   alltrails_block_cooldown_seconds: 8
+  # Wayback Machine fallback for AllTrails trailhead geo extraction (fires
+  # when the direct AllTrails fetch above is bot-blocked -- see
+  # docs/design/url-discovery-and-audit.md's "AllTrails Trailhead Geo Maps
+  # Link" section). Kept gentle since archive.org is a shared nonprofit
+  # resource, not a target to hammer.
+  wayback_request_delay_seconds: 1.0
   enable_filtered_alltrails_selection: true
   alltrails_filter_max_miles: 4
   alltrails_filter_max_gain_feet: 1000

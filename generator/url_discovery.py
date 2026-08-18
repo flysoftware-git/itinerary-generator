@@ -317,6 +317,18 @@ DEFAULT_ALLTRAILS_BLOCK_COOLDOWN_SECONDS = 8.0
 # generic page-text fetch -- avoids re-probing a domain that just blocked us
 # for every subsequent distinct URL on that same domain.
 DEFAULT_DOMAIN_BLOCK_COOLDOWN_SECONDS = 8.0
+# Wayback Machine fallback for AllTrails geo extraction (see
+# _fetch_wayback_alltrails_text): a direct AllTrails fetch is bot-blocked by
+# DataDome essentially universally in production (see _fetch_alltrails_text's
+# own comment), but archive.org's crawler is a different requester on a
+# different domain that AllTrails' bot-detection has no reason to block, and
+# it stores the ORIGINAL page HTML (including JSON-LD) at crawl time. A
+# trailhead coordinate doesn't change even in a years-old snapshot, unlike
+# ratings/hours/closures, so this fallback is safe even when the archived
+# page is stale. Delay is deliberately gentle -- archive.org is a shared
+# nonprofit resource, not a target to hammer, and this path only fires when
+# the (already-throttled) direct AllTrails fetch has already failed.
+DEFAULT_WAYBACK_REQUEST_DELAY_SECONDS = 1.0
 # Route distance/time already has a solid Haversine-estimate fallback that
 # costs zero network calls -- the live Google Maps directions HTML scrape is
 # a pure accuracy enhancement on top of it, not a correctness gate, and (like
@@ -445,6 +457,13 @@ DEFAULT_PERSISTENT_GEOCODE_CACHE_TTL_HOURS = 720
 # this short so a transient DataDome block or stale trail status doesn't get
 # frozen in across runs.
 DEFAULT_PERSISTENT_ALLTRAILS_CACHE_TTL_HOURS = 12
+# A Wayback Machine snapshot's HTML is immutable once crawled (fetching the
+# same archived-snapshot URL tomorrow returns byte-identical content), and
+# this cache exists purely to extract a trailhead coordinate that also
+# doesn't change -- so a long TTL (same rationale/value as the Nominatim
+# geocode cache above) is safe and avoids re-hitting archive.org for a trail
+# already resolved in a prior run.
+DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS = 720
 # Direct-batch harvest rows (the per-destination-per-kind Grok HTML-list
 # responses for attractions/restaurants/trails/en-route stops) are the most
 # expensive part of URL discovery and the most repeated across same-day
@@ -638,6 +657,14 @@ class URLDiscoverer:
         self._alltrails_last_request_ts: float = 0.0
         self._alltrails_blocked_until_ts: float = 0.0
         self._alltrails_fetch_lock: Lock = Lock()
+        # Wayback Machine fallback fetch state (see _fetch_wayback_alltrails_text)
+        # -- keyed by the original AllTrails trail URL (not the archive.org
+        # snapshot URL), separate lock/pacing from _alltrails_fetch_lock above
+        # since these requests go to a completely different domain/host.
+        self._wayback_request_delay_seconds: float = DEFAULT_WAYBACK_REQUEST_DELAY_SECONDS
+        self._wayback_fetch_cache: dict[str, tuple[bool, int | str, str]] = {}
+        self._wayback_last_request_ts: float = 0.0
+        self._wayback_fetch_lock: Lock = Lock()
         self._max_alltrails_query_attempts: int = 2
         self._max_restaurant_query_attempts: int = 1
         self._alltrails_rating_min: float = DEFAULT_ALLTRAILS_RATING_MIN
@@ -726,6 +753,7 @@ class URLDiscoverer:
         self._persistent_verify_cache_ttl_hours: float = float(DEFAULT_PERSISTENT_VERIFY_CACHE_TTL_HOURS)
         self._persistent_geocode_cache_ttl_hours: float = float(DEFAULT_PERSISTENT_GEOCODE_CACHE_TTL_HOURS)
         self._persistent_alltrails_cache_ttl_hours: float = float(DEFAULT_PERSISTENT_ALLTRAILS_CACHE_TTL_HOURS)
+        self._persistent_wayback_cache_ttl_hours: float = float(DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS)
         self._persistent_harvest_cache_ttl_hours: float = float(DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS)
         self._persistent_cache_dirty: bool = False
         self._persistent_cache_write_every: int = 25
@@ -842,6 +870,17 @@ class URLDiscoverer:
                     self._alltrails_block_cooldown_seconds = parsed_cooldown
             except (TypeError, ValueError):
                 self._alltrails_block_cooldown_seconds = DEFAULT_ALLTRAILS_BLOCK_COOLDOWN_SECONDS
+
+            wayback_delay_seconds = url_cfg.get(
+                "wayback_request_delay_seconds",
+                DEFAULT_WAYBACK_REQUEST_DELAY_SECONDS,
+            )
+            try:
+                parsed_wayback_delay = float(wayback_delay_seconds)
+                if parsed_wayback_delay >= 0:
+                    self._wayback_request_delay_seconds = parsed_wayback_delay
+            except (TypeError, ValueError):
+                self._wayback_request_delay_seconds = DEFAULT_WAYBACK_REQUEST_DELAY_SECONDS
 
             enable_filtered_alltrails = url_cfg.get(
                 "enable_filtered_alltrails_selection",
@@ -1083,6 +1122,17 @@ class URLDiscoverer:
                     self._persistent_alltrails_cache_ttl_hours = parsed_alltrails_ttl
             except (TypeError, ValueError):
                 self._persistent_alltrails_cache_ttl_hours = float(DEFAULT_PERSISTENT_ALLTRAILS_CACHE_TTL_HOURS)
+
+            persistent_wayback_ttl = url_cfg.get(
+                "persistent_wayback_cache_ttl_hours",
+                DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS,
+            )
+            try:
+                parsed_wayback_ttl = float(persistent_wayback_ttl)
+                if parsed_wayback_ttl > 0:
+                    self._persistent_wayback_cache_ttl_hours = parsed_wayback_ttl
+            except (TypeError, ValueError):
+                self._persistent_wayback_cache_ttl_hours = float(DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS)
 
             persistent_harvest_ttl = url_cfg.get(
                 "persistent_harvest_cache_ttl_hours",
@@ -1527,6 +1577,25 @@ class URLDiscoverer:
                     str(entry.get("text", "") or ""),
                 )
 
+            wayback_cutoff = now - (float(getattr(self, "_persistent_wayback_cache_ttl_hours", DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS)) * 3600.0)
+            if not hasattr(self, "_wayback_fetch_cache"):
+                self._wayback_fetch_cache = {}
+            for key, entry in (payload.get("wayback_geo_fetch_results", {}) or {}).items():
+                if not isinstance(key, str) or not isinstance(entry, dict):
+                    continue
+                ts = float(entry.get("ts", 0) or 0)
+                if ts < wayback_cutoff:
+                    continue
+                # Only successful fetches are ever persisted (see save side), but
+                # guard defensively in case of a hand-edited cache file.
+                if not bool(entry.get("ok", False)):
+                    continue
+                self._wayback_fetch_cache[key] = (
+                    True,
+                    self._status_from_json(entry.get("status", "")),
+                    str(entry.get("text", "") or ""),
+                )
+
             harvest_cutoff = now - (float(getattr(self, "_persistent_harvest_cache_ttl_hours", DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS)) * 3600.0)
             harvest_cache_by_section = {
                 "direct_batch_harvest_alltrails": "_alltrails_direct_batch_cache",
@@ -1571,6 +1640,8 @@ class URLDiscoverer:
             self._en_route_stop_geocode_cache = {}
         if not hasattr(self, "_alltrails_fetch_cache"):
             self._alltrails_fetch_cache = {}
+        if not hasattr(self, "_wayback_fetch_cache"):
+            self._wayback_fetch_cache = {}
         harvest_cache_by_section = {
             "direct_batch_harvest_alltrails": "_alltrails_direct_batch_cache",
             "direct_batch_harvest_attractions": "_attraction_direct_batch_cache",
@@ -1590,6 +1661,7 @@ class URLDiscoverer:
         verify_cutoff = now - (float(getattr(self, "_persistent_verify_cache_ttl_hours", DEFAULT_PERSISTENT_VERIFY_CACHE_TTL_HOURS)) * 3600.0)
         geocode_cutoff = now - (float(getattr(self, "_persistent_geocode_cache_ttl_hours", DEFAULT_PERSISTENT_GEOCODE_CACHE_TTL_HOURS)) * 3600.0)
         alltrails_cutoff = now - (float(getattr(self, "_persistent_alltrails_cache_ttl_hours", DEFAULT_PERSISTENT_ALLTRAILS_CACHE_TTL_HOURS)) * 3600.0)
+        wayback_cutoff = now - (float(getattr(self, "_persistent_wayback_cache_ttl_hours", DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS)) * 3600.0)
         harvest_cutoff = now - (float(getattr(self, "_persistent_harvest_cache_ttl_hours", DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS)) * 3600.0)
 
         payload: dict[str, Any] = {
@@ -1600,6 +1672,7 @@ class URLDiscoverer:
             "page_text_results": {},
             "en_route_geocode": {},
             "alltrails_fetch_results": {},
+            "wayback_geo_fetch_results": {},
             "direct_batch_harvest_alltrails": {},
             "direct_batch_harvest_attractions": {},
             "direct_batch_harvest_restaurants": {},
@@ -1652,6 +1725,21 @@ class URLDiscoverer:
                 continue
             payload["alltrails_fetch_results"][key] = {
                 "ts": now if now >= alltrails_cutoff else alltrails_cutoff,
+                "ok": True,
+                "status": result[1],
+                "text": str(result[2] or "")[: int(DEFAULT_PERSISTENT_PAGE_TEXT_MAX_CHARS)],
+            }
+
+        for key, result in self._wayback_fetch_cache.items():
+            # Only persist successful fetches -- a "no snapshot"/fetch-failure
+            # result could be a transient archive.org hiccup rather than a
+            # durable "this trail was never archived" answer, and freezing
+            # that in would permanently block a fallback that might succeed
+            # on a later run.
+            if not isinstance(result, tuple) or len(result) != 3 or not result[0]:
+                continue
+            payload["wayback_geo_fetch_results"][key] = {
+                "ts": now if now >= wayback_cutoff else wayback_cutoff,
                 "ok": True,
                 "status": result[1],
                 "text": str(result[2] or "")[: int(DEFAULT_PERSISTENT_PAGE_TEXT_MAX_CHARS)],
@@ -8032,12 +8120,27 @@ class URLDiscoverer:
         was already fetched earlier in the same audit_discovered_urls pass
         (e.g. the trail-miles threshold check just above) or in an earlier
         run within the cache TTL is a cache hit, not a second live request.
+
+        Falls back to _fetch_wayback_alltrails_text when the direct fetch
+        fails -- in production this is the common case, not the rare one:
+        AllTrails' DataDome bot-detection blocks this app's own direct
+        fetches of trail pages essentially universally (confirmed via a
+        real production run, dipstick71, where this feature fired zero
+        times across 19 real AllTrails attractions despite passing all of
+        its own unit tests). The direct fetch is still tried first and kept
+        as the primary path -- it costs nothing extra when it works (e.g. a
+        very new trail page not yet archived, or a lucky non-blocked
+        window) -- but the Wayback Machine fallback is what actually makes
+        this feature fire in practice. See _fetch_wayback_alltrails_text
+        for the archive.org lookup/fetch details and its own caching.
         """
         if not url or not self._is_alltrails_trail_url(url):
             return None
         ok, _status, text = self._fetch_page_text(url, timeout=8)
         if not ok or not text:
-            return None
+            ok, _status, text = self._fetch_wayback_alltrails_text(url, timeout=8)
+            if not ok or not text:
+                return None
         coords = self._extract_alltrails_geo_from_html(text)
         if not coords:
             return None
@@ -12259,6 +12362,108 @@ class URLDiscoverer:
                 self._alltrails_blocked_until_ts = time.monotonic() + cooldown_seconds
 
             self._alltrails_fetch_cache[url] = result
+            self._mark_persistent_cache_dirty()
+            return result
+
+    def _fetch_wayback_alltrails_text(self, url: str, timeout: int = 8) -> tuple[bool, int | str, str]:
+        """Fallback for _alltrails_geo_maps_url when a direct AllTrails fetch
+        is bot-blocked (see _fetch_alltrails_text's own comment on
+        DataDome): looks up the closest archived snapshot of `url` via the
+        Wayback Machine's free, no-auth CDX availability API and fetches
+        that snapshot's HTML instead. archive.org's own crawler isn't the
+        automated traffic DataDome is trying to block, and it stores the
+        ORIGINAL page HTML (including JSON-LD) at crawl time.
+
+        Verified live (2026-08-18): `https://archive.org/wayback/available
+        ?url=<trail-url>` returns `{"archived_snapshots": {"closest":
+        {"available": true, "status": "200", "url": "http://web.archive.org
+        /web/<timestamp>/<original-url>"}}}` when a snapshot exists, or an
+        empty `archived_snapshots: {}` dict when none does. Checked against
+        all 19 real AllTrails trail URLs from a real production run
+        (dipstick71): 17/19 had an available snapshot.
+
+        A trail recrawled recently by archive.org (2024 onward, based on
+        spot checks) carries the SAME `<script type="application/ld+json">`
+        `geo` block _extract_alltrails_geo_from_html already parses --
+        confirmed against a real 2026-01-08 snapshot (american-samoa/
+        tutuila/lower-sauma-ridge-trail). A trail whose only archived
+        snapshot predates AllTrails' JSON-LD rollout (seen in 2023-and-
+        earlier snapshots, e.g. Hickman Bridge Trail's only snapshot is from
+        2023-07-10) used schema.org *microdata* instead (`itemprop="geo"`
+        `<meta itemprop="latitude"|"longitude">` tags, no ld+json at all) --
+        that will not yield a coordinate through this path. That is a
+        fail-closed miss, not a bug, per this module's no-invented-data
+        rule: _extract_alltrails_geo_from_html is reused as-is rather than
+        adding a second, microdata-specific parser for it.
+
+        Deliberately does NOT route through _fetch_page_text/
+        _fetch_alltrails_text: both archive.org URLs used here (the
+        availability API call and the snapshot URL itself) contain the
+        literal substrings "alltrails.com" and "/trail/" (the original
+        AllTrails URL is embedded in each), so _is_alltrails_trail_url's
+        plain substring check would misroute them into AllTrails' own
+        request-pacing/block-cooldown state even though the actual HTTP
+        request goes to a completely different host (archive.org /
+        web.archive.org) -- and this fallback specifically runs right after
+        a direct AllTrails fetch just failed, i.e. exactly when that
+        cooldown is most likely to be active. Goes straight to
+        _fetch_page_text_uncached instead, with its own independent
+        cache/pacing/persistence (_wayback_fetch_cache, mirroring
+        _alltrails_fetch_cache's shape and persistence pattern).
+        """
+        if not hasattr(self, "_wayback_fetch_cache"):
+            self._wayback_fetch_cache = {}
+        if not hasattr(self, "_wayback_fetch_lock"):
+            self._wayback_fetch_lock = Lock()
+        if not hasattr(self, "_wayback_last_request_ts"):
+            self._wayback_last_request_ts = 0.0
+
+        delay_seconds = float(
+            getattr(self, "_wayback_request_delay_seconds", DEFAULT_WAYBACK_REQUEST_DELAY_SECONDS) or 0.0
+        )
+
+        with self._wayback_fetch_lock:
+            cached = self._wayback_fetch_cache.get(url)
+            if cached is not None:
+                return cached
+
+            def _paced_fetch(target_url: str) -> tuple[bool, int | str, str]:
+                if delay_seconds > 0:
+                    last_request = float(getattr(self, "_wayback_last_request_ts", 0.0) or 0.0)
+                    elapsed = time.monotonic() - last_request
+                    if elapsed < delay_seconds:
+                        time.sleep(delay_seconds - elapsed)
+                self._wayback_last_request_ts = time.monotonic()
+                return self._fetch_page_text_uncached(target_url, timeout=timeout)
+
+            availability_url = f"https://archive.org/wayback/available?url={quote(url, safe=':/')}"
+            ok, status, body = _paced_fetch(availability_url)
+
+            snapshot_url = ""
+            if ok and body:
+                try:
+                    payload = json.loads(body)
+                except (json.JSONDecodeError, TypeError):
+                    payload = None
+                if isinstance(payload, dict):
+                    closest = (payload.get("archived_snapshots") or {}).get("closest")
+                    if isinstance(closest, dict) and closest.get("available"):
+                        snapshot_url = str(closest.get("url") or "").strip()
+
+            if not snapshot_url:
+                # No archived snapshot (or the availability lookup itself
+                # failed) -- cache the miss in memory for this run only
+                # (never persisted to disk, see _save_persistent_caches),
+                # since it may be a transient archive.org hiccup rather than
+                # a durable "never archived" answer.
+                result: tuple[bool, int | str, str] = (False, status if not ok else "no_snapshot", "")
+                self._wayback_fetch_cache[url] = result
+                self._mark_persistent_cache_dirty()
+                return result
+
+            snap_ok, snap_status, snap_text = _paced_fetch(snapshot_url)
+            result = (bool(snap_ok and snap_text), snap_status, str(snap_text or ""))
+            self._wayback_fetch_cache[url] = result
             self._mark_persistent_cache_dirty()
             return result
 

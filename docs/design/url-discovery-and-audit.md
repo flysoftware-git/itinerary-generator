@@ -255,6 +255,95 @@ Implementation:
   AllTrails trail item typically had no `maps_url` at all (or one equal to
   its own page URL), so the badge never appeared for a trail card.
 
+### Wayback Machine fallback (the fetch actually has to succeed for this to fire)
+
+The above shipped and passed every unit test, but a real production run
+(dipstick71, 19 real AllTrails attractions) showed it fire **zero** times.
+Root cause: this module's own pre-existing comments and log output already
+establish that AllTrails' DataDome bot-detection blocks this app's own
+direct fetches of trail pages essentially universally in production (see
+`_fetch_alltrails_text`'s comment) — every other AllTrails-dependent feature
+in this file already routes around that via independent search-engine
+corroboration instead of successfully reading the page, but geo extraction
+had no such fallback, so it silently did nothing.
+
+Fix: `_alltrails_geo_maps_url` now falls back to
+`_fetch_wayback_alltrails_text` whenever the direct fetch fails. That method
+looks up the closest archived snapshot of the trail URL via the Wayback
+Machine's free, no-auth CDX availability API
+(`https://archive.org/wayback/available?url=<trail-url>`) and fetches that
+snapshot's HTML — archive.org's own crawler isn't the traffic DataDome is
+blocking (different domain, different requester, different reputation), and
+it stores the *original* page HTML, JSON-LD included, at crawl time. The
+archived HTML is run through the existing `_extract_alltrails_geo_from_html`
+unchanged (no separate parser) — a trailhead coordinate doesn't go stale the
+way ratings/hours/closures do, so even a years-old snapshot is still a
+correct answer for this specific field.
+
+Verified live (2026-08-18):
+- The availability API's real response shape: `{"archived_snapshots":
+  {"closest": {"available": true, "status": "200", "url":
+  "http://web.archive.org/web/<timestamp>/<original-url>"}}}` when a
+  snapshot exists, or `"archived_snapshots": {}` (no `closest` key) when it
+  doesn't.
+- A **recent** (2024+) archived snapshot carries the same `<script
+  type="application/ld+json">` `geo` block as a live page — confirmed
+  against a real 2026-01-08 snapshot (american-samoa/tutuila/
+  lower-sauma-ridge-trail) and several 2025/2026 snapshots below.
+- An **older** archived snapshot (2023 and earlier, before AllTrails' own
+  switch to JSON-LD) uses schema.org *microdata* instead — `<div
+  itemprop="geo" itemtype="http://schema.org/GeoCoordinates">` with
+  `<meta itemprop="latitude"|"longitude">` children, no `ld+json` block at
+  all. `_extract_alltrails_geo_from_html` does not parse this (deliberately
+  reused as-is per this module's no-invented-data rule, rather than adding a
+  second parser) — a trail stuck on a pre-2024 snapshot fails closed
+  (`maps_url` left untouched) rather than fabricating a coordinate.
+
+Real coverage check against all 19 AllTrails trail URLs from dipstick71's
+actual output (`C:\Temp\RoadTripRuns\SW2026-dipstick71\dev\index.html`):
+- **17/19 (89%)** have *some* archived snapshot available.
+- Of those 17, spot-checking extraction end-to-end: trails with a 2025/2026
+  snapshot (e.g. Delicate Arch, Double Arch, Emerald Pools, Mesa Arch,
+  Windows Loop, Grand Wash, Tsankawi Village, Corona & Bowtie) reliably
+  yield a real coordinate; trails whose only snapshot predates the JSON-LD
+  rollout (e.g. **Hickman Bridge Trail** itself — its only archived snapshot
+  is from 2023-07-10 — plus Bridal Veil Falls, Piedra Falls, Cassidy Arch,
+  Chuckwalla, Jenny's Canyon) fetch successfully but correctly extract no
+  coordinate. Net effect: a meaningful majority of real trails on a typical
+  itinerary now get a real trailhead `maps_url` where today's shipped
+  behavior gets zero, but this is not a 100% fix — a trail archived only
+  before AllTrails' JSON-LD switch stays fail-closed, same as an
+  unarchived trail.
+- 2/19 (Treasure Falls, Pueblo Loop) have no archived snapshot at all —
+  fails closed exactly like a blocked direct fetch with no fallback
+  available, `maps_url` untouched.
+
+Implementation notes:
+- `_fetch_wayback_alltrails_text` deliberately does **not** route through
+  `_fetch_page_text`/`_fetch_alltrails_text`: both archive.org URLs it uses
+  (the availability-API call and the snapshot URL itself) contain the
+  literal substrings `"alltrails.com"` and `"/trail/"` (the original
+  AllTrails URL is embedded in each), and `_is_alltrails_trail_url` is a
+  plain substring check — routing through it would misapply AllTrails' own
+  request-pacing/block-cooldown state to archive.org calls, exactly when
+  that cooldown is most likely active (this fallback runs right after a
+  direct AllTrails fetch just failed). It calls
+  `_fetch_page_text_uncached` directly instead, with its own independent
+  cache (`_wayback_fetch_cache`, keyed by the *original* AllTrails URL),
+  pacing (`_wayback_request_delay_seconds`, default 1.0s — config.yaml
+  `url_discovery.wayback_request_delay_seconds`), and persistence
+  (`_load_persistent_caches`'/`_save_persistent_caches`'
+  `wayback_geo_fetch_results` section, only successful fetches persisted,
+  same pattern as `alltrails_fetch_results`). Persistent TTL defaults to 30
+  days (`DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS`, config key
+  `persistent_wayback_cache_ttl_hours`) since an archived snapshot's HTML
+  never changes once crawled — same rationale as the Nominatim geocode
+  cache's long TTL.
+- Direct fetch is still tried first and stays the primary path — free when
+  it works (a very new page not yet archived, or a lucky non-blocked
+  window) — Wayback is purely an on-failure fallback, verified to add no
+  extra call when the direct fetch already succeeds.
+
 ## Fail-Closed Policy for Named Entities
 A link is only publishable for a named entity if it is a **deterministic, entity-specific
 target** — one that refers to that single entity and not a list, search query, or area
