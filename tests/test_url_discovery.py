@@ -1057,50 +1057,6 @@ def test_candidate_mentions_conflicting_destination_detects_other_park() -> None
     assert discoverer._candidate_mentions_conflicting_destination(candidate, "Bryce Canyon National Park")
 
 
-def test_search_alltrails_from_apify_pool_allows_precise_slug_when_destination_metadata_sparse() -> None:
-    discoverer = URLDiscoverer.__new__(URLDiscoverer)
-    discoverer._alltrails_apify_destination_token_overlap_min = 1
-    discoverer._alltrails_filter_min_reviews = 0
-
-    rows = [
-        {
-            "trailUrl": "https://www.alltrails.com/trail/us/utah/navajo-loop-trail",
-            "name": "Navajo Loop Trail",
-            "areaName": "Southern Utah",
-        }
-    ]
-
-    with patch.object(discoverer, "_get_apify_alltrails_rows_for_destination", return_value=rows):
-        out = discoverer._search_alltrails_for_trail_from_apify_pool(
-            "Navajo Loop Trail",
-            "Bryce Canyon National Park",
-        )
-
-    assert out == "https://www.alltrails.com/trail/us/utah/navajo-loop-trail"
-
-
-def test_search_alltrails_from_apify_pool_rejects_conflicting_destination_mention() -> None:
-    discoverer = URLDiscoverer.__new__(URLDiscoverer)
-    discoverer._alltrails_apify_destination_token_overlap_min = 1
-
-    rows = [
-        {
-            "trailUrl": "https://www.alltrails.com/trail/us/utah/navajo-loop-trail",
-            "name": "Navajo Loop Trail",
-            "areaName": "Zion National Park",
-            "snippet": "Navajo Loop Trail guide in Zion National Park.",
-        }
-    ]
-
-    with patch.object(discoverer, "_get_apify_alltrails_rows_for_destination", return_value=rows):
-        out = discoverer._search_alltrails_for_trail_from_apify_pool(
-            "Navajo Loop Trail",
-            "Bryce Canyon National Park",
-        )
-
-    assert out is None
-
-
 def test_discover_restaurants_can_use_direct_batch_source():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._restaurant_source = "direct_link_batch"
@@ -9081,9 +9037,13 @@ def test_alltrails_geo_maps_url_builds_coordinate_link_from_fetched_page():
     assert result == "https://www.google.com/maps/search/?api=1&query=38.28876,-111.22765"
 
 
-def test_alltrails_geo_maps_url_returns_none_when_fetch_fails():
+def test_alltrails_geo_maps_url_returns_none_when_fetch_and_wayback_both_fail():
+    """Direct fetch blocked (e.g. DataDome 403) AND no Wayback snapshot
+    available (or that lookup also fails) -- must fail closed, not crash."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
-    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")):
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")), patch.object(
+        discoverer, "_fetch_wayback_alltrails_text", return_value=(False, "no_snapshot", "")
+    ):
         result = discoverer._alltrails_geo_maps_url(
             "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail"
         )
@@ -9098,6 +9058,135 @@ def test_alltrails_geo_maps_url_returns_none_for_non_alltrails_url():
         result = discoverer._alltrails_geo_maps_url("https://www.nps.gov/zion/index.htm")
     assert result is None
     mock_fetch.assert_not_called()
+
+
+def test_alltrails_geo_maps_url_falls_back_to_wayback_when_direct_fetch_blocked():
+    """The production-critical case (dipstick71: 0/19 fires with no
+    fallback): a bot-blocked direct fetch (403, empty body) must not be the
+    end of the line -- _alltrails_geo_maps_url must try the Wayback Machine
+    fallback and, if that archived page carries the same JSON-LD geo block,
+    still produce a real coordinate maps_url."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    archived_html = (
+        '<script type="application/ld+json">'
+        '{"@type": "LocalBusiness", "geo": {"@type": "GeoCoordinates", '
+        '"latitude": "38.28876", "longitude": "-111.22765"}}'
+        "</script>"
+    )
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, 403, "")) as mock_direct, patch.object(
+        discoverer, "_fetch_wayback_alltrails_text", return_value=(True, 200, archived_html)
+    ) as mock_wayback:
+        result = discoverer._alltrails_geo_maps_url(
+            "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail"
+        )
+    assert result == "https://www.google.com/maps/search/?api=1&query=38.28876,-111.22765"
+    mock_direct.assert_called_once()
+    mock_wayback.assert_called_once()
+
+
+def test_alltrails_geo_maps_url_does_not_call_wayback_when_direct_fetch_succeeds():
+    """Avoid an unnecessary network call: when the direct fetch already
+    works (rare in production today, but the primary path is kept for the
+    cases it does), the Wayback fallback must never even be invoked."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_html = (
+        '<script type="application/ld+json">'
+        '{"@type": "LocalBusiness", "geo": {"@type": "GeoCoordinates", '
+        '"latitude": "38.28876", "longitude": "-111.22765"}}'
+        "</script>"
+    )
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_html)), patch.object(
+        discoverer, "_fetch_wayback_alltrails_text"
+    ) as mock_wayback:
+        result = discoverer._alltrails_geo_maps_url(
+            "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail"
+        )
+    assert result == "https://www.google.com/maps/search/?api=1&query=38.28876,-111.22765"
+    mock_wayback.assert_not_called()
+
+
+def test_fetch_wayback_alltrails_text_success_shape():
+    """Grounded in the real archive.org availability response shape
+    (verified live 2026-08-18 for
+    alltrails.com/trail/us/utah/hickman-bridge-trail) and a real recent
+    (2026-01-08) archived snapshot's JSON-LD geo block (american-samoa/
+    tutuila/lower-sauma-ridge-trail) -- mocks both the CDX availability API
+    call and the archived-snapshot HTML fetch."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    trail_url = "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail"
+    snapshot_url = (
+        "http://web.archive.org/web/20230710204311/"
+        "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail"
+    )
+    availability_body = json.dumps(
+        {
+            "url": "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail",
+            "archived_snapshots": {
+                "closest": {
+                    "status": "200",
+                    "available": True,
+                    "url": snapshot_url,
+                    "timestamp": "20230710204311",
+                }
+            },
+        }
+    )
+    archived_html = (
+        '<script type="application/ld+json">'
+        '{"@type": "LocalBusiness", "geo": {"@type": "GeoCoordinates", '
+        '"latitude": "38.28876", "longitude": "-111.22765"}}'
+        "</script>"
+    )
+
+    def fake_fetch_uncached(url, timeout=8):
+        if "archive.org/wayback/available" in url:
+            return (True, 200, availability_body)
+        if url == snapshot_url:
+            return (True, 200, archived_html)
+        raise AssertionError(f"unexpected URL fetched: {url}")
+
+    with patch.object(discoverer, "_fetch_page_text_uncached", side_effect=fake_fetch_uncached):
+        ok, status, text = discoverer._fetch_wayback_alltrails_text(trail_url, timeout=8)
+    assert ok is True
+    assert status == 200
+    coords = URLDiscoverer._extract_alltrails_geo_from_html(text)
+    assert coords == (38.28876, -111.22765)
+
+    # Second call for the same URL must be a cache hit, not a second lookup.
+    with patch.object(discoverer, "_fetch_page_text_uncached", side_effect=fake_fetch_uncached) as mock_fetch:
+        discoverer._fetch_wayback_alltrails_text(trail_url, timeout=8)
+    mock_fetch.assert_not_called()
+
+
+def test_fetch_wayback_alltrails_text_no_snapshot_available():
+    """A trail never archived by the Wayback Machine -- the real API shape
+    for "no snapshot" is an empty `archived_snapshots: {}` dict (no
+    `closest` key at all). Must return a graceful empty result, not raise."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    trail_url = "https://www.alltrails.com/trail/us/nowhere/never-archived-trail"
+    availability_body = json.dumps(
+        {"url": "https://www.alltrails.com/trail/us/nowhere/never-archived-trail", "archived_snapshots": {}}
+    )
+
+    with patch.object(
+        discoverer, "_fetch_page_text_uncached", return_value=(True, 200, availability_body)
+    ) as mock_fetch:
+        ok, status, text = discoverer._fetch_wayback_alltrails_text(trail_url, timeout=8)
+    assert ok is False
+    assert text == ""
+    # Only the availability lookup should have fired -- no snapshot URL to fetch.
+    mock_fetch.assert_called_once()
+
+
+def test_fetch_wayback_alltrails_text_availability_lookup_failure():
+    """archive.org itself unreachable/erroring -- must fail closed, not
+    crash, and not fabricate a snapshot URL."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    trail_url = "https://www.alltrails.com/trail/us/utah/hickman-bridge-trail"
+    with patch.object(discoverer, "_fetch_page_text_uncached", return_value=(False, "timeout", "")):
+        ok, status, text = discoverer._fetch_wayback_alltrails_text(trail_url, timeout=8)
+    assert ok is False
+    assert text == ""
 
 
 def test_audit_attaches_alltrails_geo_coordinate_maps_url_for_accepted_trail() -> None:

@@ -702,12 +702,10 @@ Options:
   --skip-events            Skip cultural events discovery
   --skip-url-discovery     Skip URL discovery (AI content only)
   --notrails               Disable trail link discovery and omit trail links
-  --alltrails-source TEXT  AllTrails source for trail-like attractions (`direct-link-batch`, `search`, or `apify-single-call`)
+  --alltrails-source TEXT  AllTrails source for trail-like attractions (`direct-link-batch` or `search`)
   --attraction-source TEXT Source for non-trail attractions (`search` or `direct-link-batch`)
   --restaurant-source TEXT Source for restaurant links (`search` or `direct-link-batch`)
   --en-route-source TEXT   Source for en-route stops (`search` or `direct-link-batch`)
-  --alltrails-apify-actor-id TEXT
-                           Optional Apify actor id override for `apify-single-call`
   --noschedule             Suppress schedule rendering in output HTML
   --destination TEXT       Limit to specific destination id (repeatable)
   --first-destination      Process only first destination after any --destination filtering

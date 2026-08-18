@@ -15,7 +15,7 @@ This note standardizes four terms:
 Owner: `URLDiscoverer` in `generator/url_discovery.py`
 
 Responsibilities:
-- collect direct candidates from source mode (`search`, `direct-link-batch`, `apify-single-call`)
+- collect direct candidates from source mode (`search`, `direct-link-batch`)
 - extract additional URLs embedded in row snippet/description text
 - preserve explicit fallback metadata fields (`maps_url`) where applicable
 - record decision telemetry for accepted/rejected candidates

@@ -317,6 +317,18 @@ DEFAULT_ALLTRAILS_BLOCK_COOLDOWN_SECONDS = 8.0
 # generic page-text fetch -- avoids re-probing a domain that just blocked us
 # for every subsequent distinct URL on that same domain.
 DEFAULT_DOMAIN_BLOCK_COOLDOWN_SECONDS = 8.0
+# Wayback Machine fallback for AllTrails geo extraction (see
+# _fetch_wayback_alltrails_text): a direct AllTrails fetch is bot-blocked by
+# DataDome essentially universally in production (see _fetch_alltrails_text's
+# own comment), but archive.org's crawler is a different requester on a
+# different domain that AllTrails' bot-detection has no reason to block, and
+# it stores the ORIGINAL page HTML (including JSON-LD) at crawl time. A
+# trailhead coordinate doesn't change even in a years-old snapshot, unlike
+# ratings/hours/closures, so this fallback is safe even when the archived
+# page is stale. Delay is deliberately gentle -- archive.org is a shared
+# nonprofit resource, not a target to hammer, and this path only fires when
+# the (already-throttled) direct AllTrails fetch has already failed.
+DEFAULT_WAYBACK_REQUEST_DELAY_SECONDS = 1.0
 # Route distance/time already has a solid Haversine-estimate fallback that
 # costs zero network calls -- the live Google Maps directions HTML scrape is
 # a pure accuracy enhancement on top of it, not a correctness gate, and (like
@@ -418,11 +430,6 @@ DEFAULT_EN_ROUTE_DETOUR_MAX_MILES = 0.0
 DEFAULT_EN_ROUTE_REQUIRE_DETOUR_METADATA = True
 DEFAULT_DIRECT_BATCH_HTML_CAPTURE_ENABLED = True
 DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR = "dev/url_discovery_direct_batch_html"
-DEFAULT_ALLTRAILS_APIFY_ACTOR_ID = "MMQdritoUWpzUVbah"
-DEFAULT_ALLTRAILS_APIFY_TOKEN_ENV = "APIFY_API_TOKEN"
-DEFAULT_ALLTRAILS_APIFY_MAX_ITEMS = 80
-DEFAULT_ALLTRAILS_APIFY_WITHIN_MILES = 30.0
-DEFAULT_ALLTRAILS_APIFY_DESTINATION_TOKEN_OVERLAP_MIN = 1
 DEFAULT_URL_POLICY_BLOCKED_CLASSES = (
     "google_search",
     "google_maps_search",
@@ -445,6 +452,13 @@ DEFAULT_PERSISTENT_GEOCODE_CACHE_TTL_HOURS = 720
 # this short so a transient DataDome block or stale trail status doesn't get
 # frozen in across runs.
 DEFAULT_PERSISTENT_ALLTRAILS_CACHE_TTL_HOURS = 12
+# A Wayback Machine snapshot's HTML is immutable once crawled (fetching the
+# same archived-snapshot URL tomorrow returns byte-identical content), and
+# this cache exists purely to extract a trailhead coordinate that also
+# doesn't change -- so a long TTL (same rationale/value as the Nominatim
+# geocode cache above) is safe and avoids re-hitting archive.org for a trail
+# already resolved in a prior run.
+DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS = 720
 # Direct-batch harvest rows (the per-destination-per-kind Grok HTML-list
 # responses for attractions/restaurants/trails/en-route stops) are the most
 # expensive part of URL discovery and the most repeated across same-day
@@ -564,7 +578,6 @@ class URLDiscoverer:
         *,
         disable_trails: bool = False,
         alltrails_source: str | None = None,
-        alltrails_apify_actor_id: str | None = None,
         attraction_source: str | None = None,
         restaurant_source: str | None = None,
         en_route_source: str | None = None,
@@ -638,6 +651,14 @@ class URLDiscoverer:
         self._alltrails_last_request_ts: float = 0.0
         self._alltrails_blocked_until_ts: float = 0.0
         self._alltrails_fetch_lock: Lock = Lock()
+        # Wayback Machine fallback fetch state (see _fetch_wayback_alltrails_text)
+        # -- keyed by the original AllTrails trail URL (not the archive.org
+        # snapshot URL), separate lock/pacing from _alltrails_fetch_lock above
+        # since these requests go to a completely different domain/host.
+        self._wayback_request_delay_seconds: float = DEFAULT_WAYBACK_REQUEST_DELAY_SECONDS
+        self._wayback_fetch_cache: dict[str, tuple[bool, int | str, str]] = {}
+        self._wayback_last_request_ts: float = 0.0
+        self._wayback_fetch_lock: Lock = Lock()
         self._max_alltrails_query_attempts: int = 2
         self._max_restaurant_query_attempts: int = 1
         self._alltrails_rating_min: float = DEFAULT_ALLTRAILS_RATING_MIN
@@ -685,16 +706,6 @@ class URLDiscoverer:
         # cache is unsafe (it let a URL validated for one item silently vouch for
         # an unrelated item that happened to reuse the same URL string).
         self._direct_batch_authoritative_urls: dict[str, set[frozenset[str]]] = {}
-        self._alltrails_apify_actor_id: str = DEFAULT_ALLTRAILS_APIFY_ACTOR_ID
-        self._alltrails_apify_token_env: str = DEFAULT_ALLTRAILS_APIFY_TOKEN_ENV
-        self._alltrails_apify_max_items: int = DEFAULT_ALLTRAILS_APIFY_MAX_ITEMS
-        self._alltrails_apify_within_miles: float = DEFAULT_ALLTRAILS_APIFY_WITHIN_MILES
-        self._alltrails_apify_within_miles_by_destination: dict[str, float] = {}
-        self._alltrails_apify_destination_token_overlap_min: int = (
-            DEFAULT_ALLTRAILS_APIFY_DESTINATION_TOKEN_OVERLAP_MIN
-        )
-        self._alltrails_apify_destination_cache: dict[str, list[dict[str, Any]]] = {}
-        self._alltrails_apify_warned_missing_token: bool = False
         self._alltrails_direct_batch_cache: dict[str, list[dict[str, Any]]] = {}
         self._attraction_direct_batch_cache: dict[str, list[dict[str, Any]]] = {}
         self._attraction_maps_area_cache: dict[str, list[dict[str, Any]]] = {}
@@ -726,6 +737,7 @@ class URLDiscoverer:
         self._persistent_verify_cache_ttl_hours: float = float(DEFAULT_PERSISTENT_VERIFY_CACHE_TTL_HOURS)
         self._persistent_geocode_cache_ttl_hours: float = float(DEFAULT_PERSISTENT_GEOCODE_CACHE_TTL_HOURS)
         self._persistent_alltrails_cache_ttl_hours: float = float(DEFAULT_PERSISTENT_ALLTRAILS_CACHE_TTL_HOURS)
+        self._persistent_wayback_cache_ttl_hours: float = float(DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS)
         self._persistent_harvest_cache_ttl_hours: float = float(DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS)
         self._persistent_cache_dirty: bool = False
         self._persistent_cache_write_every: int = 25
@@ -739,11 +751,8 @@ class URLDiscoverer:
         self._direct_batch_html_capture_subdir: str = DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR
         self._load_interest_filters(config_path)
         source_override = str(alltrails_source or "").strip().lower().replace("-", "_")
-        if source_override in {"search", "apify_single_call", "direct_link_batch"}:
+        if source_override in {"search", "direct_link_batch"}:
             self._alltrails_source = source_override
-        actor_override = str(alltrails_apify_actor_id or "").strip()
-        if actor_override:
-            self._alltrails_apify_actor_id = actor_override
         attraction_override = str(attraction_source or "").strip().lower().replace("-", "_")
         if attraction_override in {"search", "direct_link_batch"}:
             self._attraction_source = attraction_override
@@ -842,6 +851,17 @@ class URLDiscoverer:
                     self._alltrails_block_cooldown_seconds = parsed_cooldown
             except (TypeError, ValueError):
                 self._alltrails_block_cooldown_seconds = DEFAULT_ALLTRAILS_BLOCK_COOLDOWN_SECONDS
+
+            wayback_delay_seconds = url_cfg.get(
+                "wayback_request_delay_seconds",
+                DEFAULT_WAYBACK_REQUEST_DELAY_SECONDS,
+            )
+            try:
+                parsed_wayback_delay = float(wayback_delay_seconds)
+                if parsed_wayback_delay >= 0:
+                    self._wayback_request_delay_seconds = parsed_wayback_delay
+            except (TypeError, ValueError):
+                self._wayback_request_delay_seconds = DEFAULT_WAYBACK_REQUEST_DELAY_SECONDS
 
             enable_filtered_alltrails = url_cfg.get(
                 "enable_filtered_alltrails_selection",
@@ -1084,6 +1104,17 @@ class URLDiscoverer:
             except (TypeError, ValueError):
                 self._persistent_alltrails_cache_ttl_hours = float(DEFAULT_PERSISTENT_ALLTRAILS_CACHE_TTL_HOURS)
 
+            persistent_wayback_ttl = url_cfg.get(
+                "persistent_wayback_cache_ttl_hours",
+                DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS,
+            )
+            try:
+                parsed_wayback_ttl = float(persistent_wayback_ttl)
+                if parsed_wayback_ttl > 0:
+                    self._persistent_wayback_cache_ttl_hours = parsed_wayback_ttl
+            except (TypeError, ValueError):
+                self._persistent_wayback_cache_ttl_hours = float(DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS)
+
             persistent_harvest_ttl = url_cfg.get(
                 "persistent_harvest_cache_ttl_hours",
                 DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS,
@@ -1146,7 +1177,7 @@ class URLDiscoverer:
                 url_cfg.get("alltrails_source", DEFAULT_ALLTRAILS_SOURCE)
                 or DEFAULT_ALLTRAILS_SOURCE
             ).strip().lower().replace("-", "_")
-            if alltrails_source in {"search", "apify_single_call", "direct_link_batch"}:
+            if alltrails_source in {"search", "direct_link_batch"}:
                 self._alltrails_source = alltrails_source
 
             attraction_source = str(
@@ -1309,64 +1340,6 @@ class URLDiscoverer:
             if direct_batch_html_capture_subdir:
                 self._direct_batch_html_capture_subdir = direct_batch_html_capture_subdir
 
-            apify_actor = str(
-                url_cfg.get("alltrails_apify_actor_id", DEFAULT_ALLTRAILS_APIFY_ACTOR_ID)
-                or DEFAULT_ALLTRAILS_APIFY_ACTOR_ID
-            ).strip()
-            if apify_actor:
-                self._alltrails_apify_actor_id = apify_actor
-
-            apify_token_env = str(
-                url_cfg.get("alltrails_apify_token_env", DEFAULT_ALLTRAILS_APIFY_TOKEN_ENV)
-                or DEFAULT_ALLTRAILS_APIFY_TOKEN_ENV
-            ).strip()
-            if apify_token_env:
-                self._alltrails_apify_token_env = apify_token_env
-
-            apify_max_items = url_cfg.get("alltrails_apify_max_items", DEFAULT_ALLTRAILS_APIFY_MAX_ITEMS)
-            try:
-                parsed_apify_max_items = int(apify_max_items)
-                if parsed_apify_max_items > 0:
-                    self._alltrails_apify_max_items = parsed_apify_max_items
-            except (TypeError, ValueError):
-                self._alltrails_apify_max_items = DEFAULT_ALLTRAILS_APIFY_MAX_ITEMS
-
-            apify_within_miles = url_cfg.get("alltrails_apify_within_miles", DEFAULT_ALLTRAILS_APIFY_WITHIN_MILES)
-            try:
-                parsed_apify_within_miles = float(apify_within_miles)
-                if parsed_apify_within_miles > 0:
-                    self._alltrails_apify_within_miles = parsed_apify_within_miles
-            except (TypeError, ValueError):
-                self._alltrails_apify_within_miles = DEFAULT_ALLTRAILS_APIFY_WITHIN_MILES
-
-            raw_by_destination = url_cfg.get("alltrails_apify_within_miles_by_destination", {})
-            if isinstance(raw_by_destination, dict):
-                parsed_by_destination: dict[str, float] = {}
-                for raw_key, raw_value in raw_by_destination.items():
-                    key = self._normalize_destination_key(str(raw_key or ""))
-                    if not key:
-                        continue
-                    try:
-                        parsed_value = float(raw_value)
-                    except (TypeError, ValueError):
-                        continue
-                    if parsed_value > 0:
-                        parsed_by_destination[key] = parsed_value
-                self._alltrails_apify_within_miles_by_destination = parsed_by_destination
-
-            raw_overlap_min = url_cfg.get(
-                "alltrails_apify_destination_token_overlap_min",
-                DEFAULT_ALLTRAILS_APIFY_DESTINATION_TOKEN_OVERLAP_MIN,
-            )
-            try:
-                parsed_overlap_min = int(raw_overlap_min)
-                if parsed_overlap_min >= 0:
-                    self._alltrails_apify_destination_token_overlap_min = parsed_overlap_min
-            except (TypeError, ValueError):
-                self._alltrails_apify_destination_token_overlap_min = (
-                    DEFAULT_ALLTRAILS_APIFY_DESTINATION_TOKEN_OVERLAP_MIN
-                )
-
             raw_restaurant_denylist = url_cfg.get("restaurant_name_denylist", [])
             if isinstance(raw_restaurant_denylist, list):
                 self._restaurant_name_denylist = frozenset(
@@ -1527,6 +1500,25 @@ class URLDiscoverer:
                     str(entry.get("text", "") or ""),
                 )
 
+            wayback_cutoff = now - (float(getattr(self, "_persistent_wayback_cache_ttl_hours", DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS)) * 3600.0)
+            if not hasattr(self, "_wayback_fetch_cache"):
+                self._wayback_fetch_cache = {}
+            for key, entry in (payload.get("wayback_geo_fetch_results", {}) or {}).items():
+                if not isinstance(key, str) or not isinstance(entry, dict):
+                    continue
+                ts = float(entry.get("ts", 0) or 0)
+                if ts < wayback_cutoff:
+                    continue
+                # Only successful fetches are ever persisted (see save side), but
+                # guard defensively in case of a hand-edited cache file.
+                if not bool(entry.get("ok", False)):
+                    continue
+                self._wayback_fetch_cache[key] = (
+                    True,
+                    self._status_from_json(entry.get("status", "")),
+                    str(entry.get("text", "") or ""),
+                )
+
             harvest_cutoff = now - (float(getattr(self, "_persistent_harvest_cache_ttl_hours", DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS)) * 3600.0)
             harvest_cache_by_section = {
                 "direct_batch_harvest_alltrails": "_alltrails_direct_batch_cache",
@@ -1571,6 +1563,8 @@ class URLDiscoverer:
             self._en_route_stop_geocode_cache = {}
         if not hasattr(self, "_alltrails_fetch_cache"):
             self._alltrails_fetch_cache = {}
+        if not hasattr(self, "_wayback_fetch_cache"):
+            self._wayback_fetch_cache = {}
         harvest_cache_by_section = {
             "direct_batch_harvest_alltrails": "_alltrails_direct_batch_cache",
             "direct_batch_harvest_attractions": "_attraction_direct_batch_cache",
@@ -1590,6 +1584,7 @@ class URLDiscoverer:
         verify_cutoff = now - (float(getattr(self, "_persistent_verify_cache_ttl_hours", DEFAULT_PERSISTENT_VERIFY_CACHE_TTL_HOURS)) * 3600.0)
         geocode_cutoff = now - (float(getattr(self, "_persistent_geocode_cache_ttl_hours", DEFAULT_PERSISTENT_GEOCODE_CACHE_TTL_HOURS)) * 3600.0)
         alltrails_cutoff = now - (float(getattr(self, "_persistent_alltrails_cache_ttl_hours", DEFAULT_PERSISTENT_ALLTRAILS_CACHE_TTL_HOURS)) * 3600.0)
+        wayback_cutoff = now - (float(getattr(self, "_persistent_wayback_cache_ttl_hours", DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS)) * 3600.0)
         harvest_cutoff = now - (float(getattr(self, "_persistent_harvest_cache_ttl_hours", DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS)) * 3600.0)
 
         payload: dict[str, Any] = {
@@ -1600,6 +1595,7 @@ class URLDiscoverer:
             "page_text_results": {},
             "en_route_geocode": {},
             "alltrails_fetch_results": {},
+            "wayback_geo_fetch_results": {},
             "direct_batch_harvest_alltrails": {},
             "direct_batch_harvest_attractions": {},
             "direct_batch_harvest_restaurants": {},
@@ -1652,6 +1648,21 @@ class URLDiscoverer:
                 continue
             payload["alltrails_fetch_results"][key] = {
                 "ts": now if now >= alltrails_cutoff else alltrails_cutoff,
+                "ok": True,
+                "status": result[1],
+                "text": str(result[2] or "")[: int(DEFAULT_PERSISTENT_PAGE_TEXT_MAX_CHARS)],
+            }
+
+        for key, result in self._wayback_fetch_cache.items():
+            # Only persist successful fetches -- a "no snapshot"/fetch-failure
+            # result could be a transient archive.org hiccup rather than a
+            # durable "this trail was never archived" answer, and freezing
+            # that in would permanently block a fallback that might succeed
+            # on a later run.
+            if not isinstance(result, tuple) or len(result) != 3 or not result[0]:
+                continue
+            payload["wayback_geo_fetch_results"][key] = {
+                "ts": now if now >= wayback_cutoff else wayback_cutoff,
                 "ok": True,
                 "status": result[1],
                 "text": str(result[2] or "")[: int(DEFAULT_PERSISTENT_PAGE_TEXT_MAX_CHARS)],
@@ -7302,21 +7313,6 @@ class URLDiscoverer:
                     message="alltrails direct-link batch had no item-matching trail in authoritative mode",
                 )
                 return None
-        if source_mode == "apify_single_call":
-            selected = self._search_alltrails_for_trail_from_apify_pool(item_name, dest_name)
-            selected = self._prefer_canonical_alltrails_url(selected, item_name)
-            if self._passes_alltrails_post_search_filters(selected, item_name, dest_name):
-                return selected
-            self._log_decision(
-                kind="attraction",
-                dest_name=dest_name,
-                item_name=item_name,
-                reason="post_search_constraints_rejected",
-                message="alltrails apify candidate rejected by post-search constraints",
-                url=selected or "",
-            )
-            return None
-
         alltrails_variants: list[str] = _build_alltrails_query_variants(item_name, dest_name)
 
         # Preserve order while removing duplicates.
@@ -7480,330 +7476,6 @@ class URLDiscoverer:
             return False
 
         return True
-
-    @staticmethod
-    def _apify_is_closed(value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        lowered = str(value or "").strip().lower()
-        return lowered in {"1", "true", "yes"}
-
-    @staticmethod
-    def _apify_numeric(value: Any, cast: type[float] | type[int]) -> float | int | None:
-        try:
-            return cast(value)
-        except (TypeError, ValueError):
-            return None
-
-    def _search_alltrails_for_trail_from_apify_pool(self, item_name: str, dest_name: str) -> str | None:
-        rows = self._get_apify_alltrails_rows_for_destination(dest_name)
-        if not rows:
-            self._log_decision(
-                kind="attraction",
-                dest_name=dest_name,
-                item_name=item_name,
-                reason="apify_pool_empty",
-                message="alltrails apify pool empty",
-            )
-            return None
-
-        item_tokens = set(self._significant_tokens(item_name))
-        best: tuple[float, float, int, str] | None = None
-        reason_counts: dict[str, int] = {}
-
-        allowed_difficulties = {
-            str(item or "").strip().lower()
-            for item in getattr(
-                self,
-                "_alltrails_filter_allowed_difficulties",
-                DEFAULT_ALLTRAILS_FILTER_ALLOWED_DIFFICULTIES,
-            )
-            if str(item or "").strip()
-        }
-        max_miles = float(getattr(self, "_alltrails_filter_max_miles", DEFAULT_ALLTRAILS_FILTER_MAX_MILES) or 0.0)
-        max_gain = int(getattr(self, "_alltrails_filter_max_gain_feet", DEFAULT_ALLTRAILS_FILTER_MAX_GAIN_FEET) or 0)
-        min_reviews = int(getattr(self, "_alltrails_filter_min_reviews", DEFAULT_ALLTRAILS_FILTER_MIN_REVIEWS) or 0)
-        overlap_min = int(
-            getattr(
-                self,
-                "_alltrails_apify_destination_token_overlap_min",
-                DEFAULT_ALLTRAILS_APIFY_DESTINATION_TOKEN_OVERLAP_MIN,
-            )
-            or 0
-        )
-
-        def _bump(reason: str) -> None:
-            reason_counts[reason] = int(reason_counts.get(reason, 0) or 0) + 1
-
-        for row in rows:
-            if not isinstance(row, dict):
-                _bump("skip_non_object")
-                continue
-
-            if self._candidate_mentions_conflicting_destination(row, dest_name):
-                _bump("skip_destination_conflict")
-                continue
-
-            raw_url = str(
-                row.get("trailUrl")
-                or row.get("url")
-                or row.get("canonicalUrl")
-                or row.get("alltrailsUrl")
-                or ""
-            ).strip()
-            if not self._is_alltrails_trail_url(raw_url):
-                _bump("skip_not_alltrails_trail")
-                continue
-            if self._alltrails_slug_has_numbered_suffix(raw_url):
-                _bump("skip_numbered_slug")
-                continue
-            if self._apify_is_closed(row.get("isClosed")):
-                _bump("skip_closed")
-                continue
-            if not self._alltrails_slug_matches_item(raw_url, item_name):
-                _bump("skip_slug_item_mismatch")
-                continue
-
-            candidate_name = str(row.get("name") or row.get("trailName") or "").strip()
-            candidate_tokens = set(self._significant_tokens(candidate_name))
-            item_overlap_count = len(item_tokens & candidate_tokens) if item_tokens else 0
-            overlap_ratio = (item_overlap_count / float(max(1, len(item_tokens)))) if item_tokens else 1.0
-            required_item_overlap = self._required_alltrails_token_matches(len(item_tokens)) if item_tokens else 0
-            slug_is_precise = self._alltrails_slug_extra_term_count(raw_url, item_name) == 0
-            strong_item_alignment = bool(item_tokens) and item_overlap_count >= required_item_overlap
-            if not strong_item_alignment and slug_is_precise and item_tokens:
-                strong_item_alignment = True
-
-            overlap_count = self._apify_destination_overlap_count(row, dest_name)
-            if overlap_min > 0 and overlap_count < overlap_min and not strong_item_alignment:
-                _bump("skip_destination_mismatch")
-                continue
-
-            rating_raw = row.get("avgRating") if row.get("avgRating") is not None else row.get("rating")
-            reviews_raw = (
-                row.get("numReviews")
-                if row.get("numReviews") is not None
-                else (row.get("reviewCount") if row.get("reviewCount") is not None else row.get("reviews"))
-            )
-            rating = float(self._apify_numeric(rating_raw, float) or 0.0)
-            reviews = int(self._apify_numeric(reviews_raw, int) or 0)
-
-            difficulty = str(row.get("difficulty") or "").strip().lower()
-            if difficulty and allowed_difficulties and difficulty not in allowed_difficulties:
-                _bump("skip_difficulty")
-                continue
-
-            miles = row.get("lengthMiles")
-            if miles is None:
-                miles = self._meters_to_miles(row.get("lengthMeters"))
-            miles_value = float(miles) if miles is not None else None
-            if miles_value is not None and max_miles > 0 and miles_value > max_miles + 0.15:
-                _bump("skip_over_distance")
-                continue
-
-            gain_raw = row.get("elevationGainFt")
-            if gain_raw is None and row.get("elevationGainMeters") is not None:
-                gain_raw = float(row.get("elevationGainMeters")) * 3.28084
-            gain_value = int(self._apify_numeric(gain_raw, int) or 0)
-            if max_gain >= 0 and gain_value > max_gain:
-                _bump("skip_over_gain")
-                continue
-
-            if min_reviews > 0 and reviews < min_reviews:
-                _bump("skip_low_reviews")
-                continue
-
-            rank = (overlap_ratio, rating, reviews, raw_url)
-            if best is None or rank > best:
-                best = rank
-                _bump("candidate_ranked")
-
-        if not best:
-            detail = ", ".join(f"{k}={v}" for k, v in sorted(reason_counts.items())) or "none"
-            self._log_decision(
-                kind="attraction",
-                dest_name=dest_name,
-                item_name=item_name,
-                reason="apify_pool_no_match",
-                message=f"alltrails apify candidate rejected ({detail})",
-            )
-            return None
-
-        selected = self._prefer_canonical_alltrails_url(best[-1], item_name)
-        self._log_decision(
-            kind="attraction",
-            dest_name=dest_name,
-            item_name=item_name,
-            reason="apify_pool_selected",
-            message="alltrails apify candidate selected",
-            url=selected or "",
-        )
-        return selected
-
-    @staticmethod
-    def _meters_to_miles(value: Any) -> float | None:
-        try:
-            meters = float(value)
-        except (TypeError, ValueError):
-            return None
-        if meters < 0:
-            return None
-        return meters / 1609.344
-
-    def _get_apify_alltrails_rows_for_destination(self, dest_name: str) -> list[dict[str, Any]]:
-        cache_key = str(dest_name or "").strip().lower()
-        if not cache_key:
-            return []
-
-        with self._request_cache_lock:
-            cached = self._alltrails_apify_destination_cache.get(cache_key)
-            if cached is not None:
-                return cached
-
-        token_env = str(getattr(self, "_alltrails_apify_token_env", DEFAULT_ALLTRAILS_APIFY_TOKEN_ENV) or DEFAULT_ALLTRAILS_APIFY_TOKEN_ENV)
-        token = str(os.environ.get(token_env, "") or "").strip()
-        if not token:
-            if not self._alltrails_apify_warned_missing_token:
-                logger.warning(
-                    "AllTrails Apify source selected, but %s is not set; skipping Apify trail discovery",
-                    token_env,
-                )
-                self._alltrails_apify_warned_missing_token = True
-            with self._request_cache_lock:
-                self._alltrails_apify_destination_cache[cache_key] = []
-            return []
-
-        lat_lon = self._geocode_destination_for_apify(dest_name)
-        if not lat_lon:
-            with self._request_cache_lock:
-                self._alltrails_apify_destination_cache[cache_key] = []
-            return []
-
-        lat, lon = lat_lon
-        radius_miles = self._destination_apify_radius_miles(dest_name)
-        start_url = self._build_apify_explore_start_url(
-            lat,
-            lon,
-            within_miles=radius_miles,
-        )
-        actor_id = str(getattr(self, "_alltrails_apify_actor_id", DEFAULT_ALLTRAILS_APIFY_ACTOR_ID) or DEFAULT_ALLTRAILS_APIFY_ACTOR_ID).strip()
-        max_items = int(getattr(self, "_alltrails_apify_max_items", DEFAULT_ALLTRAILS_APIFY_MAX_ITEMS) or DEFAULT_ALLTRAILS_APIFY_MAX_ITEMS)
-
-        payload = {
-            "startUrl": start_url,
-            "maxItems": max(1, max_items),
-            "descriptionLanguage": "en",
-            "minRating": 0,
-            "minReviews": 0,
-        }
-        api_url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
-        rows: list[dict[str, Any]] = []
-
-        try:
-            response = self._url_validator.session.post(
-                api_url,
-                params={"token": token},
-                json=payload,
-                timeout=120,
-            )
-            response.raise_for_status()
-            parsed = response.json()
-            if isinstance(parsed, list):
-                rows = [row for row in parsed if isinstance(row, dict)]
-        except Exception as exc:
-            logger.warning("Apify AllTrails fetch failed for '%s': %s", dest_name, exc)
-            rows = []
-
-        with self._request_cache_lock:
-            self._alltrails_apify_destination_cache[cache_key] = rows
-        return rows
-
-    @staticmethod
-    def _normalize_destination_key(text: str) -> str:
-        lowered = str(text or "").strip().lower()
-        return re.sub(r"[^a-z0-9]+", " ", lowered).strip()
-
-    def _destination_apify_radius_miles(self, dest_name: str) -> float:
-        base = float(
-            getattr(self, "_alltrails_apify_within_miles", DEFAULT_ALLTRAILS_APIFY_WITHIN_MILES)
-            or DEFAULT_ALLTRAILS_APIFY_WITHIN_MILES
-        )
-        mapping = getattr(self, "_alltrails_apify_within_miles_by_destination", {})
-        if not isinstance(mapping, dict) or not mapping:
-            return base
-
-        normalized_name = self._normalize_destination_key(dest_name)
-        slug_name = re.sub(r"\s+", "-", normalized_name)
-
-        for key in (normalized_name, slug_name):
-            if key in mapping:
-                try:
-                    value = float(mapping[key])
-                    if value > 0:
-                        return value
-                except (TypeError, ValueError):
-                    continue
-        return base
-
-    def _apify_destination_overlap_count(self, row: dict[str, Any], dest_name: str) -> int:
-        dest_tokens = set(self._significant_tokens(dest_name))
-        if not dest_tokens:
-            return 0
-        text_parts = [
-            str(row.get("areaName") or ""),
-            str(row.get("cityName") or ""),
-            str(row.get("locationLabel") or ""),
-            str(row.get("areaSlug") or ""),
-            str(row.get("cityUrl") or ""),
-            str(row.get("trailUrl") or ""),
-        ]
-        row_tokens = set(self._significant_tokens(" ".join(text_parts)))
-        return len(dest_tokens & row_tokens)
-
-    def _geocode_destination_for_apify(self, destination: str) -> tuple[float, float] | None:
-        queries = [destination, f"{destination}, USA"]
-        for query in queries:
-            try:
-                response = self._url_validator.session.get(
-                    "https://nominatim.openstreetmap.org/search",
-                    params={
-                        "q": query,
-                        "format": "json",
-                        "limit": 1,
-                        "countrycodes": "us",
-                    },
-                    headers={"User-Agent": "RoadTripGenerator-URLDiscovery/1.0"},
-                    timeout=10,
-                )
-                response.raise_for_status()
-                rows = response.json()
-                if not isinstance(rows, list) or not rows:
-                    continue
-                first = rows[0] if isinstance(rows[0], dict) else {}
-                lat = float(first.get("lat"))
-                lon = float(first.get("lon"))
-                return lat, lon
-            except Exception:
-                continue
-        return None
-
-    @staticmethod
-    def _build_apify_explore_start_url(lat: float, lon: float, *, within_miles: float) -> str:
-        radius = max(1.0, float(within_miles))
-        lat_delta = radius / 69.0
-        lon_delta = radius / (69.172 * max(0.25, abs(cos(radians(lat)))))
-        b_br_lat = lat - lat_delta
-        b_tl_lat = lat + lat_delta
-        b_br_lng = lon + lon_delta
-        b_tl_lng = lon - lon_delta
-        return (
-            "https://www.alltrails.com/explore?"
-            f"b_br_lat={b_br_lat:.6f}&"
-            f"b_br_lng={b_br_lng:.6f}&"
-            f"b_tl_lat={b_tl_lat:.6f}&"
-            f"b_tl_lng={b_tl_lng:.6f}&"
-            "a[]=hiking"
-        )
 
     def _get_filtered_alltrails_selection(
         self,
@@ -8032,12 +7704,27 @@ class URLDiscoverer:
         was already fetched earlier in the same audit_discovered_urls pass
         (e.g. the trail-miles threshold check just above) or in an earlier
         run within the cache TTL is a cache hit, not a second live request.
+
+        Falls back to _fetch_wayback_alltrails_text when the direct fetch
+        fails -- in production this is the common case, not the rare one:
+        AllTrails' DataDome bot-detection blocks this app's own direct
+        fetches of trail pages essentially universally (confirmed via a
+        real production run, dipstick71, where this feature fired zero
+        times across 19 real AllTrails attractions despite passing all of
+        its own unit tests). The direct fetch is still tried first and kept
+        as the primary path -- it costs nothing extra when it works (e.g. a
+        very new trail page not yet archived, or a lucky non-blocked
+        window) -- but the Wayback Machine fallback is what actually makes
+        this feature fire in practice. See _fetch_wayback_alltrails_text
+        for the archive.org lookup/fetch details and its own caching.
         """
         if not url or not self._is_alltrails_trail_url(url):
             return None
         ok, _status, text = self._fetch_page_text(url, timeout=8)
         if not ok or not text:
-            return None
+            ok, _status, text = self._fetch_wayback_alltrails_text(url, timeout=8)
+            if not ok or not text:
+                return None
         coords = self._extract_alltrails_geo_from_html(text)
         if not coords:
             return None
@@ -12259,6 +11946,108 @@ class URLDiscoverer:
                 self._alltrails_blocked_until_ts = time.monotonic() + cooldown_seconds
 
             self._alltrails_fetch_cache[url] = result
+            self._mark_persistent_cache_dirty()
+            return result
+
+    def _fetch_wayback_alltrails_text(self, url: str, timeout: int = 8) -> tuple[bool, int | str, str]:
+        """Fallback for _alltrails_geo_maps_url when a direct AllTrails fetch
+        is bot-blocked (see _fetch_alltrails_text's own comment on
+        DataDome): looks up the closest archived snapshot of `url` via the
+        Wayback Machine's free, no-auth CDX availability API and fetches
+        that snapshot's HTML instead. archive.org's own crawler isn't the
+        automated traffic DataDome is trying to block, and it stores the
+        ORIGINAL page HTML (including JSON-LD) at crawl time.
+
+        Verified live (2026-08-18): `https://archive.org/wayback/available
+        ?url=<trail-url>` returns `{"archived_snapshots": {"closest":
+        {"available": true, "status": "200", "url": "http://web.archive.org
+        /web/<timestamp>/<original-url>"}}}` when a snapshot exists, or an
+        empty `archived_snapshots: {}` dict when none does. Checked against
+        all 19 real AllTrails trail URLs from a real production run
+        (dipstick71): 17/19 had an available snapshot.
+
+        A trail recrawled recently by archive.org (2024 onward, based on
+        spot checks) carries the SAME `<script type="application/ld+json">`
+        `geo` block _extract_alltrails_geo_from_html already parses --
+        confirmed against a real 2026-01-08 snapshot (american-samoa/
+        tutuila/lower-sauma-ridge-trail). A trail whose only archived
+        snapshot predates AllTrails' JSON-LD rollout (seen in 2023-and-
+        earlier snapshots, e.g. Hickman Bridge Trail's only snapshot is from
+        2023-07-10) used schema.org *microdata* instead (`itemprop="geo"`
+        `<meta itemprop="latitude"|"longitude">` tags, no ld+json at all) --
+        that will not yield a coordinate through this path. That is a
+        fail-closed miss, not a bug, per this module's no-invented-data
+        rule: _extract_alltrails_geo_from_html is reused as-is rather than
+        adding a second, microdata-specific parser for it.
+
+        Deliberately does NOT route through _fetch_page_text/
+        _fetch_alltrails_text: both archive.org URLs used here (the
+        availability API call and the snapshot URL itself) contain the
+        literal substrings "alltrails.com" and "/trail/" (the original
+        AllTrails URL is embedded in each), so _is_alltrails_trail_url's
+        plain substring check would misroute them into AllTrails' own
+        request-pacing/block-cooldown state even though the actual HTTP
+        request goes to a completely different host (archive.org /
+        web.archive.org) -- and this fallback specifically runs right after
+        a direct AllTrails fetch just failed, i.e. exactly when that
+        cooldown is most likely to be active. Goes straight to
+        _fetch_page_text_uncached instead, with its own independent
+        cache/pacing/persistence (_wayback_fetch_cache, mirroring
+        _alltrails_fetch_cache's shape and persistence pattern).
+        """
+        if not hasattr(self, "_wayback_fetch_cache"):
+            self._wayback_fetch_cache = {}
+        if not hasattr(self, "_wayback_fetch_lock"):
+            self._wayback_fetch_lock = Lock()
+        if not hasattr(self, "_wayback_last_request_ts"):
+            self._wayback_last_request_ts = 0.0
+
+        delay_seconds = float(
+            getattr(self, "_wayback_request_delay_seconds", DEFAULT_WAYBACK_REQUEST_DELAY_SECONDS) or 0.0
+        )
+
+        with self._wayback_fetch_lock:
+            cached = self._wayback_fetch_cache.get(url)
+            if cached is not None:
+                return cached
+
+            def _paced_fetch(target_url: str) -> tuple[bool, int | str, str]:
+                if delay_seconds > 0:
+                    last_request = float(getattr(self, "_wayback_last_request_ts", 0.0) or 0.0)
+                    elapsed = time.monotonic() - last_request
+                    if elapsed < delay_seconds:
+                        time.sleep(delay_seconds - elapsed)
+                self._wayback_last_request_ts = time.monotonic()
+                return self._fetch_page_text_uncached(target_url, timeout=timeout)
+
+            availability_url = f"https://archive.org/wayback/available?url={quote(url, safe=':/')}"
+            ok, status, body = _paced_fetch(availability_url)
+
+            snapshot_url = ""
+            if ok and body:
+                try:
+                    payload = json.loads(body)
+                except (json.JSONDecodeError, TypeError):
+                    payload = None
+                if isinstance(payload, dict):
+                    closest = (payload.get("archived_snapshots") or {}).get("closest")
+                    if isinstance(closest, dict) and closest.get("available"):
+                        snapshot_url = str(closest.get("url") or "").strip()
+
+            if not snapshot_url:
+                # No archived snapshot (or the availability lookup itself
+                # failed) -- cache the miss in memory for this run only
+                # (never persisted to disk, see _save_persistent_caches),
+                # since it may be a transient archive.org hiccup rather than
+                # a durable "never archived" answer.
+                result: tuple[bool, int | str, str] = (False, status if not ok else "no_snapshot", "")
+                self._wayback_fetch_cache[url] = result
+                self._mark_persistent_cache_dirty()
+                return result
+
+            snap_ok, snap_status, snap_text = _paced_fetch(snapshot_url)
+            result = (bool(snap_ok and snap_text), snap_status, str(snap_text or ""))
+            self._wayback_fetch_cache[url] = result
             self._mark_persistent_cache_dirty()
             return result
 
