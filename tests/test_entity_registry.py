@@ -445,3 +445,57 @@ def test_reconcile_schedule_from_registry_reuses_real_attractions_when_pool_is_s
         assert any(
             name in text for name in ("sunrise point", "navajo loop trail", "queens garden trail")
         ), text
+
+
+def test_reconcile_trip_from_registry_leaves_deferred_cultural_events_empty() -> None:
+    """Regression (real dipstick68 bug): a GH #68 grouped child (e.g. Arches,
+    grouped under Moab) defers cultural-events discovery to its group base by
+    leaving dest["cultural_events"] as the bare {} sentinel (see
+    cultural_events.py's discover() skip-gate). Reconciliation used to
+    unconditionally write cultural_events["events"] = [] and write the dict
+    back, turning the falsy {} into the truthy {"events": []} -- which
+    html_assembler's _build_events then read as "real discovery ran and
+    found zero events," rendering the honest-fallback "no ticketed events"
+    card instead of recognizing the section as deferred and rendering the
+    group-base pointer. A destination with real (non-deferred) cultural
+    events content must still have its events list reconciled against the
+    registry as before.
+    """
+    trip = {
+        "destinations": [
+            {
+                "id": "arches",
+                "name": "Arches National Park",
+                "group_with": "moab",
+                "ai_content": {},
+                "cultural_events": {},
+            },
+            {
+                "id": "moab",
+                "name": "Moab",
+                "ai_content": {},
+                "cultural_events": {
+                    "has_events": False,
+                    "ambient_scene": "Moab has a laid-back cultural scene in October.",
+                    "events": [
+                        {
+                            "name": "Field of Screams",
+                            "url": "https://example.com/field-of-screams",
+                            "_registry": {"validation_status": "rejected", "rejection_reasons": ["dead_link"]},
+                        },
+                    ],
+                },
+            },
+        ]
+    }
+
+    registry = build_entity_registry(trip)
+    reconciled = reconcile_trip_from_registry(trip, registry)
+
+    arches_events = reconciled["destinations"][0]["cultural_events"]
+    assert arches_events == {}
+
+    moab_events = reconciled["destinations"][1]["cultural_events"]
+    assert moab_events["has_events"] is False
+    assert moab_events["ambient_scene"] == "Moab has a laid-back cultural scene in October."
+    assert moab_events["events"] == []

@@ -291,8 +291,19 @@ def reconcile_trip_from_registry(trip: dict[str, Any], registry: dict[str, Any])
         dest["ai_content"] = ai
 
         dest["scenic_drives"] = _payloads(destination_id, "scenic_drives")
-        cultural_events["events"] = _payloads(destination_id, "cultural_events")
-        dest["cultural_events"] = cultural_events
+        # GH #68: a grouped child that deferred cultural-events discovery to
+        # its group base leaves dest["cultural_events"] as {} by design (see
+        # cultural_events.py's discover() skip-gate) -- that {} must stay
+        # falsy so html_assembler's _build_events renders the group-base
+        # pointer. Unconditionally writing an "events" key here turned it
+        # into the truthy {"events": []}, which _build_events then read as
+        # "real discovery ran and found zero events," rendering the
+        # honest-fallback "no ticketed events" card instead of the pointer
+        # (real dipstick68 bug: Arches/Canyonlands). Only touch cultural_events
+        # when discovery actually ran and produced a real result dict.
+        if cultural_events:
+            cultural_events["events"] = _payloads(destination_id, "cultural_events")
+            dest["cultural_events"] = cultural_events
 
     return reconciled
 
