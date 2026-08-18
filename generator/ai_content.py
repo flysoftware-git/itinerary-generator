@@ -210,6 +210,11 @@ class AIContentGenerator:
             dest["ai_content"] = bundle["destination_content"]
             dest["what_to_know"] = bundle["what_to_know"]
             dest["scenic_drives"] = bundle["scenic_drives"]
+            # Must run before URL discovery ever sees these names -- a
+            # markdown-wrapped name ("**White Rim Overlook Trail**") is
+            # what geocoding/matching would otherwise operate on.
+            self._scrub_markdown_name_wrapping_in_place(dest["ai_content"])
+            self._scrub_markdown_name_wrapping_in_place(dest["scenic_drives"])
             logger.debug(f"  Set scenic_drives for {dest['name']}: {len(bundle['scenic_drives'])} drives")
 
         with ThreadPoolExecutor(max_workers=self._llm_stage_max_workers(len(destinations))) as pool:
@@ -327,6 +332,44 @@ class AIContentGenerator:
                 self.last_banned_phrase_violations.get(phrase, 0) + count
             )
         return violation_counts
+
+    # Real dipstick68 regression: the model routinely wraps its own name
+    # output in markdown emphasis ("**Cliffside Restaurant**",
+    # "**White Rim Overlook Trail**") -- 34 occurrences observed in one
+    # real run, both restaurants and attractions, rendering the literal
+    # asterisks directly in visible card text. Worse, an unstripped name
+    # is what URL discovery/geocoding matches and builds Maps URLs
+    # against, so this isn't just cosmetic -- it's also a real cause of
+    # wrong-place matching downstream. Only "name"/"title" (the fields
+    # every downstream consumer -- URL discovery, Maps URL construction,
+    # rendering -- treats as the entity's identifier) are touched;
+    # description/practical_note and every other field are left alone.
+    _NAME_FIELD_NAMES = frozenset({"name", "title"})
+    _MARKDOWN_NAME_WRAP_PATTERN = re.compile(r"^(\*{1,2}|_{1,2})(.+?)\1$")
+
+    @classmethod
+    def _strip_markdown_name_wrapping(cls, text: str) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return raw
+        match = cls._MARKDOWN_NAME_WRAP_PATTERN.match(raw)
+        return match.group(2).strip() if match else raw
+
+    @classmethod
+    def _scrub_markdown_name_wrapping_in_place(cls, obj: Any) -> None:
+        """Recursively walk a dict/list structure, stripping markdown-emphasis
+        wrapping only from name/title fields. Mirrors
+        _scrub_banned_language_in_place's traversal, inverted to target
+        identifier fields instead of prose fields."""
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if key in cls._NAME_FIELD_NAMES and isinstance(value, str):
+                    obj[key] = cls._strip_markdown_name_wrapping(value)
+                else:
+                    cls._scrub_markdown_name_wrapping_in_place(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                cls._scrub_markdown_name_wrapping_in_place(item)
 
     def normalize_trip_content(self, trip: dict[str, Any]) -> None:
         """Post-generation normalization: cross-section and cross-destination dedup.

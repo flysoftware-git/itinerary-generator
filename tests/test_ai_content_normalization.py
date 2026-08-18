@@ -349,6 +349,91 @@ def test_enforce_banned_marketing_language_walks_full_trip_and_records_counts() 
     assert g.last_banned_phrase_violations == counts
 
 
+def test_strip_markdown_name_wrapping_removes_real_observed_wrapping() -> None:
+    """Real dipstick68 regression: the model routinely wraps its own name
+    output in markdown bold ('**Cliffside Restaurant**',
+    '**White Rim Overlook Trail**') -- 34 occurrences in one real run,
+    rendering literal asterisks directly in visible card text and feeding
+    the wrapped text into URL discovery/geocoding, causing wrong-place
+    matches downstream."""
+    assert AIContentGenerator._strip_markdown_name_wrapping("**Cliffside Restaurant**") == "Cliffside Restaurant"
+    assert AIContentGenerator._strip_markdown_name_wrapping("**White Rim Overlook Trail**") == "White Rim Overlook Trail"
+    assert AIContentGenerator._strip_markdown_name_wrapping("__Some Place__") == "Some Place"
+    assert AIContentGenerator._strip_markdown_name_wrapping("*Some Place*") == "Some Place"
+
+
+def test_strip_markdown_name_wrapping_leaves_clean_names_untouched() -> None:
+    assert AIContentGenerator._strip_markdown_name_wrapping("Cliffside Restaurant") == "Cliffside Restaurant"
+    assert AIContentGenerator._strip_markdown_name_wrapping("") == ""
+
+
+def test_strip_markdown_name_wrapping_does_not_touch_internal_asterisk() -> None:
+    """A name with an asterisk somewhere in the middle (not wrapping the
+    whole string) must survive intact -- this only strips a marker that
+    spans the entire string start-to-end, never a partial/internal one."""
+    text = "Bob's *Famous* BBQ"
+    assert AIContentGenerator._strip_markdown_name_wrapping(text) == text
+
+
+def test_scrub_markdown_name_wrapping_in_place_only_touches_name_and_title_fields() -> None:
+    """Only name/title fields are cleaned -- description/practical_note and
+    every other field are left alone, even if they also contain markdown."""
+    ai_content = {
+        "top_attractions": [
+            {
+                "name": "**White Rim Overlook Trail**",
+                "description": "**Bold** description text stays as-is.",
+            }
+        ],
+        "dinner_recommendations": [{"name": "**Cliffside Restaurant**"}],
+        "getting_here": {
+            "en_route_stops": [{"name": "**Some Stop**"}],
+        },
+    }
+    scenic_drives = [{"title": "**Zion Canyon Drive**", "description": "**Bold** stays."}]
+
+    AIContentGenerator._scrub_markdown_name_wrapping_in_place(ai_content)
+    AIContentGenerator._scrub_markdown_name_wrapping_in_place(scenic_drives)
+
+    assert ai_content["top_attractions"][0]["name"] == "White Rim Overlook Trail"
+    assert ai_content["top_attractions"][0]["description"] == "**Bold** description text stays as-is."
+    assert ai_content["dinner_recommendations"][0]["name"] == "Cliffside Restaurant"
+    assert ai_content["getting_here"]["en_route_stops"][0]["name"] == "Some Stop"
+    assert scenic_drives[0]["title"] == "Zion Canyon Drive"
+    assert scenic_drives[0]["description"] == "**Bold** stays."
+
+
+def test_generate_destination_content_strips_markdown_before_url_discovery_would_see_it() -> None:
+    """The scrub must run inside generate_destination_content itself (not
+    a later normalize_trip_content pass), since URL discovery reads
+    dest['ai_content']/dest['scenic_drives'] before normalize_trip_content
+    ever runs -- a markdown-wrapped name would already have been used for
+    matching/geocoding by then."""
+    g = _gen_with_bundle_templates()
+    g._llm = type("MockLLM", (), {"provider": "openai"})()
+    g._max_concurrent_destinations = 5
+    with patch.object(
+        g,
+        "_generate_destination_bundle",
+        return_value={
+            "destination_content": {
+                "top_attractions": [{"name": "**White Rim Overlook Trail**"}],
+            },
+            "what_to_know": {},
+            "scenic_drives": [{"title": "**Zion Canyon Drive**"}],
+        },
+    ):
+        trip = {
+            "trip": {},
+            "destinations": [{"name": "Canyonlands", "dates": "Oct 1"}],
+        }
+        g.generate_destination_content(trip)
+
+    dest = trip["destinations"][0]
+    assert dest["ai_content"]["top_attractions"][0]["name"] == "White Rim Overlook Trail"
+    assert dest["scenic_drives"][0]["title"] == "Zion Canyon Drive"
+
+
 def test_enforce_banned_marketing_language_accumulates_across_calls() -> None:
     """Regression (2026-08-15, dipstick56+): main.py calls
     normalize_trip_content (which calls this) twice in a real run -- once
