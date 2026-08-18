@@ -65,6 +65,32 @@ ATTRACTION_CLOSURE_MARKERS = (
     "this place is closed",
     "this business is closed",
 )
+# Real bug (Bryce Canyon eval run): "Bryce Canyon Visitor Center" linked to
+# https://www.nps.gov/brca/planyourvisit/visitorcenters.htm, which passes
+# every existing liveness/relevance/genericness check (200 status, on the
+# right domain, mentions the destination and "visitor center") yet actually
+# renders nothing but "Page In-Progress -- This page is currently being
+# worked on. Please check back later." NPS restructures its site often
+# enough that a stub/placeholder page like this can sit at a perfectly
+# plausible-looking URL indefinitely. None of the existing checks catch this
+# class of page because they all reason about topic/entity relevance or
+# closure status, not "does this page actually contain any real content at
+# all" -- a placeholder is topically on-topic (it IS meant to be the visitor
+# center page, eventually) and not "closed", just empty.
+UNDER_CONSTRUCTION_PAGE_MARKERS = (
+    "page in-progress",
+    "page in progress",
+    "this page is currently being worked on",
+    "this page is under construction",
+    "page under construction",
+    "site under construction",
+    "we are currently updating this page",
+    "this content is currently unavailable",
+    # Deliberately excludes generic phrases like "coming soon" -- too likely
+    # to appear in passing on an otherwise substantive page (e.g. "new
+    # exhibit coming soon") to serve as a reliable whole-page placeholder
+    # signal on their own.
+)
 # A closure marker phrase found on the same page as a mention of one of
 # these sub-part nouns is a signal the closure is scoped to a part of the
 # venue (a wing, an exhibit, a specific gallery) rather than the whole
@@ -2497,6 +2523,7 @@ class URLDiscoverer:
                     allow_alltrails=trail_like,
                     kind="attraction",
                     is_seed=is_seed,
+                    item_description=str(attr.get("description", "") or ""),
                 )
                 if cleaned != url:
                     self._log_rejected_url("attraction", dest_name, attr_name, url)
@@ -2635,7 +2662,8 @@ class URLDiscoverer:
                 gh_block["en_route_stops"] = eligible_stops
                 ai["getting_here"] = gh_block
 
-            for route_opt in ai.get("getting_there", {}).get("route_options", []) or []:
+            route_options_list = ai.get("getting_there", {}).get("route_options", []) or []
+            for route_opt in route_options_list:
                 opt_name = str(route_opt.get("title", "") or route_opt.get("name", "") or "")
                 url = str(route_opt.get("url", "") or "").strip()
                 cleaned = self._retain_discovered_url(
@@ -2653,6 +2681,19 @@ class URLDiscoverer:
                     else:
                         route_opt.pop("url", None)
                         self._annotate_registry_url_decision(route_opt, rendered_url="", rejection_reason="url_rejected")
+
+            # Real bug (published eval run): the Turquoise Trail National
+            # Scenic Byway departure route option had a real, distinct
+            # primary source URL (nsbfoundation.com) but no map-icon badge
+            # at all -- unlike en-route stops, attractions, and restaurants,
+            # nothing anywhere in this pipeline ever attached a maps_url to
+            # a route option. See _attach_secondary_maps_link's docstring:
+            # every route option's primary url is now final for this pass,
+            # so attach a distinct map-icon-badge maps_url wherever one is
+            # missing and useful, exactly like attractions/restaurants below.
+            for route_opt in route_options_list:
+                opt_name = str(route_opt.get("title", "") or route_opt.get("name", "") or "")
+                self._attach_secondary_maps_link(route_opt, opt_name, dest_name, kind="route_option")
 
             eligible_restaurants: list[dict[str, Any]] = []
             for rest in ai.get("dinner_recommendations", []) or []:
@@ -2741,6 +2782,7 @@ class URLDiscoverer:
                     dest_name,
                     allow_alltrails=False,
                     kind="scenic drive",
+                    item_description=str(drive.get("description", "") or ""),
                 )
                 # PR-004: reject drive URL when it duplicates an attraction URL
                 if cleaned and cleaned in attraction_urls:
@@ -2772,6 +2814,32 @@ class URLDiscoverer:
                 for event in events.get("events", []) or []:
                     event_name = str(event.get("name", "") or "")
                     url = str(event.get("url", "") or "").strip()
+                    # dipstick73/74: cultural_events.py's _verify_event_urls
+                    # deliberately assigns a Google-Maps-search fallback into
+                    # this same "url" field for any event whose real URL was
+                    # never found or was stripped as generic (see that
+                    # method's docstring: "unlike every other content type
+                    # ... which always falls back to a Google Maps search
+                    # link"). But this audit pass re-validates every event
+                    # url through the same strict retention gate every other
+                    # category uses, and DEFAULT_URL_POLICY_BLOCKED_CLASSES
+                    # blocks the "google_maps_search" class in "enforce" mode
+                    # (config.yaml url_policy_mode) unless the caller opts in
+                    # via allow_google_maps_search -- which this call site
+                    # never did. That silently stripped the very fallback
+                    # _verify_event_urls had just attached, leaving real,
+                    # dated events (confirmed real St. George example:
+                    # "I-15 Country Rock Music Festival") with no link at
+                    # all. Restaurants/attractions/en-route stops avoid this
+                    # exact trap by extracting a pre-existing maps-search URL
+                    # into a separate maps_url field before this same retain
+                    # call, so it survives even when the retain gate rejects
+                    # it as the primary url -- mirror that here so the
+                    # fallback is preserved for html_assembler._build_events
+                    # to render (falls back to maps_url when url is empty).
+                    maps_url = str(event.get("maps_url", "") or "").strip()
+                    if not maps_url and self._classify_url_policy_class(url) in {"google_maps_search", "google_maps_dir"}:
+                        maps_url = url
                     cleaned = self._retain_discovered_url(
                         url,
                         event_name,
@@ -2783,9 +2851,15 @@ class URLDiscoverer:
                         self._log_rejected_url("event", dest_name, event_name, url)
                         if cleaned:
                             event["url"] = cleaned
+                            if maps_url:
+                                event["maps_url"] = maps_url
                             self._annotate_registry_url_decision(event, rendered_url=cleaned)
                         else:
                             event.pop("url", None)
+                            if maps_url:
+                                event["maps_url"] = maps_url
+                            else:
+                                event.pop("maps_url", None)
                             self._annotate_registry_url_decision(event, rendered_url="", rejection_reason="url_rejected")
 
             self._deduplicate_within_destination(dest)
@@ -2805,6 +2879,7 @@ class URLDiscoverer:
         allow_shallow_relevance: bool = False,
         allow_google_maps_search: bool = False,
         is_seed: bool = False,
+        item_description: str = "",
     ) -> str:
         if not url:
             return ""
@@ -3166,7 +3241,10 @@ class URLDiscoverer:
                     return url
 
             deep_check = not allow_shallow_relevance
-            if not self._is_relevant_result(url, item_name, dest_name, candidate=candidate, deep_check=deep_check):
+            if not self._is_relevant_result(
+                url, item_name, dest_name, candidate=candidate, deep_check=deep_check,
+                item_description=item_description,
+            ):
                 return ""
 
         policy_class = self._classify_url_policy_class(url)
@@ -11780,6 +11858,7 @@ class URLDiscoverer:
         dest_name: str,
         candidate: dict[str, Any] | None = None,
         deep_check: bool = True,
+        item_description: str = "",
     ) -> bool:
         """Lightweight relevance gate: avoid live but useless links."""
         if self._is_obviously_generic_url(url.lower()):
@@ -11923,6 +12002,8 @@ class URLDiscoverer:
                     return self._candidate_text_matches_item_tokens(candidate, item_tokens)
                 return True
             text = (text or "").lower()
+            if self._is_under_construction_page(text):
+                return False
             if self._is_campground_focused_result_for_noncamping_item(url, item_name, fetched_text=text):
                 return False
             item_tokens = self._significant_tokens(item_name)
@@ -11933,6 +12014,30 @@ class URLDiscoverer:
                 return True
             if dest_tokens and not any(t in text for t in dest_tokens[:2]):
                 return False
+            # Real bug (Bryce Canyon eval run): "Scenic Drive Overlooks" (an
+            # attraction name built entirely from generic route/content
+            # vocabulary -- "scenic"/"drive" are already excluded by
+            # _significant_tokens as generic descriptors, leaving only
+            # "overlook[s]", itself a member of GENERIC_VIEWPOINT_SUFFIX_TOKENS)
+            # matched nps.gov's hoodoo-geology explainer page: any Bryce
+            # Canyon page mentioning "overlook" once (the single-token
+            # relevance bar, _required_general_token_matches(1) == 1) plus the
+            # destination name trivially clears the checks above, even though
+            # the page is about a completely different topic (how hoodoos
+            # form, not the scenic drive/auto-tour the item actually names).
+            # When the item's own display name carries no real distinguishing
+            # identity -- every significant token is a generic viewpoint/
+            # overlook descriptor -- the only remaining source of real
+            # specificity is the item's own AI-written description (e.g.
+            # "18-mile auto tour with multiple pullouts for hoodoo viewing").
+            # Require some overlap with that description too, so a same-park
+            # page about an unrelated topic can no longer pass on destination
+            # + a single generic word alone.
+            name_tokens_are_weak = not item_tokens or set(item_tokens) <= GENERIC_VIEWPOINT_SUFFIX_TOKENS
+            if name_tokens_are_weak:
+                desc_tokens = self._significant_tokens(item_description)
+                if desc_tokens and not self._text_matches_item_tokens(text, desc_tokens):
+                    return False
             return True
         except Exception:
             return False
@@ -12878,6 +12983,26 @@ class URLDiscoverer:
             # original whole-text behavior.
             return True
         return False
+
+    @staticmethod
+    def _is_under_construction_page(text: str) -> bool:
+        """True when a fetched page's own text says it is a placeholder /
+        stub rather than real content -- e.g. NPS's "Page In-Progress"
+        pages, which pass every other liveness/relevance check (200 status,
+        correct domain, mentions the destination and even the item's own
+        name) because they genuinely are the right, live URL for that
+        entity -- it just isn't populated yet. Real example (Bryce Canyon
+        eval run): "Bryce Canyon Visitor Center" linked to
+        nps.gov/brca/planyourvisit/visitorcenters.htm, whose entire visible
+        content is "Page In-Progress -- This page is currently being worked
+        on. Please check back later." None of the existing generic-URL or
+        closure-marker checks catch this: the URL shape is unremarkable and
+        the page isn't reporting the venue as closed, just empty.
+        """
+        lower_text = _strip_non_visible_html_noise(str(text or "")).lower()
+        if not lower_text:
+            return False
+        return any(marker in lower_text for marker in UNDER_CONSTRUCTION_PAGE_MARKERS)
 
     @staticmethod
     def _is_generic_listing_title(text: str) -> bool:

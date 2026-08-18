@@ -117,6 +117,92 @@ Non-AllTrails relevance:
 - On a successful fetch: requires item-token match in content, and requires
   some destination-token presence in content.
 
+Weakly-named item gate (description-overlap requirement): real bug from a
+published eval run -- Bryce Canyon's "Scenic Drive Overlooks" attraction
+(description: "18-mile auto tour with multiple pullouts for hoodoo viewing")
+linked to `nps.gov/brca/learn/nature/hoodoos.htm`, a page about hoodoo
+*geology/formation*, not the scenic drive or its overlooks. Root cause: once
+`_significant_tokens` strips "scenic"/"drive" as generic route descriptors
+(same reasoning as `"scenic"`/`"byway"` already documented above), the only
+token left in "Scenic Drive Overlooks" is `overlook` (`overlooks` after
+canonicalization) -- itself a member of `GENERIC_VIEWPOINT_SUFFIX_TOKENS`
+(`{"overlook", "view", "viewpoint", "vista"}`, already used elsewhere in this
+file to strip non-distinguishing suffix words from harvest-row matching), not
+a real identifying word. A single remaining token drops the required overlap
+to `_required_general_token_matches(1) == 1`, trivially satisfied by any
+same-park page that happens to mention "overlook" once plus the destination
+name -- content topic never enters into it.
+
+Fix: `_is_relevant_result` (and `_retain_discovered_url`, which calls it) now
+accepts an optional `item_description` parameter. When the item's own
+significant-token set is empty or entirely contained in
+`GENERIC_VIEWPOINT_SUFFIX_TOKENS` (`name_tokens_are_weak`), the item's
+AI-written description -- the only remaining source of real specificity --
+must also have token overlap with the fetched page text (same
+`_text_matches_item_tokens` helper, same overlap-count threshold). A
+same-park page about a genuinely different topic can no longer pass on
+destination-name-plus-one-generic-word alone. Threaded through for
+attractions and scenic drives in `audit_discovered_urls` (`item_description=
+attr.get("description", "")` / `drive.get("description", "")`); other call
+sites that don't pass `item_description` (default `""`) are unaffected --
+`desc_tokens` is then empty and the new check is skipped entirely, preserving
+today's exact behavior for every existing caller.
+
+Tests:
+`test_relevant_result_rejects_wrong_topic_page_for_generically_named_attraction`,
+`test_relevant_result_accepts_generically_named_attraction_with_matching_description`,
+`test_relevant_result_weak_name_gate_is_noop_without_description`, and
+`test_audit_discovered_urls_rejects_wrong_topic_link_for_scenic_drive_overlooks`
+(`tests/test_url_discovery.py`).
+
+Under-construction / placeholder-content detection: real bug from a
+published eval run -- "Bryce Canyon Visitor Center" linked to
+`https://www.nps.gov/brca/planyourvisit/visitorcenters.htm`. Live-fetched
+during investigation, that URL returns HTTP 200 on the correct `nps.gov`
+domain and mentions the destination, so it clears every existing
+liveness/genericness/relevance check -- but its entire visible content is
+"Page In-Progress -- This page is currently being worked on. Please check
+back later." NPS restructures its site often enough that a stub page like
+this can sit at an otherwise perfectly plausible URL indefinitely. This is a
+distinct failure class from everything else in this file: it isn't a dead
+link (`_is_definitively_dead_status`), a closed venue
+(`_has_attraction_closure_marker`), or a generic listing/search page
+(`_is_generic_section_landing_page`, `_is_obviously_generic_url`) -- it's a
+live, on-topic, technically-correct URL with no actual content behind it,
+which none of those checks reason about (they all classify the URL shape or
+the entity's status, never "does this page contain anything real").
+
+`_is_relevant_result`'s general (non-AllTrails) deep-check branch now calls
+`_is_under_construction_page(text)` immediately after a successful fetch,
+before the token-overlap checks -- mirroring `_has_attraction_closure_marker`
+and `_has_alltrails_closure_marker`'s existing marker-list-plus-HTML-noise-
+stripping pattern (`UNDER_CONSTRUCTION_PAGE_MARKERS`, deliberately narrow and
+specific: "page in-progress", "this page is currently being worked on",
+"this page is under construction", "site under construction", "we are
+currently updating this page", "this content is currently unavailable" --
+excludes generic phrases like bare "coming soon", which could plausibly
+appear in passing on an otherwise substantive page). `_is_generic_section_
+landing_page` was not extended for this: it's a pure URL-shape check with no
+page fetch, so it structurally cannot see page content at all -- only the
+deep-check fetch path in `_is_relevant_result` can catch this class of bug.
+
+This is a general detector, not a one-off special case for this single URL:
+any item across any category that routes through the general relevance gate
+(attractions, scenic drives, restaurants, en-route stops, route options,
+events) now gets the same protection. No static URL substitution was made
+for the Bryce Canyon Visitor Center specifically -- there is no manifest/
+config entry hardcoding that URL anywhere in this codebase (it's fully
+discovered at runtime), so the correct fix is this detector catching it on
+the next discovery/audit run, letting the existing search-and-fallback
+machinery find a real page (or fail closed to a maps-search link, which is
+strictly more useful than a placeholder) rather than hand-patching one URL.
+
+Tests: `test_is_under_construction_page_detects_real_nps_placeholder_text`,
+`test_is_under_construction_page_ignores_html_comment_noise`,
+`test_is_under_construction_page_false_on_substantive_content`, and
+`test_relevant_result_rejects_under_construction_placeholder_page`
+(`tests/test_url_discovery.py`).
+
 ## Audit Behavior
 `audit_discovered_urls` re-validates all discovered links and may remove them.
 
@@ -528,6 +614,69 @@ restaurant_with_distinct_primary_url`, `test_audit_does_not_attach_
 secondary_maps_link_when_primary_url_is_maps_fallback`, and
 `test_attach_secondary_maps_link_skips_alltrails_url_directly`
 (`tests/test_url_discovery.py`).
+
+## Cultural Event Maps-Fallback Survival Through the Audit Pass
+Real bug, confirmed from a real published eval run
+(`C:\Users\bryan\Documents\Github\PWAapps\Travel-apps\sw\eval\index.html`): St.
+George's two cultural events -- "I-15 Country Rock Music Festival" and
+"Odyssey Dance Theatre's Thriller 2026" -- both had real, structured data
+(dates, venue, admission) but rendered as plain `<strong>` text with **no**
+`<a href>` at all, unlike every other content type on the page, which always
+carries at least a Google-Maps-search fallback link when no real source URL
+survives.
+
+`generator/cultural_events.py`'s `_verify_event_urls` already does exactly
+what its docstring says: strip a dead or generic event URL, then assign
+`event["url"]` a Google-Maps-search fallback (`_event_maps_fallback_url`) for
+any event still left without one. That part was working correctly -- the URL
+genuinely was set at that point. The bug is downstream, in
+`audit_discovered_urls`'s per-destination events loop
+(`generator/url_discovery.py`): it re-validates every event's `url` through
+`_retain_discovered_url(..., kind="event")`, the same strict retention gate
+every other category goes through. `config.yaml` sets `url_policy_mode:
+"enforce"` and `google_maps_search`/`google_maps_dir` are both in
+`url_policy_blocked_classes` -- so a Google-Maps-search fallback URL is
+rejected by the policy-class gate unless the caller passes
+`allow_google_maps_search=True`. The events call site never did, so the
+fallback `_verify_event_urls` had just attached was silently stripped
+(`event.pop("url", None)`) with nothing put back in its place.
+
+This is exactly the same trap the restaurants/attractions/en-route-stops
+loops in this same function already avoid: each of them extracts a
+pre-existing `google_maps_search`/`google_maps_dir`-classified `url` into a
+separate `maps_url` field *before* calling `_retain_discovered_url`, so that
+even when the retention gate rejects the primary `url`, the fallback survives
+as `maps_url` (see "Secondary Maps Link for Attractions and Restaurants"
+above for the render-side half of this same pattern). The events loop had no
+equivalent extraction step, so it had no way to reach the fallback link once
+it was rejected by policy.
+
+Fix, two parts:
+- `audit_discovered_urls`'s events loop now extracts `event["maps_url"]` from
+  the pre-existing `url` before the retain call, mirroring the
+  restaurant/attraction/en-route-stop pattern exactly, and re-attaches it
+  whenever the retain call strips the primary `url`.
+- `html_assembler.py`'s `_build_events` (Format-A event rendering, the
+  `event-link`/`events-subcard` markup) now falls back to `ev.get("maps_url")`
+  when `ev.get("url")` is empty, so the preserved fallback actually gets
+  rendered as the event name's link instead of sitting unused in the data.
+  Previously this method's own comment ("Omit fallback link when no
+  canonical event URL is available; generic search queries fail strict
+  single-result validation") reflected a design intent that had drifted out
+  of sync with `_verify_event_urls`'s explicit contract of always attaching
+  *some* link.
+
+A genuinely bad/hallucinated event URL (e.g. an unrelated `example.com` page
+that fails the relevance gate for reasons other than the policy-class check)
+is unaffected by this fix and is still stripped with no `maps_url` fallback,
+since the extraction only triggers for URLs already classified as
+`google_maps_search`/`google_maps_dir`.
+
+Tests: `test_audit_discovered_urls_preserves_event_maps_fallback_as_maps_url`
+(`tests/test_url_discovery.py`),
+`test_build_events_format_a_falls_back_to_maps_url_when_url_missing` and
+`test_build_events_format_a_no_link_when_neither_url_nor_maps_url`
+(`tests/test_html_assembler.py`).
 
 ## Fail-Closed Policy for Named Entities
 A link is only publishable for a named entity if it is a **deterministic, entity-specific

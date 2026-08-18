@@ -3952,6 +3952,66 @@ def test_has_attraction_closure_marker_still_detects_real_full_closure() -> None
     ) is True
 
 
+def test_is_under_construction_page_detects_real_nps_placeholder_text() -> None:
+    """Real bug (Bryce Canyon eval run): "Bryce Canyon Visitor Center" linked
+    to https://www.nps.gov/brca/planyourvisit/visitorcenters.htm, whose
+    entire visible content (confirmed via live fetch) is a placeholder
+    stub, not real visitor-center information. This page is technically
+    live (200 status), on the right domain, and even mentions the
+    destination -- none of the existing checks reason about whether a page
+    actually contains any real content."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "National Park Service. Page In-Progress. This page is currently "
+        "being worked on. Please check back later. Return to NPS home."
+    )
+    assert discoverer._is_under_construction_page(page_text) is True
+
+
+def test_is_under_construction_page_ignores_html_comment_noise() -> None:
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "Bryce Canyon Visitor Center. Open daily with exhibits, a bookstore, "
+        "and ranger-led programs. "
+        "<!-- old dev note: this section is currently being worked on -->"
+    )
+    assert discoverer._is_under_construction_page(page_text) is False
+
+
+def test_is_under_construction_page_false_on_substantive_content() -> None:
+    """Control: a real, populated page must not be flagged just because it
+    happens to be short or mentions an unrelated future item."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "Bryce Canyon Visitor Center. While at the Visitor Center you will "
+        "want to see our award-winning film, 'A Song of Seasons.' Explore "
+        "our museum exhibits and bookstore. A new exhibit is coming soon."
+    )
+    assert discoverer._is_under_construction_page(page_text) is False
+
+
+def test_relevant_result_rejects_under_construction_placeholder_page() -> None:
+    """End-to-end: _is_relevant_result's general (non-AllTrails) deep-check
+    branch must reject a page whose own text says it's a placeholder, even
+    though it otherwise clears the destination/item token checks (it's a
+    real nps.gov page, on the right park, with the right item name in its
+    URL slug region)."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "Bryce Canyon National Park. Visitor Center. Page In-Progress. "
+        "This page is currently being worked on. Please check back later."
+    )
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_text)):
+        ok = discoverer._is_relevant_result(
+            "https://www.nps.gov/brca/planyourvisit/visitorcenters.htm",
+            "Bryce Canyon Visitor Center",
+            "Bryce Canyon National Park",
+        )
+
+    assert ok is False
+
+
 def test_discover_attractions_real_moifa_html_comment_closure_false_positive_keeps_real_link() -> None:
     """Full-pipeline Part 2 regression using the real evidence from
     link_recall_strategy_experiment.md: the direct-batch harvest found a
@@ -7241,6 +7301,53 @@ def test_audit_demotes_long_trail_when_over_miles_threshold() -> None:
     assert attractions == []
 
 
+def test_audit_discovered_urls_rejects_wrong_topic_link_for_scenic_drive_overlooks() -> None:
+    """End-to-end regression for the real Bryce Canyon eval bug: the
+    "Scenic Drive Overlooks" attraction linked to nps.gov's hoodoo-geology
+    page instead of a page about the drive itself. Confirms
+    audit_discovered_urls actually threads the item's own description
+    through to the relevance gate (item_description=attr.get("description")),
+    not just that _is_relevant_result behaves correctly when called directly."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.verify_url.return_value = (True, 200)
+
+    trip = {
+        "destinations": [
+            {
+                "id": "bryce",
+                "name": "Bryce Canyon National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Scenic Drive Overlooks",
+                            "description": "18-mile auto tour with multiple pullouts for hoodoo viewing.",
+                            "url": "https://www.nps.gov/brca/learn/nature/hoodoos.htm",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    page_text = (
+        "Hoodoos - Bryce Canyon National Park. The formation of Bryce Canyon "
+        "and its hoodoos requires 3 steps: deposition of rocks, uplift of the "
+        "land, and weathering and erosion."
+    )
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_text)):
+            discoverer.audit_discovered_urls(trip)
+
+    # Non-seed attraction with no verified link left after rejection is
+    # pruned entirely, matching the established verified-link-or-seed policy.
+    assert trip["destinations"][0]["ai_content"]["top_attractions"] == []
+
+
 def test_audit_demotion_strips_hike_badge_fields_not_just_type_and_url() -> None:
     """Regression for dipstick58: "Peek-a-boo Loop" and "Fairyland Loop" (Bryce
     Canyon, real run data) were correctly demoted -- url stripped, type flipped
@@ -9556,6 +9663,61 @@ def test_audit_attaches_secondary_maps_link_for_attraction_with_distinct_primary
     )
 
 
+def test_audit_attaches_secondary_maps_link_for_departure_route_option() -> None:
+    """Real bug (published eval run): the "Turquoise Trail National Scenic
+    Byway" departure route option had a real, distinct primary source URL
+    (nsbfoundation.com) but no map-icon badge at all -- unlike en-route
+    stops, attractions, and restaurants, no code path anywhere in this
+    pipeline ever attached a maps_url to a route option. audit_discovered_
+    urls' route_options loop now calls _attach_secondary_maps_link for each
+    option after its primary url is settled, mirroring the attraction/
+    restaurant fix above."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._remember_direct_batch_authoritative_url(
+        "https://nsbfoundation.com/nb/turquoise-trail-national-scenic-byway/",
+        "Turquoise Trail National Scenic Byway",
+    )
+
+    trip = {
+        "destinations": [
+            {
+                "id": "santa-fe",
+                "name": "Santa Fe, New Mexico",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "getting_there": {
+                        "route_options": [
+                            {
+                                "title": "Turquoise Trail National Scenic Byway",
+                                "url": "https://nsbfoundation.com/nb/turquoise-trail-national-scenic-byway/",
+                                "distance_or_duration": "~50 mi total route",
+                                "description": "This scenic byway connects Santa Fe and Albuquerque.",
+                            }
+                        ]
+                    },
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(False, "no_validator", "")):
+            discoverer.audit_discovered_urls(trip)
+
+    options = trip["destinations"][0]["ai_content"]["getting_there"]["route_options"]
+    assert len(options) == 1
+    option = options[0]
+    assert option["url"] == "https://nsbfoundation.com/nb/turquoise-trail-national-scenic-byway/"
+    assert option["maps_url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Turquoise%20Trail%20National%20Scenic%20Byway%20Santa%20Fe%2C%20New%20Mexico"
+    )
+
+
 def test_audit_attaches_secondary_maps_link_for_restaurant_with_distinct_primary_url() -> None:
     """Restaurant mirror of the attraction case above: real dipstick72 data
     showed 0 of 61 restaurant cards ever rendered the map badge.
@@ -9717,6 +9879,79 @@ def test_alltrails_relevance_does_not_reject_generic_marketing_phrase_only():
 
     url = "https://www.alltrails.com/trail/us/utah/angels-landing-trail"
     assert discoverer._is_relevant_result(url, "Angel's Landing", "Zion National Park")
+
+
+def test_relevant_result_rejects_wrong_topic_page_for_generically_named_attraction():
+    """Real bug (Bryce Canyon eval run): the attraction "Scenic Drive
+    Overlooks" (description: "18-mile auto tour with multiple pullouts for
+    hoodoo viewing") linked to nps.gov's hoodoo-GEOLOGY explainer page
+    instead of a page about the drive/overlooks itself. Root cause: after
+    _significant_tokens strips "scenic"/"drive" as generic route
+    descriptors, the only token left is "overlook[s]" -- itself a member of
+    GENERIC_VIEWPOINT_SUFFIX_TOKENS, not a real distinguishing identifier --
+    so the single-token relevance bar (_required_general_token_matches(1) ==
+    1) was trivially satisfied by any same-park page mentioning "overlook"
+    once. This mocked page text mirrors the real hoodoos.htm content: it
+    covers geology/formation, not the drive/auto-tour/pullouts the item's
+    own description actually promises, so the new description-overlap
+    requirement for weakly-named items must reject it."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "Hoodoos - Bryce Canyon National Park. The formation of Bryce Canyon "
+        "and its hoodoos requires 3 steps: deposition of rocks, uplift of the "
+        "land, and weathering and erosion. Many overlook the role of frost "
+        "wedging in shaping these unique rock spires over thousands of years."
+    )
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_text)):
+        ok = discoverer._is_relevant_result(
+            "https://www.nps.gov/brca/learn/nature/hoodoos.htm",
+            "Scenic Drive Overlooks",
+            "Bryce Canyon National Park",
+            item_description="18-mile auto tour with multiple pullouts for hoodoo viewing.",
+        )
+
+    assert ok is False
+
+
+def test_relevant_result_accepts_generically_named_attraction_with_matching_description():
+    """Same weakly-named item as above, but this time the candidate page
+    genuinely is about the drive/auto-tour/pullouts the description
+    promises -- the new description-overlap check must not reject a real,
+    on-topic match."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "Southern Scenic Drive Viewpoints - Bryce Canyon National Park. The "
+        "18 mile main park road offers multiple pullouts and overlooks for "
+        "a scenic auto tour, with viewing areas along the drive."
+    )
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_text)):
+        ok = discoverer._is_relevant_result(
+            "https://www.nps.gov/brca/planyourvisit/southern-scenic-drive-viewpoints.htm",
+            "Scenic Drive Overlooks",
+            "Bryce Canyon National Park",
+            item_description="18-mile auto tour with multiple pullouts for hoodoo viewing.",
+        )
+
+    assert ok is True
+
+
+def test_relevant_result_weak_name_gate_is_noop_without_description():
+    """When no item_description is available (most call sites today), the
+    weak-name gate must not change behavior at all -- preserves today's
+    exact single-token-match leniency for callers that don't pass one."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = "Hoodoos - Bryce Canyon National Park. Many overlook the geology here."
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_text)):
+        ok = discoverer._is_relevant_result(
+            "https://www.nps.gov/brca/learn/nature/hoodoos.htm",
+            "Scenic Drive Overlooks",
+            "Bryce Canyon National Park",
+        )
+
+    assert ok is True
 
 
 def test_search_strict_rejects_wrong_but_live_alltrails_trail_page():
@@ -15820,6 +16055,63 @@ def test_audit_discovered_urls_strips_weak_hallucinated_links():
     assert trip["destinations"][0]["ai_content"]["top_attractions"] == []
     assert "url" not in trip["destinations"][0]["scenic_drives"][0]
     assert "url" not in trip["destinations"][0]["cultural_events"]["events"][0]
+
+
+def test_audit_discovered_urls_preserves_event_maps_fallback_as_maps_url():
+    """Real bug (St. George eval run, dipstick73/74): "I-15 Country Rock
+    Music Festival" and "Odyssey Dance Theatre's Thriller 2026" rendered with
+    NO link at all. cultural_events.py's _verify_event_urls deliberately
+    assigns a Google-Maps-search fallback into the event's "url" field when
+    no real URL survives (mirroring every other content type's maps
+    fallback). But this audit pass re-validates that same url through the
+    strict retention gate, and config.yaml's url_policy_mode: "enforce"
+    blocks the "google_maps_search" policy class unless the caller opts in
+    via allow_google_maps_search -- which this call site never did, so the
+    fallback got silently stripped with nothing left to render. Fix: extract
+    a pre-existing google_maps_search/dir url into a separate maps_url field
+    before the retain call, exactly like restaurants/attractions/en-route
+    stops already do, so it survives even when the primary url is rejected."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.verify_url.return_value = (True, 200)
+    discoverer._url_policy_mode = "enforce"
+
+    fallback_url = (
+        "https://www.google.com/maps/search/?api=1&query="
+        "I-15+Country+Rock+Music+Festival+Mesquite+Regional+Sports+and+Event+Complex"
+    )
+    trip = {
+        "destinations": [
+            {
+                "name": "St. George, Utah",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {
+                    "has_events": True,
+                    "events": [
+                        {
+                            "name": "I-15 Country Rock Music Festival",
+                            "url": fallback_url,
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+
+    discoverer.audit_discovered_urls(trip)
+
+    event = trip["destinations"][0]["cultural_events"]["events"][0]
+    # The policy-blocked google_maps_search class still can't survive as the
+    # primary "url" in enforce mode ...
+    assert "url" not in event
+    # ... but it must survive as maps_url so html_assembler._build_events can
+    # still render a real, clickable link instead of plain unlinked text.
+    assert event.get("maps_url") == fallback_url
 
 
 def test_update_route_distance_skips_live_fetch_when_disabled():

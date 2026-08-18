@@ -2004,6 +2004,55 @@ def test_filter_departure_aligned_drives_moves_matching_one_way_drive_to_getting
     assert moved["_registry"]["ownership_type"] == "transfer_leg"
     assert moved["_registry"]["section_target"] == "getting_there.route_options"
     assert moved["_registry"]["validation_status"] == "accepted"
+    # Real bug (published eval run): this exact drive rendered as a
+    # departure route option labeled "(50 miles one-way)", reusing
+    # en-route-stop detour-style framing for what is actually a full
+    # alternate route for the whole leg, not a side detour off it. The
+    # "one-way" qualifier (a scenic-drive-specific meaning: point-to-point,
+    # not round-trip) must not survive into the route-option label.
+    assert moved["distance_or_duration"] == "~50 mi total route"
+    assert "one-way" not in moved["distance_or_duration"]
+    assert "one way" not in moved["distance_or_duration"]
+
+
+def test_reframe_route_option_distance_label_rewrites_one_way_miles() -> None:
+    g = _gen()
+    assert g._reframe_route_option_distance_label("50 miles one-way") == "~50 mi total route"
+    assert g._reframe_route_option_distance_label("17.5 mi one way") == "~17.5 mi total route"
+    assert g._reframe_route_option_distance_label("44 miles one-way") == "~44 mi total route"
+
+
+def test_reframe_route_option_distance_label_handles_whole_number_with_decimal() -> None:
+    g = _gen()
+    # A ".0" formatted mileage collapses to a clean integer-looking label.
+    assert g._reframe_route_option_distance_label("50.0 miles one-way") == "~50 mi total route"
+
+
+def test_reframe_route_option_distance_label_falls_back_to_stripping_qualifier() -> None:
+    """When the text doesn't cleanly parse as "<number> mi(les) ... one-way"
+    (unexpected AI phrasing), fail safe: strip only the misleading
+    qualifier itself rather than fabricating a rewritten label."""
+    g = _gen()
+    result = g._reframe_route_option_distance_label("scenic byway, one-way")
+    assert "one-way" not in result
+    assert "one way" not in result
+    assert "scenic byway" in result
+
+
+def test_reframe_route_option_distance_label_also_normalizes_non_one_way_mileage() -> None:
+    """The helper doesn't gate on "one-way" being present -- it always
+    normalizes a parseable "<number> mi(les)" into the same honest
+    "~X mi total route" shape. This is harmless in practice: the only real
+    call site (_filter_departure_aligned_drives) only ever invokes it on
+    text already confirmed to contain "one-way" by its own is_one_way gate."""
+    g = _gen()
+    assert g._reframe_route_option_distance_label("32 miles round-trip") == "~32 mi total route"
+
+
+def test_reframe_route_option_distance_label_empty_input() -> None:
+    g = _gen()
+    assert g._reframe_route_option_distance_label("") == ""
+    assert g._reframe_route_option_distance_label(None) == ""
 
 
 def test_filter_high_clearance_drives_removed_when_manifest_declares_no_vehicle() -> None:
