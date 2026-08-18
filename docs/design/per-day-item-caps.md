@@ -1,9 +1,10 @@
-# Per-Day Item Caps (Attractions, Restaurants, En-Route Stops)
+# Per-Day Item Caps (Attractions, Restaurants, En-Route Stops, Scenic Drives)
 
 ## Purpose
 This note documents the uniform "N items per day" ceiling applied to the
-three lists `ai_content.py` normalizes per destination -- `top_attractions`,
-`dinner_recommendations`, and `getting_here.en_route_stops` -- and why it
+lists `ai_content.py` normalizes per destination -- `top_attractions`,
+`dinner_recommendations`, `getting_here.en_route_stops`, and (added in a
+later pass, see "Scenic-Drive Cap" below) `scenic_drives` -- and why it
 exists.
 
 ## Why: cost, not just content quality
@@ -35,6 +36,12 @@ day**, where "day" is the arriving destination's inferred day count
 | Attractions | `_resolve_attraction_target` / `_apply_manifest_attraction_target` | `attractions_per_day` | 4/day |
 | Restaurants | `_resolve_restaurant_target` / `_apply_manifest_restaurant_target` | `restaurants_per_day` | 4/day |
 | En-route stops | `_resolve_enroute_target` / `_apply_manifest_enroute_target` | `en_route_stops_per_day` | 4/day |
+| Scenic drives | `_resolve_scenic_drive_target` / `_apply_manifest_scenic_drive_target` | `scenic_drives_per_day` | **2/day** |
+
+Scenic drives are the exception to the shared 4/day default -- see
+"Scenic-Drive Cap" below for why 2/day and where it's actually applied
+(not in the same `_normalize_destination_content` pipeline as the other
+three).
 
 All three live in `generator/ai_content.py`. The manifest fields mirror
 `attractions_per_day`'s existing pattern exactly: optional, numeric, settable
@@ -158,16 +165,129 @@ every case that was traced:
 
 No changes were made to any of these three functions or their constants.
 
+## Scenic-Drive Cap
+A later same-night pass added a fourth cap, `scenic_drives`, at the
+project owner's explicit request to "cap scenic drives and day trips at
+2/day, if it would meaningfully reduce search calls." This section
+documents the real measurement behind both the "yes, add it" decision and
+the honest caveat about how much it actually saves.
+
+### Measured first: scenic drives ARE a real, structural cost driver
+`url_discovery.py`'s `_discover_scenic_drives` has **no direct-batch
+harvest fallback at all** -- unlike attractions/restaurants/en-route stops
+(each backed by `_get_attraction_direct_batch_rows_for_destination` /
+`_get_restaurant_direct_batch_rows_for_destination` /
+`_get_en_route_direct_batch_rows_for_destination`, a single shared HTML
+harvest fetch per destination that resolves most items with zero
+incremental search cost), every scenic drive always falls through to an
+individual `_search_first` call. The one deterministic shortcut that
+exists (`nps_deterministic_accepted`, an NPS park's own scenic-drive page
+matched without a search) fired **zero times** across all ten real runs
+inspected (`C:\Temp\RoadTripRuns\SW2026-dipstick64` through
+`SW2026-dipstick73`).
+
+Slug-matching each run's `[scenic-drive-...|reason=discovery_completed]`
+decision lines against their corresponding `[search-...|reason=...]`
+outer search-call lines (same dest+item slug) confirmed **100% of scenic
+drives in every run required an individual live search** -- e.g. 21 of 21
+in dipstick73, 20 of 20 in dipstick71/72. Those individual scenic-drive
+searches alone accounted for roughly **14-19% of all outer `_search_first`
+invocations** in a run (e.g. dipstick73: 21 of 110 total outer search
+calls), despite scenic drives being a small item category (2-4 per
+destination). This confirms scenic drives are structurally more
+expensive *per item* to discover than attractions/restaurants -- the
+missing direct-batch fallback, not raw item count, is the real driver.
+
+### Measured second: a 2/day cap's actual yield is modest, because AI generation is destination-scoped, not day-scoped
+`prompts/scenic_drives.txt` itself instructs "Include 2-4 entries per
+destination" -- with no day-count scaling in the prompt at all. Real
+output matches: across all 10 destinations x 10 runs (100
+destination-instances), the generated count was almost always exactly 2,
+occasionally 3-5, and this did not vary by how many days the destination
+lasted (a 3-day Bryce Canyon stay generated the same 2-4 drives as a
+1-day St. George stopover).
+
+Applying the day-scaled `2 * day_count` cap retroactively against all 10
+real runs' actual per-destination counts (day counts from
+`C:\Dev\Sandbox\sw_manifest.yaml`: St. George/Zion/Arches/Canyonlands =
+1 day each -> cap 2; Capitol Reef/Pagosa Springs = 2 days -> cap 4;
+Bryce/Moab/Telluride/Santa Fe = 3 days -> cap 6) found the cap would have
+trimmed **20 of 261 total scenic-drive searches (7.7%)**, averaging **~2
+searches saved per run**. Every single overage happened at a **1-day**
+destination (St. George, Zion, Arches, Canyonlands) where `cap=2` is
+tight; not one multi-day destination ever generated enough drives to hit
+its own (much looser) day-scaled cap, because the AI's 2-4-per-destination
+habit stays flat regardless of stay length. At the run's average
+web_search-call multiplier, ~2 saved outer calls corresponds to roughly
+**1-2% of a run's total paid web_search-call volume** -- real, but not
+close to being a primary lever toward the project owner's <$1 target on
+its own.
+
+### Decision: built anyway, with the yield reported honestly
+Per the investigation's own framing ("is scenic-drive discovery a
+meaningful cost contributor"), the category qualifies -- the missing
+direct-batch fallback makes every scenic drive item structurally
+expensive, and 14-19% of a run's outer search-call volume is not
+negligible. The cap was implemented (mirroring the existing
+`_resolve_*_target`/`_apply_manifest_*_target` pattern exactly, at
+**2/day, half the other three types' 4/day default** per the project
+owner's explicit ask) because it is zero-risk -- it only ever trims a
+destination's scenic-drive list down to a data-driven ceiling that real
+runs already sit at or under in the overwhelming majority of cases, with
+no seed-eviction risk (see below) -- even though its measured yield
+(~2 calls/run, ~1-2% of total search-call volume) is modest rather than
+transformative. The real lever for scenic-drive cost would be adding a
+direct-batch harvest fallback for this category, mirroring attractions/
+restaurants/en-route stops -- a materially larger architectural change,
+out of scope for this pass.
+
+### No seed concept
+Unlike attractions (`dest.seeds`) and en-route stops
+(`dest.en_route_seeds`), scenic drives have no manifest-seed field
+anywhere in `manifest_parser.py`'s schema. `Sandbox/sw_manifest.yaml`'s
+own top-of-file schema notes say so explicitly: "scenic drives: FULLY
+AI-DISCOVERED -- not seeded here." `_apply_manifest_scenic_drive_target`
+accepts a `protected_names` parameter for structural symmetry with the
+other three cap functions, but no caller passes anything into it today.
+
+### Where the cap runs (different from the other three)
+Attractions/restaurants/en-route stops are capped inside
+`_normalize_destination_content`, which processes `destination_content`
+(`dest["ai_content"]`). Scenic drives are generated and attached
+separately -- `dest["scenic_drives"] = bundle["scenic_drives"]` inside
+`generate_destination_content`'s own per-destination closure, not inside
+`_normalize_destination_content` -- so the new cap is applied there
+instead, immediately after the existing markdown-name-scrub call and
+before `discover_all` ever runs. `normalize_trip_content`'s existing
+`_filter_oversized_scenic_drives`/`_filter_departure_aligned_drives`/
+`_deduplicate_cross_destination_scenic_drives` were deliberately left
+alone as the wrong place for a search-cost-saving cap: they run *after*
+`discover_all`, so trimming there only cleans up already-paid-for search
+results, exactly the same "too late to save cost" problem the restaurant/
+schedule-ordering fix (above) solved for restaurants.
+
+### Ranking basis: stable truncation, order-preserving
+`scenic_drives` has no `rating`/`votes`/`must_see` field, like en-route
+stops -- but unlike en-route stops, list order is meaningful by the
+prompt's own convention: `prompts/scenic_drives.txt` instructs "For
+destinations with a well-known named drive ... that drive is always the
+first entry." A stable truncation that preserves existing order (rather
+than a fabricated ranking heuristic) is therefore not just the safe
+default, it directly respects that primacy convention.
+
 ## Key implementation locations
 - Caps and ranking: `generator/ai_content.py`
   (`_resolve_attraction_target`/`_apply_manifest_attraction_target`,
   `_resolve_restaurant_target`/`_apply_manifest_restaurant_target`,
-  `_resolve_enroute_target`/`_apply_manifest_enroute_target`).
+  `_resolve_enroute_target`/`_apply_manifest_enroute_target`,
+  `_resolve_scenic_drive_target`/`_apply_manifest_scenic_drive_target`).
 - Call-site wiring and the restaurant/schedule ordering fix:
-  `_normalize_destination_content` in the same file.
+  `_normalize_destination_content` in the same file. The scenic-drive cap
+  is wired separately, in `generate_destination_content` (see "Where the
+  cap runs" above).
 - Manifest schema fields: `generator/manifest_parser.py`
   (`attractions_per_day`, `restaurants_per_day`, `en_route_stops_per_day`,
-  both at `trip:` and per-destination level).
+  `scenic_drives_per_day`, all at both `trip:` and per-destination level).
 - Tests: `tests/test_ai_content_normalization.py`.
 
 ## Related documents
@@ -178,4 +298,6 @@ No changes were made to any of these three functions or their constants.
   now runs ahead of for both attractions and restaurants.
 - `docs/design/url-discovery-and-audit.md` -- see "Search-Result Cache
   Audit" for the companion cost investigation (search-result caching, not
-  item counts).
+  item counts), and "Predictive No-Verified-URL Skip Investigation" for a
+  related same-night investigation (evaluated, not built) into predicting
+  and skipping searches likely to fail before spending the call.

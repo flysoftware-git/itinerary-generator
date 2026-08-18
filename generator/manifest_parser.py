@@ -78,6 +78,10 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                     "type": "number",
                     "description": "Optional default target number of en-route stops to keep per destination-day (scaled by the ARRIVING destination's day count, not the drive itself) when trimming candidates. Mirrors attractions_per_day.",
                 },
+                "scenic_drives_per_day": {
+                    "type": "number",
+                    "description": "Optional default target number of scenic drives to keep per destination-day when trimming candidates. Mirrors attractions_per_day, but defaults to 2/day (half the others' 4/day) -- scenic drives are typically fewer/bigger commitments, and every one costs an individual live search call (no direct-batch harvest fallback exists for this category).",
+                },
                 "has_high_clearance_vehicle": {
                     "type": "boolean",
                     "description": "Optional traveler vehicle declaration. When explicitly set to "
@@ -159,6 +163,10 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                     "en_route_stops_per_day": {
                         "type": "number",
                         "description": "Optional destination-specific target number of en-route stops to keep per destination-day when trimming candidates. Mirrors attractions_per_day.",
+                    },
+                    "scenic_drives_per_day": {
+                        "type": "number",
+                        "description": "Optional destination-specific target number of scenic drives to keep per destination-day when trimming candidates. Mirrors attractions_per_day, but defaults to 2/day. See trip-level scenic_drives_per_day.",
                     },
                     "lodging": {
                         "type": "object",

@@ -725,6 +725,102 @@ paths (`_verify_url_cached`, page-text/AllTrails fetch, all with their own
 short, independent TTLs) were left untouched -- those exist specifically to
 catch a page going stale/closed, which is not this audit's concern.
 
+## Predictive No-Verified-URL Skip Investigation (evaluated, not built)
+A second same-night cost-reduction question (see
+`docs/design/per-day-item-caps.md` for the companion scenic-drive-cap side
+of the same investigation round): the "verified-link-or-seed policy"
+already removes a non-seed attraction/restaurant/en-route stop from the
+final output when no verified URL survives discovery
+(`no_verified_url_removed`, logged with `message="non-seed item removed:
+no real verified source URL survived discovery/audit"`). That removal
+happens *after* a search call was already spent trying to find it, so it
+improves output quality but saves no cost. The question was whether a
+candidate item's name could be checked *before* ever searching, to predict
+it will end up removed anyway and skip the search call entirely -- reusing
+`_is_category_style_activity`/`_is_ambiguous_geographic_feature_name`
+(existing detectors built for a different, lower-stakes purpose: deciding
+whether a *found-but-generic* URL should be replaced with a maps-search
+fallback), not new heuristic logic.
+
+### Real evidence: 177 unique real failing names across 10 runs
+Every `no_verified_url_removed` line across all ten real console logs with
+this reason code (`C:\Temp\RoadTripRuns\SW2026-dipstick64` through
+`SW2026-dipstick73`) was collected and deduplicated by item name: 308 raw
+occurrences, 177 unique names. Reading the actual names shows most are
+**not** vague/generic -- they're perfectly specific-sounding real places
+that simply didn't corroborate a live, verified URL in that run:
+- Small local restaurants with ordinary specific names: "Whiptail Grill",
+  "MeMe's Cafe", "Bear Paw Cafe", "Rustler's Restaurant", "Ebenezer's Barn
+  and Grill", "Zion Pizza & Noodle Co.", "Sakura". Nothing about reading
+  these names in isolation predicts search failure -- they read exactly
+  like the restaurants that *do* resolve successfully in the same runs.
+- Minor roadside pullouts/overlooks: "Coral Pink Sand Dunes overlook
+  pullout", "Checkerboard Mesa pullout", "Hatch Scenic Pullout", "Boulder
+  Mountain Summit Pullout", "Chama River Gorge Turnout" -- plausibly
+  genuinely obscure, but named with the same "Overlook"/"Pullout" pattern
+  as thousands of real, well-indexed NPS viewpoints.
+- AI-invented composite/combo names stringing two real trail segments
+  together with a connector word: "Navajo Loop and Queens Garden Trail",
+  "Wall Street and Queens Garden Loop Trail", "Sunset Point to Sunrise
+  Point via Rim Trail", "Queen Victoria via Queen's Garden Trail", "Red
+  Canyon Overlook via Canyon Rim Trail" -- the literal combined string
+  rarely matches any single real page's title, even though each named
+  component (Navajo Loop, Queens Garden Trail, Sunset Point, Rim Trail)
+  is independently real and well-documented. This is a genuinely
+  learnable-looking pattern (connector words "and"/"via"/"to ... Loop"),
+  but building a detector for it would be new heuristic logic from
+  scratch -- out of scope per this investigation's own ground rule -- and
+  is not obviously safe either: "Navajo Loop and Queens Garden Trail" is
+  itself a real, commonly-hiked combined route at Bryce Canyon with real
+  dedicated write-ups, so a naive connector-word skip would likely
+  mis-fire on exactly the kind of composite name that *does* resolve.
+
+### Existing detectors cover ~8% of real failures, and even that 8% includes false positives
+Running the actual 169 (name-normalized) unique failing names through both
+existing detectors:
+- `_is_category_style_activity` (checks for "fishing", "stargazing",
+  "kayaking", etc.) flagged exactly **1** name: "Stargazing Programs".
+- `_is_ambiguous_geographic_feature_name` (short name + a bare geographic
+  marker word, with "trail"/"road"/"overlook"/"viewpoint"/"museum"/etc.
+  explicitly *excluded* as "specific enough") flagged **13** names.
+
+Combined, only **14 of 169 (8.3%)** of real failures would have been
+caught -- nowhere near "a meaningful share." Worse, several of those 14
+are false positives that would have wrongly skipped a real, findable
+place: `_is_ambiguous_geographic_feature_name` flagged **"Cliff Palace
+(Mesa Verde)"** (a UNESCO World Heritage cliff-dwelling site inside Mesa
+Verde National Park, with an unambiguous `nps.gov` page -- flagged purely
+because "mesa" is a bare geographic-marker token and the name is short),
+and **"Telluride Mountain Village"** / **"Telluride Mountain Village
+Gondola"** / **"Telluride Mountain Resort"** (all real, well-documented
+places). This is the concrete version of the risk the project owner asked
+to be evaluated honestly: `_is_ambiguous_geographic_feature_name` was
+tuned for a lower-stakes decision (swap a *found* generic URL for a maps
+fallback) where a false positive just means a slightly worse link; reused
+as a pre-search skip gate, the same false positive means a real,
+verifiable place never gets searched for at all.
+
+The bulk of real failures (restaurants, minor pullouts, AI-invented
+composite trail names) have no name-level signal either existing detector
+was built to catch, and inventing new detection for them would be new
+heuristic scoring logic from scratch -- explicitly out of scope for this
+pass.
+
+### Cost math confirms the juice isn't worth the squeeze
+Even setting the false-positive risk aside: each `no_verified_url_removed`
+item costs at most one already-cached-after-first-attempt search (the
+persistent 7-day search-result cache, see above, means a repeat run
+against the same manifest doesn't re-pay for the same failed query). A
+predictive skip saves a small, already-partially-amortized cost while
+risking a real quality regression in the direction this codebase's stated
+design principle (fail-open, prefer real content over pure cost
+optimization) explicitly favors avoiding.
+
+### Conclusion: not built
+No code change was made for this investigation. `_is_category_style_activity`
+and `_is_ambiguous_geographic_feature_name` are unchanged, still used only
+for their original maps-fallback-assignment purpose.
+
 ## Known Failure Modes and Mitigations
 Issue: Valid AllTrails links removed in audit because fetch text is sparse.
 - Mitigation: slug-based retention with soft-404 checks.

@@ -500,6 +500,36 @@ def test_generate_destination_content_strips_markdown_before_url_discovery_would
     assert dest["scenic_drives"][0]["title"] == "Zion Canyon Drive"
 
 
+def test_generate_destination_content_applies_scenic_drive_cap_before_url_discovery_would_see_it() -> None:
+    """Integration-level check that generate_destination_content trims
+    dest['scenic_drives'] to the 2/day cap itself (via
+    _apply_manifest_scenic_drive_target), not just that a later
+    normalize_trip_content pass eventually cleans it up -- URL discovery
+    reads dest['scenic_drives'] before normalize_trip_content ever runs, so
+    an uncapped list here would still cost one live search call per extra
+    drive. A 1-day destination (dates spans a single day) caps at 2."""
+    g = _gen_with_bundle_templates()
+    g._llm = type("MockLLM", (), {"provider": "openai"})()
+    g._max_concurrent_destinations = 5
+    with patch.object(
+        g,
+        "_generate_destination_bundle",
+        return_value={
+            "destination_content": {},
+            "what_to_know": {},
+            "scenic_drives": [{"title": f"Drive {i}"} for i in range(5)],
+        },
+    ):
+        trip = {
+            "trip": {},
+            "destinations": [{"name": "St. George, Utah", "dates": "October 17, 2026"}],
+        }
+        g.generate_destination_content(trip)
+
+    dest = trip["destinations"][0]
+    assert [d["title"] for d in dest["scenic_drives"]] == ["Drive 0", "Drive 1"]
+
+
 def test_resolve_grouping_aware_prev_next_names_skips_day_trip_children() -> None:
     """Regression grounded in the real Sandbox/sw_manifest.yaml shape and a
     real project owner finding: Moab's own schedule's last evening read
@@ -870,6 +900,51 @@ def test_manifest_enroute_target_scales_with_day_count() -> None:
 
     assert len(one_day) == 4
     assert len(three_day) == 10  # capped at min(len(stops), 4*3=12) -> all 10 survive
+
+
+def test_resolve_scenic_drive_target_default_is_two_per_day() -> None:
+    """Half the other three types' 4/day default, per the explicit
+    'cap scenic drives at 2/day' ask -- not a typo."""
+    g = _gen()
+    assert g._resolve_scenic_drive_target({}, {}) == 2
+
+
+def test_resolve_scenic_drive_target_destination_override_wins_over_trip() -> None:
+    g = _gen()
+    assert g._resolve_scenic_drive_target({"scenic_drives_per_day": 1}, {"scenic_drives_per_day": 6}) == 1
+
+
+def test_manifest_scenic_drive_target_preserves_relative_order_when_trimming() -> None:
+    """Scenic drives have no rating/votes/must_see signal to rank on, and
+    the prompt's own convention makes list order meaningful (the
+    well-known named drive is always first) -- trimming must be a stable
+    truncation, not a re-sort."""
+    g = _gen()
+    drives = [{"title": f"Drive {i}"} for i in range(5)]
+
+    out = g._apply_manifest_scenic_drive_target(drives, dates="October 17, 2026", scenic_drives_per_day=2)
+
+    assert [d["title"] for d in out] == ["Drive 0", "Drive 1"]
+
+
+def test_manifest_scenic_drive_target_scales_with_day_count() -> None:
+    g = _gen()
+    drives = [{"title": f"Drive {i}"} for i in range(5)]
+
+    one_day = g._apply_manifest_scenic_drive_target(drives, dates="October 17, 2026", scenic_drives_per_day=2)
+    three_day = g._apply_manifest_scenic_drive_target(drives, dates="October 19-21, 2026", scenic_drives_per_day=2)
+
+    assert len(one_day) == 2
+    assert len(three_day) == 5  # capped at min(len(drives), 2*3=6) -> all 5 survive
+
+
+def test_manifest_scenic_drive_target_no_trim_when_under_cap() -> None:
+    g = _gen()
+    drives = [{"title": "Only Drive"}]
+
+    out = g._apply_manifest_scenic_drive_target(drives, dates="October 17, 2026", scenic_drives_per_day=2)
+
+    assert out == drives
 
 
 def test_normalize_getting_here_applies_enroute_cap_and_preserves_seed() -> None:
