@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from difflib import SequenceMatcher
 import logging
+from math import asin, cos, radians, sqrt
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Any
 import requests
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient, LLMCircuitOpenError
+from generator.multi_site_grouping import group_base_id, is_grouped
 
 logger = logging.getLogger(__name__)
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -34,6 +36,67 @@ _retry_transient_llm_errors = retry(
     wait=wait_exponential(multiplier=2, min=2, max=30),
     retry=retry_if_not_exception_type(_NON_RETRYABLE_LLM_EXCEPTIONS),
 )
+
+
+def _estimate_haversine_route(
+    origin_lat: Any,
+    origin_lng: Any,
+    dest_lat: Any,
+    dest_lng: Any,
+    *,
+    road_factor: float = 1.30,
+    avg_speed_mph: float = 60.0,
+) -> tuple[float | None, str | None]:
+    """Estimate driving distance/time from straight-line (Haversine) coordinates.
+
+    A real validation run (SW2026-dipstick68) showed the AI's own
+    `getting_here.distance_miles`/`drive_time` guess for a grouped day-trip
+    child (Arches National Park, based from Moab) come back as "212 mi" /
+    "30 min" -- internally impossible (424 mph) and wildly wrong versus the
+    real ~7-minute drive. This function recomputes those numbers from real
+    geocoded coordinates instead, for callers with high confidence in both
+    endpoints (see _override_grouped_child_distance_from_geocode below).
+
+    Deliberately duplicates URLDiscoverer._estimate_route_from_haversine's
+    exact formula/convention (generator/url_discovery.py, same 1.30
+    road-distance factor and 60mph average speed already used elsewhere in
+    this codebase for real distance estimates) rather than importing it --
+    a small pure function here is simpler than instantiating a whole
+    URLDiscoverer just for this one calculation.
+    """
+    try:
+        lat1, lng1 = float(origin_lat), float(origin_lng)
+        lat2, lng2 = float(dest_lat), float(dest_lng)
+    except (TypeError, ValueError):
+        return None, None
+    if not (
+        -90.0 <= lat1 <= 90.0
+        and -180.0 <= lng1 <= 180.0
+        and -90.0 <= lat2 <= 90.0
+        and -180.0 <= lng2 <= 180.0
+    ):
+        return None, None
+
+    r = 3958.8
+    dlat = radians(lat2 - lat1)
+    dlng = radians(lng2 - lng1)
+    s1 = radians(lat1)
+    s2 = radians(lat2)
+    h = (0.5 - cos(dlat) / 2.0) + cos(s1) * cos(s2) * (0.5 - cos(dlng) / 2.0)
+    h = min(1.0, max(0.0, h))
+    straight = 2.0 * r * asin(sqrt(h))
+    if straight <= 0.5:
+        return None, None
+
+    driving = straight * road_factor
+    total_hours = driving / avg_speed_mph
+    hrs = int(total_hours)
+    mins = int(round((total_hours - hrs) * 60))
+    if mins == 60:
+        hrs += 1
+        mins = 0
+    time_str = f"{hrs} hr {mins} min" if (hrs and mins) else (f"{hrs} hr" if hrs else f"{mins} min")
+    return round(driving), time_str
 
 
 class AIContentGenerator:
@@ -378,6 +441,7 @@ class AIContentGenerator:
         so that both what_to_know and cultural_events data are available.
         """
         self._enforce_banned_marketing_language(trip)
+        self._override_grouped_child_distance_from_geocode(trip)
         self._deduplicate_cross_section_tips(trip)
         self._deduplicate_cross_destination_what_to_know(trip)
         self._filter_oversized_scenic_drives(trip)
@@ -1150,6 +1214,51 @@ class AIContentGenerator:
         if not out.get("route_summary") and out.get("drive_time"):
             out["route_summary"] = f"Arrival leg into {dest_name} typically takes about {out.get('drive_time')}."
         return out
+
+    def _override_grouped_child_distance_from_geocode(self, trip: dict[str, Any]) -> None:
+        """Replace a grouped child's AI-guessed getting_here distance/time
+        with a value computed from real geocoded coordinates.
+
+        Real dipstick68 run: Arches National Park (a GH #68 grouped child,
+        `group_with: moab`) rendered distance_miles=212 / drive_time="30 min"
+        -- physically impossible (424 mph) and nowhere close to the real
+        ~7-minute drive from its Moab base. The AI is asked to estimate
+        these numbers itself (prompts/destination_content.txt) and can
+        simply guess wrong even when the destination-name context is
+        correct. Grouped children are the one case where we have very high
+        confidence in both endpoints of the leg (a real, geocoded base and
+        a real, geocoded day-trip site, per the manifest's `group_with`),
+        so recompute rather than trust the guess there.
+
+        Deliberately scoped to grouped children only, not every
+        destination's getting_here leg: the AI's distance estimate has
+        only been observed to be unreliable for this specific short
+        day-trip case so far. Whether the same unreliability holds for
+        ordinary multi-day-destination legs is an open question and a
+        candidate follow-up, not something to change on a single data
+        point.
+        """
+        destinations = trip.get("destinations", []) or []
+        dest_by_id = {
+            d.get("id"): d for d in destinations if isinstance(d, dict) and d.get("id")
+        }
+        for dest in destinations:
+            if not isinstance(dest, dict) or not is_grouped(dest):
+                continue
+            base = dest_by_id.get(group_base_id(dest))
+            if not isinstance(base, dict):
+                continue
+            ai_content = dest.get("ai_content")
+            getting_here = ai_content.get("getting_here") if isinstance(ai_content, dict) else None
+            if not isinstance(getting_here, dict):
+                continue
+            miles, time_str = _estimate_haversine_route(
+                base.get("lat"), base.get("lng"), dest.get("lat"), dest.get("lng"),
+            )
+            if miles is None or time_str is None:
+                continue
+            getting_here["distance_miles"] = miles
+            getting_here["drive_time"] = time_str
 
     def _normalize_environment(self, environment: Any, dates: str, dest: dict[str, Any]) -> Any:
         if not isinstance(environment, dict):
