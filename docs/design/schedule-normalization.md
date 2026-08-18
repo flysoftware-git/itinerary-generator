@@ -217,6 +217,35 @@ one real caveat and one decorative gap:
   matters (arrival activities happen before checkin anyway, e.g. lunch, a
   short walk), but nothing enforces it.
 
+**Update, 2026-08-18 — implausible "morning" activity claim on arrival day
+fixed, real SW2026-dipstick69 regression.** `morning_already_arrival_aware`
+(the guard that decides whether to overwrite the AI's own Morning text with
+the deterministic "Travel from X...arrival around Y" phrase) only checked
+for the *presence* of arrival language (arrive/drive/route/etc.) in the
+AI's text, then trusted that text completely once found — it never checked
+whether the same sentence also claims a specific, time-sensitive activity
+the actual computed arrival time contradicts. Real observed text, Bryce
+Canyon National Park Day 1 (arrival day from Zion, 135 min / 2 hr 15 min
+drive): "Arrive at Bryce Canyon National Park and check in to your
+lodging. After settling in, head to Sunrise Point for morning views of the
+canyon." Computed arrival (10:00 AM default day start + 135 min drive) is
+12:15 PM — already past noon, so "morning views" immediately after
+arriving and settling in is not physically possible; project owner's
+review flagged exactly this class of error (GH #16, physical-reality
+scheduling model). Fixed: when `morning_already_arrival_aware` is true
+*and* the text also names "morning" combined with an activity verb (head
+to/visit/watch/enjoy/hike/tour/see/views, etc.) *and* the computed arrival
+time falls past a late-morning cutoff (11:00 AM), only the false
+time-of-day phrase is stripped (e.g. "morning views" → "views") and an
+honest arrival-time note is appended — the real attraction mention and the
+AI's own arrival/check-in narration are left intact, mirroring the
+existing `_is_heavy_activity_block` correction pattern a few lines above
+rather than reverting to generic filler. Verified by
+`tests/test_ai_content_normalization.py::test_inject_travel_realism_corrects_implausible_morning_activity_claim_on_arrival_day`.
+This is a narrow language-correctness fix for one specific phrasing
+pattern, not a resolution of the broader Case 1/3 gaps above (pipeline
+ordering, `checkin_time` still decorative) — those remain open.
+
 ### Case 4 — Multi-day destination, departure day (not the trip's last day)
 
 **Inputs available today:** `next_destination` name only
@@ -720,6 +749,27 @@ v2.1 activity-budget behavior:
 	day of that same multi-day stay. If too few not-yet-used attractions
 	remain to build a real block (fewer than two), that day's Afternoon is
 	left as-is rather than forcing a repeat.
+- **Cross-day dedup guard, whole-schedule follow-up (fixed 2026-08-18,
+	real SW2026-dipstick69 regression).** The guard above only closed the
+	gap for names the packer picked *itself* -- `used_multi_activity_names`
+	only ever gained an entry via the `used_multi_activity_names.update(...)`
+	call inside `_build_multi_activity_afternoon_summary`. A name mentioned
+	by raw AI-authored prose for a period the packer never touches (most
+	commonly Evening -- Morning and Evening are deliberately not packed, see
+	below) was invisible to it. Real observed text, Bryce Canyon National
+	Park: Day 1 Evening read "Watch the sunset from Natural Bridge,
+	experiencing the changing colors of the canyon...", then Day 2 Afternoon
+	read "Consider one or more of the following, within about 1h 30m:
+	Natural Bridge (30m), Inspiration Point (30m), Bryce Point (30m)..." --
+	the same attraction named twice on different days of the same stay.
+	Fixed with `_register_attraction_mentions`, called for Day 1 before the
+	Day 2+ packing loop starts and again for each day right after it is
+	packed: it scans every period's summary text (not just the ones the
+	packer itself set) for any known attraction name and adds matches into
+	the same shared `used_multi_activity_names` set, so a name spoken for
+	anywhere on an earlier day -- packed or raw prose -- is excluded from
+	every later day's pack. Verified by
+	`tests/test_ai_content_normalization.py::test_inject_travel_realism_dipstick69_evening_attraction_not_repeated_in_later_day_afternoon_pack`.
 - **One major destination per block guard** (fixed -- same dipstick62 report:
 	"Moab Giants Dinosaur Park (1h 30m), Canyonlands National Park (1h 30m),
 	Arches National Park (1h 30m)" packed into a single time block, ignoring
