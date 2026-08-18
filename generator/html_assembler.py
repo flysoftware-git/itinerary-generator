@@ -284,7 +284,21 @@ class HTMLAssembler:
                 "time_label": dep_time,
             })
 
+        # GH #68: a grouped day-trip child (e.g. Arches/Canyonlands under
+        # Moab) shares its base's own lodging location, so it renders on
+        # this overview map as a marker sitting right on top of -- or a
+        # few pixels from -- its base's own marker. Project owner: "I don't
+        # want the overview map to contain Daytrips, as that doesn't
+        # render well." The nav menu already excludes grouped children for
+        # the same reason (see _build_nav_tabs) -- apply the identical
+        # exclusion here so the two stay consistent, and number the
+        # surviving markers by their own position (not skipping indices),
+        # matching the _build_nav_tabs numbering fix.
+        marker_number = 0
         for i, d in enumerate(destinations):
+            if group_base_id(d):
+                continue
+            marker_number += 1
             dates = d.get("dates", "")
             # Extract month abbrev and start day from e.g. "October 7-9, 2026"
             mo_match = re.match(r'([A-Za-z]+)\s+(\d+)', dates)
@@ -297,8 +311,8 @@ class HTMLAssembler:
                     "mo": mo,
                     "dy": dy,
                     "name": short,
-                    "idx": i + 1,
-                    "stop_index": i + 1,
+                    "idx": marker_number,
+                    "stop_index": marker_number,
                 }
             )
 

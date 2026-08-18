@@ -310,6 +310,44 @@ def test_build_map_markers_includes_sequential_stop_indices() -> None:
     assert markers[-1]["time_label"] == "5:15 PM"
 
 
+def test_build_map_markers_excludes_grouped_day_trip_children() -> None:
+    """Project owner: "I don't want the overview map to contain Daytrips,
+    as that doesn't render well" -- a grouped day-trip child shares its
+    base's own lodging coordinates, so it rendered as a marker sitting on
+    top of (or a few pixels from) its base's own marker. Mirrors the same
+    exclusion _build_nav_tabs already applies for the nav menu, including
+    renumbering the surviving markers sequentially rather than skipping
+    the excluded ones' indices."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [
+        {"id": "moab", "name": "Moab", "dates": "August 1-4, 2026", "lat": 38.57, "lng": -109.55},
+        {
+            "id": "arches",
+            "name": "Arches National Park",
+            "dates": "August 2, 2026",
+            "lat": 38.73,
+            "lng": -109.59,
+            "group_with": "moab",
+        },
+        {
+            "id": "canyonlands",
+            "name": "Canyonlands National Park",
+            "dates": "August 3, 2026",
+            "lat": 38.46,
+            "lng": -109.82,
+            "group_with": "moab",
+        },
+        {"id": "telluride", "name": "Telluride", "dates": "August 5-6, 2026", "lat": 37.94, "lng": -107.81},
+    ]
+
+    markers = assembler._build_map_markers(destinations, {})
+    dest_markers = [m for m in markers if "idx" in m]
+
+    assert [m["name"] for m in dest_markers] == ["Moab", "Telluride"]
+    assert [m["idx"] for m in dest_markers] == [1, 2]
+    assert [m["stop_index"] for m in dest_markers] == [1, 2]
+
+
 def test_build_map_markers_falls_back_for_return_when_return_coords_missing() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     destinations = [
