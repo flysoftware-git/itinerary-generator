@@ -1845,6 +1845,70 @@ def test_normalize_getting_here_returns_normalized_dict() -> None:
     assert "Arrival leg into Moab" in out.get("route_summary", "")
 
 
+def test_override_grouped_child_distance_from_geocode_fixes_impossible_ai_guess() -> None:
+    """Real dipstick68 regression: Arches National Park (group_with: moab)
+    rendered distance_miles=212 / drive_time="30 min" from the AI's own
+    getting_here guess -- physically impossible (424 mph) and nowhere close
+    to the real ~7-minute drive from Moab. Real geocoded coordinates from
+    that run's console log (Moab lat=38.5738 lng=-109.5462, Arches
+    lat=38.7265 lng=-109.5630) should produce a small, sane distance/time
+    instead once the override runs."""
+    g = _gen()
+    trip = {
+        "destinations": [
+            {
+                "id": "moab",
+                "name": "Moab",
+                "lat": 38.5738,
+                "lng": -109.5462,
+                "ai_content": {"getting_here": {"distance_miles": 5, "drive_time": "10 min"}},
+            },
+            {
+                "id": "arches",
+                "name": "Arches National Park",
+                "group_with": "moab",
+                "lat": 38.7265,
+                "lng": -109.5630,
+                "ai_content": {
+                    "getting_here": {
+                        "distance_miles": 212,
+                        "drive_time": "30 min",
+                        "route_summary": "Take US-191 N from Moab.",
+                    }
+                },
+            },
+        ]
+    }
+
+    g._override_grouped_child_distance_from_geocode(trip)
+
+    arches_gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert arches_gh["distance_miles"] != 212
+    assert arches_gh["drive_time"] != "30 min"
+    assert arches_gh["distance_miles"] < 20
+    assert "hr" not in arches_gh["drive_time"]  # under an hour, minutes-only string
+    # route_summary (real prose, not a derived number) is left untouched.
+    assert arches_gh["route_summary"] == "Take US-191 N from Moab."
+    # The base entry itself is never a grouped child -- its own numbers
+    # (however implausible) are out of scope for this override.
+    moab_gh = trip["destinations"][0]["ai_content"]["getting_here"]
+    assert moab_gh["distance_miles"] == 5
+    assert moab_gh["drive_time"] == "10 min"
+
+
+def test_estimate_haversine_route_moab_to_arches_is_a_few_miles_under_15_minutes() -> None:
+    """Direct check of the pure Haversine helper against the exact real
+    coordinates from the dipstick68 run, independent of the trip-level
+    override wiring above."""
+    from generator.ai_content import _estimate_haversine_route
+
+    miles, time_str = _estimate_haversine_route(38.5738, -109.5462, 38.7265, -109.5630)
+
+    assert miles is not None and time_str is not None
+    assert 1 <= miles <= 20
+    assert time_str == "14 min"
+
+
 def test_normalize_restaurants_filters_chain_and_fast_food() -> None:
     g = _gen()
     restaurants = [
