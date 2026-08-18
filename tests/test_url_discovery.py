@@ -8157,6 +8157,247 @@ def test_audit_validates_authoritative_en_route_stop_url():
     assert stops == []
 
 
+def test_item_has_verified_route_geocode_requires_waypoint_eligible_and_coords():
+    """Unit coverage for the helper backing the en-route-stop geocode bar.
+
+    Only the exact combination `_prune_en_route_stops_by_geometry` produces
+    -- `route_waypoint_eligible is True` together with numeric
+    `geocode_lat`/`geocode_lng` -- counts. Anything short of that (missing
+    flag, False flag, missing/non-numeric coordinates) must not count, since
+    those states mean geocoding never resolved a route-plausible point at
+    all (see `_prune_en_route_stops_by_geometry`'s early-return branches,
+    which set `route_waypoint_eligible = False` without ever touching
+    `geocode_lat`/`geocode_lng`).
+    """
+    verified = {
+        "name": "Corona Arch",
+        "route_waypoint_eligible": True,
+        "geocode_lat": 38.6136,
+        "geocode_lng": -109.6890,
+    }
+    assert URLDiscoverer._item_has_verified_route_geocode(verified) is True
+
+    missing_flag = {"name": "Corona Arch", "geocode_lat": 38.6136, "geocode_lng": -109.6890}
+    assert URLDiscoverer._item_has_verified_route_geocode(missing_flag) is False
+
+    ineligible = {
+        "name": "Corona Arch",
+        "route_waypoint_eligible": False,
+        "geocode_lat": 38.6136,
+        "geocode_lng": -109.6890,
+    }
+    assert URLDiscoverer._item_has_verified_route_geocode(ineligible) is False
+
+    no_coords = {"name": "Corona Arch", "route_waypoint_eligible": True}
+    assert URLDiscoverer._item_has_verified_route_geocode(no_coords) is False
+
+    non_numeric_coords = {
+        "name": "Corona Arch",
+        "route_waypoint_eligible": True,
+        "geocode_lat": None,
+        "geocode_lng": None,
+    }
+    assert URLDiscoverer._item_has_verified_route_geocode(non_numeric_coords) is False
+
+
+def test_audit_keeps_en_route_stop_with_verified_route_geocode_despite_no_url():
+    """Regression grounded in real SW2026-dipstick67 removals.
+
+    Under the strict verified-link-or-seed policy, a production run removed
+    68 of 77 en-route stops (~88%) trip-wide -- a wildly disproportionate
+    rate next to attractions (~37%) and restaurants (~8%). Manual
+    spot-checks of the removed names (this test uses "Corona Arch" and
+    "Dead Horse Point State Park Overlook", both real dipstick67 Canyonlands
+    en-route-stop removals) confirmed they are real, correctly located
+    places -- Nominatim geocodes them cleanly, and the pipeline had already
+    computed and vetted that same geocode via
+    `_prune_en_route_stops_by_geometry` (`route_waypoint_eligible=True`,
+    `geocode_lat`/`geocode_lng` set) before the stricter URL-only bar threw
+    that evidence away and deleted the stop.
+
+    A stop carrying that already-verified geocode must survive audit even
+    with no source URL at all -- distinct from (and not weaker than) a
+    generic maps-search fallback, since a real Nominatim resolution
+    filtered through route-geometry plausibility checks is independent,
+    externally checkable evidence the place exists at this specific
+    location, not just a best-guess query string.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    trip = {
+        "destinations": [
+            {
+                "id": "canyonlands",
+                "name": "Canyonlands National Park",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {
+                        "en_route_stops": [
+                            {
+                                "name": "Corona Arch",
+                                "description": "A dramatic freestanding sandstone arch just off the highway.",
+                                "route_waypoint_eligible": True,
+                                "geocode_lat": 38.6136,
+                                "geocode_lng": -109.6890,
+                            },
+                            {
+                                "name": "Dead Horse Point State Park Overlook",
+                                "description": "Sweeping canyon-rim overlook near the highway turnoff.",
+                                "route_waypoint_eligible": True,
+                                "geocode_lat": 38.4838,
+                                "geocode_lng": -109.7379,
+                            },
+                        ]
+                    },
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_retain_discovered_url", return_value=""):
+            discoverer.audit_discovered_urls(trip)
+
+    stops = trip["destinations"][0]["ai_content"]["getting_here"]["en_route_stops"]
+    kept_names = {stop["name"] for stop in stops}
+    assert kept_names == {"Corona Arch", "Dead Horse Point State Park Overlook"}
+    # No removal should have been recorded in the registry for either stop.
+    removed_names = {
+        decision["display_name"]
+        for decision in trip["destinations"][0].get("_registry_decisions", [])
+        if decision.get("rejection_reasons") == ["no_verified_url_removed"]
+    }
+    assert removed_names == set()
+
+
+def test_audit_still_removes_en_route_stop_without_geocode_or_url():
+    """Companion to the geocode-keep regression above: a non-seed en-route
+    stop with no source URL AND no verified route geocode (the ordinary
+    "we truly have no evidence" case -- e.g. geocoding never ran, or
+    genuinely found nothing plausible) must still be removed under the
+    verified-link-or-seed policy. The new geocode bar is additive, not a
+    blanket loosening of en-route-stop verification.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    trip = {
+        "destinations": [
+            {
+                "id": "canyonlands",
+                "name": "Canyonlands National Park",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {
+                        "en_route_stops": [
+                            {
+                                "name": "Some Unresolved Stop",
+                                "description": "No geocode, no url.",
+                            }
+                        ]
+                    },
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_retain_discovered_url", return_value=""):
+            discoverer.audit_discovered_urls(trip)
+
+    stops = trip["destinations"][0]["ai_content"]["getting_here"]["en_route_stops"]
+    assert stops == []
+
+
+def test_audit_attraction_with_route_geocode_like_fields_still_removed_without_url():
+    """The new geocode-based bar is en-route-stop-specific (passed via
+    `extra_verified` only at the en-route-stops call site in
+    `audit_discovered_urls`). An attraction is never given that override,
+    so even if it happened to carry the same-shaped
+    `route_waypoint_eligible`/`geocode_lat`/`geocode_lng` fields (which
+    nothing in the attraction pipeline actually sets -- this is a defensive
+    check, not a realistic data shape), it must still be removed when it
+    has no seed status and no verified URL. Attractions keep the strict
+    real-page-or-seed bar untouched.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._max_trail_miles = 0
+
+    trip = {
+        "destinations": [
+            {
+                "id": "canyonlands",
+                "name": "Canyonlands National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Mesa Arch",
+                            "type": "attraction",
+                            "description": "A short, easy walk to a famous arch overlook.",
+                            "route_waypoint_eligible": True,
+                            "geocode_lat": 38.3897,
+                            "geocode_lng": -109.8683,
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    assert trip["destinations"][0]["ai_content"]["top_attractions"] == []
+
+
+def test_audit_restaurant_with_route_geocode_like_fields_still_removed_without_url():
+    """Same isolation check as the attraction test above, for restaurants:
+    restaurants have no seed concept and no `extra_verified` override at
+    their `audit_discovered_urls` call site, so geocode-shaped fields (not
+    something the restaurant pipeline actually sets) must not grant a pass.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+
+    trip = {
+        "destinations": [
+            {
+                "id": "moab",
+                "name": "Moab",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [
+                        {
+                            "name": "Some Cafe",
+                            "description": "A local spot.",
+                            "route_waypoint_eligible": True,
+                            "geocode_lat": 38.5733,
+                            "geocode_lng": -109.5498,
+                        }
+                    ],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_is_restaurant_ineligible", return_value=False):
+            discoverer.audit_discovered_urls(trip)
+
+    assert trip["destinations"][0]["ai_content"]["dinner_recommendations"] == []
+
+
 def test_retain_discovered_url_rejects_incomplete_google_maps_place_link():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
 

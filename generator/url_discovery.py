@@ -2378,6 +2378,8 @@ class URLDiscoverer:
                     entity_class="en_route_stop",
                     kind="en_route_stop",
                     dest_name=dest_name,
+                    extra_verified=self._item_has_verified_route_geocode(stop),
+                    extra_verified_reason="en_route_geocode_verified_kept",
                 ):
                     eligible_stops.append(stop)
             gh_block = ai.get("getting_here", {})
@@ -3633,6 +3635,58 @@ class URLDiscoverer:
             "google_maps_dir",
         }
 
+    @staticmethod
+    def _item_has_verified_route_geocode(item: dict[str, Any]) -> bool:
+        """True when an en-route stop carries a real, route-plausible geocode.
+
+        `route_waypoint_eligible` and `geocode_lat`/`geocode_lng` are set in
+        exactly one place, `_prune_en_route_stops_by_geometry`, and only
+        together: a Nominatim lookup for the stop's own name -- biased
+        toward the actual route's viewbox, and sanity-checked against the
+        route itself when the match fell outside it -- resolved to a real
+        coordinate that then also passed route-geometry plausibility (not
+        beyond the destination, not off in the wrong direction; a
+        same-named place resolving far outside the route is tracked
+        separately as `en_route_geometry_filtered_wrong_region` and never
+        reaches this state). That is real, independent, externally
+        checkable evidence that a place by this name exists at a specific
+        location plausibly on this route -- distinct from, and not gated
+        on, any dedicated web page existing for it.
+
+        This matters specifically for en-route stops because many genuine
+        ones (roadside pull-offs, scenic turnouts, historic markers) never
+        have their own page anywhere on the internet, unlike a destination
+        attraction (NPS/park page) or restaurant (own site/Yelp/
+        TripAdvisor). A source-page-only verification bar removes those
+        wholesale even when they are real, correctly located places: a
+        dipstick67 production run under the verified-link-or-seed policy
+        removed 68 of 77 en-route stops (~88%) trip-wide, against a 37%
+        removal rate for attractions and 8% for restaurants -- and manual
+        spot-checks of the removed names (Cliff Palace at Mesa Verde,
+        Corona Arch, Dead Horse Point State Park Overlook, Checkerboard
+        Mesa, Little Wild Horse Canyon Trailhead, Edge of the Cedars State
+        Park Museum) showed real official pages exist for several of them
+        (some even harvested by direct-batch and then rejected by a
+        separate liveness/retention check -- a recall gap, not an absence
+        of a page) while all of them geocode cleanly to their real,
+        correct, route-plausible location.
+
+        Reusing `route_waypoint_eligible` -- the same flag this codebase
+        already trusts for route-ordering and Google Maps waypoint
+        decisions -- means this isn't a new, untested verification signal;
+        it only recognizes evidence already computed and already vetted
+        for exactly this purpose upstream, instead of discarding it and
+        replacing it with a coin flip on whether a URL happened to survive
+        the harvest/retention pipeline separately.
+        """
+        if not isinstance(item, dict):
+            return False
+        if item.get("route_waypoint_eligible") is not True:
+            return False
+        lat = item.get("geocode_lat")
+        lng = item.get("geocode_lng")
+        return isinstance(lat, (int, float)) and isinstance(lng, (int, float))
+
     def _keep_item_if_verified_or_seed(
         self,
         dest: dict[str, Any],
@@ -3644,6 +3698,8 @@ class URLDiscoverer:
         entity_class: str,
         kind: str,
         dest_name: str,
+        extra_verified: bool = False,
+        extra_verified_reason: str = "",
     ) -> bool:
         """Decide whether `item` stays in its section's list.
 
@@ -3658,10 +3714,29 @@ class URLDiscoverer:
         failure -- silently dropping a traveler's own request would be a
         worse UX failure than showing it honestly-unverified.
 
+        `extra_verified` is an opt-in, section-specific override for a
+        caller that has its own distinct, real (non-URL) verification
+        signal -- currently only en-route stops, via
+        `_item_has_verified_route_geocode` -- so attractions and
+        restaurants are entirely unaffected and keep the strict
+        real-page-or-seed bar.
+
         Returns True (keep) or False (drop, after logging the removal for
         registry/audit visibility).
         """
         if is_seed or self._item_has_verified_url(item):
+            return True
+        if extra_verified:
+            self._log_decision(
+                kind=kind,
+                dest_name=dest_name,
+                item_name=item_name,
+                reason=extra_verified_reason or "extra_verification_kept",
+                message=(
+                    "non-seed item kept: no source URL, but verified by an "
+                    "alternate section-specific bar"
+                ),
+            )
             return True
         self._log_decision(
             kind=kind,
