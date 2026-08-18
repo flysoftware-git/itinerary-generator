@@ -65,8 +65,10 @@ DEFAULT_PRICING_USD_PER_1M: dict[str, dict[str, float]] = {
     # of silent-cost bug found for claude-sonnet-5 and grok-4-fast earlier
     # this session, now a third time from the identical root cause (a new
     # model used before its pricing entry existed). Web search's separate
-    # $10-per-1000-calls fee is NOT included here -- same known gap as
-    # Claude's untracked search fee; UsageTracker has no field for it yet.
+    # $10-per-1000-calls fee is NOT part of this per-token table (it's a
+    # platform-level fee, not a model-level rate) -- it's now tracked
+    # separately via DEFAULT_TOOL_CALL_PRICING_USD_PER_1000 below and folded
+    # into UsageTracker.add()'s total, fixed 2026-08-17.
     "openai:gpt-4.1-mini": {"input": 0.40, "output": 1.60},
     "deepseek:deepseek-chat": {"input": 0.27, "output": 1.10},
     "deepseek:deepseek-reasoner": {"input": 0.55, "output": 2.19},
@@ -100,12 +102,43 @@ DEFAULT_PRICING_USD_PER_1M: dict[str, dict[str, float]] = {
     # Anthropic console: ~9.15M input / ~327K output tokens in one day) looked
     # like "pennies" internally right up until the account ran out of credit.
     # Not yet included here: web search's separate $10-per-1000-searches
-    # charge (on top of token costs) -- UsageTracker has no field for
-    # server_tool_use search counts yet, a real but smaller (~14% of
-    # reconstructed spend) remaining gap.
+    # charge (on top of token costs) -- claude_search.py's ClaudeSearch
+    # class doesn't pass a tool-call count into UsageTracker.add() yet
+    # (unlike grok_search.py/openai_search.py, fixed 2026-08-17; see
+    # DEFAULT_TOOL_CALL_PRICING_USD_PER_1000 above), a real but smaller
+    # (~14% of reconstructed spend) remaining gap. Live verification of
+    # Anthropic's usage.server_tool_use.web_search_requests field name was
+    # blocked by the same exhausted-account-credit issue documented in
+    # docs/design/search-provider-capability-probe.md §4.1/§9 -- confirm
+    # against a real response before wiring this one up.
     "anthropic:claude-sonnet-5": {"input": 2.00, "output": 10.00},
     "gemini:gemini-1.5-pro": {"input": 3.50, "output": 10.50},
     "gemini:gemini-1.5-flash": {"input": 0.35, "output": 1.05},
+}
+
+# Both xAI and OpenAI bill their server-side web_search tool SEPARATELY from
+# token usage, per actual invocation -- not per logical /v1/responses call. A
+# single call that runs an agentic search loop can fire web_search multiple
+# times internally (confirmed live 2026-08-17: a single Grok /v1/responses
+# call returned usage.server_side_tool_usage_details.web_search_calls == 2 for
+# one query that needed two search rounds), each billed separately. This is
+# keyed by provider, not by model, because the fee is a platform-level tool
+# charge, not a per-model token rate -- confirmed against both providers'
+# pricing docs, which price web_search identically across every model on that
+# platform.
+#   xAI:    $5.00 per 1,000 web_search calls (docs.x.ai/developers/pricing).
+#   OpenAI: $10.00 per 1,000 web_search calls (community/docs-confirmed). The
+#           retrieved search content is ALSO billed as extra input tokens on
+#           the next turn for multi-round agentic loops -- that part is
+#           already captured by the ordinary input_tokens count this tracker
+#           records, so it is not double-counted here.
+# Before this table existed, UsageTracker had no field for tool-invocation
+# counts at all -- every dipstick run's own [LLM-COST] summary silently
+# omitted this real cost component, which is why real xAI billing (~$5/day)
+# ran well above what this app's own estimator reported (~$0.40/run).
+DEFAULT_TOOL_CALL_PRICING_USD_PER_1000: dict[str, float] = {
+    "grok": 5.00,
+    "openai": 10.00,
 }
 
 
@@ -118,11 +151,18 @@ class UsageRecord:
     completion_tokens: int
     total_tokens: int
     estimated_cost_usd: float
+    tool_calls: int = 0
+    tool_call_cost_usd: float = 0.0
 
 
 class UsageTracker:
-    def __init__(self, pricing_map: dict[str, dict[str, float]] | None = None) -> None:
+    def __init__(
+        self,
+        pricing_map: dict[str, dict[str, float]] | None = None,
+        tool_call_pricing_map: dict[str, float] | None = None,
+    ) -> None:
         self._pricing = pricing_map or DEFAULT_PRICING_USD_PER_1M
+        self._tool_call_pricing = tool_call_pricing_map or DEFAULT_TOOL_CALL_PRICING_USD_PER_1000
         self._records: list[UsageRecord] = []
         self._lock = threading.Lock()
 
@@ -133,9 +173,12 @@ class UsageTracker:
         operation: str,
         prompt_tokens: int,
         completion_tokens: int,
+        tool_calls: int = 0,
     ) -> None:
         total_tokens = int(prompt_tokens) + int(completion_tokens)
-        estimated = self._estimate_cost(provider, model, int(prompt_tokens), int(completion_tokens))
+        token_cost = self._estimate_cost(provider, model, int(prompt_tokens), int(completion_tokens))
+        tool_call_cost = self._estimate_tool_call_cost(provider, int(tool_calls))
+        estimated = round(token_cost + tool_call_cost, 6)
         record = UsageRecord(
             provider=provider,
             model=model,
@@ -144,6 +187,8 @@ class UsageTracker:
             completion_tokens=int(completion_tokens),
             total_tokens=total_tokens,
             estimated_cost_usd=estimated,
+            tool_calls=int(tool_calls),
+            tool_call_cost_usd=tool_call_cost,
         )
         with self._lock:
             self._records.append(record)
@@ -171,6 +216,14 @@ class UsageTracker:
         out_cost = (out_tokens / 1_000_000) * prices.get("output", 0.0)
         return round(in_cost + out_cost, 6)
 
+    def _estimate_tool_call_cost(self, provider: str, tool_calls: int) -> float:
+        if tool_calls <= 0:
+            return 0.0
+        price_per_1000 = self._tool_call_pricing.get(provider)
+        if not price_per_1000:
+            return 0.0
+        return round((tool_calls / 1000) * price_per_1000, 6)
+
     def summary(self) -> dict[str, Any]:
         by_model: dict[str, dict[str, Any]] = {}
         for rec in self._records:
@@ -184,6 +237,8 @@ class UsageTracker:
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
                     "total_tokens": 0,
+                    "tool_calls": 0,
+                    "tool_call_cost_usd": 0.0,
                     "estimated_cost_usd": 0.0,
                 },
             )
@@ -191,14 +246,18 @@ class UsageTracker:
             bucket["prompt_tokens"] += rec.prompt_tokens
             bucket["completion_tokens"] += rec.completion_tokens
             bucket["total_tokens"] += rec.total_tokens
+            bucket["tool_calls"] += rec.tool_calls
+            bucket["tool_call_cost_usd"] = round(bucket["tool_call_cost_usd"] + rec.tool_call_cost_usd, 6)
             bucket["estimated_cost_usd"] = round(bucket["estimated_cost_usd"] + rec.estimated_cost_usd, 6)
 
         rows = sorted(by_model.values(), key=lambda x: x["estimated_cost_usd"], reverse=True)
         total = round(sum(x["estimated_cost_usd"] for x in rows), 6)
+        total_tool_call_cost = round(sum(x["tool_call_cost_usd"] for x in rows), 6)
         return {
             "models": rows,
             "total_calls": len(self._records),
             "total_estimated_cost_usd": total,
+            "total_tool_call_cost_usd": total_tool_call_cost,
             "records": [
                 {
                     "provider": r.provider,
@@ -207,6 +266,8 @@ class UsageTracker:
                     "prompt_tokens": r.prompt_tokens,
                     "completion_tokens": r.completion_tokens,
                     "total_tokens": r.total_tokens,
+                    "tool_calls": r.tool_calls,
+                    "tool_call_cost_usd": r.tool_call_cost_usd,
                     "estimated_cost_usd": r.estimated_cost_usd,
                 }
                 for r in self._records

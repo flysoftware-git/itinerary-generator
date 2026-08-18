@@ -7,20 +7,31 @@ import requests
 from generator.openai_search import OpenAiCircuitOpenError, OpenAiSearch, _extract_json_object
 
 
-def _responses_stream_lines(text: str, *, usage: dict | None = None) -> list[str]:
+def _responses_stream_lines(
+    text: str, *, usage: dict | None = None, web_search_calls: int = 0
+) -> list[str]:
     """SSE lines matching the real /v1/responses streaming shape (confirmed
     2026-08-15 via a raw probe of api.openai.com -- identical event types to
-    xAI's own /v1/responses, since xAI's was modeled on this shape)."""
+    xAI's own /v1/responses, since xAI's was modeled on this shape).
+
+    ``web_search_calls`` inserts that many "response.web_search_call.completed"
+    events -- confirmed live 2026-08-17 that OpenAI's "usage" object carries
+    no aggregate web_search invocation count (unlike xAI's
+    server_side_tool_usage_details.web_search_calls), so each invocation's own
+    completed event is what OpenAiSearch actually counts."""
     import json as _json
-    return [
+    lines = [
         'data: {"type": "response.created"}',
         'data: {"type": "response.output_item.added"}',
-        "data: " + _json.dumps({"type": "response.output_text.delta", "delta": text}),
-        "data: " + _json.dumps({
-            "type": "response.completed",
-            "response": {"usage": usage or {"input_tokens": 100, "output_tokens": 50}},
-        }),
     ]
+    for _ in range(web_search_calls):
+        lines.append('data: {"type": "response.web_search_call.completed"}')
+    lines.append("data: " + _json.dumps({"type": "response.output_text.delta", "delta": text}))
+    lines.append("data: " + _json.dumps({
+        "type": "response.completed",
+        "response": {"usage": usage or {"input_tokens": 100, "output_tokens": 50}},
+    }))
+    return lines
 
 
 def _make_streaming_response(lines: list[str]) -> MagicMock:
@@ -138,6 +149,32 @@ def test_chat_completion_tracks_usage_with_responses_token_fields():
     tracker.add.assert_called_once()
     assert tracker.add.call_args.kwargs["prompt_tokens"] == 100
     assert tracker.add.call_args.kwargs["completion_tokens"] == 50
+    assert tracker.add.call_args.kwargs["provider"] == "openai"
+    assert tracker.add.call_args.kwargs["tool_calls"] == 0
+
+
+def test_chat_completion_tracks_web_search_call_count_from_completed_events() -> None:
+    """OpenAI bills web_search separately from tokens ($10/1000 calls) and,
+    unlike xAI, exposes no aggregate count in its "usage" object (confirmed
+    live 2026-08-17) -- OpenAiSearch must instead count each
+    "response.web_search_call.completed" SSE event as it streams by. A real
+    2-round agentic search fires that event once per round, so this asserts
+    the count is passed through to UsageTracker.add() as tool_calls, not
+    silently dropped the way it was before this fix (the exact real-cost gap
+    behind the user's ~$5/day-vs-~$0.40/run discrepancy)."""
+    tracker = MagicMock()
+    oa = OpenAiSearch(api_key="test", model="test", usage_tracker=tracker)
+    fake_response = _make_streaming_response(
+        _responses_stream_lines("<ul></ul>", web_search_calls=2)
+    )
+    session = MagicMock()
+    session.post.return_value = fake_response
+    oa._get_session = MagicMock(return_value=session)  # type: ignore[method-assign]
+
+    oa.chat_completion(system_prompt="sys", user_prompt="u", live_search=True)
+
+    tracker.add.assert_called_once()
+    assert tracker.add.call_args.kwargs["tool_calls"] == 2
     assert tracker.add.call_args.kwargs["provider"] == "openai"
 
 

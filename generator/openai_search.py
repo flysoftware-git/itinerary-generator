@@ -210,18 +210,21 @@ class OpenAiSearch:
             logger.warning("OpenAI search error for %r: %s", query[:60], exc)
             return []
 
-    def _record_responses_usage(self, usage: dict[str, Any], *, operation_suffix: str) -> None:
+    def _record_responses_usage(
+        self, usage: dict[str, Any], *, operation_suffix: str, web_search_calls: int = 0
+    ) -> None:
         if not (self._usage_tracker and isinstance(usage, dict)):
             return
         prompt_tokens = int(usage.get("input_tokens", 0) or 0)
         completion_tokens = int(usage.get("output_tokens", 0) or 0)
-        if prompt_tokens or completion_tokens:
+        if prompt_tokens or completion_tokens or web_search_calls:
             self._usage_tracker.add(
                 provider="openai",
                 model=self._model,
                 operation=f"{self._usage_operation_prefix}:{operation_suffix}",
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                tool_calls=int(web_search_calls),
             )
 
     def chat_completion(
@@ -257,8 +260,10 @@ class OpenAiSearch:
         if response_format is not None:
             payload["text"] = {"format": response_format}
         try:
-            content, usage = self._post_responses_streaming_with_retries(payload, user_prompt)
-            self._record_responses_usage(usage, operation_suffix="chat_completion_search")
+            content, usage, web_search_calls = self._post_responses_streaming_with_retries(payload, user_prompt)
+            self._record_responses_usage(
+                usage, operation_suffix="chat_completion_search", web_search_calls=web_search_calls
+            )
             return content
         except requests.RequestException as exc:
             self._log_request_exception(user_prompt, exc)
@@ -297,8 +302,8 @@ class OpenAiSearch:
                 "input": f"{system_prompt}\n\n{query}",
                 "tools": [{"type": "web_search"}],
             }
-            content, usage = self._post_responses_streaming_with_retries(payload, query)
-            self._record_responses_usage(usage, operation_suffix="search")
+            content, usage, web_search_calls = self._post_responses_streaming_with_retries(payload, query)
+            self._record_responses_usage(usage, operation_suffix="search", web_search_calls=web_search_calls)
 
             parsed = _extract_json_object(content)
             results = parsed.get("results", [])
@@ -490,12 +495,25 @@ class OpenAiSearch:
 
     def _post_responses_streaming_with_retries(
         self, payload: dict[str, Any], query: str
-    ) -> tuple[str, dict[str, Any]]:
+    ) -> tuple[str, dict[str, Any], int]:
         """Stream a /v1/responses call and accumulate the final output text
-        + usage from its SSE events. Identical structure to
-        GrokSearch._post_responses_streaming_with_retries -- see that
-        method's docstring for why streaming (not a plain blocking POST) is
-        required for this endpoint shape."""
+        + usage + web_search tool-call count from its SSE events. Identical
+        structure to GrokSearch._post_responses_streaming_with_retries -- see
+        that method's docstring for why streaming (not a plain blocking POST)
+        is required for this endpoint shape.
+
+        Unlike xAI, OpenAI's "usage" object carries no aggregate web_search
+        invocation count (confirmed live 2026-08-17: its usage keys are only
+        input_tokens/input_tokens_details/output_tokens/output_tokens_details/
+        total_tokens -- no server_side_tool_usage_details field). Each
+        invocation instead surfaces as its own "response.web_search_call.
+        completed" SSE event (one per call; a live 2-round Grok search on the
+        same endpoint shape fired exactly two of the analogous events, so
+        counting them is equivalent to reading xAI's own aggregate count) --
+        counted here rather than parsed out of the final output array so a
+        truncated/retried stream still yields an accurate count of whatever
+        actually completed.
+        """
         payload = dict(payload)
         payload["stream"] = True
         is_probe = self._circuit_breaker_check()
@@ -504,6 +522,7 @@ class OpenAiSearch:
         for attempt in range(1, max_attempts + 1):
             text_parts: list[str] = []
             usage: dict[str, Any] = {}
+            web_search_calls = 0
             deadline = time.monotonic() + self._stream_total_timeout
             try:
                 with _OPENAI_SEMAPHORE:
@@ -540,6 +559,8 @@ class OpenAiSearch:
                     etype = evt.get("type", "")
                     if etype == "response.output_text.delta":
                         text_parts.append(str(evt.get("delta", "") or ""))
+                    elif etype == "response.web_search_call.completed":
+                        web_search_calls += 1
                     elif etype == "response.completed":
                         usage = (evt.get("response", {}) or {}).get("usage", {}) or {}
                         break
@@ -547,7 +568,7 @@ class OpenAiSearch:
                         err = (evt.get("response", {}) or {}).get("error") or etype
                         raise RuntimeError(f"OpenAI streaming response ended with {etype}: {err}")
                 self._record_circuit_breaker_outcome(transient_failure=False, is_probe=is_probe)
-                return "".join(text_parts), usage
+                return "".join(text_parts), usage, web_search_calls
             except requests.RequestException as exc:
                 last_exc = exc
                 is_transient = self._is_transient_request_error(exc)
