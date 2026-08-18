@@ -692,7 +692,7 @@ Options:
   --output PATH            Output directory [default: output/]
   --config PATH            Config YAML [default: config.yaml]
   --llm-provider TEXT      Override LLM provider for this run
-  --environment TEXT       Optional environment folder override (dev/test/prod)
+  --environment TEXT       Optional environment folder override (dev/eval/prod)
   --env-file PATH          Optional .env file loaded before env resolution
   --llm-model TEXT         Override LLM model for this run
   --log-level TEXT         Console logging threshold (`debug|info|warning|error|critical`)

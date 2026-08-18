@@ -1619,12 +1619,20 @@ def _build_development_build_info(*, repo_root: Path, run_id: str, build_tag: st
 
 
 def _write_development_build_info(output_dir: Path, build_info: dict[str, Any]) -> tuple[Path, Path]:
-    dev_dir = output_dir / "dev"
-    dev_dir.mkdir(parents=True, exist_ok=True)
+    # Previously nested these under output_dir / "dev" -- a leftover generic
+    # "development artifacts" label unrelated to the --environment flag, but
+    # colliding with it: an `--environment dev` run already nests output_dir
+    # under its own "dev" segment (see the CLI's output_dir construction),
+    # so build_info ended up at a confusing, doubled ".../dev/dev/..." path,
+    # and the same unrelated "dev" segment appeared even under --environment
+    # prod/eval (".../prod/dev/build_info.json"). Every other output file
+    # (index.html, validation_report.json, ...) already lives directly in
+    # output_dir with no such nesting -- match that.
+    output_dir.mkdir(parents=True, exist_ok=True)
     run_id = str(build_info.get("run_id", "") or "")
 
-    per_run_path = dev_dir / f"build_info.{run_id or 'unknown'}.json"
-    latest_path = dev_dir / "build_info.latest.json"
+    per_run_path = output_dir / f"build_info.{run_id or 'unknown'}.json"
+    latest_path = output_dir / "build_info.latest.json"
 
     payload = json.dumps(build_info, indent=2, ensure_ascii=False)
     per_run_path.write_text(payload, encoding="utf-8")
@@ -1643,8 +1651,8 @@ def _write_development_build_info(output_dir: Path, build_info: dict[str, Any]) 
 )
 @click.option(
     "--environment",
-    type=click.Choice(["dev", "test", "prod"], case_sensitive=False),
-    help="Environment override (dev/test/prod). Optional.",
+    type=click.Choice(["dev", "eval", "prod"], case_sensitive=False),
+    help="Environment override (dev/eval/prod). Optional.",
 )
 @click.option(
     "--env-file",
