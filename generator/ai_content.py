@@ -277,7 +277,22 @@ class AIContentGenerator:
             # what geocoding/matching would otherwise operate on.
             self._scrub_markdown_name_wrapping_in_place(dest["ai_content"])
             self._scrub_markdown_name_wrapping_in_place(dest["scenic_drives"])
-            logger.debug(f"  Set scenic_drives for {dest['name']}: {len(bundle['scenic_drives'])} drives")
+            # Cost-reduction pass (see docs/design/per-day-item-caps.md): cap
+            # scenic drives BEFORE URL discovery ever runs, same rationale as
+            # the attraction/restaurant/en-route-stop caps -- url_discovery.py
+            # never decides how many scenic drives to go search for, it only
+            # searches whatever this hands it, and (unlike those three types)
+            # scenic drives have no direct-batch harvest fallback at all: every
+            # single one always costs an individual live search call. Must run
+            # here, in generate_destination_content, not in normalize_trip_content's
+            # _filter_oversized_scenic_drives -- that runs AFTER discover_all,
+            # too late to save any search cost.
+            dest["scenic_drives"] = self._apply_manifest_scenic_drive_target(
+                dest["scenic_drives"],
+                dates=dest.get("dates", ""),
+                scenic_drives_per_day=self._resolve_scenic_drive_target(dest, trip["trip"]),
+            )
+            logger.debug(f"  Set scenic_drives for {dest['name']}: {len(dest['scenic_drives'])} drives")
 
         with ThreadPoolExecutor(max_workers=self._llm_stage_max_workers(len(destinations))) as pool:
             futures = [pool.submit(_one, (i, d)) for i, d in enumerate(destinations)]
@@ -1433,6 +1448,96 @@ class AIContentGenerator:
         target = max(1, int(en_route_stops_per_day) * day_count)
         if len(stops) <= target:
             return stops
+
+        selected = list(protected_items)
+        selected.extend(remaining[: max(0, target - len(selected))])
+        return selected
+
+    def _resolve_scenic_drive_target(self, dest: dict[str, Any], trip_meta: dict[str, Any]) -> int:
+        """Scenic-drive counterpart to `_resolve_attraction_target`/
+        `_resolve_restaurant_target`/`_resolve_enroute_target` -- same
+        manifest-config precedence (destination override wins over trip
+        default, both optional) -- but a default of **2**/day, not 4. Per
+        the project owner's explicit "cap scenic drives at 2/day" ask: this
+        is intentionally HALF the other three types' default, not a typo,
+        since scenic drives are typically fewer/bigger commitments than
+        attractions. See docs/design/per-day-item-caps.md for the real-run
+        measurement behind this cap (dipstick64-73 run-console.log analysis).
+        """
+        default_target = 2
+        trip_value = trip_meta.get("scenic_drives_per_day") if isinstance(trip_meta, dict) else None
+        dest_value = dest.get("scenic_drives_per_day") if isinstance(dest, dict) else None
+        candidate = dest_value if dest_value is not None else trip_value
+        try:
+            parsed = int(candidate)
+        except (TypeError, ValueError):
+            parsed = default_target
+        if parsed < 1:
+            parsed = default_target
+        return parsed
+
+    def _apply_manifest_scenic_drive_target(
+        self,
+        drives: list[dict[str, Any]],
+        *,
+        dates: str,
+        scenic_drives_per_day: int,
+        protected_names: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Scenic-drive counterpart to `_apply_manifest_enroute_target`: same
+        day-count-aware target formula (`scenic_drives_per_day * day_count`,
+        1-5 days via `_infer_day_count`) and the same stable-truncation
+        approach for a list with no quality signal to rank on.
+
+        No seed concept: unlike attractions (`dest.seeds`) and en-route
+        stops (`dest.en_route_seeds`), scenic drives have no manifest-seed
+        field anywhere in `manifest_parser.py`'s schema -- the manifest's
+        own top-of-file schema notes say so explicitly ("scenic drives:
+        FULLY AI-DISCOVERED -- not seeded here", `Sandbox/sw_manifest.yaml`).
+        `protected_names` is accepted only for structural symmetry with the
+        other three per-day-cap functions (so a future manifest field could
+        plug in without a signature change); no caller passes anything today,
+        so it is always empty in practice.
+
+        Ranking basis: `prompts/scenic_drives.txt`'s `scenic_drives` schema
+        has no `rating`/`votes`/`must_see` field, exactly like en-route
+        stops -- but unlike en-route stops, list ORDER here is meaningful by
+        the prompt's own instruction ("For destinations with a well-known
+        named drive ... that drive is always the first entry"). A stable
+        truncation that preserves existing order (rather than a fabricated
+        heuristic sort) is therefore not just the safe default, it's the
+        only choice that respects the prompt's own primacy convention.
+        """
+        if not isinstance(drives, list):
+            return []
+        if not drives:
+            return []
+
+        protected = {
+            self._canonical_seed_name(str(name or ""))
+            for name in (protected_names or [])
+            if self._canonical_seed_name(str(name or ""))
+        }
+
+        if protected:
+            protected_items = [
+                item for item in drives
+                if isinstance(item, dict)
+                and self._canonical_seed_name(str(item.get("title", "") or "")) in protected
+            ]
+            remaining = [
+                item for item in drives
+                if isinstance(item, dict)
+                and self._canonical_seed_name(str(item.get("title", "") or "")) not in protected
+            ]
+        else:
+            protected_items = []
+            remaining = [item for item in drives if isinstance(item, dict)]
+
+        day_count = max(1, self._infer_day_count(dates))
+        target = max(1, int(scenic_drives_per_day) * day_count)
+        if len(drives) <= target:
+            return drives
 
         selected = list(protected_items)
         selected.extend(remaining[: max(0, target - len(selected))])
