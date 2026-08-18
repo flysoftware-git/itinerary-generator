@@ -449,6 +449,40 @@ hyperlinked to a page describing a 5.3-mile route.
 	`_alltrails_slug_matches_item` rather than only in the seed-relaxed path,
 	since every one of its ~10 call sites shares the same false-positive risk.
 
+Issue (Dipstick69/70): the direct-batch row-matched leniency paths (both the
+restaurant-specific "item-matched authoritative direct-batch URL" block and
+the shared attraction/en-route-stop/restaurant "row-matched" block in
+`_retain_discovered_url`) accept a candidate URL once its search-result row
+matches the item, without ever checking where the URL actually resolves. Real
+example: the en-route stop "Poshuouinge Pueblo Ruins" (Santa Fe leg, via
+Pagosa Springs) was linked to
+`fs.usda.gov/recarea/carson/recarea/?recid=44248` -- a URL whose
+distinguishing `?recid=` query param made it look item-specific, so it
+cleared `_is_generic_section_landing_page`'s pure URL-string check. Live
+verification (2026-08-18) confirmed this exact URL 301-redirects to
+`fs.usda.gov/r03/carson/recreation`, a generic Carson National Forest
+recreation hub page with zero mentions of "Poshuouinge" anywhere in its body.
+Notably, that final path's own last segment ("recreation") isn't in
+`_is_generic_section_landing_page`'s `generic_sections` set either, so simply
+re-running that existing URL-string heuristic against the final URL would not
+have caught this specific case -- redirect targets need a content-relevance
+check, not just a second URL-shape check.
+- Mitigation: `_redirect_target_lacks_item_relevance` looks up the URL in
+	`_fetch_final_url_cache` (already populated by `_fetch_page_text` whenever a
+	fetch follows a redirect -- see `_fetch_page_text_uncached`) after the row-
+	matched leniency's own fetch has run. If the final URL differs from the
+	original, it is checked two ways: (1) the same URL-string heuristic used
+	elsewhere (`_is_generic_section_landing_page` for
+	attraction/en-route-stop/generic kinds, `_is_generic_restaurant_landing_url`
+	for restaurants), and (2) whenever fetch text is available, whether the
+	item's own significant tokens actually appear in it
+	(`_text_matches_item_tokens`) -- this second check is what catches the
+	Poshuouinge case, since the URL-shape heuristic alone does not. Either
+	signal being generic/absent rejects the candidate. A redirect by itself is
+	not disqualifying -- only a redirect landing somewhere that neither looks
+	nor reads as item-specific is. Wired into both leniency call sites in
+	`_retain_discovered_url` (search `_redirect_target_lacks_item_relevance`).
+
 ## Must-See Badge Policy
 The "Must-See" badge is a deterministic, render-time decision -- not the
 LLM's opinion. The model still emits a `must_see` boolean per attraction
