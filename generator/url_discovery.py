@@ -2497,6 +2497,7 @@ class URLDiscoverer:
                     allow_alltrails=trail_like,
                     kind="attraction",
                     is_seed=is_seed,
+                    item_description=str(attr.get("description", "") or ""),
                 )
                 if cleaned != url:
                     self._log_rejected_url("attraction", dest_name, attr_name, url)
@@ -2741,6 +2742,7 @@ class URLDiscoverer:
                     dest_name,
                     allow_alltrails=False,
                     kind="scenic drive",
+                    item_description=str(drive.get("description", "") or ""),
                 )
                 # PR-004: reject drive URL when it duplicates an attraction URL
                 if cleaned and cleaned in attraction_urls:
@@ -2837,6 +2839,7 @@ class URLDiscoverer:
         allow_shallow_relevance: bool = False,
         allow_google_maps_search: bool = False,
         is_seed: bool = False,
+        item_description: str = "",
     ) -> str:
         if not url:
             return ""
@@ -3198,7 +3201,10 @@ class URLDiscoverer:
                     return url
 
             deep_check = not allow_shallow_relevance
-            if not self._is_relevant_result(url, item_name, dest_name, candidate=candidate, deep_check=deep_check):
+            if not self._is_relevant_result(
+                url, item_name, dest_name, candidate=candidate, deep_check=deep_check,
+                item_description=item_description,
+            ):
                 return ""
 
         policy_class = self._classify_url_policy_class(url)
@@ -11812,6 +11818,7 @@ class URLDiscoverer:
         dest_name: str,
         candidate: dict[str, Any] | None = None,
         deep_check: bool = True,
+        item_description: str = "",
     ) -> bool:
         """Lightweight relevance gate: avoid live but useless links."""
         if self._is_obviously_generic_url(url.lower()):
@@ -11965,6 +11972,30 @@ class URLDiscoverer:
                 return True
             if dest_tokens and not any(t in text for t in dest_tokens[:2]):
                 return False
+            # Real bug (Bryce Canyon eval run): "Scenic Drive Overlooks" (an
+            # attraction name built entirely from generic route/content
+            # vocabulary -- "scenic"/"drive" are already excluded by
+            # _significant_tokens as generic descriptors, leaving only
+            # "overlook[s]", itself a member of GENERIC_VIEWPOINT_SUFFIX_TOKENS)
+            # matched nps.gov's hoodoo-geology explainer page: any Bryce
+            # Canyon page mentioning "overlook" once (the single-token
+            # relevance bar, _required_general_token_matches(1) == 1) plus the
+            # destination name trivially clears the checks above, even though
+            # the page is about a completely different topic (how hoodoos
+            # form, not the scenic drive/auto-tour the item actually names).
+            # When the item's own display name carries no real distinguishing
+            # identity -- every significant token is a generic viewpoint/
+            # overlook descriptor -- the only remaining source of real
+            # specificity is the item's own AI-written description (e.g.
+            # "18-mile auto tour with multiple pullouts for hoodoo viewing").
+            # Require some overlap with that description too, so a same-park
+            # page about an unrelated topic can no longer pass on destination
+            # + a single generic word alone.
+            name_tokens_are_weak = not item_tokens or set(item_tokens) <= GENERIC_VIEWPOINT_SUFFIX_TOKENS
+            if name_tokens_are_weak:
+                desc_tokens = self._significant_tokens(item_description)
+                if desc_tokens and not self._text_matches_item_tokens(text, desc_tokens):
+                    return False
             return True
         except Exception:
             return False

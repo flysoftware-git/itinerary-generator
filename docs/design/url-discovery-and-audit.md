@@ -117,6 +117,44 @@ Non-AllTrails relevance:
 - On a successful fetch: requires item-token match in content, and requires
   some destination-token presence in content.
 
+Weakly-named item gate (description-overlap requirement): real bug from a
+published eval run -- Bryce Canyon's "Scenic Drive Overlooks" attraction
+(description: "18-mile auto tour with multiple pullouts for hoodoo viewing")
+linked to `nps.gov/brca/learn/nature/hoodoos.htm`, a page about hoodoo
+*geology/formation*, not the scenic drive or its overlooks. Root cause: once
+`_significant_tokens` strips "scenic"/"drive" as generic route descriptors
+(same reasoning as `"scenic"`/`"byway"` already documented above), the only
+token left in "Scenic Drive Overlooks" is `overlook` (`overlooks` after
+canonicalization) -- itself a member of `GENERIC_VIEWPOINT_SUFFIX_TOKENS`
+(`{"overlook", "view", "viewpoint", "vista"}`, already used elsewhere in this
+file to strip non-distinguishing suffix words from harvest-row matching), not
+a real identifying word. A single remaining token drops the required overlap
+to `_required_general_token_matches(1) == 1`, trivially satisfied by any
+same-park page that happens to mention "overlook" once plus the destination
+name -- content topic never enters into it.
+
+Fix: `_is_relevant_result` (and `_retain_discovered_url`, which calls it) now
+accepts an optional `item_description` parameter. When the item's own
+significant-token set is empty or entirely contained in
+`GENERIC_VIEWPOINT_SUFFIX_TOKENS` (`name_tokens_are_weak`), the item's
+AI-written description -- the only remaining source of real specificity --
+must also have token overlap with the fetched page text (same
+`_text_matches_item_tokens` helper, same overlap-count threshold). A
+same-park page about a genuinely different topic can no longer pass on
+destination-name-plus-one-generic-word alone. Threaded through for
+attractions and scenic drives in `audit_discovered_urls` (`item_description=
+attr.get("description", "")` / `drive.get("description", "")`); other call
+sites that don't pass `item_description` (default `""`) are unaffected --
+`desc_tokens` is then empty and the new check is skipped entirely, preserving
+today's exact behavior for every existing caller.
+
+Tests:
+`test_relevant_result_rejects_wrong_topic_page_for_generically_named_attraction`,
+`test_relevant_result_accepts_generically_named_attraction_with_matching_description`,
+`test_relevant_result_weak_name_gate_is_noop_without_description`, and
+`test_audit_discovered_urls_rejects_wrong_topic_link_for_scenic_drive_overlooks`
+(`tests/test_url_discovery.py`).
+
 ## Audit Behavior
 `audit_discovered_urls` re-validates all discovered links and may remove them.
 

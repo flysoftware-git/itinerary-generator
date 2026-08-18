@@ -7241,6 +7241,53 @@ def test_audit_demotes_long_trail_when_over_miles_threshold() -> None:
     assert attractions == []
 
 
+def test_audit_discovered_urls_rejects_wrong_topic_link_for_scenic_drive_overlooks() -> None:
+    """End-to-end regression for the real Bryce Canyon eval bug: the
+    "Scenic Drive Overlooks" attraction linked to nps.gov's hoodoo-geology
+    page instead of a page about the drive itself. Confirms
+    audit_discovered_urls actually threads the item's own description
+    through to the relevance gate (item_description=attr.get("description")),
+    not just that _is_relevant_result behaves correctly when called directly."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.verify_url.return_value = (True, 200)
+
+    trip = {
+        "destinations": [
+            {
+                "id": "bryce",
+                "name": "Bryce Canyon National Park",
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Scenic Drive Overlooks",
+                            "description": "18-mile auto tour with multiple pullouts for hoodoo viewing.",
+                            "url": "https://www.nps.gov/brca/learn/nature/hoodoos.htm",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+    page_text = (
+        "Hoodoos - Bryce Canyon National Park. The formation of Bryce Canyon "
+        "and its hoodoos requires 3 steps: deposition of rocks, uplift of the "
+        "land, and weathering and erosion."
+    )
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_text)):
+            discoverer.audit_discovered_urls(trip)
+
+    # Non-seed attraction with no verified link left after rejection is
+    # pruned entirely, matching the established verified-link-or-seed policy.
+    assert trip["destinations"][0]["ai_content"]["top_attractions"] == []
+
+
 def test_audit_demotion_strips_hike_badge_fields_not_just_type_and_url() -> None:
     """Regression for dipstick58: "Peek-a-boo Loop" and "Fairyland Loop" (Bryce
     Canyon, real run data) were correctly demoted -- url stripped, type flipped
@@ -9717,6 +9764,79 @@ def test_alltrails_relevance_does_not_reject_generic_marketing_phrase_only():
 
     url = "https://www.alltrails.com/trail/us/utah/angels-landing-trail"
     assert discoverer._is_relevant_result(url, "Angel's Landing", "Zion National Park")
+
+
+def test_relevant_result_rejects_wrong_topic_page_for_generically_named_attraction():
+    """Real bug (Bryce Canyon eval run): the attraction "Scenic Drive
+    Overlooks" (description: "18-mile auto tour with multiple pullouts for
+    hoodoo viewing") linked to nps.gov's hoodoo-GEOLOGY explainer page
+    instead of a page about the drive/overlooks itself. Root cause: after
+    _significant_tokens strips "scenic"/"drive" as generic route
+    descriptors, the only token left is "overlook[s]" -- itself a member of
+    GENERIC_VIEWPOINT_SUFFIX_TOKENS, not a real distinguishing identifier --
+    so the single-token relevance bar (_required_general_token_matches(1) ==
+    1) was trivially satisfied by any same-park page mentioning "overlook"
+    once. This mocked page text mirrors the real hoodoos.htm content: it
+    covers geology/formation, not the drive/auto-tour/pullouts the item's
+    own description actually promises, so the new description-overlap
+    requirement for weakly-named items must reject it."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "Hoodoos - Bryce Canyon National Park. The formation of Bryce Canyon "
+        "and its hoodoos requires 3 steps: deposition of rocks, uplift of the "
+        "land, and weathering and erosion. Many overlook the role of frost "
+        "wedging in shaping these unique rock spires over thousands of years."
+    )
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_text)):
+        ok = discoverer._is_relevant_result(
+            "https://www.nps.gov/brca/learn/nature/hoodoos.htm",
+            "Scenic Drive Overlooks",
+            "Bryce Canyon National Park",
+            item_description="18-mile auto tour with multiple pullouts for hoodoo viewing.",
+        )
+
+    assert ok is False
+
+
+def test_relevant_result_accepts_generically_named_attraction_with_matching_description():
+    """Same weakly-named item as above, but this time the candidate page
+    genuinely is about the drive/auto-tour/pullouts the description
+    promises -- the new description-overlap check must not reject a real,
+    on-topic match."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = (
+        "Southern Scenic Drive Viewpoints - Bryce Canyon National Park. The "
+        "18 mile main park road offers multiple pullouts and overlooks for "
+        "a scenic auto tour, with viewing areas along the drive."
+    )
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_text)):
+        ok = discoverer._is_relevant_result(
+            "https://www.nps.gov/brca/planyourvisit/southern-scenic-drive-viewpoints.htm",
+            "Scenic Drive Overlooks",
+            "Bryce Canyon National Park",
+            item_description="18-mile auto tour with multiple pullouts for hoodoo viewing.",
+        )
+
+    assert ok is True
+
+
+def test_relevant_result_weak_name_gate_is_noop_without_description():
+    """When no item_description is available (most call sites today), the
+    weak-name gate must not change behavior at all -- preserves today's
+    exact single-token-match leniency for callers that don't pass one."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    page_text = "Hoodoos - Bryce Canyon National Park. Many overlook the geology here."
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, page_text)):
+        ok = discoverer._is_relevant_result(
+            "https://www.nps.gov/brca/learn/nature/hoodoos.htm",
+            "Scenic Drive Overlooks",
+            "Bryce Canyon National Park",
+        )
+
+    assert ok is True
 
 
 def test_search_strict_rejects_wrong_but_live_alltrails_trail_page():
