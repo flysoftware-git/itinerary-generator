@@ -210,6 +210,68 @@ class AIContentGenerator:
             keyword in name for keyword in AIContentGenerator._EVENING_UNSUITABLE_VENUE_KEYWORDS
         )
 
+    @staticmethod
+    def _parse_duration_minutes(raw: str) -> int:
+        """Parse an attraction's own free-text `duration` field into minutes.
+
+        Grounded against real duration badge strings observed in production
+        output (`badge-duration` spans, e.g. C:\\Users\\...\\eval\\index.html):
+        "1-2 hours", "4\u20138 hrs round-trip", "1.5\u20132 hrs round-trip", "30 min",
+        "1 hr", "2\u20133 hrs" -- both hyphen and en-dash range separators, both
+        "hr(s)"/"hour(s)" and "m"/"min(s)"/"minute(s)" units, plain single
+        values, and ranges (averaged to the midpoint) all appear in real
+        data, so all are handled rather than assuming one canonical format.
+        """
+        text = str(raw or "").lower().strip()
+        if not text:
+            return 0
+        total = 0
+        found = False
+
+        hr_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)", text)
+        if hr_match:
+            total += int(round(float(hr_match.group(1)) * 60))
+            found = True
+
+        min_match = re.search(r"(\d+)\s*(?:m|min|mins|minute|minutes)", text)
+        if min_match:
+            total += int(min_match.group(1))
+            found = True
+
+        range_match = re.search(r"(\d+(?:\.\d+)?)\s*[-\u2013]\s*(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)", text)
+        if range_match:
+            low = float(range_match.group(1))
+            high = float(range_match.group(2))
+            total = int(round(((low + high) / 2.0) * 60))
+            found = True
+
+        if found:
+            return max(0, total)
+
+        bare_hours = re.search(r"\b(\d+(?:\.\d+)?)\b", text)
+        if bare_hours:
+            return int(round(float(bare_hours.group(1)) * 60))
+
+        return 0
+
+    # An Evening slot realistically runs from roughly dinner time to a
+    # traveler's own bedtime -- not the multi-hour window Morning/Afternoon
+    # have. 3 hours is a generous cutoff for "still fine to START in the
+    # evening" (a sunset viewpoint, a short walk, dinner-adjacent stroll);
+    # above that, an attraction is a genuine multi-hour undertaking that
+    # shouldn't be framed as an evening pick. Real example that motivated
+    # this: a previous run's Evening period suggested "The Narrows" (Zion),
+    # whose own duration badge reads "4\u20138 hrs round-trip" -- physically
+    # not something to start after dinner.
+    _EVENING_MAX_ACTIVITY_MINUTES = 180
+
+    @staticmethod
+    def _is_evening_unsuitable_duration(attraction: dict[str, Any]) -> bool:
+        duration_minutes = AIContentGenerator._parse_duration_minutes(
+            str(attraction.get("duration", "") or "")
+        )
+        return duration_minutes > AIContentGenerator._EVENING_MAX_ACTIVITY_MINUTES
+
     def __init__(
         self,
         config_path: Path | str = "config.yaml",
@@ -2036,38 +2098,11 @@ class AIContentGenerator:
                 hour12 = 12
             return f"{hour12}:{minute:02d} {suffix}"
 
-        def _parse_duration_minutes(raw: str) -> int:
-            text = str(raw or "").lower().strip()
-            if not text:
-                return 0
-            total = 0
-            found = False
-
-            hr_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)", text)
-            if hr_match:
-                total += int(round(float(hr_match.group(1)) * 60))
-                found = True
-
-            min_match = re.search(r"(\d+)\s*(?:m|min|mins|minute|minutes)", text)
-            if min_match:
-                total += int(min_match.group(1))
-                found = True
-
-            range_match = re.search(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)", text)
-            if range_match:
-                low = float(range_match.group(1))
-                high = float(range_match.group(2))
-                total = int(round(((low + high) / 2.0) * 60))
-                found = True
-
-            if found:
-                return max(0, total)
-
-            bare_hours = re.search(r"\b(\d+(?:\.\d+)?)\b", text)
-            if bare_hours:
-                return int(round(float(bare_hours.group(1)) * 60))
-
-            return 0
+        # Promoted to a static method (AIContentGenerator._parse_duration_minutes)
+        # so both the Evening duration-unsuitability check below and other
+        # callers outside this closure's scope share one implementation
+        # instead of two copies drifting apart.
+        _parse_duration_minutes = self._parse_duration_minutes
 
         def _parse_hours_limit(value: Any, fallback_hours: float = 5.0) -> int:
             try:
@@ -2699,11 +2734,33 @@ class AIContentGenerator:
         # strips the specific sentence mentioning a name-recognizable
         # closes-early venue rather than trying to validate Evening content
         # generally.
+        #
+        # Also excludes an attraction whose own `duration` field (e.g.
+        # "4-8 hours", "1-2 hrs round-trip", "30 min" -- see
+        # _parse_duration_minutes) is a genuine multi-hour undertaking
+        # (> _EVENING_MAX_ACTIVITY_MINUTES): nothing upstream of this point
+        # checks a candidate's stated duration against the period it's being
+        # slotted into before naming it in an Evening summary (rotation only
+        # matches by name, never consults duration; the Afternoon multi-
+        # activity packer does check duration against its own budget, but
+        # Evening is deliberately never packed -- see the "Deliberately not
+        # extended" note in docs/design/schedule-normalization.md). Real
+        # motivating case: a previous run's Evening period suggested "The
+        # Narrows" (Zion) -- a real hike whose own duration badge reads
+        # "4-8 hrs round-trip" elsewhere on the same page -- which is not
+        # something to start after dinner. Same strip-the-sentence,
+        # fall-back-to-relaxed-evening mechanism as the venue check above,
+        # so a long-duration item is excluded from Evening candidacy
+        # specifically while remaining fully eligible for Morning/Afternoon,
+        # where a multi-hour commitment is realistic.
         unsuitable_evening_names = [
             str(attr.get("name", "") or "").strip()
             for attr in attractions
             if isinstance(attr, dict)
-            and AIContentGenerator._is_evening_unsuitable_venue(attr)
+            and (
+                AIContentGenerator._is_evening_unsuitable_venue(attr)
+                or AIContentGenerator._is_evening_unsuitable_duration(attr)
+            )
             and str(attr.get("name", "") or "").strip()
         ]
         if unsuitable_evening_names:
@@ -2736,8 +2793,8 @@ class AIContentGenerator:
                     if cleaned != summary:
                         period["summary"] = cleaned
                         logger.info(
-                            "  Evening schedule: removed likely-closed venue mention '%s' "
-                            "(indoor/exhibit-type venue unsuitable for an evening visit)",
+                            "  Evening schedule: removed unsuitable-for-evening mention '%s' "
+                            "(closes-early venue or a multi-hour-duration activity)",
                             matched_name,
                         )
 

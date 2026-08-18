@@ -2586,3 +2586,84 @@ def test_inject_travel_realism_leaves_evening_unchanged_when_no_unsuitable_venue
     )
 
     assert updated[0]["periods"][2]["summary"] == "Enjoy dinner at The Shed, then a sunset walk around the plaza."
+
+
+def test_parse_duration_minutes_handles_real_badge_formats() -> None:
+    """Grounded against real `badge-duration` strings observed in a real
+    published run's HTML (C:\\Users\\...\\eval\\index.html) rather than an
+    assumed single format: plain ranges with a hyphen or an en-dash, both
+    'hr(s)'/'hour(s)' and 'min(s)'/'minute(s)' unit spellings, a bare
+    single value, and trailing free text like 'round-trip' after the unit."""
+    assert AIContentGenerator._parse_duration_minutes("30 min") == 30
+    assert AIContentGenerator._parse_duration_minutes("1 hr") == 60
+    assert AIContentGenerator._parse_duration_minutes("1-2 hours") == 90
+    assert AIContentGenerator._parse_duration_minutes("4\u20138 hrs round-trip") == 360
+    assert AIContentGenerator._parse_duration_minutes("1.5\u20132 hrs round-trip") == 105
+    assert AIContentGenerator._parse_duration_minutes("") == 0
+
+
+def test_is_evening_unsuitable_duration_flags_multi_hour_hikes_only() -> None:
+    """Real example that motivated this (project owner: 'Are these
+    estimates being really factored in?'): a previous run's Evening period
+    suggested 'The Narrows' -- a real Zion hike whose own duration badge,
+    elsewhere on the same real published page, reads '4\u20138 hrs
+    round-trip'. That is a genuine multi-hour undertaking, not something to
+    start after dinner. A short, evening-compatible activity (e.g. a 30-45
+    minute sunset viewpoint) must NOT be flagged just for having a
+    duration field at all."""
+    assert AIContentGenerator._is_evening_unsuitable_duration(
+        {"name": "The Narrows", "duration": "4\u20138 hrs round-trip"}
+    )
+    assert not AIContentGenerator._is_evening_unsuitable_duration(
+        {"name": "Sunset Point", "duration": "30 min"}
+    )
+    assert not AIContentGenerator._is_evening_unsuitable_duration(
+        {"name": "Canyon Overlook Trail", "duration": "1-2 hours"}
+    )
+    # No duration data at all must never be treated as "too long" --
+    # _parse_duration_minutes returns 0 for an empty/missing field, which
+    # is not > the threshold.
+    assert not AIContentGenerator._is_evening_unsuitable_duration({"name": "Unknown Spot"})
+
+
+def test_inject_travel_realism_strips_multi_hour_hike_mention_from_evening_schedule() -> None:
+    """Real motivating pattern (this specific line may not reproduce
+    identically run to run, but the underlying issue is real -- see the
+    project owner's question 'Are these estimates being really factored
+    in?'): an Evening period naming 'The Narrows', a real Zion hike whose
+    own duration is '4-8 hours round-trip' elsewhere in the same real
+    output -- physically not something to start after dinner. Reuses the
+    same evening-unsuitable-venue strip/fallback mechanism (previously
+    duration-blind) rather than a separate new pass."""
+    g = _gen()
+    days = [{
+        "day_label": "Day 1",
+        "periods": [
+            {"period": "Morning", "summary": "Start early at Angels Landing before the heat builds."},
+            {"period": "Afternoon", "summary": "Cool off at the Zion Human History Museum exhibits."},
+            {
+                "period": "Evening",
+                "summary": "Enjoy dinner at Zion Pizza. Head into The Narrows for an evening hike.",
+            },
+        ],
+    }]
+    attractions = [
+        {"name": "Angels Landing", "type": "hike", "duration": "4-5 hours"},
+        {"name": "The Narrows", "type": "hike", "duration": "4-8 hrs round-trip"},
+    ]
+
+    updated = g._inject_travel_realism(
+        days,
+        {},
+        "Capitol Reef National Park",
+        "Bryce Canyon National Park",
+        attractions=attractions,
+        restaurants=[{"name": "Zion Pizza"}],
+    )
+
+    evening_summary = updated[0]["periods"][2]["summary"]
+    assert "The Narrows" not in evening_summary
+    assert "Zion Pizza" in evening_summary
+    # Morning is untouched -- a multi-hour hike is a perfectly realistic
+    # Morning pick; only Evening candidacy is affected.
+    assert "Angels Landing" in updated[0]["periods"][0]["summary"]
