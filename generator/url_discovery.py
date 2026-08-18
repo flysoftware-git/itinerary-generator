@@ -10367,6 +10367,72 @@ class URLDiscoverer:
         perpendicular_degrees = abs(cross) / ab_len
         return perpendicular_degrees * 69.0
 
+    # Generic place-designation words that commonly co-occur with an
+    # unrelated place's real name in Nominatim/OSM data (e.g. two entirely
+    # different towns can each have their own "Historic District"). These
+    # must not count as evidence of a name match on their own -- only the
+    # non-generic "anchor" words carry real identity, mirroring the
+    # generic_trail_tokens carve-out in _alltrails_slug_matches_item.
+    _GEOCODE_GENERIC_DESIGNATION_TOKENS = frozenset({
+        "historic", "historical", "district", "downtown", "village",
+        "town", "area", "neighbourhood", "neighborhood",
+    })
+
+    @classmethod
+    def _geocode_result_name_plausible(cls, query_name: str, result: dict[str, Any] | None) -> bool:
+        """Reject a Nominatim result whose own place name shares no
+        distinguishing token with the geocoded query -- catches free-text
+        search fuzzy-matching onto a completely different, unrelated place.
+
+        Real case (dipstick69): en-route stop "Rockville Historic District"
+        (a real Rockville, UT designation with no distinctly-tagged OSM
+        entry) was geocoded via a route-viewbox-restricted Nominatim search
+        to (37.166804, -113.0864502) -- which is actually the neighbouring
+        "Grafton Historic DIstrict" entry (a real, separate en-route stop
+        on the same leg, ~3 road miles away). The existing distance-from-
+        route-midpoint sanity check doesn't catch this because Grafton is
+        well within the route viewbox/radius; only a name check does.
+
+        A pure "shares no token" check is too weak here: "Rockville
+        Historic District" and "Grafton Historic DIstrict" already share
+        "historic"/"district", so the check must discount those generic
+        designation words and require overlap on each side's real
+        identifying ("anchor") word(s) instead -- "rockville" vs "grafton"
+        share nothing. Conversely a legitimate case like "Sunrise Point"
+        resolving to a result named "Sunrise Point Overlook" must still
+        pass: only "point" is generic there (already excluded by the
+        shared _significant_tokens stop-word list), so "sunrise" anchors
+        both sides.
+        """
+        query_tokens = set(cls._significant_tokens(query_name))
+        if not query_tokens:
+            return True
+        if not isinstance(result, dict):
+            return True
+
+        result_name = str(result.get("name") or "").strip()
+        if not result_name:
+            display_name = str(result.get("display_name") or "").strip()
+            # Only the result's own place name (the first component of
+            # display_name), never the full address hierarchy -- the
+            # containing town/county/state in display_name can coincidentally
+            # contain the query's own place-name token (Grafton's entry sits
+            # inside "Rockville, Washington County, Utah", so checking the
+            # full string would let "rockville" match through the address
+            # rather than the actual (different) place being returned).
+            result_name = display_name.split(",", 1)[0]
+        result_tokens = set(cls._significant_tokens(result_name))
+        if not result_tokens:
+            return True
+
+        generic = cls._GEOCODE_GENERIC_DESIGNATION_TOKENS
+        query_anchors = query_tokens - generic
+        if not query_anchors:
+            # Query itself is only generic designation words -- nothing to
+            # anchor on, so fall back to plain overlap rather than rejecting.
+            return bool(query_tokens & result_tokens)
+        return bool(query_anchors & result_tokens)
+
     def _geocode_en_route_stop_for_route(
         self,
         stop_name: str,
@@ -10497,6 +10563,15 @@ class URLDiscoverer:
                 first = rows[0] if isinstance(rows[0], dict) else {}
                 parsed = self._parse_lat_lng(first.get("lat"), first.get("lon"))
                 if parsed is None:
+                    continue
+                if not self._geocode_result_name_plausible(name, first):
+                    # A real, well-tagged place, just not the one queried for
+                    # (e.g. free-text search fuzzy-matched onto a completely
+                    # different named place sharing only generic designation
+                    # words). Keep trying the remaining query/viewbox
+                    # combinations rather than giving up on this stop
+                    # entirely -- same pattern as the out-of-region rejection
+                    # below.
                     continue
                 if (
                     not use_viewbox
@@ -12010,7 +12085,8 @@ class URLDiscoverer:
         item_tokens = cls._significant_tokens(item_name)
         if not item_tokens:
             return True
-        slug = unquote(urlparse(url).path.rsplit("/", 1)[-1]).replace("-", " ")
+        raw_slug = unquote(urlparse(url).path.rsplit("/", 1)[-1]).lower()
+        slug = raw_slug.replace("-", " ")
         slug_tokens = cls._significant_tokens(slug)
         if not slug_tokens:
             return False
@@ -12019,6 +12095,19 @@ class URLDiscoverer:
         overlap = len(item_set & slug_set)
         required = cls._required_alltrails_token_matches(len(item_tokens))
         if overlap < required:
+            return False
+
+        # AllTrails' own naming convention for a joined/combined route is
+        # "trail-a-to-trail-b" (real dipstick69 case: Bryce Canyon's "Navajo
+        # Loop Trail", a real ~1.3mi loop, token-overlap-matched the slug
+        # "navajo-loop-trail-to-peekaboo-loop" because "navajo"/"loop"/"trail"
+        # are all subset tokens of it -- even though that page is actually a
+        # different, ~5.3mi combined route through two joined trails, a real
+        # distance mismatch against the item's own stated length). A trip
+        # owner's own seed name can legitimately describe a combined route
+        # (e.g. "Bear Lake to Emerald Lake"), so only reject when the item
+        # name itself doesn't already contain "to".
+        if "-to-" in raw_slug and not re.search(r"\bto\b", (item_name or "").lower()):
             return False
 
         # Use raw tokens for trail/loop: _significant_tokens excludes them as stop words

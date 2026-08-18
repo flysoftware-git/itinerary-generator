@@ -4967,6 +4967,42 @@ def test_alltrails_slug_matches_item_rejects_off_by_one_trail_swap():
     )
 
 
+def test_alltrails_slug_matches_item_rejects_combined_trail_slug():
+    """Real dipstick69 bug: Bryce Canyon's 'Navajo Loop Trail' (a real ~1.3
+    mile loop, per the AI's own description) token-overlap-matched
+    'navajo-loop-trail-to-peekaboo-loop' -- a real but different, ~5.3 mile
+    COMBINED trail joining Navajo Loop with Peekaboo Loop -- because
+    'navajo'/'loop'/'trail' are all subset tokens of the slug. The rendered
+    card ended up linking its "1.3 mile loop" description to a page
+    describing a 5.3-mile route. AllTrails' own naming convention marks a
+    joined/combined route with a '-to-' segment; that must be rejected
+    unless the item's own name also legitimately describes a combined route."""
+    assert not URLDiscoverer._alltrails_slug_matches_item(
+        "https://www.alltrails.com/trail/us/utah/navajo-loop-trail-to-peekaboo-loop",
+        "Navajo Loop Trail",
+    )
+
+
+def test_alltrails_slug_matches_item_accepts_standalone_trail_slug():
+    """Companion positive control: the same trail's own standalone slug (no
+    '-to-' combinator) must still be accepted."""
+    assert URLDiscoverer._alltrails_slug_matches_item(
+        "https://www.alltrails.com/trail/us/utah/navajo-loop-trail",
+        "Navajo Loop Trail",
+    )
+
+
+def test_alltrails_slug_matches_item_allows_combined_slug_when_item_itself_says_to():
+    """When the trip owner's own seed name legitimately describes a combined
+    route (contains the word 'to'), a matching '-to-' slug must not be
+    rejected purely for containing that convention."""
+    assert URLDiscoverer._alltrails_slug_matches_item(
+        "https://www.alltrails.com/trail/us/utah/navajo-loop-trail-to-peekaboo-loop",
+        "Navajo Loop Trail to Peekaboo Loop",
+    )
+
+
+
 def test_search_attraction_direct_batch_authoritative_prefers_item_specific_url_over_generic_landing_page():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
@@ -10335,6 +10371,13 @@ def _make_nominatim_response(lat: str, lon: str):
     return resp
 
 
+def _make_nominatim_response_named(lat: str, lon: str, *, name: str = "", display_name: str = ""):
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = [{"lat": lat, "lon": lon, "name": name, "display_name": display_name}]
+    return resp
+
+
 def _make_nominatim_empty_response():
     resp = MagicMock()
     resp.raise_for_status.return_value = None
@@ -10480,6 +10523,76 @@ def test_geocode_en_route_stop_marks_out_of_region_rejection_distinctly_from_no_
         origin_name="Zion National Park",
         dest_name="Bryce Canyon National Park",
     ) is False
+
+
+def test_geocode_result_name_plausible_rejects_different_named_place() -> None:
+    """Unit-level check on the name-plausibility helper itself, grounded in
+    live-captured Nominatim data (2026-08-18) for the real dipstick69 bug:
+    querying 'Rockville Historic District' with a St. George->Zion route
+    viewbox returns a real OSM entry named 'Grafton Historic DIstrict' at
+    (37.166804, -113.0864502) -- Grafton Ghost Town's actual location, a
+    separate en-route stop ~3 road miles from Rockville. A naive
+    "shares no token" check would wrongly pass this because both names
+    share 'historic'/'district'; the real identifying words ('rockville'
+    vs 'grafton') never overlap and must be what's compared."""
+    grafton_result = {
+        "name": "Grafton Historic DIstrict",
+        "display_name": "Grafton Historic DIstrict, Rockville, Washington County, Utah, United States",
+    }
+    assert URLDiscoverer._geocode_result_name_plausible(
+        "Rockville Historic District", grafton_result
+    ) is False
+
+
+def test_geocode_result_name_plausible_accepts_superset_variant() -> None:
+    """A result name that's a reasonable superset/variant of the query (not a
+    clearly different place) must still pass -- e.g. 'Sunrise Point'
+    legitimately resolving to a result named 'Sunrise Point Overlook'."""
+    result = {"name": "Sunrise Point Overlook", "display_name": "Sunrise Point Overlook, Bryce Canyon, UT"}
+    assert URLDiscoverer._geocode_result_name_plausible("Sunrise Point", result) is True
+
+
+def test_geocode_en_route_stop_rejects_name_mismatched_viewbox_match() -> None:
+    """Full-pipeline regression for the real dipstick69 bug: en-route stop
+    'Rockville Historic District' (a real Rockville, UT designation with no
+    distinctly-tagged OSM entry) geocoded -- via the route-viewbox-restricted
+    Nominatim search -- to (37.166804, -113.0864502), which is actually the
+    separate, neighbouring 'Grafton Historic DIstrict' entry (~3 road miles
+    away, a different en-route stop on the same St. George -> Zion leg). The
+    rendered Google Maps directions URL then listed 'Grafton Ghost Town' as a
+    waypoint twice (once via its own name-string fallback, once via
+    Rockville's mis-geocoded coordinates). The existing distance-from-route-
+    midpoint sanity check does not catch this -- Grafton is well within the
+    route viewbox -- only a name-plausibility check does."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+
+    origin = (37.0965, -113.5684)  # St. George, UT
+    dest = (37.2982, -113.0263)  # Zion National Park
+
+    def fake_get(_url, params=None, **_kwargs):
+        # Every attempt (viewbox-biased and unrestricted) resolves to the
+        # same wrong, name-mismatched Grafton entry -- mirrors the real
+        # captured Nominatim behavior for this exact query/route.
+        return _make_nominatim_response_named(
+            "37.1668040",
+            "-113.0864502",
+            name="Grafton Historic DIstrict",
+            display_name="Grafton Historic DIstrict, Rockville, Washington County, Utah, United States",
+        )
+
+    discoverer._url_validator.session.get.side_effect = fake_get
+
+    with patch("generator.url_discovery.time.sleep"):
+        coords = discoverer._geocode_en_route_stop_for_route(
+            "Rockville Historic District",
+            origin_name="St. George",
+            dest_name="Zion National Park",
+            origin=origin,
+            dest=dest,
+        )
+
+    assert coords is None
 
 
 def test_prune_en_route_stops_drops_stop_confirmed_out_of_region() -> None:

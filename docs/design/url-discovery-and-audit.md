@@ -409,6 +409,46 @@ attractions/restaurants never got rating data attached at all.
 	`badge-rating` badge in the renderer (previously restaurant/en-route-stop
 	only).
 
+Issue (Dipstick69): `_geocode_en_route_stop_for_route` took Nominatim's first
+result unconditionally, sanity-checked only by distance from the route
+midpoint. On the St. George -> Zion leg, the en-route stop "Rockville
+Historic District" (a real designation with no distinctly-tagged OSM entry)
+free-text-matched, inside the route viewbox, onto a completely different,
+well-tagged entry named "Grafton Historic DIstrict" -- the real-world
+location of "Grafton Ghost Town", a separate en-route stop on the same leg
+~3 road miles away. Because both names share the generic words
+"historic"/"district", a naive "shares no token" check would not have caught
+it either. The distance check didn't catch it because Grafton sits well
+inside the route viewbox. Consequence: the rendered Google Maps directions
+URL listed "Grafton Ghost Town" as a waypoint twice (once via its own
+name-string fallback, once via Rockville's mis-geocoded coordinates, which
+Google's UI reverse-geocodes back to Grafton).
+- Mitigation: `_geocode_result_name_plausible` compares the query's
+	significant tokens against the result's own `name`/`display_name` after
+	excluding a small set of generic place-designation words ("historic",
+	"district", "downtown", "village", "town", "area", "neighbo(u)rhood") from
+	both sides, requiring the remaining identifying ("anchor") tokens to
+	overlap. A result that fails is skipped (`continue`), not treated as a
+	final failure -- the function keeps trying its other query/viewbox
+	attempts, same as the existing out-of-region rejection.
+
+
+Issue (Dipstick69): `_alltrails_slug_matches_item` (used by every AllTrails
+acceptance path, including `_search_alltrails_for_seed_relaxed`) does pure
+token-overlap matching, so a slug with extra trail-name content beyond the
+item's own tokens still passes as long as the item's tokens are a subset.
+Bryce Canyon's "Navajo Loop Trail" (~1.3mi loop) matched
+`navajo-loop-trail-to-peekaboo-loop` -- a real but different, ~5.3mi combined
+route joining two trails -- because "navajo"/"loop"/"trail" are all present
+in the slug. The rendered card's own "1.3 mile loop" description ended up
+hyperlinked to a page describing a 5.3-mile route.
+- Mitigation: a slug containing AllTrails' "-to-" combined-route naming
+	convention (`trail-a-to-trail-b`) is now rejected unless the item's own
+	name also contains the word "to" (i.e. the trip owner's own seed
+	legitimately describes a combined route). Fixed centrally in
+	`_alltrails_slug_matches_item` rather than only in the seed-relaxed path,
+	since every one of its ~10 call sites shares the same false-positive risk.
+
 ## Must-See Badge Policy
 The "Must-See" badge is a deterministic, render-time decision -- not the
 LLM's opinion. The model still emits a `must_see` boolean per attraction
