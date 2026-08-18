@@ -205,10 +205,19 @@ def test_policy_schedule_reconciliation_keeps_allowed_entities() -> None:
     assert "Canyon Overlook Trail" in combined
 
 
-def test_dedupe_schedule_day_content_fixes_partial_day_duplication() -> None:
+def test_dedupe_schedule_day_content_flags_partial_day_duplication_without_mutating_text() -> None:
     """Regression: the day-level dedup check used to only fire when EVERY
     period in a day was already a duplicate -- a day with 2 of 3 periods
-    repeated (but one genuinely new) triggered nothing at all."""
+    repeated (but one genuinely new) triggered nothing at all.
+
+    Also grounds the SW2026-dipstick68 leaked-instruction fix: this function
+    used to "fix" a detected duplicate by appending a literal internal
+    instruction sentence (e.g. "Prioritize a different trailhead or district
+    than previous days.") directly onto the rendered summary -- text meant
+    only to flag the period for _inject_travel_realism's later rotation pass,
+    but which could reach real rendered output verbatim whenever rotation
+    didn't end up changing that period. It must never mutate `summary` at
+    all now -- only mark the period with a private, non-rendered flag."""
     gen = _gen()
     days = [
         {
@@ -232,12 +241,16 @@ def test_dedupe_schedule_day_content_fixes_partial_day_duplication() -> None:
     out = gen._dedupe_schedule_day_content(days)
 
     day2 = out[1]["periods"]
-    assert day2[0]["summary"] != "Start early at a priority attraction."
-    assert "different trailhead or district" in day2[0]["summary"].lower()
-    assert day2[1]["summary"] != "Continue with a second major stop."
-    assert "different area" in day2[1]["summary"].lower()
-    # The genuinely new Evening summary must be left untouched.
+    # Summary text itself must be completely untouched -- no instructional
+    # suffix, no wording change at all.
+    assert day2[0]["summary"] == "Start early at a priority attraction."
+    assert day2[1]["summary"] == "Continue with a second major stop."
     assert day2[2]["summary"] == "Something genuinely different tonight."
+    # The duplicate periods are flagged (non-rendered) for the later
+    # rotation pass; the genuinely new Evening period is not.
+    assert day2[0].get("_dedupe_needs_variation") is True
+    assert day2[1].get("_dedupe_needs_variation") is True
+    assert "_dedupe_needs_variation" not in day2[2]
 
 
 def test_dedupe_schedule_day_content_leaves_distinct_days_untouched() -> None:

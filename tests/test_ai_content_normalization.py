@@ -1220,6 +1220,145 @@ def test_inject_travel_realism_rotates_evening_focus_across_a_multi_day_stay() -
     assert "navajo loop trail" in day2_evening or "queens garden trail" in day2_evening
 
 
+def test_normalize_schedule_dipstick68_leaked_instruction_never_reaches_rendered_evening_text() -> None:
+    """Regression grounded in the real SW2026-dipstick68 output for Bryce
+    Canyon National Park, Day 2 Evening, exactly as the project owner found
+    it: 'Visit Bryce Point for sunset views, then enjoy dinner at Bryce
+    Canyon Pines Restaurant. Choose a different sunset zone or dining pocket
+    than earlier nights.' Their words: 'the first sentence duplicates the
+    prior evening, the second is a silly thing to tell users.'
+
+    _dedupe_schedule_day_content used to append that second sentence
+    (period_variation_suffix['Evening']) directly onto the rendered summary
+    as a stopgap flag for _inject_travel_realism's rotation pass to replace
+    with real content -- but the flag text itself could survive verbatim
+    whenever rotation didn't end up changing that period (here: only one
+    real accepted attraction, Bryce Point, so nothing to rotate the sunset
+    viewpoint to). This exercises the full _normalize_schedule pipeline
+    (not just _dedupe_schedule_day_content in isolation) with that exact
+    real single-attraction, single-restaurant shape -- a genuine dead end
+    for the underlying duplicate -- and asserts the leaked instruction can
+    never appear in the rendered output regardless."""
+    g = _gen()
+    schedule = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Hike the Rim Trail in the cool morning air."},
+                {"period": "Afternoon", "summary": "Explore Inspiration Point overlooks."},
+                {
+                    "period": "Evening",
+                    "summary": "Visit Bryce Point for sunset views, then enjoy dinner at Bryce Canyon Pines Restaurant.",
+                },
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Return to the Rim Trail for a different stretch."},
+                {"period": "Afternoon", "summary": "Revisit Inspiration Point at a different time of day."},
+                {
+                    "period": "Evening",
+                    "summary": "Visit Bryce Point for sunset views, then enjoy dinner at Bryce Canyon Pines Restaurant.",
+                },
+            ],
+        },
+    ]
+
+    out = g._normalize_schedule(
+        schedule=schedule,
+        restaurants=[{"name": "Bryce Canyon Pines Restaurant"}],
+        dates="October 9-11, 2026",
+        attractions=[{"name": "Bryce Point"}],
+        getting_here={"drive_time": "1 hr 45 min"},
+        previous_destination="Zion National Park",
+        next_destination="Capitol Reef National Park",
+    )
+
+    full_text = " ".join(
+        str(period.get("summary", "") or "")
+        for day in out
+        for period in day.get("periods", []) or []
+    ).lower()
+    # The leaked internal instruction must never appear anywhere in
+    # rendered output, no matter which period it would have targeted.
+    assert "choose a different sunset zone" not in full_text
+    assert "dining pocket" not in full_text
+    assert "prioritize a different trailhead" not in full_text
+    assert "shift focus to a different area" not in full_text
+    assert "vary stops and pacing" not in full_text
+    # No private/internal marker keys leak into the returned period dicts.
+    for day in out:
+        for period in day.get("periods", []) or []:
+            assert not any(str(key).startswith("_") for key in period)
+
+    # With genuinely only one real attraction and one real restaurant for
+    # this destination, the underlying Day 1/Day 2 Evening duplicate has no
+    # data left to vary -- an honest, undecorated duplicate is acceptable
+    # (no fragile forced rewrite), as long as it never carries the leaked
+    # instruction sentence.
+    day1_evening = out[0]["periods"][2]["summary"]
+    day2_evening = out[1]["periods"][2]["summary"]
+    assert day1_evening == "Visit Bryce Point for sunset views, then enjoy dinner at Bryce Canyon Pines Restaurant."
+    assert day2_evening == day1_evening
+
+
+def test_normalize_schedule_dipstick68_evening_duplicate_resolves_via_restaurant_rotation_when_possible() -> None:
+    """Companion to the dead-end case above: when a second real restaurant
+    candidate genuinely exists for the destination (unlike the true
+    dipstick68 dead end), the existing restaurant-rotation mechanism
+    (_rotate_restaurant_summary) already resolves the Day 2 Evening
+    duplicate on its own -- and, now that the leaked-instruction suffix is
+    gone entirely, nothing gets appended on top of that already-fixed text
+    either."""
+    g = _gen()
+    schedule = [
+        {
+            "day_label": "Day 1",
+            "periods": [
+                {"period": "Morning", "summary": "Hike the Rim Trail in the cool morning air."},
+                {"period": "Afternoon", "summary": "Explore Inspiration Point overlooks."},
+                {
+                    "period": "Evening",
+                    "summary": "Visit Bryce Point for sunset views, then enjoy dinner at Bryce Canyon Pines Restaurant.",
+                },
+            ],
+        },
+        {
+            "day_label": "Day 2",
+            "periods": [
+                {"period": "Morning", "summary": "Return to the Rim Trail for a different stretch."},
+                {"period": "Afternoon", "summary": "Revisit Inspiration Point at a different time of day."},
+                {
+                    "period": "Evening",
+                    "summary": "Visit Bryce Point for sunset views, then enjoy dinner at Bryce Canyon Pines Restaurant.",
+                },
+            ],
+        },
+    ]
+
+    out = g._normalize_schedule(
+        schedule=schedule,
+        restaurants=[
+            {"name": "Bryce Canyon Pines Restaurant"},
+            {"name": "Bryce Canyon Lodge Dining Room"},
+        ],
+        dates="October 9-11, 2026",
+        attractions=[{"name": "Bryce Point"}],
+        getting_here={"drive_time": "1 hr 45 min"},
+        previous_destination="Zion National Park",
+        next_destination="Capitol Reef National Park",
+    )
+
+    day1_evening = out[0]["periods"][2]["summary"].lower()
+    day2_evening = out[1]["periods"][2]["summary"].lower()
+    assert "choose a different sunset zone" not in day2_evening
+    assert "dining pocket" not in day2_evening
+    assert day2_evening != day1_evening
+    assert "bryce canyon lodge dining room" in day2_evening
+    assert "bryce point" in day2_evening
+
+
 def test_filter_oversized_scenic_drives_removes_full_day_loop() -> None:
     g = _gen()
     g._config = {"url_discovery": {"max_scenic_drive_miles": 150}}

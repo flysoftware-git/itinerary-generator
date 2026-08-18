@@ -575,25 +575,66 @@ For each summary:
 - Evening fallback includes a dinner mention tied to a known restaurant when possible.
 
 ## De-duplication and Variation
-`_dedupe_schedule_day_content` ensures each day has at least one meaningful
-distinction from prior days. Runs before `_inject_travel_realism`'s
-attraction-name rotation, so it's the only defense against duplication in
-generic fallback text (e.g. `_ensure_day_period_coverage`'s filler string)
-that carries no canonical attraction/restaurant name for that later pass to
-rotate in.
+`_dedupe_schedule_day_content` flags periods whose summary exactly
+duplicates an earlier day's same-content summary. Runs before
+`_inject_travel_realism`'s attraction-name rotation, so it's the earliest
+point that can detect duplication in generic fallback text (e.g.
+`_ensure_day_period_coverage`'s filler string) that carries no canonical
+attraction/restaurant name for that later rotation pass to grab onto.
 
 Detection is per-period against the full running history of every prior
 period's summary (fixed -- previously only triggered when *every* period in
 a day was already a duplicate, so a day with 2 of 3 periods repeated, but
-one genuinely new, triggered nothing at all):
-- Appends a period-specific variation suffix to whichever specific period(s)
-	are duplicates -- not just the first eligible period in the day
-	regardless of which period actually repeated.
-- Keeps the original summary but adds diversity intent.
+one genuinely new, triggered nothing at all).
+
+**Leaked-instruction fix (2026-08-18, real SW2026-dipstick68 regression):**
+this function used to "fix" a detected duplicate itself, by appending a
+literal internal instruction sentence directly onto the rendered summary --
+e.g. `period_variation_suffix["Evening"]` = "Choose a different sunset zone
+or dining pocket than earlier nights." The docstring described this as a
+stopgap: only meant to flag the period for `_inject_travel_realism`'s later
+rotation pass to replace with real, varied content, never meant to survive
+as visible prose. In practice nothing downstream ever consumed that flag --
+`_inject_travel_realism`'s rotation passes run unconditionally on every
+period regardless of whether dedup flagged it -- so whenever rotation
+didn't happen to change that specific period (e.g. only one real attraction
+existed to rotate the pre-dinner clause to), the literal instruction
+sentence reached final rendered output verbatim. Real observed text, Bryce
+Canyon National Park Day 2 Evening: "Visit Bryce Point for sunset views,
+then enjoy dinner at Bryce Canyon Pines Restaurant. Choose a different
+sunset zone or dining pocket than earlier nights." -- project owner: "the
+first sentence duplicates the prior evening, the second is a silly thing to
+tell users."
+
+Fixed unconditionally: `_dedupe_schedule_day_content` never mutates
+`summary` at all now. A detected duplicate only sets a private,
+non-rendered `period["_dedupe_needs_variation"] = True` marker.
+`_inject_travel_realism` strips this marker from every period right before
+returning (belt-and-suspenders -- the marker isn't actually consumed by any
+rotation logic, since rotation already runs unconditionally regardless of
+it; the strip exists purely so a literal internal marker can never leak
+into rendered/serialized output even if some future caller forwards the raw
+period dict instead of just `period`/`summary`). If a period is still an
+exact duplicate after rotation has had its chance -- genuinely only one
+real attraction and one real restaurant exist for that destination, so
+nothing is left to vary -- the duplicate is left as plain, undecorated
+text: an honest limitation rather than a forced, fragile rewrite. Verified
+by
+`tests/test_ai_content_normalization.py::test_normalize_schedule_dipstick68_leaked_instruction_never_reaches_rendered_evening_text`
+(true dead end: 1 attraction, 1 restaurant -- leaked text absent, duplicate
+honestly left in place) and
+`::test_normalize_schedule_dipstick68_evening_duplicate_resolves_via_restaurant_rotation_when_possible`
+(a second real restaurant exists -- the pre-existing `_rotate_restaurant_summary`
+rotation, described below, already resolves the duplicate on its own) and
+`tests/test_schedule_policy_matrix.py::test_dedupe_schedule_day_content_flags_partial_day_duplication_without_mutating_text`.
 
 Rationalization requirement:
 - For multi-day destinations, each day must contain at least one substantive
-	differentiator from prior days (distinct area, activity focus, or transfer duty).
+	differentiator from prior days (distinct area, activity focus, or transfer duty),
+	*when real distinguishing data (a second attraction, a second restaurant, etc.)
+	exists for that destination to provide one* -- otherwise the current
+	normalization pipeline has nothing left to vary and honestly leaves the
+	duplicate rather than injecting cosmetic non-content.
 - Cosmetic wording changes alone do not satisfy differentiation quality.
 
 **Attraction-focus rotation (day-level allocation pass, in
@@ -795,7 +836,9 @@ Symptom: Dinner references are vague.
 - Verify `dinner_recommendations` passed into normalizer and that names exist.
 
 Symptom: Days feel repetitive.
-- Inspect `_dedupe_schedule_day_content` suffix insertion and upstream model quality.
+- Inspect `_dedupe_schedule_day_content`'s `_dedupe_needs_variation` flagging,
+	whether `_inject_travel_realism`'s rotation passes had a second real
+	attraction/restaurant to rotate to, and upstream model quality.
 
 Symptom: Arrival/departure context absent.
 - Confirm multi-day inference and `previous_destination` / `next_destination` inputs.

@@ -1506,24 +1506,40 @@ class AIContentGenerator:
         return self._dedupe_schedule_day_content(out)
 
     def _dedupe_schedule_day_content(self, days: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Ensure each day has at least one meaningful content difference from prior days.
+        """Flag periods whose summary exactly duplicates an earlier day's
+        same-content summary, so downstream rotation knows which periods
+        still need real variation.
 
-        Runs before _inject_travel_realism's attraction-name rotation, so this
-        is the only defense against duplication in generic fallback text that
-        carries no canonical attraction/restaurant name for that later pass to
-        rotate in (e.g. _ensure_day_period_coverage's identical filler string
-        reused verbatim across every day missing a period).
+        Runs before _inject_travel_realism's attraction-name/restaurant
+        rotation. This function used to "fix" a detected duplicate itself by
+        appending a literal instructional sentence (e.g. "Choose a different
+        sunset zone or dining pocket than earlier nights.") directly onto the
+        rendered summary -- a stopgap meant to flag the period for
+        _inject_travel_realism's rotation pass to actually replace with real
+        content. That text was never meant to survive as visible prose, but
+        a real validation run (SW2026-dipstick68, Bryce Canyon Evening) proved
+        it could reach final rendered output verbatim whenever rotation
+        didn't end up changing that period (e.g. only one real attraction/
+        restaurant candidate existed to rotate to). A literal internal
+        instruction must never be able to reach rendered output as if it
+        were real prose, regardless of whether rotation later succeeds --
+        so this now only marks the period with a private, non-rendered
+        `_dedupe_needs_variation` flag and never mutates `summary` itself.
+        _inject_travel_realism strips this flag before returning, whether or
+        not it actually managed to vary the text (belt-and-suspenders: even
+        if some future caller forwarded the raw period dict instead of just
+        "period"/"summary", the flag can never leak into rendered output).
+
+        If a period is still an exact duplicate after rotation has had its
+        chance (e.g. genuinely only one attraction and one restaurant exist
+        for that destination, so there is nothing left to vary), the
+        duplicate is left as plain, undecorated text -- an honest limitation
+        rather than a forced, fragile rewrite.
         """
         if len(days) <= 1:
             return days
 
-        period_variation_suffix = {
-            "Morning": "Prioritize a different trailhead or district than previous days.",
-            "Afternoon": "Shift focus to a different area to avoid repeating the same loop.",
-            "Evening": "Choose a different sunset zone or dining pocket than earlier nights.",
-        }
-
-        # Detect and fix duplication per period, not only when an entire day's
+        # Detect duplication per period, not only when an entire day's
         # periods are all duplicates of prior days -- a day with 2 of 3
         # periods repeated (but one genuinely new) previously triggered
         # nothing at all.
@@ -1531,17 +1547,12 @@ class AIContentGenerator:
         for day in days:
             periods = day.get("periods", []) or []
             for period in periods:
-                label = str(period.get("period", "")).title()
                 summary = str(period.get("summary", "") or "").strip()
                 if not summary:
                     continue
                 normalized = summary.lower()
                 if normalized in seen_summaries:
-                    suffix = period_variation_suffix.get(label, "Vary stops and pacing from previous days.")
-                    if suffix.lower() not in normalized:
-                        summary = f"{summary} {suffix}".strip()
-                        period["summary"] = summary
-                        normalized = summary.lower()
+                    period["_dedupe_needs_variation"] = True
                 seen_summaries.add(normalized)
 
         return days
@@ -2309,6 +2320,21 @@ class AIContentGenerator:
                             "(indoor/exhibit-type venue unsuitable for an evening visit)",
                             matched_name,
                         )
+
+        # Final cleanup: _dedupe_schedule_day_content marks exact-duplicate
+        # periods with a private, non-rendered flag before the rotation
+        # passes above run. Whether or not rotation above actually changed a
+        # flagged period's text, the flag itself must never survive into the
+        # returned period dict -- it exists only to document intent while
+        # normalization is running, not as data any renderer should see.
+        # This is a deliberate belt-and-suspenders guarantee (not currently
+        # load-bearing for any behavior above, since the rotation passes act
+        # unconditionally on every period regardless of this flag) so that a
+        # literal internal marker can never leak into rendered output even
+        # if some future change forwards the raw period dict somewhere.
+        for day in days:
+            for period in day.get("periods", []) or []:
+                period.pop("_dedupe_needs_variation", None)
 
         return days
 
