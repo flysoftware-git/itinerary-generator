@@ -15822,6 +15822,63 @@ def test_audit_discovered_urls_strips_weak_hallucinated_links():
     assert "url" not in trip["destinations"][0]["cultural_events"]["events"][0]
 
 
+def test_audit_discovered_urls_preserves_event_maps_fallback_as_maps_url():
+    """Real bug (St. George eval run, dipstick73/74): "I-15 Country Rock
+    Music Festival" and "Odyssey Dance Theatre's Thriller 2026" rendered with
+    NO link at all. cultural_events.py's _verify_event_urls deliberately
+    assigns a Google-Maps-search fallback into the event's "url" field when
+    no real URL survives (mirroring every other content type's maps
+    fallback). But this audit pass re-validates that same url through the
+    strict retention gate, and config.yaml's url_policy_mode: "enforce"
+    blocks the "google_maps_search" policy class unless the caller opts in
+    via allow_google_maps_search -- which this call site never did, so the
+    fallback got silently stripped with nothing left to render. Fix: extract
+    a pre-existing google_maps_search/dir url into a separate maps_url field
+    before the retain call, exactly like restaurants/attractions/en-route
+    stops already do, so it survives even when the primary url is rejected."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+    discoverer._url_validator.verify_url.return_value = (True, 200)
+    discoverer._url_policy_mode = "enforce"
+
+    fallback_url = (
+        "https://www.google.com/maps/search/?api=1&query="
+        "I-15+Country+Rock+Music+Festival+Mesquite+Regional+Sports+and+Event+Complex"
+    )
+    trip = {
+        "destinations": [
+            {
+                "name": "St. George, Utah",
+                "ai_content": {
+                    "top_attractions": [],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {
+                    "has_events": True,
+                    "events": [
+                        {
+                            "name": "I-15 Country Rock Music Festival",
+                            "url": fallback_url,
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+
+    discoverer.audit_discovered_urls(trip)
+
+    event = trip["destinations"][0]["cultural_events"]["events"][0]
+    # The policy-blocked google_maps_search class still can't survive as the
+    # primary "url" in enforce mode ...
+    assert "url" not in event
+    # ... but it must survive as maps_url so html_assembler._build_events can
+    # still render a real, clickable link instead of plain unlinked text.
+    assert event.get("maps_url") == fallback_url
+
+
 def test_update_route_distance_skips_live_fetch_when_disabled():
     """Route distance already has a solid Haversine fallback that costs zero
     network calls -- the live Google Maps directions HTML scrape is a pure

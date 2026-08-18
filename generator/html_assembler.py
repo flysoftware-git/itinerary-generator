@@ -1939,9 +1939,18 @@ class HTMLAssembler:
             for ev in events.get("events", []):
                 url = self._normalize_external_url(ev.get("url", ""))
                 if not url:
-                    # Omit fallback link when no canonical event URL is available;
-                    # generic search queries fail strict single-result validation.
-                    pass
+                    # dipstick73/74: url_discovery.py's audit_discovered_urls
+                    # now preserves a Google-Maps-search fallback in a
+                    # separate maps_url field when the primary url gets
+                    # stripped by the retention gate (mirroring how
+                    # restaurants/attractions/en-route stops already
+                    # preserve theirs) -- fall back to it here so the event
+                    # name still gets a real, clickable maps lookup instead
+                    # of rendering as unlinked plain text. See
+                    # cultural_events.py's _verify_event_urls docstring for
+                    # why every real, dated event is meant to have SOME
+                    # link, even if only a maps search.
+                    url = self._normalize_external_url(ev.get("maps_url", ""))
                 name_html = (
                     f'<a href="{self._safe_href(url)}" class="event-link" target="_blank" rel="noopener">{html_escape.escape(str(ev.get("name", "") or ""))}</a>'
                     if url else ev.get("name", "")

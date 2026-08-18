@@ -2772,6 +2772,32 @@ class URLDiscoverer:
                 for event in events.get("events", []) or []:
                     event_name = str(event.get("name", "") or "")
                     url = str(event.get("url", "") or "").strip()
+                    # dipstick73/74: cultural_events.py's _verify_event_urls
+                    # deliberately assigns a Google-Maps-search fallback into
+                    # this same "url" field for any event whose real URL was
+                    # never found or was stripped as generic (see that
+                    # method's docstring: "unlike every other content type
+                    # ... which always falls back to a Google Maps search
+                    # link"). But this audit pass re-validates every event
+                    # url through the same strict retention gate every other
+                    # category uses, and DEFAULT_URL_POLICY_BLOCKED_CLASSES
+                    # blocks the "google_maps_search" class in "enforce" mode
+                    # (config.yaml url_policy_mode) unless the caller opts in
+                    # via allow_google_maps_search -- which this call site
+                    # never did. That silently stripped the very fallback
+                    # _verify_event_urls had just attached, leaving real,
+                    # dated events (confirmed real St. George example:
+                    # "I-15 Country Rock Music Festival") with no link at
+                    # all. Restaurants/attractions/en-route stops avoid this
+                    # exact trap by extracting a pre-existing maps-search URL
+                    # into a separate maps_url field before this same retain
+                    # call, so it survives even when the retain gate rejects
+                    # it as the primary url -- mirror that here so the
+                    # fallback is preserved for html_assembler._build_events
+                    # to render (falls back to maps_url when url is empty).
+                    maps_url = str(event.get("maps_url", "") or "").strip()
+                    if not maps_url and self._classify_url_policy_class(url) in {"google_maps_search", "google_maps_dir"}:
+                        maps_url = url
                     cleaned = self._retain_discovered_url(
                         url,
                         event_name,
@@ -2783,9 +2809,15 @@ class URLDiscoverer:
                         self._log_rejected_url("event", dest_name, event_name, url)
                         if cleaned:
                             event["url"] = cleaned
+                            if maps_url:
+                                event["maps_url"] = maps_url
                             self._annotate_registry_url_decision(event, rendered_url=cleaned)
                         else:
                             event.pop("url", None)
+                            if maps_url:
+                                event["maps_url"] = maps_url
+                            else:
+                                event.pop("maps_url", None)
                             self._annotate_registry_url_decision(event, rendered_url="", rejection_reason="url_rejected")
 
             self._deduplicate_within_destination(dest)

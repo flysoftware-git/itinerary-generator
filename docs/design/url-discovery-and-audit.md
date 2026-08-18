@@ -529,6 +529,69 @@ secondary_maps_link_when_primary_url_is_maps_fallback`, and
 `test_attach_secondary_maps_link_skips_alltrails_url_directly`
 (`tests/test_url_discovery.py`).
 
+## Cultural Event Maps-Fallback Survival Through the Audit Pass
+Real bug, confirmed from a real published eval run
+(`C:\Users\bryan\Documents\Github\PWAapps\Travel-apps\sw\eval\index.html`): St.
+George's two cultural events -- "I-15 Country Rock Music Festival" and
+"Odyssey Dance Theatre's Thriller 2026" -- both had real, structured data
+(dates, venue, admission) but rendered as plain `<strong>` text with **no**
+`<a href>` at all, unlike every other content type on the page, which always
+carries at least a Google-Maps-search fallback link when no real source URL
+survives.
+
+`generator/cultural_events.py`'s `_verify_event_urls` already does exactly
+what its docstring says: strip a dead or generic event URL, then assign
+`event["url"]` a Google-Maps-search fallback (`_event_maps_fallback_url`) for
+any event still left without one. That part was working correctly -- the URL
+genuinely was set at that point. The bug is downstream, in
+`audit_discovered_urls`'s per-destination events loop
+(`generator/url_discovery.py`): it re-validates every event's `url` through
+`_retain_discovered_url(..., kind="event")`, the same strict retention gate
+every other category goes through. `config.yaml` sets `url_policy_mode:
+"enforce"` and `google_maps_search`/`google_maps_dir` are both in
+`url_policy_blocked_classes` -- so a Google-Maps-search fallback URL is
+rejected by the policy-class gate unless the caller passes
+`allow_google_maps_search=True`. The events call site never did, so the
+fallback `_verify_event_urls` had just attached was silently stripped
+(`event.pop("url", None)`) with nothing put back in its place.
+
+This is exactly the same trap the restaurants/attractions/en-route-stops
+loops in this same function already avoid: each of them extracts a
+pre-existing `google_maps_search`/`google_maps_dir`-classified `url` into a
+separate `maps_url` field *before* calling `_retain_discovered_url`, so that
+even when the retention gate rejects the primary `url`, the fallback survives
+as `maps_url` (see "Secondary Maps Link for Attractions and Restaurants"
+above for the render-side half of this same pattern). The events loop had no
+equivalent extraction step, so it had no way to reach the fallback link once
+it was rejected by policy.
+
+Fix, two parts:
+- `audit_discovered_urls`'s events loop now extracts `event["maps_url"]` from
+  the pre-existing `url` before the retain call, mirroring the
+  restaurant/attraction/en-route-stop pattern exactly, and re-attaches it
+  whenever the retain call strips the primary `url`.
+- `html_assembler.py`'s `_build_events` (Format-A event rendering, the
+  `event-link`/`events-subcard` markup) now falls back to `ev.get("maps_url")`
+  when `ev.get("url")` is empty, so the preserved fallback actually gets
+  rendered as the event name's link instead of sitting unused in the data.
+  Previously this method's own comment ("Omit fallback link when no
+  canonical event URL is available; generic search queries fail strict
+  single-result validation") reflected a design intent that had drifted out
+  of sync with `_verify_event_urls`'s explicit contract of always attaching
+  *some* link.
+
+A genuinely bad/hallucinated event URL (e.g. an unrelated `example.com` page
+that fails the relevance gate for reasons other than the policy-class check)
+is unaffected by this fix and is still stripped with no `maps_url` fallback,
+since the extraction only triggers for URLs already classified as
+`google_maps_search`/`google_maps_dir`.
+
+Tests: `test_audit_discovered_urls_preserves_event_maps_fallback_as_maps_url`
+(`tests/test_url_discovery.py`),
+`test_build_events_format_a_falls_back_to_maps_url_when_url_missing` and
+`test_build_events_format_a_no_link_when_neither_url_nor_maps_url`
+(`tests/test_html_assembler.py`).
+
 ## Fail-Closed Policy for Named Entities
 A link is only publishable for a named entity if it is a **deterministic, entity-specific
 target** — one that refers to that single entity and not a list, search query, or area

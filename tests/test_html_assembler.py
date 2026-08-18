@@ -2120,6 +2120,65 @@ def test_build_events_local_tip_renders_plain_text_without_url() -> None:
     assert "<a href=" not in html
 
 
+def test_build_events_format_a_falls_back_to_maps_url_when_url_missing() -> None:
+    """Real bug (St. George eval run): "I-15 Country Rock Music Festival" and
+    "Odyssey Dance Theatre's Thriller 2026" rendered as plain <strong> text
+    with no <a href> at all -- despite cultural_events.py's _verify_event_urls
+    deliberately assigning a Google-Maps-search fallback link to every
+    Format-A event with no surviving real URL. Root cause: url_discovery.py's
+    audit_discovered_urls re-validates every event url through the strict
+    retention gate and strips a google_maps_search-class fallback in
+    "enforce" policy mode, but (until fixed) never preserved it as a separate
+    maps_url the way restaurants/attractions/en-route stops already do --
+    so by render time the event had neither url nor maps_url. Once the audit
+    pass preserves maps_url, _build_events must actually use it as a
+    fallback for the event name link."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    events = {
+        "has_events": True,
+        "events": [
+            {
+                "name": "I-15 Country Rock Music Festival",
+                "dates_in_range": "October 17, 2026",
+                "venue": "Mesquite Regional Sports and Event Complex",
+                "admission": "Varies",
+                "maps_url": (
+                    "https://www.google.com/maps/search/?api=1&query="
+                    "I-15+Country+Rock+Music+Festival+Mesquite+Regional+Sports+and+Event+Complex"
+                ),
+            }
+        ],
+    }
+
+    html = assembler._build_events(events, "St. George, Utah")
+
+    assert '<a href="https://www.google.com/maps/search/?api=1&amp;query=' in html
+    assert 'class="event-link"' in html
+    assert '>I-15 Country Rock Music Festival</a>' in html
+
+
+def test_build_events_format_a_no_link_when_neither_url_nor_maps_url() -> None:
+    """When there's truly nothing to link to (no url, no maps_url), the event
+    still renders as plain text -- preserves pre-fix behavior for that case."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    events = {
+        "has_events": True,
+        "events": [
+            {
+                "name": "Unlinked Event",
+                "dates_in_range": "October 17, 2026",
+                "venue": "Some Venue",
+                "admission": "Free",
+            }
+        ],
+    }
+
+    html = assembler._build_events(events, "St. George, Utah")
+
+    assert "<a href=" not in html
+    assert "<strong>Unlinked Event</strong>" in html
+
+
 def test_image_caption_drops_wikimedia_template_boilerplate() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     image = {
