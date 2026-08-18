@@ -4050,7 +4050,20 @@ def test_search_en_route_direct_batch_authoritative_rejects_off_region_row_and_k
     assert out == "https://www.google.com/maps/search/?api=1&query=Lizard+Head+Pass+Telluride+CO"
 
 
-def test_search_en_route_direct_batch_authoritative_prefers_maps_when_multiple_rows_match():
+def test_search_en_route_direct_batch_authoritative_prefers_source_over_generic_maps_search():
+    """A generic google.com/maps/search/ URL is documented as never qualifying
+    as canonical entity evidence (docs/design/url-discovery-and-audit.md) and
+    _item_has_verified_url refuses to count it as "verified" -- so selecting
+    one here over an already-retained real source page (fs.usda.gov, a
+    verified-class URL) doesn't just deprioritize the source page, it
+    guarantees the item gets discarded outright at audit with nothing to
+    show. Regression coverage for dipstick67: "Mancos State Park" had its
+    real cpw.state.co.us page found and preserved, then out-selected for a
+    maps-search URL here, which then failed audit and the whole stop was
+    removed -- a real page thrown away for one that was never going to
+    survive. A deterministic Maps *place* URL is a different, verified
+    policy class and still wins over a source page (see
+    test_search_en_route_direct_batch_authoritative_prefers_maps_place_over_source_url)."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
 
@@ -4075,7 +4088,7 @@ def test_search_en_route_direct_batch_authoritative_prefers_maps_when_multiple_r
                 "October 18, 2026",
             )
 
-    assert out == "https://www.google.com/maps/search/?api=1&query=Lizard+Head+Pass+Telluride+CO"
+    assert out == "https://www.fs.usda.gov/recarea/gmug/recreation/recarea/?recid=33482"
 
 
 def test_search_en_route_direct_batch_authoritative_prefers_maps_place_over_source_url():
@@ -7652,6 +7665,99 @@ def test_is_definitively_dead_status_recognizes_dns_and_connection_failures() ->
     assert discoverer._is_definitively_dead_status(dns_error) is True
     refused = "ConnectionError(MaxRetryError(\"Failed to establish a new connection: [Errno 111] Connection refused\"))"
     assert discoverer._is_definitively_dead_status(refused) is True
+
+
+def test_is_bot_block_false_negative_dead_status_scoped_to_gov_connection_refused() -> None:
+    """`_is_definitively_dead_status` alone can't tell a genuinely nonexistent
+    host apart from a live .gov host that TCP-refused/reset an automated
+    request (dipstick67: nps.gov pages for "Cliff Palace" at Mesa Verde and
+    "Checkerboard Mesa" -- both live, famous, actively maintained -- were
+    rejected as dead this way). The carve-out must fire only for the
+    ambiguous "failed to establish a new connection" marker on a .gov host,
+    never for an explicit 404/410, never for an unambiguous DNS-failure
+    marker, and never for a non-.gov domain."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    refused = "ConnectionError(MaxRetryError(\"Failed to establish a new connection: [Errno 111] Connection refused\"))"
+
+    assert discoverer._is_bot_block_false_negative_dead_status(
+        "https://www.nps.gov/meve/planyourvisit/cliff_palace.htm", refused
+    ) is True
+    assert discoverer._is_bot_block_false_negative_dead_status(
+        "https://www.flanigansinn.com/spotted-dog-cafe/", refused
+    ) is False
+    assert discoverer._is_bot_block_false_negative_dead_status(
+        "https://www.nps.gov/meve/planyourvisit/cliff_palace.htm", 404
+    ) is False
+    dns_error_on_gov = (
+        "HTTPSConnectionPool(host='www.nps.gov', port=443): Max retries exceeded "
+        "with url: / (Caused by NameResolutionError(\"Failed to resolve 'www.nps.gov' "
+        "([Errno 11001] getaddrinfo failed)\"))"
+    )
+    assert discoverer._is_bot_block_false_negative_dead_status(
+        "https://www.nps.gov/meve/planyourvisit/cliff_palace.htm", dns_error_on_gov
+    ) is False
+
+
+def test_retain_url_preserves_nps_gov_en_route_stop_on_connection_refused_false_negative() -> None:
+    """Regression for dipstick67: direct-batch harvest found the real,
+    correct, official nps.gov page for the en-route stop "Cliff Palace
+    (Mesa Verde)", but it was rejected outright as "dead" on a single fetch
+    that failed with a connection-refused-style error -- the signature of
+    nps.gov's bot-blocking, not of a page that no longer exists. The
+    row-matched, non-DNS, .gov carve-out must let it through."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    candidate = {
+        "name": "Cliff Palace",
+        "title": "Cliff Palace",
+        "url": "https://www.nps.gov/meve/planyourvisit/cliff_palace.htm",
+        "snippet": "Cliff Palace at Mesa Verde National Park",
+    }
+    refused = "ConnectionError(MaxRetryError(\"Failed to establish a new connection: [Errno 111] Connection refused\"))"
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(False, refused, "")):
+        out = discoverer._retain_discovered_url(
+            "https://www.nps.gov/meve/planyourvisit/cliff_palace.htm",
+            "Cliff Palace (Mesa Verde)",
+            "Pagosa Springs",
+            allow_alltrails=False,
+            kind="en-route stop",
+            candidate=candidate,
+        )
+
+    assert out == "https://www.nps.gov/meve/planyourvisit/cliff_palace.htm"
+
+
+def test_retain_url_preserves_multi_token_en_route_stop_row_matched_candidate() -> None:
+    """Regression for dipstick67: the single-token preservation exemption only
+    covered one-word item names, so real, row-matched, official multi-word
+    en-route stops ("Corona Arch" -> blm.gov/visit/corona-arch-trail,
+    2 tokens) still fell through to the deep relevance gate, which requires
+    the *destination* name to appear on the stop's own page -- something an
+    en-route stop (explicitly not part of the destination, per
+    docs/design/url-discovery-and-audit.md) has no reason to do. Attractions
+    keep the stricter single-token-only bar; only en-route stops get the
+    wider exemption."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    candidate = {
+        "name": "Corona Arch",
+        "title": "Corona Arch Trailhead",
+        "url": "https://www.blm.gov/visit/corona-arch-trail",
+        "snippet": "Corona Arch is a popular hiking destination near Moab, Utah.",
+    }
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, "")):
+        out = discoverer._retain_discovered_url(
+            "https://www.blm.gov/visit/corona-arch-trail",
+            "Corona Arch",
+            "Canyonlands National Park",
+            allow_alltrails=False,
+            kind="en-route stop",
+            candidate=candidate,
+        )
+
+    assert out == "https://www.blm.gov/visit/corona-arch-trail"
 
 
 def test_retain_url_rejects_matched_restaurant_row_with_unresolvable_domain() -> None:

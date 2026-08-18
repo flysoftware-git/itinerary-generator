@@ -2728,7 +2728,11 @@ class URLDiscoverer:
                 # exemption -- a matched row pointing at a domain that fails to
                 # resolve is not "close enough", it is a broken link.
                 ok, fetch_status, _ = self._fetch_page_text(url, timeout=8)
-                if not ok and self._is_definitively_dead_status(fetch_status):
+                if (
+                    not ok
+                    and self._is_definitively_dead_status(fetch_status)
+                    and not self._is_bot_block_false_negative_dead_status(url, fetch_status)
+                ):
                     logger.info(
                         "Rejected dead item-matched authoritative direct-batch URL for %s '%s' (%s): %s (%s)",
                         kind,
@@ -2867,7 +2871,11 @@ class URLDiscoverer:
                 and self._direct_batch_row_matches_item(candidate, item_name, dest_name)
             ):
                 ok, status, _ = self._fetch_page_text(url, timeout=8)
-                if not ok and self._is_definitively_dead_status(status):
+                if (
+                    not ok
+                    and self._is_definitively_dead_status(status)
+                    and not self._is_bot_block_false_negative_dead_status(url, status)
+                ):
                     logger.info(
                         "Rejected dead authoritative direct-batch candidate for %s '%s' (%s): %s",
                         kind,
@@ -2877,9 +2885,28 @@ class URLDiscoverer:
                     )
                     return ""
                 item_tokens = self._significant_tokens(item_name)
-                if len(item_tokens) <= 1 and self._candidate_text_matches_item_tokens(candidate, item_tokens):
+                # En-route stops sit along the route, not inside the
+                # destination itself, so the deep relevance gate's
+                # destination-token-on-page requirement below is inapplicable
+                # to them by construction -- not just for single-word names.
+                # Restricting this exemption to len(item_tokens) <= 1 alone
+                # dropped real, row-matched, multi-word official pages
+                # (dipstick67: "Corona Arch" -> blm.gov/visit/corona-arch-trail,
+                # "Dead Horse Point State Park Overlook" -> stateparks.utah.gov)
+                # purely because the page never repeats "Canyonlands National
+                # Park" -- a park these stops are not actually part of.
+                # Attractions/restaurants keep the stricter single-token-only
+                # bar; only en-route stops get this wider exemption.
+                is_multi_token_en_route_stop = (
+                    kind in {"en-route stop", "en_route_stop"} and len(item_tokens) > 1
+                )
+                if (
+                    (len(item_tokens) <= 1 or is_multi_token_en_route_stop)
+                    and self._candidate_text_matches_item_tokens(candidate, item_tokens)
+                ):
                     logger.info(
-                        "Preserved direct-batch single-token item %s '%s' (%s): %s",
+                        "Preserved direct-batch %s %s '%s' (%s): %s",
+                        "row-matched en-route stop" if is_multi_token_en_route_stop else "single-token item",
                         kind,
                         item_name or "unknown",
                         dest_name or "unknown destination",
@@ -7076,11 +7103,38 @@ class URLDiscoverer:
                         matching_other_urls.append((score, cleaned))
 
             selected = ""
-            # En-route stops are navigation waypoints — prefer Maps over source pages.
-            if matching_map_urls:
-                selected = sorted(matching_map_urls, key=lambda row: row[0], reverse=True)[0][1]
-            elif matching_other_urls:
-                selected = sorted(matching_other_urls, key=lambda row: row[0], reverse=True)[0][1]
+            # En-route stops are navigation waypoints, so a Maps result is
+            # normally preferred over a source page. But a generic
+            # maps-search/-dir URL is documented as never qualifying as
+            # canonical entity evidence (docs/design/url-discovery-and-audit.md)
+            # and _item_has_verified_url explicitly refuses to count it as
+            # "verified" -- so picking one here over an already-retained real
+            # source page doesn't just deprioritize the source page, it
+            # guarantees the item gets discarded outright at audit with
+            # nothing to show (dipstick67: Mancos State Park's real
+            # cpw.state.co.us page was found and preserved, then out-selected
+            # for a maps-search URL, which then failed audit and the whole
+            # stop was removed). A deterministic Maps *place* URL (its own
+            # policy class, not search/dir) IS audit-verified, so it keeps
+            # winning over a source page exactly as before.
+            best_map = (
+                sorted(matching_map_urls, key=lambda row: row[0], reverse=True)[0][1]
+                if matching_map_urls else ""
+            )
+            best_other = (
+                sorted(matching_other_urls, key=lambda row: row[0], reverse=True)[0][1]
+                if matching_other_urls else ""
+            )
+            if (
+                best_map
+                and best_other
+                and self._classify_url_policy_class(best_map) in {"google_maps_search", "google_maps_dir"}
+            ):
+                selected = best_other
+            elif best_map:
+                selected = best_map
+            else:
+                selected = best_other
             if selected:
                 self._remember_direct_batch_authoritative_url(selected, item_name)
                 self._log_decision(
@@ -11764,6 +11818,53 @@ class URLDiscoverer:
                 "errno 11001",
             )
         )
+
+    @staticmethod
+    def _is_bot_block_false_negative_dead_status(url: str, status: int | str | None) -> bool:
+        """True when a "definitively dead" verdict is actually an ambiguous
+        connection-level failure against a domain too well-established to
+        plausibly have disappeared.
+
+        "Failed to establish a new connection" is the one marker in
+        `_is_definitively_dead_status` that is genuinely ambiguous: urllib3
+        uses that exact phrasing both when DNS resolution never got far
+        enough to try connecting (host doesn't exist) *and* when a live
+        host's TCP connection is actively refused or reset -- which is
+        exactly what an aggressive bot-blocking WAF does to automated
+        traffic from a flagged IP, rather than completing the handshake and
+        returning a clean HTTP 403. Federal recreation-site domains
+        (nps.gov, blm.gov, fs.usda.gov, ...) are both essentially certain to
+        still exist and well documented for exactly this kind of
+        connection-level bot blocking (dipstick67: direct-batch harvest
+        found the real, live nps.gov pages for "Cliff Palace" at Mesa Verde
+        and "Checkerboard Mesa" -- both among the most-visited, actively
+        maintained pages on the entire site -- and both got rejected here as
+        "dead" on a single fetch).
+
+        This carve-out is deliberately narrow: an explicit HTTP 404/410, or
+        any of the other, unambiguous DNS-resolution-failure markers (a much
+        more specific and reliable "this host doesn't exist" signal), still
+        means dead regardless of domain -- this only second-guesses the one
+        marker that a live, bot-blocking host can also trigger.
+        """
+        if isinstance(status, int):
+            return False
+        text = str(status or "").lower()
+        unambiguous_dns_failure_markers = (
+            "getaddrinfo failed",
+            "name or service not known",
+            "nodename nor servname",
+            "nameresolutionerror",
+            "failed to resolve",
+            "no address associated with hostname",
+            "errno 11001",
+        )
+        if any(marker in text for marker in unambiguous_dns_failure_markers):
+            return False
+        if "failed to establish a new connection" not in text:
+            return False
+        host = urlparse(url or "").netloc.lower()
+        return host.endswith(".gov") or ".gov." in host
 
     def _fetch_page_text(self, url: str, timeout: int = 8) -> tuple[bool, int | str, str]:
         if self._is_alltrails_trail_url(url):
