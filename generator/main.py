@@ -17,7 +17,7 @@ Flags:
   --skip-events     Skip cultural events discovery
   --skip-url-discovery  Skip URL discovery (AI content only)
     --notrails        Disable trail link discovery and omit trail links
-    --alltrails-source  Choose trail-link source: direct-link-batch, search, or apify-single-call
+    --alltrails-source  Choose trail-link source: direct-link-batch or search
     --attraction-source Choose non-trail attraction source: search or direct-link-batch
     --restaurant-source Choose restaurant source: search or direct-link-batch
     --en-route-source   Choose en-route stop source: search or direct-link-batch
@@ -1155,7 +1155,6 @@ def _selective_retry_destinations(
     skip_url_discovery: bool,
     no_trails: bool,
     alltrails_source: str | None,
-    alltrails_apify_actor_id: str | None,
     attraction_source: str | None,
     restaurant_source: str | None,
     en_route_source: str | None,
@@ -1244,7 +1243,6 @@ def _selective_retry_destinations(
                     llm_client=llm_client,
                     disable_trails=bool(no_trails),
                     alltrails_source=alltrails_source,
-                    alltrails_apify_actor_id=alltrails_apify_actor_id,
                     attraction_source=attraction_source,
                     restaurant_source=restaurant_source,
                     en_route_source=en_route_source,
@@ -1662,7 +1660,7 @@ def _write_development_build_info(output_dir: Path, build_info: dict[str, Any]) 
 @click.option("--notrails", "no_trails", is_flag=True, help="Disable trail link discovery and omit trail links")
 @click.option(
     "--alltrails-source",
-    type=click.Choice(["direct-link-batch", "search", "apify-single-call"], case_sensitive=False),
+    type=click.Choice(["direct-link-batch", "search"], case_sensitive=False),
     default=None,
     help="AllTrails source for trail-like attractions",
 )
@@ -1683,12 +1681,6 @@ def _write_development_build_info(output_dir: Path, build_info: dict[str, Any]) 
     type=click.Choice(["search", "direct-link-batch"], case_sensitive=False),
     default=None,
     help="Source for en-route stop links",
-)
-@click.option(
-    "--alltrails-apify-actor-id",
-    type=str,
-    default="",
-    help="Optional Apify actor id override for --alltrails-source apify-single-call",
 )
 @click.option(
     "--search-provider",
@@ -1727,7 +1719,6 @@ def main(
     attraction_source: str | None,
     restaurant_source: str | None,
     en_route_source: str | None,
-    alltrails_apify_actor_id: str,
     search_provider: str | None,
     noschedule: bool,
     noseed: bool,
@@ -1976,7 +1967,7 @@ def main(
     normalized_alltrails_source: str | None = None
     if alltrails_source:
         normalized_alltrails_source = str(alltrails_source).strip().lower().replace("-", "_")
-        if normalized_alltrails_source not in {"direct_link_batch", "search", "apify_single_call"}:
+        if normalized_alltrails_source not in {"direct_link_batch", "search"}:
             normalized_alltrails_source = None
     normalized_attraction_source: str | None = None
     if attraction_source:
@@ -1993,7 +1984,6 @@ def main(
         normalized_en_route_source = str(en_route_source).strip().lower().replace("-", "_")
         if normalized_en_route_source not in {"search", "direct_link_batch"}:
             normalized_en_route_source = None
-    resolved_apify_actor_id = str(alltrails_apify_actor_id or "").strip() or None
 
     # ── Hybrid provider/model selection ─────────────────────────────────────
     llm_overrides = _resolve_llm_overrides(trip, cli_provider=llm_provider, cli_model=llm_model)
@@ -2089,7 +2079,6 @@ def main(
                 llm_client=llm_client,
                 disable_trails=bool(no_trails),
                 alltrails_source=normalized_alltrails_source,
-                alltrails_apify_actor_id=resolved_apify_actor_id,
                 attraction_source=normalized_attraction_source,
                 restaurant_source=normalized_restaurant_source,
                 en_route_source=normalized_en_route_source,
@@ -2177,7 +2166,6 @@ def main(
                 skip_url_discovery=skip_url_discovery,
                 no_trails=bool(no_trails),
                 alltrails_source=normalized_alltrails_source,
-                alltrails_apify_actor_id=resolved_apify_actor_id,
                 attraction_source=normalized_attraction_source,
                 restaurant_source=normalized_restaurant_source,
                 en_route_source=normalized_en_route_source,

@@ -430,11 +430,6 @@ DEFAULT_EN_ROUTE_DETOUR_MAX_MILES = 0.0
 DEFAULT_EN_ROUTE_REQUIRE_DETOUR_METADATA = True
 DEFAULT_DIRECT_BATCH_HTML_CAPTURE_ENABLED = True
 DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR = "dev/url_discovery_direct_batch_html"
-DEFAULT_ALLTRAILS_APIFY_ACTOR_ID = "MMQdritoUWpzUVbah"
-DEFAULT_ALLTRAILS_APIFY_TOKEN_ENV = "APIFY_API_TOKEN"
-DEFAULT_ALLTRAILS_APIFY_MAX_ITEMS = 80
-DEFAULT_ALLTRAILS_APIFY_WITHIN_MILES = 30.0
-DEFAULT_ALLTRAILS_APIFY_DESTINATION_TOKEN_OVERLAP_MIN = 1
 DEFAULT_URL_POLICY_BLOCKED_CLASSES = (
     "google_search",
     "google_maps_search",
@@ -583,7 +578,6 @@ class URLDiscoverer:
         *,
         disable_trails: bool = False,
         alltrails_source: str | None = None,
-        alltrails_apify_actor_id: str | None = None,
         attraction_source: str | None = None,
         restaurant_source: str | None = None,
         en_route_source: str | None = None,
@@ -712,16 +706,6 @@ class URLDiscoverer:
         # cache is unsafe (it let a URL validated for one item silently vouch for
         # an unrelated item that happened to reuse the same URL string).
         self._direct_batch_authoritative_urls: dict[str, set[frozenset[str]]] = {}
-        self._alltrails_apify_actor_id: str = DEFAULT_ALLTRAILS_APIFY_ACTOR_ID
-        self._alltrails_apify_token_env: str = DEFAULT_ALLTRAILS_APIFY_TOKEN_ENV
-        self._alltrails_apify_max_items: int = DEFAULT_ALLTRAILS_APIFY_MAX_ITEMS
-        self._alltrails_apify_within_miles: float = DEFAULT_ALLTRAILS_APIFY_WITHIN_MILES
-        self._alltrails_apify_within_miles_by_destination: dict[str, float] = {}
-        self._alltrails_apify_destination_token_overlap_min: int = (
-            DEFAULT_ALLTRAILS_APIFY_DESTINATION_TOKEN_OVERLAP_MIN
-        )
-        self._alltrails_apify_destination_cache: dict[str, list[dict[str, Any]]] = {}
-        self._alltrails_apify_warned_missing_token: bool = False
         self._alltrails_direct_batch_cache: dict[str, list[dict[str, Any]]] = {}
         self._attraction_direct_batch_cache: dict[str, list[dict[str, Any]]] = {}
         self._attraction_maps_area_cache: dict[str, list[dict[str, Any]]] = {}
@@ -767,11 +751,8 @@ class URLDiscoverer:
         self._direct_batch_html_capture_subdir: str = DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR
         self._load_interest_filters(config_path)
         source_override = str(alltrails_source or "").strip().lower().replace("-", "_")
-        if source_override in {"search", "apify_single_call", "direct_link_batch"}:
+        if source_override in {"search", "direct_link_batch"}:
             self._alltrails_source = source_override
-        actor_override = str(alltrails_apify_actor_id or "").strip()
-        if actor_override:
-            self._alltrails_apify_actor_id = actor_override
         attraction_override = str(attraction_source or "").strip().lower().replace("-", "_")
         if attraction_override in {"search", "direct_link_batch"}:
             self._attraction_source = attraction_override
@@ -1196,7 +1177,7 @@ class URLDiscoverer:
                 url_cfg.get("alltrails_source", DEFAULT_ALLTRAILS_SOURCE)
                 or DEFAULT_ALLTRAILS_SOURCE
             ).strip().lower().replace("-", "_")
-            if alltrails_source in {"search", "apify_single_call", "direct_link_batch"}:
+            if alltrails_source in {"search", "direct_link_batch"}:
                 self._alltrails_source = alltrails_source
 
             attraction_source = str(
@@ -1358,64 +1339,6 @@ class URLDiscoverer:
             ).strip()
             if direct_batch_html_capture_subdir:
                 self._direct_batch_html_capture_subdir = direct_batch_html_capture_subdir
-
-            apify_actor = str(
-                url_cfg.get("alltrails_apify_actor_id", DEFAULT_ALLTRAILS_APIFY_ACTOR_ID)
-                or DEFAULT_ALLTRAILS_APIFY_ACTOR_ID
-            ).strip()
-            if apify_actor:
-                self._alltrails_apify_actor_id = apify_actor
-
-            apify_token_env = str(
-                url_cfg.get("alltrails_apify_token_env", DEFAULT_ALLTRAILS_APIFY_TOKEN_ENV)
-                or DEFAULT_ALLTRAILS_APIFY_TOKEN_ENV
-            ).strip()
-            if apify_token_env:
-                self._alltrails_apify_token_env = apify_token_env
-
-            apify_max_items = url_cfg.get("alltrails_apify_max_items", DEFAULT_ALLTRAILS_APIFY_MAX_ITEMS)
-            try:
-                parsed_apify_max_items = int(apify_max_items)
-                if parsed_apify_max_items > 0:
-                    self._alltrails_apify_max_items = parsed_apify_max_items
-            except (TypeError, ValueError):
-                self._alltrails_apify_max_items = DEFAULT_ALLTRAILS_APIFY_MAX_ITEMS
-
-            apify_within_miles = url_cfg.get("alltrails_apify_within_miles", DEFAULT_ALLTRAILS_APIFY_WITHIN_MILES)
-            try:
-                parsed_apify_within_miles = float(apify_within_miles)
-                if parsed_apify_within_miles > 0:
-                    self._alltrails_apify_within_miles = parsed_apify_within_miles
-            except (TypeError, ValueError):
-                self._alltrails_apify_within_miles = DEFAULT_ALLTRAILS_APIFY_WITHIN_MILES
-
-            raw_by_destination = url_cfg.get("alltrails_apify_within_miles_by_destination", {})
-            if isinstance(raw_by_destination, dict):
-                parsed_by_destination: dict[str, float] = {}
-                for raw_key, raw_value in raw_by_destination.items():
-                    key = self._normalize_destination_key(str(raw_key or ""))
-                    if not key:
-                        continue
-                    try:
-                        parsed_value = float(raw_value)
-                    except (TypeError, ValueError):
-                        continue
-                    if parsed_value > 0:
-                        parsed_by_destination[key] = parsed_value
-                self._alltrails_apify_within_miles_by_destination = parsed_by_destination
-
-            raw_overlap_min = url_cfg.get(
-                "alltrails_apify_destination_token_overlap_min",
-                DEFAULT_ALLTRAILS_APIFY_DESTINATION_TOKEN_OVERLAP_MIN,
-            )
-            try:
-                parsed_overlap_min = int(raw_overlap_min)
-                if parsed_overlap_min >= 0:
-                    self._alltrails_apify_destination_token_overlap_min = parsed_overlap_min
-            except (TypeError, ValueError):
-                self._alltrails_apify_destination_token_overlap_min = (
-                    DEFAULT_ALLTRAILS_APIFY_DESTINATION_TOKEN_OVERLAP_MIN
-                )
 
             raw_restaurant_denylist = url_cfg.get("restaurant_name_denylist", [])
             if isinstance(raw_restaurant_denylist, list):
@@ -7390,21 +7313,6 @@ class URLDiscoverer:
                     message="alltrails direct-link batch had no item-matching trail in authoritative mode",
                 )
                 return None
-        if source_mode == "apify_single_call":
-            selected = self._search_alltrails_for_trail_from_apify_pool(item_name, dest_name)
-            selected = self._prefer_canonical_alltrails_url(selected, item_name)
-            if self._passes_alltrails_post_search_filters(selected, item_name, dest_name):
-                return selected
-            self._log_decision(
-                kind="attraction",
-                dest_name=dest_name,
-                item_name=item_name,
-                reason="post_search_constraints_rejected",
-                message="alltrails apify candidate rejected by post-search constraints",
-                url=selected or "",
-            )
-            return None
-
         alltrails_variants: list[str] = _build_alltrails_query_variants(item_name, dest_name)
 
         # Preserve order while removing duplicates.
@@ -7568,330 +7476,6 @@ class URLDiscoverer:
             return False
 
         return True
-
-    @staticmethod
-    def _apify_is_closed(value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        lowered = str(value or "").strip().lower()
-        return lowered in {"1", "true", "yes"}
-
-    @staticmethod
-    def _apify_numeric(value: Any, cast: type[float] | type[int]) -> float | int | None:
-        try:
-            return cast(value)
-        except (TypeError, ValueError):
-            return None
-
-    def _search_alltrails_for_trail_from_apify_pool(self, item_name: str, dest_name: str) -> str | None:
-        rows = self._get_apify_alltrails_rows_for_destination(dest_name)
-        if not rows:
-            self._log_decision(
-                kind="attraction",
-                dest_name=dest_name,
-                item_name=item_name,
-                reason="apify_pool_empty",
-                message="alltrails apify pool empty",
-            )
-            return None
-
-        item_tokens = set(self._significant_tokens(item_name))
-        best: tuple[float, float, int, str] | None = None
-        reason_counts: dict[str, int] = {}
-
-        allowed_difficulties = {
-            str(item or "").strip().lower()
-            for item in getattr(
-                self,
-                "_alltrails_filter_allowed_difficulties",
-                DEFAULT_ALLTRAILS_FILTER_ALLOWED_DIFFICULTIES,
-            )
-            if str(item or "").strip()
-        }
-        max_miles = float(getattr(self, "_alltrails_filter_max_miles", DEFAULT_ALLTRAILS_FILTER_MAX_MILES) or 0.0)
-        max_gain = int(getattr(self, "_alltrails_filter_max_gain_feet", DEFAULT_ALLTRAILS_FILTER_MAX_GAIN_FEET) or 0)
-        min_reviews = int(getattr(self, "_alltrails_filter_min_reviews", DEFAULT_ALLTRAILS_FILTER_MIN_REVIEWS) or 0)
-        overlap_min = int(
-            getattr(
-                self,
-                "_alltrails_apify_destination_token_overlap_min",
-                DEFAULT_ALLTRAILS_APIFY_DESTINATION_TOKEN_OVERLAP_MIN,
-            )
-            or 0
-        )
-
-        def _bump(reason: str) -> None:
-            reason_counts[reason] = int(reason_counts.get(reason, 0) or 0) + 1
-
-        for row in rows:
-            if not isinstance(row, dict):
-                _bump("skip_non_object")
-                continue
-
-            if self._candidate_mentions_conflicting_destination(row, dest_name):
-                _bump("skip_destination_conflict")
-                continue
-
-            raw_url = str(
-                row.get("trailUrl")
-                or row.get("url")
-                or row.get("canonicalUrl")
-                or row.get("alltrailsUrl")
-                or ""
-            ).strip()
-            if not self._is_alltrails_trail_url(raw_url):
-                _bump("skip_not_alltrails_trail")
-                continue
-            if self._alltrails_slug_has_numbered_suffix(raw_url):
-                _bump("skip_numbered_slug")
-                continue
-            if self._apify_is_closed(row.get("isClosed")):
-                _bump("skip_closed")
-                continue
-            if not self._alltrails_slug_matches_item(raw_url, item_name):
-                _bump("skip_slug_item_mismatch")
-                continue
-
-            candidate_name = str(row.get("name") or row.get("trailName") or "").strip()
-            candidate_tokens = set(self._significant_tokens(candidate_name))
-            item_overlap_count = len(item_tokens & candidate_tokens) if item_tokens else 0
-            overlap_ratio = (item_overlap_count / float(max(1, len(item_tokens)))) if item_tokens else 1.0
-            required_item_overlap = self._required_alltrails_token_matches(len(item_tokens)) if item_tokens else 0
-            slug_is_precise = self._alltrails_slug_extra_term_count(raw_url, item_name) == 0
-            strong_item_alignment = bool(item_tokens) and item_overlap_count >= required_item_overlap
-            if not strong_item_alignment and slug_is_precise and item_tokens:
-                strong_item_alignment = True
-
-            overlap_count = self._apify_destination_overlap_count(row, dest_name)
-            if overlap_min > 0 and overlap_count < overlap_min and not strong_item_alignment:
-                _bump("skip_destination_mismatch")
-                continue
-
-            rating_raw = row.get("avgRating") if row.get("avgRating") is not None else row.get("rating")
-            reviews_raw = (
-                row.get("numReviews")
-                if row.get("numReviews") is not None
-                else (row.get("reviewCount") if row.get("reviewCount") is not None else row.get("reviews"))
-            )
-            rating = float(self._apify_numeric(rating_raw, float) or 0.0)
-            reviews = int(self._apify_numeric(reviews_raw, int) or 0)
-
-            difficulty = str(row.get("difficulty") or "").strip().lower()
-            if difficulty and allowed_difficulties and difficulty not in allowed_difficulties:
-                _bump("skip_difficulty")
-                continue
-
-            miles = row.get("lengthMiles")
-            if miles is None:
-                miles = self._meters_to_miles(row.get("lengthMeters"))
-            miles_value = float(miles) if miles is not None else None
-            if miles_value is not None and max_miles > 0 and miles_value > max_miles + 0.15:
-                _bump("skip_over_distance")
-                continue
-
-            gain_raw = row.get("elevationGainFt")
-            if gain_raw is None and row.get("elevationGainMeters") is not None:
-                gain_raw = float(row.get("elevationGainMeters")) * 3.28084
-            gain_value = int(self._apify_numeric(gain_raw, int) or 0)
-            if max_gain >= 0 and gain_value > max_gain:
-                _bump("skip_over_gain")
-                continue
-
-            if min_reviews > 0 and reviews < min_reviews:
-                _bump("skip_low_reviews")
-                continue
-
-            rank = (overlap_ratio, rating, reviews, raw_url)
-            if best is None or rank > best:
-                best = rank
-                _bump("candidate_ranked")
-
-        if not best:
-            detail = ", ".join(f"{k}={v}" for k, v in sorted(reason_counts.items())) or "none"
-            self._log_decision(
-                kind="attraction",
-                dest_name=dest_name,
-                item_name=item_name,
-                reason="apify_pool_no_match",
-                message=f"alltrails apify candidate rejected ({detail})",
-            )
-            return None
-
-        selected = self._prefer_canonical_alltrails_url(best[-1], item_name)
-        self._log_decision(
-            kind="attraction",
-            dest_name=dest_name,
-            item_name=item_name,
-            reason="apify_pool_selected",
-            message="alltrails apify candidate selected",
-            url=selected or "",
-        )
-        return selected
-
-    @staticmethod
-    def _meters_to_miles(value: Any) -> float | None:
-        try:
-            meters = float(value)
-        except (TypeError, ValueError):
-            return None
-        if meters < 0:
-            return None
-        return meters / 1609.344
-
-    def _get_apify_alltrails_rows_for_destination(self, dest_name: str) -> list[dict[str, Any]]:
-        cache_key = str(dest_name or "").strip().lower()
-        if not cache_key:
-            return []
-
-        with self._request_cache_lock:
-            cached = self._alltrails_apify_destination_cache.get(cache_key)
-            if cached is not None:
-                return cached
-
-        token_env = str(getattr(self, "_alltrails_apify_token_env", DEFAULT_ALLTRAILS_APIFY_TOKEN_ENV) or DEFAULT_ALLTRAILS_APIFY_TOKEN_ENV)
-        token = str(os.environ.get(token_env, "") or "").strip()
-        if not token:
-            if not self._alltrails_apify_warned_missing_token:
-                logger.warning(
-                    "AllTrails Apify source selected, but %s is not set; skipping Apify trail discovery",
-                    token_env,
-                )
-                self._alltrails_apify_warned_missing_token = True
-            with self._request_cache_lock:
-                self._alltrails_apify_destination_cache[cache_key] = []
-            return []
-
-        lat_lon = self._geocode_destination_for_apify(dest_name)
-        if not lat_lon:
-            with self._request_cache_lock:
-                self._alltrails_apify_destination_cache[cache_key] = []
-            return []
-
-        lat, lon = lat_lon
-        radius_miles = self._destination_apify_radius_miles(dest_name)
-        start_url = self._build_apify_explore_start_url(
-            lat,
-            lon,
-            within_miles=radius_miles,
-        )
-        actor_id = str(getattr(self, "_alltrails_apify_actor_id", DEFAULT_ALLTRAILS_APIFY_ACTOR_ID) or DEFAULT_ALLTRAILS_APIFY_ACTOR_ID).strip()
-        max_items = int(getattr(self, "_alltrails_apify_max_items", DEFAULT_ALLTRAILS_APIFY_MAX_ITEMS) or DEFAULT_ALLTRAILS_APIFY_MAX_ITEMS)
-
-        payload = {
-            "startUrl": start_url,
-            "maxItems": max(1, max_items),
-            "descriptionLanguage": "en",
-            "minRating": 0,
-            "minReviews": 0,
-        }
-        api_url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
-        rows: list[dict[str, Any]] = []
-
-        try:
-            response = self._url_validator.session.post(
-                api_url,
-                params={"token": token},
-                json=payload,
-                timeout=120,
-            )
-            response.raise_for_status()
-            parsed = response.json()
-            if isinstance(parsed, list):
-                rows = [row for row in parsed if isinstance(row, dict)]
-        except Exception as exc:
-            logger.warning("Apify AllTrails fetch failed for '%s': %s", dest_name, exc)
-            rows = []
-
-        with self._request_cache_lock:
-            self._alltrails_apify_destination_cache[cache_key] = rows
-        return rows
-
-    @staticmethod
-    def _normalize_destination_key(text: str) -> str:
-        lowered = str(text or "").strip().lower()
-        return re.sub(r"[^a-z0-9]+", " ", lowered).strip()
-
-    def _destination_apify_radius_miles(self, dest_name: str) -> float:
-        base = float(
-            getattr(self, "_alltrails_apify_within_miles", DEFAULT_ALLTRAILS_APIFY_WITHIN_MILES)
-            or DEFAULT_ALLTRAILS_APIFY_WITHIN_MILES
-        )
-        mapping = getattr(self, "_alltrails_apify_within_miles_by_destination", {})
-        if not isinstance(mapping, dict) or not mapping:
-            return base
-
-        normalized_name = self._normalize_destination_key(dest_name)
-        slug_name = re.sub(r"\s+", "-", normalized_name)
-
-        for key in (normalized_name, slug_name):
-            if key in mapping:
-                try:
-                    value = float(mapping[key])
-                    if value > 0:
-                        return value
-                except (TypeError, ValueError):
-                    continue
-        return base
-
-    def _apify_destination_overlap_count(self, row: dict[str, Any], dest_name: str) -> int:
-        dest_tokens = set(self._significant_tokens(dest_name))
-        if not dest_tokens:
-            return 0
-        text_parts = [
-            str(row.get("areaName") or ""),
-            str(row.get("cityName") or ""),
-            str(row.get("locationLabel") or ""),
-            str(row.get("areaSlug") or ""),
-            str(row.get("cityUrl") or ""),
-            str(row.get("trailUrl") or ""),
-        ]
-        row_tokens = set(self._significant_tokens(" ".join(text_parts)))
-        return len(dest_tokens & row_tokens)
-
-    def _geocode_destination_for_apify(self, destination: str) -> tuple[float, float] | None:
-        queries = [destination, f"{destination}, USA"]
-        for query in queries:
-            try:
-                response = self._url_validator.session.get(
-                    "https://nominatim.openstreetmap.org/search",
-                    params={
-                        "q": query,
-                        "format": "json",
-                        "limit": 1,
-                        "countrycodes": "us",
-                    },
-                    headers={"User-Agent": "RoadTripGenerator-URLDiscovery/1.0"},
-                    timeout=10,
-                )
-                response.raise_for_status()
-                rows = response.json()
-                if not isinstance(rows, list) or not rows:
-                    continue
-                first = rows[0] if isinstance(rows[0], dict) else {}
-                lat = float(first.get("lat"))
-                lon = float(first.get("lon"))
-                return lat, lon
-            except Exception:
-                continue
-        return None
-
-    @staticmethod
-    def _build_apify_explore_start_url(lat: float, lon: float, *, within_miles: float) -> str:
-        radius = max(1.0, float(within_miles))
-        lat_delta = radius / 69.0
-        lon_delta = radius / (69.172 * max(0.25, abs(cos(radians(lat)))))
-        b_br_lat = lat - lat_delta
-        b_tl_lat = lat + lat_delta
-        b_br_lng = lon + lon_delta
-        b_tl_lng = lon - lon_delta
-        return (
-            "https://www.alltrails.com/explore?"
-            f"b_br_lat={b_br_lat:.6f}&"
-            f"b_br_lng={b_br_lng:.6f}&"
-            f"b_tl_lat={b_tl_lat:.6f}&"
-            f"b_tl_lng={b_tl_lng:.6f}&"
-            "a[]=hiking"
-        )
 
     def _get_filtered_alltrails_selection(
         self,

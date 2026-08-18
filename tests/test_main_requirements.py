@@ -29,7 +29,6 @@ def test_cli_declares_required_options() -> None:
         "attraction_source",
         "restaurant_source",
         "en_route_source",
-        "alltrails_apify_actor_id",
         "noschedule",
         "noseed",
         "destinations",
@@ -71,7 +70,6 @@ def test_cli_source_option_choices_include_direct_link_batch() -> None:
     assert set(alltrails.type.choices) == {
         "direct-link-batch",
         "search",
-        "apify-single-call",
     }
     assert set(attractions.type.choices) == {"search", "direct-link-batch"}
     assert set(restaurants.type.choices) == {"search", "direct-link-batch"}
@@ -772,7 +770,6 @@ def test_selective_retry_runs_only_flagged_destinations() -> None:
         skip_url_discovery=False,
         no_trails=False,
         alltrails_source="direct_link_batch",
-        alltrails_apify_actor_id=None,
         attraction_source="search",
         restaurant_source="search",
         en_route_source="direct_link_batch",
@@ -819,7 +816,6 @@ def test_selective_retry_skips_url_stage_when_breaker_reopens_after_outer_gate()
         skip_url_discovery=False,
         no_trails=False,
         alltrails_source="direct_link_batch",
-        alltrails_apify_actor_id=None,
         attraction_source="search",
         restaurant_source="search",
         en_route_source="direct_link_batch",
@@ -861,7 +857,6 @@ def test_selective_retry_runs_url_stage_when_breaker_check_returns_false() -> No
         skip_url_discovery=False,
         no_trails=False,
         alltrails_source="direct_link_batch",
-        alltrails_apify_actor_id=None,
         attraction_source="search",
         restaurant_source="search",
         en_route_source="direct_link_batch",
@@ -908,7 +903,6 @@ def test_selective_retry_respects_skip_flags() -> None:
         skip_url_discovery=False,
         no_trails=False,
         alltrails_source="direct_link_batch",
-        alltrails_apify_actor_id=None,
         attraction_source="search",
         restaurant_source="search",
         en_route_source="direct_link_batch",
@@ -1078,7 +1072,6 @@ def test_selective_retry_narrows_stages_per_destination() -> None:
         skip_url_discovery=False,
         no_trails=False,
         alltrails_source="direct_link_batch",
-        alltrails_apify_actor_id=None,
         attraction_source="search",
         restaurant_source="search",
         en_route_source="direct_link_batch",

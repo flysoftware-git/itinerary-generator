@@ -280,11 +280,6 @@ url_discovery:
   alltrails_filter_max_gain_feet: 1000
   alltrails_filter_min_reviews: 5
   alltrails_filter_allowed_difficulties: ["easy", "moderate"]
-  alltrails_apify_within_miles: 15
-  alltrails_apify_within_miles_by_destination:
-    "zion national park": 12
-    "zion": 12
-  alltrails_apify_destination_token_overlap_min: 1
   alltrails_explore_filters:
     within_miles: 10
     activities: ["hiking"]

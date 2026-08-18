@@ -1057,50 +1057,6 @@ def test_candidate_mentions_conflicting_destination_detects_other_park() -> None
     assert discoverer._candidate_mentions_conflicting_destination(candidate, "Bryce Canyon National Park")
 
 
-def test_search_alltrails_from_apify_pool_allows_precise_slug_when_destination_metadata_sparse() -> None:
-    discoverer = URLDiscoverer.__new__(URLDiscoverer)
-    discoverer._alltrails_apify_destination_token_overlap_min = 1
-    discoverer._alltrails_filter_min_reviews = 0
-
-    rows = [
-        {
-            "trailUrl": "https://www.alltrails.com/trail/us/utah/navajo-loop-trail",
-            "name": "Navajo Loop Trail",
-            "areaName": "Southern Utah",
-        }
-    ]
-
-    with patch.object(discoverer, "_get_apify_alltrails_rows_for_destination", return_value=rows):
-        out = discoverer._search_alltrails_for_trail_from_apify_pool(
-            "Navajo Loop Trail",
-            "Bryce Canyon National Park",
-        )
-
-    assert out == "https://www.alltrails.com/trail/us/utah/navajo-loop-trail"
-
-
-def test_search_alltrails_from_apify_pool_rejects_conflicting_destination_mention() -> None:
-    discoverer = URLDiscoverer.__new__(URLDiscoverer)
-    discoverer._alltrails_apify_destination_token_overlap_min = 1
-
-    rows = [
-        {
-            "trailUrl": "https://www.alltrails.com/trail/us/utah/navajo-loop-trail",
-            "name": "Navajo Loop Trail",
-            "areaName": "Zion National Park",
-            "snippet": "Navajo Loop Trail guide in Zion National Park.",
-        }
-    ]
-
-    with patch.object(discoverer, "_get_apify_alltrails_rows_for_destination", return_value=rows):
-        out = discoverer._search_alltrails_for_trail_from_apify_pool(
-            "Navajo Loop Trail",
-            "Bryce Canyon National Park",
-        )
-
-    assert out is None
-
-
 def test_discover_restaurants_can_use_direct_batch_source():
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._restaurant_source = "direct_link_batch"
