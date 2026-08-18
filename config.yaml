@@ -349,7 +349,7 @@ url_discovery:
 # Overridable per-entry via the grouped entry's own base_owned_categories
 # field (an explicit empty list there opts that entry out entirely).
 multi_site_grouping:
-  base_owned_categories: ["restaurant"]
+  base_owned_categories: ["restaurant", "cultural_events"]
 
 # ── Output validation ─────────────────────────────────────────────────────────
 validation:

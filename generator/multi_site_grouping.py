@@ -15,16 +15,22 @@ from typing import Any
 # Valid category names for multi_site_grouping.base_owned_categories
 # (config.yaml default) and a grouped destination entry's own
 # base_owned_categories override. Matches the categories url_discovery.py
-# independently discovers per destination.
+# independently discovers per destination, plus cultural_events (discovered
+# by cultural_events.py, not url_discovery.py).
 VALID_BASE_OWNED_CATEGORIES: frozenset[str] = frozenset(
-    {"trail", "attraction", "restaurant", "en_route_stop", "scenic_drive"}
+    {"trail", "attraction", "restaurant", "en_route_stop", "scenic_drive", "cultural_events"}
 )
 
 # config.yaml multi_site_grouping.base_owned_categories default, matching
 # docs/design/multi-site-destination-grouping.md §5's recommendation:
 # physical proximity means restaurants are the category most likely to be
-# a duplicate if independently discovered per grouped entry.
-DEFAULT_BASE_OWNED_CATEGORIES: tuple[str, ...] = ("restaurant",)
+# a duplicate if independently discovered per grouped entry. cultural_events
+# joined this default after a real validation run (dipstick67) showed a
+# grouped child (Canyonlands) independently generating its own Cultural
+# Events section that was actually about the group base's town (Moab) --
+# project owner: "Cultural events should likely be kept in the primary
+# destination not sub-destinations."
+DEFAULT_BASE_OWNED_CATEGORIES: tuple[str, ...] = ("restaurant", "cultural_events")
 
 
 def group_base_id(dest: dict[str, Any] | None) -> str:

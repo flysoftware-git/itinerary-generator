@@ -28,6 +28,7 @@ from urllib.parse import quote
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient
 from generator.search_provider import build_search_client
+from generator.multi_site_grouping import DEFAULT_BASE_OWNED_CATEGORIES, category_deferred_to_base
 
 logger = logging.getLogger(__name__)
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -68,16 +69,56 @@ class CulturalEventsDiscoverer:
         )
         self._template = (PROMPTS_DIR / "cultural_events.txt").read_text(encoding="utf-8")
         self._system_prompt = (PROMPTS_DIR / "system_prompt.txt").read_text(encoding="utf-8")
+        # GH #68 multi-site grouping (config.yaml multi_site_grouping.base_owned_categories)
+        # -- see generator/multi_site_grouping.py for the resolution rule this feeds.
+        # Loaded independently of url_discovery.py's own copy since
+        # CulturalEventsDiscoverer is constructed and run separately (see
+        # main.py) and has no other config.yaml dependency today.
+        self._multi_site_base_owned_categories: frozenset[str] = frozenset(DEFAULT_BASE_OWNED_CATEGORIES)
+        self._load_multi_site_grouping_config(config_path)
+
+    def _load_multi_site_grouping_config(self, config_path: Path | str) -> None:
+        try:
+            import yaml
+
+            with Path(config_path).open(encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            multi_site_cfg = cfg.get("multi_site_grouping", {}) or {}
+            raw_base_owned = multi_site_cfg.get("base_owned_categories", DEFAULT_BASE_OWNED_CATEGORIES)
+            if isinstance(raw_base_owned, list):
+                self._multi_site_base_owned_categories = frozenset(
+                    str(c or "").strip().lower() for c in raw_base_owned if str(c or "").strip()
+                )
+        except Exception as e:
+            logger.warning("Could not load multi_site_grouping config from %s: %s", config_path, e)
 
     def discover(self, trip: dict[str, Any]) -> None:
         destinations = trip.get("destinations", [])
 
         def _one(dest: dict) -> None:
+            # GH #68 multi-site grouping §5: a grouped entry can defer
+            # cultural-events discovery to its group base entirely, mirroring
+            # url_discovery.py's restaurant/scenic-drive skip-gates. Unlike
+            # those two (bundled into one combined ai_content.py LLM call
+            # that can't be cheaply skipped per-category), cultural events
+            # are discovered via their own dedicated search + synthesis call
+            # per destination -- so this skips the real API cost entirely
+            # instead of generating-then-hiding at render time. Real
+            # validation-run finding (dipstick67): a grouped child
+            # (Canyonlands) independently generated its own Cultural Events
+            # section that was actually about the group base's town (Moab).
+            if category_deferred_to_base(dest, "cultural_events", self._multi_site_base_owned_categories):
+                dest["cultural_events"] = {}
+                logger.info(
+                    "  Cultural events discovery skipped for '%s' -- category deferred to group base",
+                    dest.get("name", ""),
+                )
+                return
             try:
                 logger.info("Discovering cultural events for '%s'…", dest["name"])
                 result = self._discover_for_dest(dest)
                 dest["cultural_events"] = result
-                logger.info("  → Cultural events for '%s': has_events=%s, count=%d", 
+                logger.info("  → Cultural events for '%s': has_events=%s, count=%d",
                            dest["name"], result.get("has_events", False), len(result.get("events", [])))
             except Exception as e:
                 logger.error("Failed to discover cultural events for '%s': %s", dest["name"], e, exc_info=True)

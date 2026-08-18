@@ -23,6 +23,108 @@ def test_search_provider_override_forces_single_provider():
     assert isinstance(discoverer._search, GrokSearch)
 
 
+def test_init_loads_cultural_events_into_default_deferred_categories() -> None:
+    """config.yaml's multi_site_grouping.base_owned_categories now
+    includes cultural_events by default (dipstick67 fix) -- confirm
+    CulturalEventsDiscoverer.__init__ actually loads it, not just
+    multi_site_grouping.py's own constant."""
+    mock_llm = type("MockLLM", (), {"usage_tracker": None})()
+    with patch.dict("os.environ", {"XAI_API_KEY": "test-key"}):
+        discoverer = CulturalEventsDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+
+    assert "cultural_events" in discoverer._multi_site_base_owned_categories
+
+
+def test_discover_skips_generation_for_deferred_grouped_child() -> None:
+    """dipstick67 fix: cultural_events.py's discover() now skips the
+    entire Grok search + LLM synthesis call for a grouped child (e.g.
+    Canyonlands) whose cultural_events category is deferred to its group
+    base (e.g. Moab) -- the real API cost is avoided entirely, not just
+    hidden at render time. This differs from restaurants/scenic-drives,
+    which are bundled into ai_content.py's one combined LLM call and can
+    only skip the separate discovery/verification step; cultural events
+    have their own dedicated per-destination call, so the generation
+    itself can be skipped."""
+    d = _discoverer()
+    d._multi_site_base_owned_categories = frozenset({"restaurant", "cultural_events"})
+
+    def _boom(dest):
+        raise AssertionError("_discover_for_dest should not be called for a deferred grouped child")
+
+    d._discover_for_dest = _boom
+
+    trip = {
+        "destinations": [
+            {
+                "id": "canyonlands",
+                "name": "Canyonlands National Park",
+                "dates": "August 3, 2026",
+                "group_with": "moab",
+            },
+        ]
+    }
+    d.discover(trip)
+
+    assert trip["destinations"][0]["cultural_events"] == {}
+
+
+def test_discover_still_runs_for_group_base_itself() -> None:
+    """The group base (no group_with) always supplies its own real
+    cultural_events regardless of the deferred-category config -- only a
+    grouped child ever defers (category_deferred_to_base's is_grouped()
+    guard)."""
+    d = _discoverer()
+    d._multi_site_base_owned_categories = frozenset({"restaurant", "cultural_events"})
+
+    calls: list[str] = []
+
+    def _fake(dest):
+        calls.append(dest["name"])
+        return {"has_events": False, "honest_assessment": "No ticketed events were confidently verified."}
+
+    d._discover_for_dest = _fake
+
+    trip = {"destinations": [{"id": "moab", "name": "Moab", "dates": "August 1-4, 2026"}]}
+    d.discover(trip)
+
+    assert calls == ["Moab"]
+    assert trip["destinations"][0]["cultural_events"] == {
+        "has_events": False,
+        "honest_assessment": "No ticketed events were confidently verified.",
+    }
+
+
+def test_discover_runs_for_grouped_child_when_cultural_events_not_deferred() -> None:
+    """A grouped child still gets its own independent cultural-events
+    discovery call when cultural_events isn't in the resolved
+    base_owned_categories (e.g. an explicit per-entry override, or a
+    project config that only defers restaurants)."""
+    d = _discoverer()
+    d._multi_site_base_owned_categories = frozenset({"restaurant"})  # no cultural_events
+
+    calls: list[str] = []
+
+    def _fake(dest):
+        calls.append(dest["name"])
+        return {"has_events": False, "honest_assessment": "ok"}
+
+    d._discover_for_dest = _fake
+
+    trip = {
+        "destinations": [
+            {
+                "id": "canyonlands",
+                "name": "Canyonlands National Park",
+                "dates": "August 3, 2026",
+                "group_with": "moab",
+            },
+        ]
+    }
+    d.discover(trip)
+
+    assert calls == ["Canyonlands National Park"]
+
+
 def test_local_tip_removed_when_weekday_outside_itinerary() -> None:
     d = _discoverer()
     result = {

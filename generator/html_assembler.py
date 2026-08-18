@@ -494,7 +494,7 @@ class HTMLAssembler:
         section += self._build_schedule(ai, drives, dest["name"])
 
         # Cultural events
-        section += self._build_events(events, dest["name"])
+        section += self._build_events(events, dest["name"], dest=dest, dest_by_id=dest_by_id)
 
         # Dinner recommendations
         section += self._build_restaurants(ai, dest["name"], dest=dest, dest_by_id=dest_by_id)
@@ -1313,7 +1313,7 @@ class HTMLAssembler:
         )
         html += self._build_attractions(ai, drives, dest.get("name", ""), dest=dest, dest_by_id=dest_by_id)
         # No _build_schedule call -- see docstring above.
-        html += self._build_events(events, dest["name"])
+        html += self._build_events(events, dest["name"], dest=dest, dest_by_id=dest_by_id)
         html += self._build_restaurants(ai, dest["name"], dest=dest, dest_by_id=dest_by_id)
 
         if self._config.get("render", {}).get("show_debug_block", False):
@@ -1900,13 +1900,28 @@ class HTMLAssembler:
         html += '</div>\n'
         return html
 
-    def _build_events(self, events: dict, dest_name: str) -> str:
+    def _build_events(
+        self,
+        events: dict,
+        dest_name: str,
+        *,
+        dest: dict[str, Any] | None = None,
+        dest_by_id: dict[str, dict[str, Any]] | None = None,
+    ) -> str:
         import logging
         logger = logging.getLogger(__name__)
-        
+
         if not events:
+            # GH #68 multi-site grouping §5: cultural events deferred to the
+            # group base leave dest["cultural_events"] empty by design (see
+            # cultural_events.py's discover() skip-gate, mirroring
+            # url_discovery.py's restaurant/scenic-drive skip-gates) --
+            # render a pointer instead of just omitting the section, same as
+            # restaurants/scenic-drives already do.
+            if self._category_deferred_for_render(dest, "cultural_events"):
+                return self._group_base_pointer_html(dest, dest_by_id, "Cultural events", icon="\U0001f3ad")
             return ""
-        
+
         html = '<div class="card events-card">\n'
         if events.get("has_events"):
             html += '<h3>🎭 Cultural Events &amp; Entertainment</h3>\n'

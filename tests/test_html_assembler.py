@@ -3269,6 +3269,93 @@ def test_build_restaurants_no_pointer_for_ungrouped_entry_with_no_restaurants() 
     assert html == ""
 
 
+def test_build_events_renders_see_base_pointer_when_deferred() -> None:
+    """dipstick67 real validation-run finding: Canyonlands (a grouped
+    child of Moab) independently rendered its own Cultural Events card
+    with a confusing, self-contradictory tip ("Check out the Moab Music
+    Festival, which... concludes before your visit") that was actually
+    about Moab's own cultural scene, not Canyonlands. cultural_events is
+    now a default base_owned_category (see multi_site_grouping.py), so a
+    grouped child with empty cultural_events (cultural_events.py's
+    discovery skip-gate leaves it {}) renders the same "see base" pointer
+    restaurants/scenic-drives already use, instead of silently vanishing
+    or (as observed) generating its own unrelated content."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._multi_site_base_owned_categories = frozenset({"restaurant", "cultural_events"})
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    canyonlands = dest_by_id["canyonlands"]
+
+    html = assembler._build_events({}, "Canyonlands National Park", dest=canyonlands, dest_by_id=dest_by_id)
+
+    assert "Cultural events: see " in html
+    assert '<a href="#section-moab">Moab</a>' in html
+    assert "Moab Music Festival" not in html
+
+
+def test_build_events_no_pointer_for_ungrouped_entry_with_no_events() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._multi_site_base_owned_categories = frozenset({"restaurant", "cultural_events"})
+
+    html = assembler._build_events({}, "Zion National Park", dest={"id": "zion"})
+
+    assert html == ""
+
+
+def test_build_group_child_card_renders_cultural_events_pointer_not_own_content() -> None:
+    """End-to-end grouped-child-card regression grounded in the real
+    dipstick67 example: Canyonlands (grouped under Moab) previously
+    independently rendered its own Cultural Events card with a confusing,
+    self-contradictory local tip ("Check out the Moab Music Festival,
+    which... concludes before your visit") that was actually about Moab's
+    own cultural scene. cultural_events.py's discovery skip-gate now
+    leaves a deferred grouped child's dest["cultural_events"] empty (the
+    Grok search + synthesis call for it is skipped entirely, saving the
+    API cost -- see cultural_events.py's discover()), so the realistic
+    post-generation state is {} here, same as dinner_recommendations for
+    a deferred restaurant. _build_group_child_card must render the "see
+    base" pointer for it, not silently omit the section."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._config = {}
+    assembler._multi_site_base_owned_categories = frozenset({"restaurant", "cultural_events"})
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    canyonlands = dict(dest_by_id["canyonlands"])
+    canyonlands["ai_content"] = {"top_attractions": [], "getting_here": {"en_route_stops": []}}
+    canyonlands["cultural_events"] = {}
+
+    html = assembler._build_group_child_card(
+        canyonlands, {}, "Arches National Park", "Arches National Park, UT", "Moab", dest_by_id
+    )
+
+    assert "Moab Music Festival" not in html
+    assert "Cultural events: see " in html
+    assert '<a href="#section-moab">Moab</a>' in html
+
+
+def test_build_single_section_base_still_renders_own_cultural_events() -> None:
+    """The group base itself (Moab, no group_with) must keep rendering its
+    own real Cultural Events content normally -- deferral only ever
+    applies to grouped children, never to the base that owns the
+    category (mirrors category_deferred_to_base's is_grouped() guard)."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._multi_site_base_owned_categories = frozenset({"restaurant", "cultural_events"})
+    destinations = _moab_group_destinations()
+    dest_by_id = {d["id"]: d for d in destinations}
+    moab = dest_by_id["moab"]
+
+    events = {
+        "has_events": False,
+        "honest_assessment": "No ticketed events were confidently verified for these dates.",
+        "local_tip": "Check out the Moab Farmers Market on Thursday evenings.",
+    }
+
+    html = assembler._build_events(events, "Moab", dest=moab, dest_by_id=dest_by_id)
+
+    assert "Cultural events: see " not in html
+    assert "Moab Farmers Market" in html
+
+
 def test_build_attractions_renders_see_base_pointer_for_deferred_scenic_drives_only() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     assembler._multi_site_base_owned_categories = frozenset()
