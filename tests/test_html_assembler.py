@@ -417,7 +417,7 @@ def test_build_getting_here_route_waypoints_are_destination_scoped_for_ambiguous
         current_route_target="St. George, Utah",
     )
 
-    assert "waypoints=optimize%3Atrue|Red%20Cliffs%20Desert%20Reserve%20St.%20George%2C%20Utah|Leeds%20Historic%20District%20St.%20George%2C%20Utah" in html
+    assert "waypoints=Red%20Cliffs%20Desert%20Reserve%20St.%20George%2C%20Utah|Leeds%20Historic%20District%20St.%20George%2C%20Utah" in html
 
 
 def test_build_getting_here_route_waypoint_prefers_geocoded_coordinates() -> None:
@@ -547,7 +547,7 @@ def test_build_getting_here_orders_waypoints_by_route_progress() -> None:
         current_route_target="St. George, Utah",
     )
 
-    assert "waypoints=optimize%3Atrue|First%20Stop%20St.%20George%2C%20Utah|Mid%20Stop%20St.%20George%2C%20Utah|Last%20Stop%20St.%20George%2C%20Utah" in html
+    assert "waypoints=First%20Stop%20St.%20George%2C%20Utah|Mid%20Stop%20St.%20George%2C%20Utah|Last%20Stop%20St.%20George%2C%20Utah" in html
     assert html.index("First Stop") < html.index("Mid Stop") < html.index("Last Stop")
 
 
@@ -2876,10 +2876,48 @@ def test_destination_attractions_map_url_uses_multi_waypoint_directions() -> Non
     assert "origin=Pioneer%20Park%20St.%20George%2C%20Utah" in url
     assert "destination=Snow%20Canyon%20State%20Park" in url
     assert "waypoints=" in url
-    # 2+ waypoints: mirrors _build_route_gmaps_url's optimize:true convention.
-    assert "optimize%3Atrue" in url or "optimize:true" in url
+    # optimize:true is NOT valid syntax for this public, keyless Maps URL
+    # scheme (google.com/maps/dir/?api=1&...) -- live-verified (dipstick68)
+    # that Google tries to geocode the literal string as a place name
+    # instead, producing a wildly wrong route. Must never reappear here.
+    assert "optimize" not in url.lower()
     assert "St.%20George%20Dinosaur%20Discovery%20Site" in url
     assert "Red%20Cliffs%20Desert%20Reserve" in url
+
+
+def test_build_route_gmaps_url_never_emits_optimize_true() -> None:
+    """Real dipstick68 regression: the consumer-facing, keyless
+    google.com/maps/dir/?api=1&... URL scheme does not support the
+    Directions API's "optimize:true|" waypoint-reorder convention. Adding
+    it made Google try to geocode the literal string "optimize:true" as a
+    place, matching it to an unrelated business ("Optimize Health," a
+    Washington-state clinic) and turning a normal ~10-minute St. George
+    route into a 33-hour, 2,196-mile one -- live-verified directly against
+    real Google Maps. Must never reappear in a multi-waypoint route URL."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    stops = [
+        {
+            "name": "Jenny's Canyon Trail",
+            "route_waypoint_eligible": True,
+            "route_progress_ratio": 0.3,
+        },
+        {
+            "name": "Red Hills Desert Garden",
+            "route_waypoint_eligible": True,
+            "route_progress_ratio": 0.6,
+        },
+    ]
+    url = assembler._build_route_gmaps_url(
+        "St. George Dinosaur Discovery Site at Johnson Farm",
+        {"name": "Chuckwalla Trail"},
+        stops,
+        waypoint_scope_name="St. George, Utah",
+    )
+
+    assert "optimize" not in url.lower()
+    assert "waypoints=" in url
+    assert "Jenny" in url
+    assert "Red%20Hills%20Desert%20Garden" in url
 
 
 def test_destination_attractions_map_url_prefers_geocoded_coordinates() -> None:

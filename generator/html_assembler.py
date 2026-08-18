@@ -637,8 +637,7 @@ class HTMLAssembler:
         # without a query_place_id is rejected as ambiguous). Mirrors
         # _build_route_gmaps_url's coordinate-preference (a real geocoded
         # lat/lng resolves to exactly one point, so prefer it over
-        # name-based text when available) and its optimize:true convention
-        # for 2+ waypoints.
+        # name-based text when available).
         def _point_text(item: dict[str, Any], qualified_text: str) -> str:
             lat = item.get("geocode_lat")
             lng = item.get("geocode_lng")
@@ -658,10 +657,7 @@ class HTMLAssembler:
             "api=1",
         ]
         if waypoints:
-            if len(waypoints) > 1:
-                params.append("waypoints=" + quote("optimize:true|" + "|".join(waypoints), safe="|"))
-            else:
-                params.append("waypoints=" + quote("|".join(waypoints), safe="|"))
+            params.append("waypoints=" + quote("|".join(waypoints), safe="|"))
         return "https://www.google.com/maps/dir/?" + "&".join(params)
 
     def _build_intro_note(self, dest: dict[str, Any], events: dict[str, Any]) -> str:
@@ -1041,12 +1037,23 @@ class HTMLAssembler:
             # line, but its projection lands *ahead of* Virgin, UT, which is
             # only ~3 mi off that line and genuinely closer to the
             # destination -- verified with real geocoded coordinates from
-            # that run). With 2+ waypoints, let Google's own road-network
-            # routing reorder them instead of trusting our approximation.
-            if len(waypoint_names) > 1:
-                params.append("waypoints=" + quote("optimize:true|" + "|".join(waypoint_names), safe="|"))
-            else:
-                params.append("waypoints=" + quote("|".join(waypoint_names), safe="|"))
+            # that run).
+            #
+            # An earlier version of this fix prepended "optimize:true|" to
+            # ask Google's own road-network routing to reorder the
+            # waypoints, matching the Directions *API*'s documented
+            # convention. That convention does not apply to this public,
+            # keyless "Universal Cross-Platform Maps URL" scheme
+            # (google.com/maps/dir/?api=1&...) -- live-verified (dipstick68:
+            # St. George's Attractions Map, "Jenny's Canyon Trail" +
+            # "Red Hills Desert Garden" as waypoints) that adding
+            # "optimize:true" here makes Google try to geocode the literal
+            # string "optimize:true" as if it were a place, matching it to
+            # an unrelated business ("Optimize Health," a Washington-state
+            # clinic) and producing a 33-hour, 2,196-mile route instead of
+            # the correct ~10-minute local one. Reverted -- there is no
+            # working reorder-via-URL option for this scheme.
+            params.append("waypoints=" + quote("|".join(waypoint_names), safe="|"))
         return "https://www.google.com/maps/dir/?" + "&".join(params)
 
     def _build_destination_scope_maps_url(self, destination_name: str = "", source_url: str = "") -> str:
