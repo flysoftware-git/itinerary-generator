@@ -1065,6 +1065,45 @@ class AIContentGenerator:
                 "confirm weather, trail status, and operating hours the day before arrival."
             )
 
+        # GH #68 day-trip children (`group_with` set, e.g. Arches/Canyonlands
+        # under Moab) share the same region, season, and lodging base as
+        # their group base -- so an independently-generated "What to Know"
+        # card for the child is near-guaranteed to reproduce the SAME six
+        # generic categories the base's own card already covers, just
+        # reworded. Real published-run evidence: Moab/Arches/Canyonlands
+        # each independently got local_customs/best_times_of_day/
+        # safety_considerations/crowd_patterns/local_etiquette one-liners
+        # that are substantively identical generic seasonal-desert-park
+        # advice ("stay hydrated", "leave no trace", "early morning/late
+        # afternoon light", "fewer crowds than summer, weekends busy") --
+        # different wording, same content, so the exact-string cross-
+        # destination dedup below (_deduplicate_cross_destination_what_to_know)
+        # never caught it. Project owner: "The 'what to know' about Day
+        # Trips does not need the repetitive [generic boilerplate]... just
+        # offer unique comments to that locality."
+        #
+        # Unlike restaurants/cultural_events (fully deferred to the base via
+        # multi_site_grouping.category_deferred_to_base), full deferral isn't
+        # right here -- a day trip DOES sometimes have genuinely distinct
+        # practical notes (permits, road conditions, facilities). Only
+        # "summary" and "transportation_quirks" are kept for a grouped
+        # child (the two categories real data showed can carry genuinely
+        # site-specific content, e.g. a timed-entry permit or an unpaved-road
+        # warning); the other four generic categories are left empty rather
+        # than filled with yet another boilerplate fallback sentence that
+        # would just duplicate the base's own card in substance again.
+        grouped_child = is_grouped(dest)
+        suppressed_for_grouped_child = (
+            "local_customs",
+            "best_times_of_day",
+            "safety_considerations",
+            "crowd_patterns",
+            "local_etiquette",
+        )
+        if grouped_child:
+            for field in suppressed_for_grouped_child:
+                normalized[field] = ""
+
         fallback_defaults = {
             "local_customs": "Follow posted rules, respect quiet areas, and support local businesses with patience during peak windows.",
             "best_times_of_day": "Early morning and late afternoon usually provide easier parking and calmer conditions.",
@@ -1074,6 +1113,8 @@ class AIContentGenerator:
             "local_etiquette": "Yield politely on narrow paths, keep noise low at viewpoints, and pack out all trash.",
         }
         for key, fallback in fallback_defaults.items():
+            if grouped_child and key in suppressed_for_grouped_child:
+                continue
             if not normalized[key]:
                 normalized[key] = fallback
 

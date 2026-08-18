@@ -2568,6 +2568,72 @@ def test_normalize_what_to_know_does_not_require_or_emit_legacy_weather_photo_fi
     assert normalized["local_customs"] == "Respect shuttle lines."
 
 
+def test_normalize_what_to_know_suppresses_generic_boilerplate_for_grouped_day_trip_child() -> None:
+    """Real GH #68 evidence (project owner: 'The "what to know" about Day
+    Trips does not need the repetitive [generic boilerplate] if it is just
+    duplicates earlier direction in Moab, just offer unique comments to
+    that locality'): a real published run's What to Know cards for Moab,
+    Arches National Park (`group_with: moab`), and Canyonlands National
+    Park (`group_with: moab`) each independently generated the SAME six
+    categories with substantively identical (not verbatim-identical, so
+    the pre-existing exact-string _deduplicate_cross_destination_what_to_know
+    never caught it) generic seasonal-desert-park advice -- e.g. Arches and
+    Canyonlands both independently said 'Early morning and late afternoon
+    provide the best light/lighting for photography' for best_times_of_day.
+
+    For a grouped child, local_customs/best_times_of_day/
+    safety_considerations/crowd_patterns/local_etiquette must be left empty
+    (not filled with yet another boilerplate fallback sentence) so the
+    renderer (html_assembler.py's _build_intro_note, which already skips
+    empty fields) simply omits them -- summary and transportation_quirks
+    are kept since real data showed those are the two categories that can
+    carry genuinely site-specific content (e.g. a park-specific access/
+    facilities note)."""
+    g = _gen()
+    payload = {
+        "summary": "Arches National Park in late October features cool temperatures and fewer visitors.",
+        "local_customs": "Respect wildlife and maintain a safe distance from animals encountered along trails.",
+        "best_times_of_day": "Early morning and late afternoon provide the best light for photography.",
+        "transportation_quirks": "Parking can fill up quickly at popular trailheads, so plan to arrive early.",
+        "safety_considerations": "Stay hydrated and watch for sudden weather changes, especially in the fall.",
+        "crowd_patterns": "Expect fewer crowds compared to summer, but popular areas can still be busy.",
+        "local_etiquette": "Leave no trace; pack out all trash and stay on designated trails.",
+    }
+    dest = {
+        "id": "arches",
+        "name": "Arches National Park",
+        "dates": "October 23, 2026",
+        "group_with": "moab",
+    }
+
+    normalized = g._normalize_what_to_know(payload, dest)
+
+    assert normalized["summary"] == payload["summary"]
+    assert normalized["transportation_quirks"] == payload["transportation_quirks"]
+    assert normalized["local_customs"] == ""
+    assert normalized["best_times_of_day"] == ""
+    assert normalized["safety_considerations"] == ""
+    assert normalized["crowd_patterns"] == ""
+    assert normalized["local_etiquette"] == ""
+
+
+def test_normalize_what_to_know_keeps_full_boilerplate_for_ungrouped_base_destination() -> None:
+    """Companion to the suppression test above: Moab itself (no
+    `group_with`) is the group base, not a grouped child -- it must keep
+    the full six-category card exactly as before this fix, since it has no
+    other destination's card to defer to."""
+    g = _gen()
+    payload = {
+        "summary": "Moab in October offers a pleasant climate for outdoor activities.",
+    }
+    dest = {"id": "moab", "name": "Moab", "dates": "October 22-24, 2026"}
+
+    normalized = g._normalize_what_to_know(payload, dest)
+
+    for key in ("local_customs", "best_times_of_day", "safety_considerations", "crowd_patterns", "local_etiquette"):
+        assert normalized[key].strip() != ""
+
+
 def test_render_prompt_template_replaces_known_tokens_only() -> None:
     g = _gen()
     template = (
