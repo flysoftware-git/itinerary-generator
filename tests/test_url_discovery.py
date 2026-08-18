@@ -1447,6 +1447,73 @@ def test_direct_batch_row_match_strength_rejects_single_shared_word_against_unre
     assert strength == 0
 
 
+def test_direct_batch_row_match_strength_rejects_canyon_generic_anchor_overlap() -> None:
+    """Real dipstick67 bug: the seed attraction "Jenny's Canyon Trail" (St.
+    George, Utah) was authoritatively linked to an unrelated direct-batch
+    row for "Entrada at Snow Canyon Golf Course" -- a golf course with
+    nothing to do with the trail. Root cause: after "trail" is dropped as a
+    generic stopword, the item's only remaining significant tokens are
+    "jenny" and "canyon"; the golf course row's blob shares only "canyon"
+    (via "Snow Canyon"), which was enough to reach the weak single-anchor-
+    token match tier (strength 1) purely because "canyon" is >= 5 characters.
+    This is the same generic-word-overlap class as the "scenic"/"byway"
+    fix, except "canyon" is common enough across real, unrelated named
+    places in canyon country (Snow Canyon, Zion Canyon, Bryce Canyon, Red
+    Canyon, ...) that it must not single-handedly justify even the weak
+    match tier. Real evidence: console log line
+    "[attraction-st-george-utah-jenny-s-canyon-trail|reason=
+    direct_batch_selected_authoritative] attraction link (direct-link batch
+    authoritative): Jenny's Canyon Trail -> https://www.google.com/maps/
+    search/?api=1&query=Entrada+at+Snow+Canyon+Golf+Course+St.+George+UT"
+    from the real SW2026-dipstick67 run."""
+    row = {
+        "name": "Entrada at Snow Canyon Golf Course",
+        "title": "Entrada at Snow Canyon Golf Course",
+        "url": "https://www.google.com/maps/search/?api=1&query=Entrada+at+Snow+Canyon+Golf+Course+St.+George+UT",
+        "snippet": (
+            "Entrada at Snow Canyon Golf Course - private golf club Links: "
+            "https://www.google.com/maps/search/?api=1&query=Entrada+at+Snow+Canyon+Golf+Course+St.+George+UT"
+        ),
+    }
+    strength = URLDiscoverer._direct_batch_row_match_strength(
+        row, "Jenny's Canyon Trail", "St. George, Utah"
+    )
+    assert strength == 0
+    assert URLDiscoverer._direct_batch_url_matches_item(
+        row["url"], "Jenny's Canyon Trail", "St. George, Utah"
+    ) is False
+
+
+def test_search_attraction_from_direct_batch_rejects_unrelated_canyon_golf_course() -> None:
+    """Full-path regression for the dipstick67 Jenny's Canyon Trail mismatch
+    (see test_direct_batch_row_match_strength_rejects_canyon_generic_anchor_
+    overlap above): resolving the seed attraction's link from the real St.
+    George direct-batch harvest must not return the unrelated golf course
+    row just because both mention "canyon"."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+
+    rows = [
+        {
+            "name": "Entrada at Snow Canyon Golf Course",
+            "title": "Entrada at Snow Canyon Golf Course",
+            "url": "https://www.google.com/maps/search/?api=1&query=Entrada+at+Snow+Canyon+Golf+Course+St.+George+UT",
+            "snippet": (
+                "Entrada at Snow Canyon Golf Course - private golf club Links: "
+                "https://www.google.com/maps/search/?api=1&query=Entrada+at+Snow+Canyon+Golf+Course+St.+George+UT"
+            ),
+        },
+    ]
+
+    with patch.object(discoverer, "_get_attraction_direct_batch_rows_for_destination", return_value=rows):
+        with patch.object(discoverer, "_retain_discovered_url", side_effect=lambda url, *a, **k: url):
+            out = discoverer._search_attraction_from_direct_batch(
+                "Jenny's Canyon Trail", "St. George, Utah", "October 17, 2026"
+            )
+
+    assert out is None
+
+
 def test_direct_batch_row_match_strength_rejects_scenic_byway_boilerplate_overlap() -> None:
     """Real dipstick62 bug: the en-route-stop seed "Enchanted Circle Scenic
     Byway" (a real byway near Taos, NM, unrelated to Ouray, CO) rendered
@@ -11712,6 +11779,14 @@ def test_retain_url_rejects_google_maps_search_for_named_waypoint_in_enforce_mod
 
 
 def test_retain_url_allows_google_maps_search_for_direct_batch_harvest_only():
+    """The policy exception still accepts a direct-batch-harvested
+    google_maps_search URL -- but see
+    test_retain_url_rebuilds_ai_authored_google_maps_search_query_dropping_
+    state_suffix below: the query text itself is now rebuilt via the
+    controlled _maps_fallback_query_text builder (item_name + dest_name,
+    %20-quoted) rather than trusted verbatim, so this fixture's already-
+    item+dest-ordered, no-extra-suffix query round-trips to the same text
+    modulo quoting style."""
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._url_policy_mode = "enforce"
     discoverer._url_policy_blocked_classes = {"google_maps_search"}
@@ -11727,7 +11802,45 @@ def test_retain_url_allows_google_maps_search_for_direct_batch_harvest_only():
         kind="attraction",
         allow_google_maps_search=True,
     )
-    assert result == url
+    assert result == (
+        "https://www.google.com/maps/search/?api=1&query=Canyon%20Overlook%20Trail%20Zion%20National%20Park"
+    )
+
+
+def test_retain_url_rebuilds_ai_authored_google_maps_search_query_dropping_state_suffix() -> None:
+    """Real dipstick67 bug: the direct-batch harvest's own AI-authored Google
+    Maps search link for "Sunrise Point" (Bryce Canyon National Park) was
+    "https://www.google.com/maps/search/?api=1&query=Sunrise+Point+Bryce+
+    Canyon+National+Park+UT" -- accepted verbatim through the
+    google_maps_search policy exception. Reproduced live in a real browser:
+    that exact query (with the trailing bare "UT") returns a multi-result
+    disambiguation list matching the user's complaint ("Sunrise point is
+    opening to a broad range of options") -- Sunrise Point tied against the
+    unrelated, similarly-named "Sunset Point" and an out-of-state "Sunrise
+    Point" cliff. Dropping just the trailing state code (same item+destination
+    text otherwise) resolves straight to the single correct place. The fix
+    rebuilds the query via the same controlled _maps_fallback_query_text
+    builder used everywhere else, instead of trusting the AI-harvested query
+    text verbatim."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+    discoverer._url_policy_blocked_classes = {"google_maps_search"}
+    discoverer._url_policy_allowlisted_urls = set()
+    discoverer._url_domain_denylist = frozenset()
+
+    url = "https://www.google.com/maps/search/?api=1&query=Sunrise+Point+Bryce+Canyon+National+Park+UT"
+    result = discoverer._retain_discovered_url(
+        url,
+        "Sunrise Point",
+        "Bryce Canyon National Park",
+        allow_alltrails=False,
+        kind="attraction",
+        allow_google_maps_search=True,
+    )
+    assert result == (
+        "https://www.google.com/maps/search/?api=1&query=Sunrise%20Point%20Bryce%20Canyon%20National%20Park"
+    )
+    assert "UT" not in result
 
 
 def test_retain_discovered_url_rejects_alltrails_trail_when_post_constraints_fail() -> None:
