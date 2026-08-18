@@ -33,6 +33,7 @@ import re
 from math import asin, ceil, cos, radians, sqrt
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 from threading import Lock
 from typing import Any
 from generator.llm_client import MultiLLMClient
@@ -441,7 +442,22 @@ DEFAULT_URL_POLICY_AUTO_ALLOW_FROM_OUTPUT = True
 DEFAULT_URL_POLICY_OUTPUT_PATH = "output/index.html"
 DEFAULT_PERSISTENT_CACHE_ENABLED = True
 DEFAULT_PERSISTENT_CACHE_PATH = ".cache/url_discovery/persistent_cache.json"
-DEFAULT_PERSISTENT_SEARCH_CACHE_TTL_HOURS = 72
+# Cost-audit finding (see docs/design/url-discovery-and-audit.md "Search-Result
+# Cache Audit"): raised from 72h to 168h (7 days). A cached search result only
+# answers "what URL does this query currently resolve to" -- a real place's
+# authoritative page essentially never changes week to week. Whether that page
+# is still LIVE is a completely separate question, re-checked independently on
+# much shorter TTLs regardless of this one: _verify_url_cached (12h, see
+# DEFAULT_PERSISTENT_VERIFY_CACHE_TTL_HOURS) and page-text/AllTrails fetches
+# (24h/12h below). So extending this TTL cannot let a closure or dead link go
+# undetected for longer than those already do -- it only avoids re-asking the
+# same "which URL is this" question inside the same week, which is exactly the
+# repeat-run cost driver this audit was chasing (AllTrails corroboration
+# searches alone were ~30% of one real run's Grok calls). This mirrors the
+# geocode/Wayback caches below, which already use a long TTL (720h) for the
+# same reason: querying a genuinely static fact more than once a week is pure
+# waste, not freshness.
+DEFAULT_PERSISTENT_SEARCH_CACHE_TTL_HOURS = 168
 DEFAULT_PERSISTENT_PAGE_TEXT_CACHE_TTL_HOURS = 24
 DEFAULT_PERSISTENT_VERIFY_CACHE_TTL_HOURS = 12
 DEFAULT_PERSISTENT_PAGE_TEXT_MAX_CHARS = 120000
@@ -1680,13 +1696,65 @@ class URLDiscoverer:
                     "rows": [dict(item) for item in rows if isinstance(item, dict)],
                 }
 
-        tmp = cache_path.with_suffix(".tmp")
-        try:
-            tmp.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
-            tmp.replace(cache_path)
-            self._persistent_cache_dirty = False
-        except Exception as exc:
-            logger.info("Persistent cache save skipped due to write error: %s", exc)
+        # Cost-audit finding (see docs/design/url-discovery-and-audit.md
+        # "Search-Result Cache Audit"): real dipstick runs from tonight
+        # (dipstick69/70/72's run-console.log) logged "Persistent cache save
+        # skipped due to write error" -- WinError 32 (sharing violation),
+        # WinError 2, and Errno 13 (permission denied), all on this exact
+        # '.cache\\url_discovery\\persistent_cache.tmp' path. _discover_attractions
+        # et al. run destinations concurrently via a ThreadPoolExecutor
+        # (see the caller of _save_persistent_caches below), and
+        # _mark_persistent_cache_dirty triggers a mid-run checkpoint save
+        # from WHICHEVER worker thread happens to cross the write_every
+        # threshold -- so two threads in the same process could race to
+        # write_text()/replace() the exact same fixed tmp path at once,
+        # which is precisely what a Windows sharing-violation/permission
+        # error on that path looks like. A failed save doesn't just lose
+        # that run's new results for next time -- while it's failing
+        # silently, this run also never gets the benefit of a warm cache, no
+        # matter how long DEFAULT_PERSISTENT_SEARCH_CACHE_TTL_HOURS is set to.
+        #
+        # Fixed two ways: (1) a dedicated lock (deliberately NOT the existing
+        # _request_cache_lock -- at least one caller of
+        # _mark_persistent_cache_dirty(), the grouped direct-batch harvest
+        # path around line 5928, already holds _request_cache_lock while
+        # calling it, and _mark_persistent_cache_dirty can itself trigger
+        # this save; reusing that lock here would self-deadlock the very
+        # first time a checkpoint save fires from inside that call site)
+        # serializes the write+replace, so two threads in this process can
+        # never collide on the same tmp path; (2) the tmp filename is unique
+        # per save attempt (pid + thread id) as defense-in-depth against an
+        # external process (antivirus, OneDrive, a second manual invocation)
+        # transiently holding the shared path, with a short bounded retry
+        # since that class of external lock is normally gone within
+        # milliseconds.
+        if not hasattr(self, "_persistent_cache_save_lock"):
+            self._persistent_cache_save_lock = Lock()
+
+        with self._persistent_cache_save_lock:
+            tmp = cache_path.with_name(
+                f"{cache_path.stem}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
+            last_exc: Exception | None = None
+            for attempt in range(3):
+                try:
+                    tmp.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+                    tmp.replace(cache_path)
+                    self._persistent_cache_dirty = False
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < 2:
+                        time.sleep(0.05 * (attempt + 1))
+            if last_exc is not None:
+                logger.info("Persistent cache save skipped due to write error: %s", last_exc)
+                # Best-effort cleanup so a failed attempt doesn't litter the
+                # cache directory with an orphaned per-attempt tmp file.
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     def _mark_persistent_cache_dirty(self) -> None:
         self._persistent_cache_dirty = True

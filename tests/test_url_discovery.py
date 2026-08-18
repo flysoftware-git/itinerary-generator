@@ -1875,6 +1875,88 @@ def test_load_persistent_caches_respects_geocode_ttl(tmp_path) -> None:
     assert "stale|a|b" not in reader._en_route_stop_geocode_cache
 
 
+def test_save_persistent_caches_does_not_deadlock_when_dirty_mark_holds_request_cache_lock(tmp_path) -> None:
+    """Regression for a real deadlock hazard found during the search-cache
+    cost audit: _fetch_and_cache_grouped_direct_batch (~line 5928) calls
+    _mark_persistent_cache_dirty() WHILE HOLDING _request_cache_lock, and
+    _mark_persistent_cache_dirty() can itself trigger _save_persistent_caches()
+    once write_every dirty-marks accumulate. If the save path reused
+    _request_cache_lock (a plain, non-reentrant Lock) to serialize its file
+    write, that exact call site would self-deadlock the first time a
+    checkpoint save fires from inside it. _save_persistent_caches() must use
+    its own dedicated lock instead.
+
+    Runs the real hazard sequence on a background thread with a timeout so a
+    regression hangs the test with a clear failure instead of hanging the
+    whole suite forever."""
+    cache_path = tmp_path / "persistent_cache.json"
+
+    writer = URLDiscoverer.__new__(URLDiscoverer)
+    writer._persistent_cache_enabled = True
+    writer._persistent_cache_path = str(cache_path)
+    writer._persistent_cache_dirty = False
+    writer._persistent_cache_pending_writes = 0
+    writer._persistent_cache_write_every = 1  # force the very next dirty-mark to save immediately
+    writer._request_cache_lock = Lock()
+    writer._search_results_cache = {"some query": [{"url": "https://example.com"}]}
+
+    def _hazard_sequence() -> None:
+        # Mirrors the real call site: hold _request_cache_lock, then mark dirty
+        # (which, with write_every=1, immediately calls _save_persistent_caches()).
+        with writer._request_cache_lock:
+            writer._mark_persistent_cache_dirty()
+
+    thread = threading.Thread(target=_hazard_sequence, daemon=True)
+    thread.start()
+    thread.join(timeout=5.0)
+
+    assert not thread.is_alive(), "deadlocked: _save_persistent_caches reused _request_cache_lock"
+    assert cache_path.exists()
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert "some query" in payload["search_results"]
+
+
+def test_save_persistent_caches_survives_concurrent_saves_from_multiple_threads(tmp_path) -> None:
+    """Regression for the real WinError 32/2/Errno 13 failures logged in
+    tonight's dipstick69/70/72 run-console.log: _discover_attractions et al.
+    run destinations concurrently via a ThreadPoolExecutor, and each worker
+    thread's own periodic checkpoint save could previously race another
+    thread's save on the same fixed, shared tmp path. Fires several
+    concurrent saves at the same URLDiscoverer instance and asserts none of
+    them raise and the final on-disk file is valid, complete JSON."""
+    cache_path = tmp_path / "persistent_cache.json"
+
+    writer = URLDiscoverer.__new__(URLDiscoverer)
+    writer._persistent_cache_enabled = True
+    writer._persistent_cache_path = str(cache_path)
+    writer._persistent_cache_dirty = True
+    writer._request_cache_lock = Lock()
+    writer._search_results_cache = {f"query {i}": [{"url": f"https://example.com/{i}"}] for i in range(20)}
+
+    errors: list[BaseException] = []
+
+    def _save() -> None:
+        try:
+            writer._persistent_cache_dirty = True
+            writer._save_persistent_caches()
+        except BaseException as exc:  # pragma: no cover - failure path only
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_save) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+
+    assert not any(t.is_alive() for t in threads)
+    assert not errors
+    assert cache_path.exists()
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert len(payload["search_results"]) == 20
+    # No stray per-attempt tmp files left behind after a successful save.
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
 def test_search_attraction_authoritative_prefers_strong_match_over_weak_anchor_match() -> None:
     """Corroboration/disambiguation regression: when a batch has one row that
     fully matches the item's tokens (strength 2) and a second, different row
