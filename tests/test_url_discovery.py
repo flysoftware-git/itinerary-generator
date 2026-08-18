@@ -36,6 +36,30 @@ def test_build_query_variants_compacts_overly_long_categories():
     assert "hike" in variants[0].lower()
 
 
+def test_is_obviously_generic_url_rejects_nps_news_article():
+    """Real dipstick67 regression: the general-search recovery path
+    (authoritative_no_match_recovered_via_general_search) accepted a live,
+    on-domain nps.gov page for 'Chimney Rock' that was actually a news post
+    about a missing-hiker search-and-rescue effort -- a real page, on the
+    right domain, that happens to mention Capitol Reef, but never a stable
+    entity-specific reference page. Page TYPE (a dated news/incident
+    article) must be rejected regardless of token overlap."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    real_url = (
+        "https://www.nps.gov/care/learn/news/"
+        "capitol-reef-national-park-seeks-public-assistance-in-locating-missing-hiker.htm"
+    )
+    assert discoverer._is_obviously_generic_url(real_url.lower()) is True
+
+
+def test_is_obviously_generic_url_still_allows_real_planyourvisit_page():
+    """Guard against over-rejection: a real nps.gov attraction detail page
+    under /planyourvisit/<topic> must remain allowed (existing behavior)."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    real_url = "https://www.nps.gov/care/planyourvisit/chimneyrock.htm"
+    assert discoverer._is_obviously_generic_url(real_url.lower()) is False
+
+
 def test_discover_all_adds_urls_to_attractions():
     trip = {
         "destinations": [

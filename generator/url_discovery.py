@@ -118,6 +118,19 @@ GENERIC_BAD_URL_MARKERS = (
     "/about",
     "/index.htm",
     "/index.html",
+    # A news article, press release, or incident report is a dated,
+    # non-durable page about an EVENT -- never a stable entity-specific
+    # reference page for an attraction/trail/landmark, even when it's live,
+    # on the right domain, and happens to mention the item's name (real
+    # example: an nps.gov "seeks public assistance in locating missing
+    # hiker" news post got accepted as "Chimney Rock"'s link because it's a
+    # genuine, live, on-domain page that mentions Capitol Reef -- the
+    # existing relevance checks have no notion of page TYPE, only token
+    # overlap).
+    "/learn/news/",
+    "/news/",
+    "/press-release",
+    "/pressrelease",
 )
 # Titles/names that identify a search-result or listing page rather than a
 # specific named place -- e.g. "THE 10 BEST Restaurants in St. George -
