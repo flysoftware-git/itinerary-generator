@@ -616,15 +616,20 @@ from stage cost because a prefix was not recognised.
 throughput per minute, and a `batch_work_ratio` comparing actual calls against a naive
 per-destination baseline — the quantitative case for batch harvesting.
 
-Everything lands in `output/dev/run_ledger.jsonl` alongside stage timings, CLI flags,
-circuit-breaker stats, banned-phrase violations and retry efficiency. An `atexit` guard
-writes a `terminated_without_finalize` row if the process dies, so a crashed run is still
-visible.
+Everything lands in `output/<environment>/run_ledger.jsonl` — the ledger path resolves to
+the same `dev`/`eval`/`prod` value as the rest of the run (it defaults to `dev` only for the
+narrow window before the manifest is parsed and the environment is known), alongside stage
+timings, CLI flags, circuit-breaker stats, banned-phrase violations and retry efficiency. An
+`atexit` guard writes a `terminated_without_finalize` row if the process dies, so a crashed
+run is still visible.
 
 Two caveats when reading costs: usage is recorded only on *success*, so a run that dies
 after burning retries reports near-zero; and an unpriced model silently costs `$0.00` —
 which is exactly how every Claude Sonnet 5 call was costed at zero until the pricing table
-was corrected. Web-search server-tool fees are still untracked.
+was corrected. Web-search server-tool fees (`tool_call_cost_usd`) are tracked and folded
+into `estimated_cost_usd` — see `generator/costs.py` — but are the majority of spend on a
+Grok-heavy run (§4.7), so a report that only surfaces `estimated_cost_usd` without the
+token/tool split reads as far more expensive in "tokens" than it is.
 
 > **Design notes:** [`instrumentation-curation-and-provenance.md`](design/instrumentation-curation-and-provenance.md) ·
 > [`provider-model-matrix.md`](design/provider-model-matrix.md)
@@ -695,6 +700,56 @@ Stated plainly, because a new contributor will otherwise find these the hard way
 
 > **Design notes:** [`url-quality-pr-backlog.md`](design/url-quality-pr-backlog.md) ·
 > [`side-trip-exploration.md`](design/side-trip-exploration.md)
+
+### 4.6 Release rollback
+
+There is no runtime kill switch for v2 behaviour, and none is planned. The tool is a
+batch CLI, not a served process: each invocation is a discrete, on-demand run, so nothing
+is "live" between a bad run and the next `git revert` the way it would be for a system
+under continuous traffic. A flag that toggles v1-vs-v2 behaviour at runtime would mean
+carrying two maintained code paths indefinitely to hedge against a scenario — flip a
+switch mid-incident without being able to rerun — that this architecture doesn't produce.
+
+The source-selection flags in §4.3 (`--notrails`, `--alltrails-source`,
+`--attraction-source`, `--restaurant-source`, `--en-route-source`, `--search-provider`)
+already cover the fragile, externally-dependent subsystems — AllTrails' DataDome bot
+gate chief among them — without any additional plumbing.
+
+**The actual rollback plan:**
+
+- **Trigger:** an entry-into-service run produces materially worse
+  `resolved_exact` / `resolved_fallback_query` / `unresolved` / `rejected` counts than the
+  `v1.4.6` baseline, or an unexplained cost spike.
+- **Mechanism:** redeploy/rerun from the last known-good tag (`v1.4.6`, commit `003419f`,
+  ahead of that the pre-v2 baseline `ff71a13`) until the regression is root-caused and
+  fixed forward on `issue-6-v2`.
+- **Not provided:** an in-place behavioural toggle. If a specific subsystem needs
+  disabling mid-run without a full revert, reach for the matching §4.3 source-selection
+  flag first — that covers the highest-risk surface already.
+
+### 4.7 V2.0 entry-into-service baseline
+
+Recorded from the run reviewed and approved for entry into service, pulled from its
+ledger entry and validation report rather than re-run — **recorded only, not enforced**:
+no automated check fails a future run for drifting from these numbers yet.
+
+- **Run:** `run_id 20260819T011501.442336Z`, `environment=prod`, commit `e15f289`
+  (`issue-6-v2`), manifest `C:/Dev/Sandbox/sw_manifest.yaml`, 10 destinations, wall time
+  1094.3 s (~18m 14s).
+- **Cost:** **$2.6549** total across 202 calls — 184 × `grok-4-fast` (1.65M tokens,
+  445 web-search tool calls costing $2.225) + 18 × `gpt-4o-mini` ($0.0245). Web-search
+  tool fees are ~84% of spend on this run, not token usage.
+- **Quality:** `validation_report.json` — `valid: true`, 0 errors, 3 warnings
+  ("Attractions removed for no verified URL: 17 (threshold 3)", "Restaurants removed: 1
+  (threshold 0)", "En-route stops removed: 3 (threshold 2)"). All 10 destinations landed
+  `status=degraded` / `terminal=stable_without_retry`; en-route resolution ranged 3/4 to
+  8/8 per destination.
+- **Caveat:** no `v1.4.6` baseline run was ever captured for a direct before/after
+  comparison — the kickoff checklist's §4.2 baseline-snapshot section was left blank.
+  These are absolute v2.0 numbers, not a delta against v1.4.
+
+> **Source:** `run_ledger.jsonl`, `validation_report.json`, `destination_status_report.md`
+> alongside the reviewed `index.html`.
 
 ---
 
@@ -1087,6 +1142,9 @@ on `issue-6-v2`.
   §4.1 links §8 for completeness, not because it is satisfied.
 - `provider-model-matrix.md` and `search-provider-capability-probe.md` assign Claude to two
   search roles; `config.yaml` currently runs all three on Grok (§2.4).
+- §4.3 above says environments are `dev`/`test`/`prod`; the CLI's actual `--environment`
+  choices are `dev`/`eval`/`prod` — `test` was renamed to `eval` in code without the prose
+  catching up.
 
 ---
 
