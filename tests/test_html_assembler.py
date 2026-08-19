@@ -2310,6 +2310,23 @@ def test_header_links_omit_invalid_urls() -> None:
     assert 'target="_blank" rel="noopener"' in html
 
 
+def test_header_links_renders_redacted_placeholder_not_a_link() -> None:
+    """A privacy-redacted planning_links entry (main._apply_privacy_redaction)
+    must render as an explanatory, non-clickable placeholder rather than
+    either a real link or silently vanishing -- see requirements.md's
+    planning-links redaction policy."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {"lat": 37.2982, "lng": -113.0263}
+    links = [{"label": "Trip Plans", "url": "", "redacted": True}]
+
+    html = assembler._build_header_links(links, nps_code=None, dest=dest, attractions=[])
+
+    assert "Trip Plans" in html
+    assert ">Trip Plans</span>" in html
+    assert ">Trip Plans</a>" not in html
+    assert 'title="' in html
+
+
 def test_header_links_all_four_types_open_in_new_tab() -> None:
     """Every notion-header-btn anchor (Current Weather, Attractions Map,
     NPS, and custom manifest-provided links) must carry

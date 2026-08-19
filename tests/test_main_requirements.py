@@ -18,6 +18,7 @@ def test_cli_declares_required_options() -> None:
         "llm_provider",
         "environment",
         "env_file",
+        "privacy_mode",
         "llm_model",
         "dry_run",
         "skip_images",
@@ -165,6 +166,56 @@ def test_strip_destination_seeds_clears_all_manifest_seed_lists() -> None:
     assert trip["destinations"][0]["seeds"] == []
     assert trip["destinations"][1]["seeds"] == []
     assert trip["destinations"][2]["seeds"] == []
+
+
+def test_apply_privacy_redaction_replaces_planning_links_with_placeholder() -> None:
+    trip = {
+        "destinations": [
+            {"id": "zion", "planning_links": [{"label": "Zion Trip Notes", "url": "https://www.notion.so/x"}]},
+            {"id": "moab", "planning_links": [{"label": "A", "url": "https://a"}, {"label": "B", "url": "https://b"}]},
+            {"id": "santafe"},
+        ]
+    }
+
+    counts = main_mod._apply_privacy_redaction(trip)
+
+    assert counts["planning_links"] == 3
+    assert trip["destinations"][0]["planning_links"] == [{"label": "Trip Plans", "url": "", "redacted": True}]
+    assert trip["destinations"][1]["planning_links"] == [{"label": "Trip Plans", "url": "", "redacted": True}]
+    assert trip["destinations"][2].get("planning_links", []) == []
+
+
+def test_apply_privacy_redaction_blanks_lodging_name_keeps_location_and_checkin() -> None:
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "lodging": {"name": "Zion Lodge", "location": "Springdale, UT", "checkin_time": "4:00 PM"},
+            },
+            {"id": "moab"},
+        ]
+    }
+
+    counts = main_mod._apply_privacy_redaction(trip)
+
+    assert counts["lodging_names"] == 1
+    assert trip["destinations"][0]["lodging"]["name"] == ""
+    assert trip["destinations"][0]["lodging"]["location"] == "Springdale, UT"
+    assert trip["destinations"][0]["lodging"]["checkin_time"] == "4:00 PM"
+
+
+def test_resolve_privacy_redaction_auto_follows_environment() -> None:
+    assert main_mod._resolve_privacy_redaction("auto", "prod") is True
+    assert main_mod._resolve_privacy_redaction("auto", "dev") is False
+    assert main_mod._resolve_privacy_redaction("auto", "eval") is False
+    assert main_mod._resolve_privacy_redaction(None, "prod") is True
+    assert main_mod._resolve_privacy_redaction(None, "dev") is False
+
+
+def test_resolve_privacy_redaction_explicit_override_wins() -> None:
+    assert main_mod._resolve_privacy_redaction("on", "dev") is True
+    assert main_mod._resolve_privacy_redaction("off", "prod") is False
+    assert main_mod._resolve_privacy_redaction("OFF", "prod") is False
 
 
 def test_registry_roundtrip_preserves_destination_shaped_sections() -> None:

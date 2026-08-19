@@ -609,6 +609,15 @@ class HTMLAssembler:
                 f'<a href="https://www.nps.gov/{nps_code}/" class="notion-header-btn" target="_blank" rel="noopener">NPS</a>'
             )
         for link in links:
+            if link.get("redacted"):
+                label = html_escape.escape(link.get("label", "Trip Plans"))
+                pills.append(
+                    '<span class="notion-header-btn" style="cursor:default;opacity:0.65;" '
+                    'title="Planning links are omitted from this shared build. '
+                    'See the private version for reservation/planning details.">'
+                    f'{label}</span>'
+                )
+                continue
             url = self._normalize_external_url(link.get("url", ""))
             if not url:
                 continue

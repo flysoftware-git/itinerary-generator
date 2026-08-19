@@ -601,6 +601,19 @@ a per-provider cost/behaviour comparison is uncontaminated.
 Environments (`dev`/`test`/`prod`) resolve CLI > manifest > `ENVIRONMENT` > `dev`, and
 nest the output directory **only** when the CLI form was used.
 
+`--privacy-mode` (`auto`/`on`/`off`, §4.7-adjacent) piggybacks on the same environment
+resolution rather than being an independent switch: `auto` redacts `planning_links` and
+`lodging.name` only in `prod`, the only environment ever committed/published, so a
+personal Notion link or hotel name can't reach a wider audience just because someone
+forgot an extra flag. Caught live: the first real `--environment prod` build had none of
+this and rendered real Notion trip-planning links straight into `index.html`.
+`lodging.location`/`checkin_time` are excluded from redaction entirely — both are
+load-bearing (geocoding/routing, restaurant-search anchoring, schedule construction), so
+redacting them would degrade itinerary quality, not just remove personal data. Applied
+once, immediately after environment resolution, by mutating the parsed trip in place —
+every downstream consumer (rendering, reports, anything written later) sees an
+already-redacted trip, so there's no side channel to individually patch and forget.
+
 > **Requires:** [§9 CLI Interface](requirements.md#9-cli-interface) ·
 > [§12 Output Structure](requirements.md#12-output-structure)
 

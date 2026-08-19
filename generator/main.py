@@ -256,6 +256,52 @@ def _strip_destination_seeds(trip: dict[str, Any]) -> int:
     return stripped_count
 
 
+def _resolve_privacy_redaction(mode: str | None, environment_selected: str) -> bool:
+    """`planning_links` (Notion/reservation links) and lodging property
+    names carry personal data that must never reach a build meant for wider
+    eyes. `auto` (the default) redacts only in `prod`, since that's the only
+    environment whose output is ever committed/published; `on`/`off`
+    override the environment-based default explicitly either direction.
+
+    Deliberately NOT redacted: `lodging.location` and `lodging.checkin_time`.
+    Both are load-bearing well beyond display -- `location` drives
+    geocoding/routing (main.py) and is the search anchor for
+    "restaurants near lodging" (url_discovery.py); `checkin_time` drives
+    arrival-day schedule/prompt construction (ai_content.py). Redacting
+    either would ripple into itinerary content quality, not just privacy.
+    """
+    normalized = (mode or "auto").lower()
+    if normalized == "on":
+        return True
+    if normalized == "off":
+        return False
+    return environment_selected == "prod"
+
+
+def _apply_privacy_redaction(trip: dict[str, Any]) -> dict[str, int]:
+    """Redact planning_links and lodging.name in place. planning_links are
+    replaced with a single placeholder entry (rather than emptied outright)
+    so the renderer can show an explanatory pill instead of the button
+    silently vanishing -- see html_assembler._build_header_links. lodging.name
+    is blanked, not replaced, since its only consumers already fall back to
+    lodging.location when name is empty (html_assembler._build_group_lodging_pointer
+    and the grouped-destination banner), so no placeholder is needed there.
+    """
+    counts = {"planning_links": 0, "lodging_names": 0}
+    for dest in trip.get("destinations", []) or []:
+        if not isinstance(dest, dict):
+            continue
+        links = dest.get("planning_links", [])
+        if isinstance(links, list) and links:
+            counts["planning_links"] += len(links)
+            dest["planning_links"] = [{"label": "Trip Plans", "url": "", "redacted": True}]
+        lodging = dest.get("lodging")
+        if isinstance(lodging, dict) and str(lodging.get("name", "") or "").strip():
+            counts["lodging_names"] += 1
+            lodging["name"] = ""
+    return counts
+
+
 def _run_quality_gate(trip: dict[str, Any], html_path: "Path | None" = None) -> None:
     """Emit warnings for known quality regressions so they're visible on every run.
 
@@ -1659,6 +1705,16 @@ def _write_development_build_info(output_dir: Path, build_info: dict[str, Any]) 
     type=click.Path(exists=True),
     help="Optional path to .env file. If provided, loaded before environment resolution.",
 )
+@click.option(
+    "--privacy-mode",
+    type=click.Choice(["auto", "on", "off"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="Redact personal trip details (planning_links, lodging property names -- NOT "
+         "lodging location/check-in time, which drive routing and schedule content) from "
+         "rendered output. 'auto' redacts only in --environment prod; 'on'/'off' force the "
+         "behavior regardless of environment.",
+)
 @click.option("--llm-model", type=str, help="Override LLM model for this run")
 @click.option("--dry-run", is_flag=True, help="Parse & validate only; no AI calls")
 @click.option("--skip-images", is_flag=True, help="Skip image fetching")
@@ -1716,6 +1772,7 @@ def main(
     llm_provider: str | None,
     environment: str | None,
     env_file: str | None,
+    privacy_mode: str,
     llm_model: str | None,
     dry_run: bool,
     skip_images: bool,
@@ -1759,6 +1816,10 @@ def main(
     # visible to it without extra plumbing.
     environment_selected = "dev"
     ledger_path = Path(output) / environment_selected / "run_ledger.jsonl"
+    # Resolved once the real environment is known (see _resolve_privacy_redaction
+    # below); a safe pre-resolution default of "redact" avoids any window where an
+    # early-failure ledger record could misreport this as false.
+    redact_privacy_details = True
     finalized = False
     stage_timings: dict[str, float] = {}
     runtime_metrics: dict[str, Any] = {}
@@ -1791,6 +1852,8 @@ def main(
             "environment": environment_selected,
             "environment_cli_override": environment,
             "env_file": env_file,
+            "privacy_mode": privacy_mode,
+            "privacy_redacted": bool(redact_privacy_details),
             "llm_provider": llm_provider,
             "llm_model": llm_model,
             "search_provider_override": search_provider,
@@ -1889,6 +1952,24 @@ def main(
         click.style("   Env      : ", fg="cyan") +
         click.style(environment_selected, fg="green")
     )
+
+    redact_privacy_details = _resolve_privacy_redaction(privacy_mode, environment_selected)
+    if redact_privacy_details:
+        redaction_counts = _apply_privacy_redaction(trip)
+        click.echo(
+            click.style("   Privacy  : ", fg="cyan") +
+            click.style(
+                f"redacted ({redaction_counts['planning_links']} planning_link(s), "
+                f"{redaction_counts['lodging_names']} lodging name(s))",
+                fg="yellow",
+            )
+        )
+    else:
+        click.echo(
+            click.style("   Privacy  : ", fg="cyan") +
+            click.style("off (planning_links and lodging names rendered as-is)", fg="green")
+        )
+    runtime_metrics["privacy_redacted"] = redact_privacy_details
 
     # Add environment tag to logger name
     logger.name = f"{logger.name}[{environment_selected}]"

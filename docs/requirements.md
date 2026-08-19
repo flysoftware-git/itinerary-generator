@@ -6,6 +6,7 @@
 |---|---|---|
 | 1 | §5 | Hardened closure-marker detection for both attractions and AllTrails trail pages: page text fetched via `URLValidator.get_text` is raw, unmodified `resp.text`, so a closure phrase sitting inside a non-visible HTML comment or `<script>`/`<style>` block (stale dev/CMS markup, or — on AllTrails' React/Next.js pages — inline JSON hydration state for an unrelated "nearby trails" widget) was previously read as evidence the whole entity was closed. Both detectors now strip comments and script/style content before matching. Attraction closure detection additionally evaluates at sentence granularity so a same-sentence sub-part qualifier (`wing`, `gallery`, `exhibit`, ...) is read as a partial closure, not a whole-venue one; no equivalent partial-closure exemption exists for AllTrails, since there is no confirmed evidence of an analogous pattern on trail pages |
 | 2 | §9, §12 | Fixed the run ledger being hardcoded to `<output>/dev/run_ledger.jsonl` regardless of the resolved `--environment`, silently conflating dev/eval/prod run history in the same file. The ledger path (and its `environment` field) now resolves to the same environment as the rest of the run; a pre-resolution `dev` placeholder is used only for the narrow window before the manifest is parsed (so a failure before that point still lands its ledger entry somewhere), and is corrected once the real environment is known |
+| 3 | §9, §12 | Added `--privacy-mode` (`auto`/`on`/`off`, default `auto`) to redact `planning_links` and `lodging.name` from rendered output. Discovered live: the first real `--environment prod` build (destined for a public repo) rendered real, personal Notion trip-planning links directly into `index.html`'s header buttons with no redaction path available at all. `auto` redacts only in `prod` (the only environment ever published); `lodging.location`/`checkin_time` are deliberately left untouched since both drive geocoding/routing/schedule content, not just display. A redacted planning link renders as an explanatory non-link placeholder rather than vanishing silently |
 
 ### Changelog for v2.1
 | # | Section | Change |
@@ -705,6 +706,7 @@ Options:
   --llm-provider TEXT      Override LLM provider for this run
   --environment TEXT       Optional environment folder override (dev/eval/prod)
   --env-file PATH          Optional .env file loaded before env resolution
+  --privacy-mode TEXT      Redact personal trip details from output (`auto`/`on`/`off`, default `auto`)
   --llm-model TEXT         Override LLM model for this run
   --log-level TEXT         Console logging threshold (`debug|info|warning|error|critical`)
   --dry-run                Parse & validate manifest only; no AI calls
@@ -730,6 +732,14 @@ Output path policy:
 Run ledger policy:
 - Every run appends one JSON-lines record to `run_ledger.jsonl`, whose path resolves to the same `dev`/`eval`/`prod` environment as the rest of the run (`<output>/<environment>/run_ledger.jsonl`), not a hardcoded location.
 - A crashed run still writes a `terminated_without_finalize` record via an `atexit` guard.
+
+Privacy redaction policy:
+- `planning_links` (manifest-provided Notion/reservation/personal-planning links, §3) and `lodging.name` (specific property name) carry personal data and must not appear in output meant for wider distribution.
+- `--privacy-mode auto` (default) redacts these from every destination only when the resolved environment is `prod` — the only environment whose output is ever committed/published; `dev`/`eval` include them unchanged. `--privacy-mode on`/`off` override the environment-based default explicitly (`on` forces redaction everywhere including `dev`/`eval`; `off` forces inclusion everywhere including `prod`).
+- Deliberately NOT redacted: `lodging.location` and `lodging.checkin_time`. Both are load-bearing beyond display — `location` drives geocoding/routing and is the search anchor for "restaurants near lodging"; `checkin_time` drives arrival-day schedule construction. Redacting either would degrade itinerary content quality, not just remove personal data.
+- A redacted `planning_links` entry is not simply removed: it is replaced with a single non-link placeholder pill carrying an explanatory tooltip (e.g. "Planning links are omitted from this shared build"), so the header doesn't look broken or incomplete. A redacted `lodging.name` is blanked (not replaced); its only renderers already fall back to `lodging.location` when the name is empty.
+- Redaction happens once, immediately after environment resolution and before any other pipeline stage runs, by mutating the parsed trip's destinations in place — so every downstream consumer (rendering, reporting, future code) sees an already-redacted trip and cannot leak the original values through a side channel.
+- The resolved mode and redaction outcome are recorded in the run ledger (`privacy_mode`, `privacy_redacted`).
 
 Logging policy:
 - Default console logging threshold is `INFO`.
