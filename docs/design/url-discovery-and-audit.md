@@ -1013,6 +1013,112 @@ AI-written description against candidate context -- neither available to
 this pass; not attempted given no real alternate candidate exists to
 prefer even in principle.
 
+### Bug 2 follow-up: pushed back on "not fixable" -- investigated a description-vs-geocode plausibility check, both real candidate signals fail on live data
+The project owner pushed back on the Bug 2 write-up above with two fair
+questions: "What is 'not fixable in code', is it detectable? If an
+enroute, why not scrub as an option?" Both are legitimate -- the item's own
+AI-written description ("riverfront trails and historic site at Virgin
+River") makes a specific, checkable geographic claim, which is a real
+signal the write-up above hadn't used. Investigated two concrete ways to
+use it, both against live Nominatim data and real descriptions from actual
+runs, not hypothetically.
+
+**Signal 1 tried: distance from the item's own geocode to a separately
+geocoded reference for the named feature.** This turns out not to work,
+for a reason specific to rivers rather than a tuning problem: the wrong
+"Confluence Park" match (37.0745819, -113.582935, Bloomington Hills) is
+only **2.07 mi** from the real Santa Clara/Virgin confluence (~37.07,
+-113.62) -- and live-geocoding "Virgin River, St. George, Utah" itself
+(2026-08-18) returns "Virgin River Trail" at (37.0715898, -113.5820456),
+just **0.21 mi** from the wrong match, plus a second "Virgin River Trail"
+segment 1.08 mi away and "Virgin River Skimboard Park" 3.67 mi away -- all
+real, legitimately-named Virgin-River features. The wrong match genuinely
+*is* near the river, because the Virgin River physically winds through the
+entire St. George area including Bloomington Hills; the bug isn't that the
+geocode landed somewhere un-riverlike, it's that it landed at the *wrong
+specific* riverside place. That collapses the whole approach: a distance
+threshold loose enough to not reject the many legitimate "riverside
+picnic spot" / "cliff-edge views of Virgin River gorge" stops that are
+correctly, if loosely, described relative to a large river (real examples
+below) is also loose enough to accept this exact bug; a threshold tight
+enough to catch it (well under 1 mi) would reject those same legitimate
+stops. There is also no authoritative reference point for the specific
+claim that actually appears here: live-querying "Virgin River confluence,
+St. George, Utah" and "Santa Clara River Virgin River confluence, St.
+George, Utah" both return **zero** Nominatim results (2026-08-18) -- OSM
+has no distinctly-tagged entity for "the confluence" itself (matching the
+reverse-geocode finding in the original Bug 2 writeup above), so even
+wanting to geocode the literal claim in the description hits the same
+data gap. And the river's own top-level geocode result is a poor
+single-point stand-in regardless: the oversized-waterway fix above
+measured the Virgin River's own aggregate bounding box at ~114 mi
+diagonal, so "the river" can resolve to a point almost anywhere across
+three states depending on Nominatim's internal ranking, unrelated to
+where any specific en-route stop actually sits.
+
+**Signal 2 tried (the project owner's own narrower suggestion): does the
+matched entity's own returned metadata (address/extratags) corroborate the
+description's specific claim, independent of any second geocode call.**
+Also fails, in both directions. Re-querying "Confluence Park, St. George,
+Utah" live with `addressdetails=1&extratags=1` (2026-08-18) returns
+`address: {park, suburb: "Bloomington Hills", city, county, state,
+country}` and `extratags: null` -- no "river"/"Virgin" token anywhere, so
+this signal doesn't even produce distinguishing evidence against the wrong
+match on its own terms. Worse, it false-positives broadly against
+real, indisputably correct matches: five other en-route stops from real
+runs, each with a description naming a specific nearby feature, were
+spot-checked live the same way --
+"La Verkin Overlook" ("cliff-edge views of Virgin River gorge", dipsticks
+64/66/68) resolves to `address: {amenity: "La Verkin Overlook Trailhead
+Parking", road, town: "La Verkin", county, state}`, no "Virgin"/"river"
+token; "Dead Horse Point State Park" ("...views of the Colorado River...",
+dipsticks 49/51/53/55/60/61) resolves to `address: {nature_reserve,
+county, state}`, no "Colorado"/"river" token; "Crystal Geyser" ("...on the
+Green River", dipsticks 32/68), "Gateway Canyons" ("...along Dolores
+River", dipstick 75), and "Mossy Cave Trail" ("...along the
+Sevier River", dipstick 70) all show the same pattern. Nominatim addresses
+are built from road/city/county/state components and essentially never
+include a nearby named natural feature, so "does the match's own metadata
+corroborate the description's river/lake/canyon claim" would reject
+almost every legitimately river-adjacent en-route stop, not just the bad
+one -- reproducing, via a new and narrower gate, the same wholesale-
+removal failure mode (the dipstick67 ~88% removal figure cited in
+`_item_has_verified_route_geocode`'s docstring) that function was
+deliberately built to avoid.
+
+**Scale check.** Scanned real en-route stop descriptions across all 70 real
+runs under `C:\Temp\RoadTripRuns\SW2026-dipstick*` (1,302 real en-route
+`stop-desc` entries, 2026-08-18): ~24% (313/1302) mention some generic
+water/landscape word ("river", "reservoir", "waterfall", "shoreline", ...)
+but only ~3% (41/1302) name a *specific* feature by proper name the way
+"at Virgin River" does (e.g. "Colorado River", "San Juan River", "Green
+River", "Indian Creek"). Even limited to that narrow 3%, both signals
+above still fail for the reasons given -- this isn't a rare-edge-case
+argument against building the check, it's that the check doesn't work at
+any scale.
+
+**Answering the two questions directly:** Is it detectable? Not reliably.
+The description's claim is real and specific, but both concrete signals
+available to check it against were tested live and both point the wrong
+way: distance-to-feature can't separate this bug from the common,
+legitimate case because the wrong match is genuinely geographically close
+to the named river (0.2-2 mi, since the river runs through the whole
+area); metadata corroboration produces no positive evidence against the
+bad match and false-positives on real, correct matches instead. Why not
+scrub it? Because scrubbing needs a signal that actually distinguishes
+"right general area, wrong specific same-named place" from "correctly,
+loosely described relative to a large nearby feature" -- and no such
+signal was found that doesn't also catch legitimate stops in the same net.
+Per this codebase's own established discipline (prefer honest absence over
+a fragile forced fix), Confluence Park remains a documented, accepted
+data-source limitation rather than a code gate: forcing a fix with either
+investigated signal would do more harm (dropping or caution-badging real,
+correctly-matched en-route stops trip-wide) than the good it does (this
+one same-name collision). No code change shipped for this follow-up;
+`test_geocode_result_name_plausible_accepts_confluence_park_same_name_
+collision` (`tests/test_url_discovery.py`) remains the pinned regression
+confirming the existing, correct (accepting) behavior.
+
 ## Map-Link vs. Source-Link Icon Distinguishability
 Project owner, re: the "Belly of the Dragon" en-route-stop card and others:
 "the icons... indicating link to Map not source, and the links to the Map
