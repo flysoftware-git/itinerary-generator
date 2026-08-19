@@ -101,6 +101,66 @@ destinations:
     assert "en_route_seeds" not in dests["taos"]
 
 
+def test_en_route_exclude_urls_rejected(tmp_path):
+    manifest_content = """
+trip:
+  title: "Test"
+  subtitle: "Test"
+  theme_color: "#123456"
+destinations:
+  - id: test
+    name: "Test Destination"
+    dates: "Jan 1–3, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+    en_route_exclude:
+      - "https://example.com/confluence-park"
+"""
+    f = tmp_path / "bad_en_route_exclude_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    with pytest.raises(ValueError, match="URL"):
+        parser.load(str(f))
+
+
+def test_en_route_exclude_valid_manifest_parses(tmp_path):
+    """Real bug: 'Confluence Park' geocodes to a real, live-verified match
+    that's a different, wrong same-named place -- no automated check can
+    reliably distinguish this from a legitimate stop (see
+    docs/design/url-discovery-and-audit.md). en_route_exclude gives the
+    traveler a durable way to blocklist a specific known-bad name, mirroring
+    en_route_seeds' exact schema shape with the opposite effect."""
+    manifest_content = """
+trip:
+  title: "Test"
+  subtitle: "Test"
+  theme_color: "#123456"
+destinations:
+  - id: st_george
+    name: "St. George, Utah"
+    dates: "Oct 17, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com/stgeorge"
+  - id: zion
+    name: "Zion National Park"
+    dates: "Oct 18, 2026"
+    en_route_exclude:
+      - "Confluence Park"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com/zion"
+"""
+    f = tmp_path / "en_route_exclude_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    trip = parser.load(str(f))
+    dests = {d["id"]: d for d in trip["destinations"]}
+    assert dests["zion"]["en_route_exclude"] == ["Confluence Park"]
+    assert "en_route_exclude" not in dests["st_george"]
+
+
 def test_duplicate_ids_rejected(tmp_path):
     manifest_content = """
 trip:

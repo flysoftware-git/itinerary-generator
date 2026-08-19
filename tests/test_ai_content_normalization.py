@@ -947,7 +947,7 @@ def test_manifest_restaurant_target_scales_with_santa_fe_two_day_stay() -> None:
     assert len(out) == 8
 
 
-def test_resolve_enroute_target_default_is_four_per_day() -> None:
+def test_resolve_enroute_target_default_is_four() -> None:
     g = _gen()
     assert g._resolve_enroute_target({}, {}) == 4
 
@@ -957,23 +957,45 @@ def test_resolve_enroute_target_destination_override_wins_over_trip() -> None:
     assert g._resolve_enroute_target({"en_route_stops_per_day": 1}, {"en_route_stops_per_day": 6}) == 1
 
 
-def test_manifest_enroute_target_preserves_relative_order_when_trimming() -> None:
-    """En-route stops have no rating/votes/must_see signal to rank on (see
-    _apply_manifest_enroute_target's docstring), so trimming must be a
-    stable truncation of the existing order, not a re-sort."""
+def test_manifest_enroute_target_prioritizes_shorter_detours_when_trimming() -> None:
+    """Real project-owner ask: "Can we prioritize the enroutes to keep it to
+    the top 4 or less? Could also save calls." Unlike the day-count-scaled
+    attraction/restaurant/scenic-drive caps, en-route stops are capped flat
+    (a single arrival leg happens once regardless of length of stay -- see
+    _resolve_enroute_target's docstring) and prioritized by
+    detour_distance_miles (the AI's own self-reported estimate, always
+    available before any search call) -- a shorter detour is objectively
+    more worth keeping as a quick "can't-miss" stop. A stop with no
+    parseable detour figure sorts last, not first, so an unknown-length
+    detour can't win a keep slot over a real, short, verified one."""
     g = _gen()
-    stops = [{"name": f"Stop {i}"} for i in range(6)]
+    stops = [
+        {"name": "Far Overlook", "detour_distance_miles": 25.0},
+        {"name": "Quick Pull-Off", "detour_distance_miles": 2.0},
+        {"name": "Unknown Detour"},  # no detour_distance_miles at all
+        {"name": "Medium Stop", "detour_distance_miles": 8.5},
+        {"name": "Roadside Marker", "detour_distance_miles": 0.5},
+        {"name": "Distant Trailhead", "detour_distance_miles": "not a number"},
+    ]
 
-    out = g._apply_manifest_enroute_target(stops, dates="October 17, 2026", en_route_stops_per_day=4)
+    out = g._apply_manifest_enroute_target(stops, dates="October 19-21, 2026", en_route_stops_per_day=4)
 
-    assert [s["name"] for s in out] == ["Stop 0", "Stop 1", "Stop 2", "Stop 3"]
+    assert [s["name"] for s in out] == ["Roadside Marker", "Quick Pull-Off", "Medium Stop", "Far Overlook"]
 
 
-def test_manifest_enroute_target_keeps_seeded_stops_regardless_of_cap() -> None:
+def test_manifest_enroute_target_keeps_seeded_stops_regardless_of_detour() -> None:
     """A manifest en_route_seeds entry (the traveler's own explicit pick)
-    must survive the cap even if it would otherwise be trimmed."""
+    must survive the cap even with a long detour that would otherwise lose
+    out to shorter ones."""
     g = _gen()
-    stops = [{"name": f"Stop {i}"} for i in range(5)] + [{"name": "Traveler's En-Route Pick"}]
+    stops = [
+        {"name": "Stop 0", "detour_distance_miles": 1.0},
+        {"name": "Stop 1", "detour_distance_miles": 2.0},
+        {"name": "Stop 2", "detour_distance_miles": 3.0},
+        {"name": "Stop 3", "detour_distance_miles": 4.0},
+        {"name": "Stop 4", "detour_distance_miles": 5.0},
+        {"name": "Traveler's En-Route Pick", "detour_distance_miles": 40.0},
+    ]
 
     out = g._apply_manifest_enroute_target(
         stops,
@@ -987,15 +1009,19 @@ def test_manifest_enroute_target_keeps_seeded_stops_regardless_of_cap() -> None:
     assert len(out) == 4
 
 
-def test_manifest_enroute_target_scales_with_day_count() -> None:
+def test_manifest_enroute_target_is_flat_not_scaled_by_day_count() -> None:
+    """Unlike attractions/restaurants/scenic drives, the en-route-stop cap
+    does NOT scale with the arriving destination's length of stay -- the
+    single arrival leg happens once regardless of how many days the
+    traveler then stays (see _resolve_enroute_target's docstring)."""
     g = _gen()
-    stops = [{"name": f"Stop {i}"} for i in range(10)]
+    stops = [{"name": f"Stop {i}", "detour_distance_miles": float(i)} for i in range(10)]
 
     one_day = g._apply_manifest_enroute_target(stops, dates="October 17, 2026", en_route_stops_per_day=4)
     three_day = g._apply_manifest_enroute_target(stops, dates="October 19-21, 2026", en_route_stops_per_day=4)
 
     assert len(one_day) == 4
-    assert len(three_day) == 10  # capped at min(len(stops), 4*3=12) -> all 10 survive
+    assert len(three_day) == 4
 
 
 def test_resolve_scenic_drive_target_default_is_two_per_day() -> None:
@@ -1060,6 +1086,53 @@ def test_normalize_getting_here_applies_enroute_cap_and_preserves_seed() -> None
     names = [s["name"] for s in out["en_route_stops"]]
     assert "Seeded Overlook" in names
     assert len(names) == 4
+
+
+def test_normalize_getting_here_applies_en_route_exclude() -> None:
+    """Real bug: 'Confluence Park' geocodes to a real, live-verified match
+    that's a different, wrong same-named place in St. George -- a genuine
+    Nominatim same-name collision no automated heuristic could reliably
+    catch without also rejecting legitimate stops (see
+    docs/design/url-discovery-and-audit.md). en_route_exclude gives the
+    traveler a durable, manifest-level way to blocklist a specific
+    known-bad name -- applied before the cap/prioritization and before any
+    search call, so an excluded name is dropped even if there's room left
+    under the cap, not just deprioritized."""
+    g = _gen()
+    getting_here = {
+        "drive_time": "1 hr 30 min",
+        "en_route_stops": [
+            {"name": "Confluence Park", "detour_distance_miles": 1.0},
+            {"name": "La Verkin Overlook", "detour_distance_miles": 3.9},
+            {"name": "Toquerville Falls", "detour_distance_miles": 10.6},
+        ],
+    }
+    dest = {"name": "Zion National Park", "en_route_exclude": ["Confluence Park"]}
+
+    out = g._normalize_getting_here(getting_here, "Zion National Park", dates="October 18, 2026", trip_meta={}, dest=dest)
+
+    names = [s["name"] for s in out["en_route_stops"]]
+    assert "Confluence Park" not in names
+    assert "La Verkin Overlook" in names
+    assert "Toquerville Falls" in names
+
+
+def test_normalize_getting_here_en_route_exclude_matches_case_and_punctuation_insensitively() -> None:
+    g = _gen()
+    getting_here = {
+        "drive_time": "1 hr",
+        "en_route_stops": [
+            {"name": "confluence park", "detour_distance_miles": 1.0},
+            {"name": "Real Stop", "detour_distance_miles": 2.0},
+        ],
+    }
+    dest = {"name": "Zion National Park", "en_route_exclude": ["Confluence Park!"]}
+
+    out = g._normalize_getting_here(getting_here, "Zion National Park", dates="October 18, 2026", trip_meta={}, dest=dest)
+
+    names = [s["name"] for s in out["en_route_stops"]]
+    assert "confluence park" not in [n.lower() for n in names]
+    assert "Real Stop" in names
 
 
 from generator.ai_content import AIContentGenerator

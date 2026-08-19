@@ -209,6 +209,23 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                        "and detour-threshold verification as any other "
                                        "en-route-stop candidate.",
                     },
+                    "en_route_exclude": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 2},
+                        "description": "Name hints for en-route stops to NEVER include on the "
+                                       "leg arriving at this destination, even if the AI/"
+                                       "discovery pipeline proposes and would otherwise verify "
+                                       "one (e.g. a real, live-verified geocode that turns out "
+                                       "to be the wrong same-named place — no automated check "
+                                       "can reliably catch this class of mismatch, see "
+                                       "docs/design/url-discovery-and-audit.md's En-Route Stop "
+                                       "Geocode sections). Matched the same way as `seeds`/"
+                                       "`en_route_seeds` (case-insensitive, punctuation-"
+                                       "normalized) and applied before URL discovery runs, so "
+                                       "an excluded name also never costs a search call. "
+                                       "Structurally identical to `en_route_seeds` (plain names "
+                                       "only, no URLs) but with the opposite effect.",
+                    },
                     "group_with": {
                         "type": "string",
                         "pattern": "^[a-z0-9_]+$",
@@ -248,6 +265,7 @@ class ManifestParser:
         self._validate_schema(data)
         self._validate_seeds(data)
         self._validate_en_route_seeds(data)
+        self._validate_en_route_exclude(data)
         self._validate_ids_unique(data)
         self._validate_group_with(data)
         logger.info(
@@ -336,6 +354,15 @@ class ManifestParser:
                     raise ValueError(
                         f"Destination '{dest['id']}': en_route_seed '{seed}' must be a "
                         "name only — not a URL. The generator discovers all URLs automatically."
+                    )
+
+    def _validate_en_route_exclude(self, data: dict[str, Any]) -> None:
+        for dest in data.get("destinations", []):
+            for name in dest.get("en_route_exclude", []):
+                if name.startswith(("http://", "https://")):
+                    raise ValueError(
+                        f"Destination '{dest['id']}': en_route_exclude entry '{name}' must be a "
+                        "name only — not a URL."
                     )
 
     def _validate_ids_unique(self, data: dict[str, Any]) -> None:
