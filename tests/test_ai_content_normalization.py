@@ -947,7 +947,7 @@ def test_manifest_restaurant_target_scales_with_santa_fe_two_day_stay() -> None:
     assert len(out) == 8
 
 
-def test_resolve_enroute_target_default_is_four_per_day() -> None:
+def test_resolve_enroute_target_default_is_four() -> None:
     g = _gen()
     assert g._resolve_enroute_target({}, {}) == 4
 
@@ -957,23 +957,45 @@ def test_resolve_enroute_target_destination_override_wins_over_trip() -> None:
     assert g._resolve_enroute_target({"en_route_stops_per_day": 1}, {"en_route_stops_per_day": 6}) == 1
 
 
-def test_manifest_enroute_target_preserves_relative_order_when_trimming() -> None:
-    """En-route stops have no rating/votes/must_see signal to rank on (see
-    _apply_manifest_enroute_target's docstring), so trimming must be a
-    stable truncation of the existing order, not a re-sort."""
+def test_manifest_enroute_target_prioritizes_shorter_detours_when_trimming() -> None:
+    """Real project-owner ask: "Can we prioritize the enroutes to keep it to
+    the top 4 or less? Could also save calls." Unlike the day-count-scaled
+    attraction/restaurant/scenic-drive caps, en-route stops are capped flat
+    (a single arrival leg happens once regardless of length of stay -- see
+    _resolve_enroute_target's docstring) and prioritized by
+    detour_distance_miles (the AI's own self-reported estimate, always
+    available before any search call) -- a shorter detour is objectively
+    more worth keeping as a quick "can't-miss" stop. A stop with no
+    parseable detour figure sorts last, not first, so an unknown-length
+    detour can't win a keep slot over a real, short, verified one."""
     g = _gen()
-    stops = [{"name": f"Stop {i}"} for i in range(6)]
+    stops = [
+        {"name": "Far Overlook", "detour_distance_miles": 25.0},
+        {"name": "Quick Pull-Off", "detour_distance_miles": 2.0},
+        {"name": "Unknown Detour"},  # no detour_distance_miles at all
+        {"name": "Medium Stop", "detour_distance_miles": 8.5},
+        {"name": "Roadside Marker", "detour_distance_miles": 0.5},
+        {"name": "Distant Trailhead", "detour_distance_miles": "not a number"},
+    ]
 
-    out = g._apply_manifest_enroute_target(stops, dates="October 17, 2026", en_route_stops_per_day=4)
+    out = g._apply_manifest_enroute_target(stops, dates="October 19-21, 2026", en_route_stops_per_day=4)
 
-    assert [s["name"] for s in out] == ["Stop 0", "Stop 1", "Stop 2", "Stop 3"]
+    assert [s["name"] for s in out] == ["Roadside Marker", "Quick Pull-Off", "Medium Stop", "Far Overlook"]
 
 
-def test_manifest_enroute_target_keeps_seeded_stops_regardless_of_cap() -> None:
+def test_manifest_enroute_target_keeps_seeded_stops_regardless_of_detour() -> None:
     """A manifest en_route_seeds entry (the traveler's own explicit pick)
-    must survive the cap even if it would otherwise be trimmed."""
+    must survive the cap even with a long detour that would otherwise lose
+    out to shorter ones."""
     g = _gen()
-    stops = [{"name": f"Stop {i}"} for i in range(5)] + [{"name": "Traveler's En-Route Pick"}]
+    stops = [
+        {"name": "Stop 0", "detour_distance_miles": 1.0},
+        {"name": "Stop 1", "detour_distance_miles": 2.0},
+        {"name": "Stop 2", "detour_distance_miles": 3.0},
+        {"name": "Stop 3", "detour_distance_miles": 4.0},
+        {"name": "Stop 4", "detour_distance_miles": 5.0},
+        {"name": "Traveler's En-Route Pick", "detour_distance_miles": 40.0},
+    ]
 
     out = g._apply_manifest_enroute_target(
         stops,
@@ -987,15 +1009,19 @@ def test_manifest_enroute_target_keeps_seeded_stops_regardless_of_cap() -> None:
     assert len(out) == 4
 
 
-def test_manifest_enroute_target_scales_with_day_count() -> None:
+def test_manifest_enroute_target_is_flat_not_scaled_by_day_count() -> None:
+    """Unlike attractions/restaurants/scenic drives, the en-route-stop cap
+    does NOT scale with the arriving destination's length of stay -- the
+    single arrival leg happens once regardless of how many days the
+    traveler then stays (see _resolve_enroute_target's docstring)."""
     g = _gen()
-    stops = [{"name": f"Stop {i}"} for i in range(10)]
+    stops = [{"name": f"Stop {i}", "detour_distance_miles": float(i)} for i in range(10)]
 
     one_day = g._apply_manifest_enroute_target(stops, dates="October 17, 2026", en_route_stops_per_day=4)
     three_day = g._apply_manifest_enroute_target(stops, dates="October 19-21, 2026", en_route_stops_per_day=4)
 
     assert len(one_day) == 4
-    assert len(three_day) == 10  # capped at min(len(stops), 4*3=12) -> all 10 survive
+    assert len(three_day) == 4
 
 
 def test_resolve_scenic_drive_target_default_is_two_per_day() -> None:

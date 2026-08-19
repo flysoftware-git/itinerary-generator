@@ -1606,11 +1606,24 @@ class AIContentGenerator:
 
     def _resolve_enroute_target(self, dest: dict[str, Any], trip_meta: dict[str, Any]) -> int:
         """En-route-stop counterpart to `_resolve_attraction_target`/
-        `_resolve_restaurant_target` -- same manifest-config precedence and
-        default of 4/day. See docs/design/per-day-item-caps.md for why a
-        per-destination-day basis was kept here too, even though en-route
-        stops belong to the single drive INTO a destination rather than the
-        stay itself.
+        `_resolve_restaurant_target`, but a FLAT cap, not day-count-scaled --
+        unlike attractions/restaurants/scenic drives, which are all consumed
+        throughout a multi-day stay (so more days genuinely means room for
+        more of them), an en-route stop belongs to the single drive INTO a
+        destination, which happens exactly once no matter how many days the
+        traveler then stays. Scaling this by day-count meant a 3-day
+        destination's arrival leg could carry up to 12 en-route-stop
+        candidates -- comfortably exceeding Google's own 8-waypoint cap on
+        the public `maps/dir/?api=1&waypoints=...` URL scheme
+        (`_build_route_gmaps_url`, generator/html_assembler.py), so stops
+        beyond the 8th rendered as cards with no corresponding pin on the
+        map at all. Project owner: "Can we prioritize the enroutes to keep
+        it to the top 4 or less? Could also save calls." A flat cap of 4
+        keeps every surviving card comfortably under the map's own limit
+        and, since this runs before url_discovery.py ever searches for a
+        link, fewer surviving candidates means fewer paid search calls too
+        -- unlike a post-search prioritization, which would only change what
+        renders, not what got searched. See docs/design/per-day-item-caps.md.
         """
         default_target = 4
         trip_value = trip_meta.get("en_route_stops_per_day") if isinstance(trip_meta, dict) else None
@@ -1632,40 +1645,41 @@ class AIContentGenerator:
         en_route_stops_per_day: int,
         protected_names: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """En-route-stop counterpart to `_apply_manifest_attraction_target`:
-        same day-count-aware target formula and the same never-evict-a-
-        manifest-seed guarantee (here, `en_route_seeds` rather than `seeds`).
+        """En-route-stop counterpart to `_apply_manifest_attraction_target`,
+        with two real differences from the attraction/restaurant/scenic-drive
+        pattern (see `_resolve_enroute_target`'s docstring for the flat-cap
+        rationale):
 
-        Day-count basis, and why it was kept despite the conceptual mismatch:
-        an en-route stop belongs to the single drive INTO this destination,
-        which happens once no matter how many days the traveler then stays --
-        so "days at the destination" isn't a perfect scaling proxy for "how
-        many detours are worth offering on this one drive" the way it is for
-        attractions/restaurants consumed throughout the stay. A distance- or
-        drive-time-scaled basis would be conceptually cleaner, but
-        `getting_here.distance_miles`/`drive_time` are themselves AI-guessed
-        (see `_override_grouped_child_distance_from_geocode` above for a real
-        case of that guess being wildly wrong) and normalization runs before
-        any geocode-based correction, so building a cap on top of a number
-        already documented as unreliable here would trade one weak proxy for
-        another, shakier one. Day-count is kept as the uniform, already-
-        validated basis per the project owner's explicit ask for a uniform
-        "4 items/day" ceiling across all three item types; in practice a
-        longer multi-destination leg is also plausibly correlated with a
-        longer stay at the destination it delivers you to, so it is not a
-        pure mismatch either.
+        1. FLAT target, not day-count-scaled -- `en_route_stops_per_day`'s
+           name is kept only for call-site continuity with the sibling
+           `_apply_manifest_*_target` functions; despite the name, this
+           value is used directly as the target with no `* day_count`
+           multiplication (a single arrival leg happens once regardless of
+           the destination's length of stay).
 
-        Scoring, like restaurants, has no must_see/rating/votes signal to
-        rank on (`getting_here.en_route_stops` schema in
-        prompts/destination_content.txt has no such fields) -- but unlike
-        restaurants there's also no name-alphabetical fallback that means
-        anything to a traveler driving a specific route in a specific
-        direction. Rather than fabricate a ranking heuristic from data that
-        carries no real quality signal, the AI's/upstream normalization's
-        existing relative order is preserved (a stable truncation): seeded
-        stops are pulled to the front and always survive, non-seeded stops
-        keep their original relative order and are simply cut off at the
-        target count.
+        2. Prioritized by detour distance, not preserved in original order.
+           Earlier reasoning here held there was "no must_see/rating/votes
+           signal to rank on" -- true for a quality signal, but there IS a
+           real, always-available, pre-search signal: `detour_distance_miles`
+           (prompts/destination_content.txt's own schema requests this for
+           every en-route-stop candidate, defaulted to 0 by
+           `_normalize_getting_here` just before this runs). A shorter
+           detour is objectively more worth keeping for a "can't-miss"
+           quick stop than a longer one -- the same real-world quantity
+           tonight's separate `DEFAULT_EN_ROUTE_DETOUR_MAX_MILES` fix
+           (generator/url_discovery.py) already uses to reject stops
+           outright once real geocoded detour metrics exist; this reuses
+           the same intuition earlier in the pipeline, on the AI's own
+           self-reported estimate, to choose which of TOO MANY otherwise-
+           plausible candidates to keep. A candidate whose detour figure
+           doesn't parse as a real number sorts last (treated as an unknown,
+           unverified-length detour) rather than first, so a malformed
+           value can't win a keep slot over a real, short, verified one.
+
+        The never-evict-a-manifest-seed guarantee (`en_route_seeds`) is
+        unchanged: seeded stops are always kept regardless of detour
+        distance, mirroring how a seed already bypasses `max_trail_miles`-
+        style demotion for attractions.
         """
         if not isinstance(stops, list):
             return []
@@ -1693,13 +1707,20 @@ class AIContentGenerator:
             protected_items = []
             remaining = [item for item in stops if isinstance(item, dict)]
 
-        day_count = max(1, self._infer_day_count(dates))
-        target = max(1, int(en_route_stops_per_day) * day_count)
+        target = max(1, int(en_route_stops_per_day))
         if len(stops) <= target:
             return stops
 
+        def _detour_sort_key(item: dict[str, Any]) -> tuple[int, float]:
+            miles = self._coerce_float(item.get("detour_distance_miles"))
+            if miles is None:
+                return (1, 0.0)  # unknown/unparseable detour sorts after every real value
+            return (0, miles)
+
+        remaining_by_detour = sorted(remaining, key=_detour_sort_key)
+
         selected = list(protected_items)
-        selected.extend(remaining[: max(0, target - len(selected))])
+        selected.extend(remaining_by_detour[: max(0, target - len(selected))])
         return selected
 
     def _resolve_scenic_drive_target(self, dest: dict[str, Any], trip_meta: dict[str, Any]) -> int:

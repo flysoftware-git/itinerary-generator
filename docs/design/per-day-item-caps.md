@@ -35,7 +35,7 @@ day**, where "day" is the arriving destination's inferred day count
 |---|---|---|---|
 | Attractions | `_resolve_attraction_target` / `_apply_manifest_attraction_target` | `attractions_per_day` | 4/day |
 | Restaurants | `_resolve_restaurant_target` / `_apply_manifest_restaurant_target` | `restaurants_per_day` | 4/day |
-| En-route stops | `_resolve_enroute_target` / `_apply_manifest_enroute_target` | `en_route_stops_per_day` | 4/day |
+| En-route stops | `_resolve_enroute_target` / `_apply_manifest_enroute_target` | `en_route_stops_per_day` | **4 flat, not scaled** |
 | Scenic drives | `_resolve_scenic_drive_target` / `_apply_manifest_scenic_drive_target` | `scenic_drives_per_day` | **2/day** |
 
 Scenic drives are the exception to the shared 4/day default -- see
@@ -74,7 +74,33 @@ the pre-existing attraction behavior:
   Callers currently pass no protected names for restaurants; the parameter
   exists so a future manifest field could plug in without a signature change.
 
-## Why en-route stops still use a day-count basis
+## Update: en-route stops moved to a flat cap (not day-scaled)
+The section below documents the *original* rationale for keeping en-route
+stops on the shared day-count basis despite the conceptual mismatch already
+flagged at the time. That decision was reversed in a later same-night pass.
+
+Real trigger: a 3-day destination's arrival leg could carry up to `4 * 3 =
+12` en-route-stop candidates under the day-count formula -- comfortably
+exceeding Google's own 8-waypoint cap on the public
+`maps/dir/?api=1&waypoints=...` URL scheme (`_build_route_gmaps_url`,
+`generator/html_assembler.py`). Stops beyond the 8th rendered as cards in
+the itinerary with no corresponding pin on the overview/route map at all --
+a real card/map desync the project owner caught from a live screenshot.
+Project owner: "Can we prioritize the enroutes to keep it to the top 4 or
+less? Could also save calls."
+
+`_resolve_enroute_target`/`_apply_manifest_enroute_target` now use a FLAT
+target of 4 (still overridable via the same `en_route_stops_per_day`
+manifest field, kept for call-site continuity even though the name no
+longer implies a per-day multiplier) -- `target = max(1,
+int(en_route_stops_per_day))`, no `* day_count`. This keeps every surviving
+en-route-stop card comfortably under the map's own 8-waypoint limit, and
+since this runs before `url_discovery.py` ever searches for a link per
+candidate, fewer surviving candidates also means fewer paid `web_search`
+calls -- unlike a hypothetical post-search prioritization pass, which would
+only change what renders, not what got searched.
+
+### Original rationale (superseded by the above, kept for history)
 En-route stops conceptually belong to the single drive **into** a
 destination, which happens once regardless of how many days the traveler
 then stays -- so "days at the destination" is an imperfect scaling proxy
@@ -89,10 +115,7 @@ unreliable would trade one weak proxy for a shakier one. Day-count was kept
 as the uniform basis per the explicit ask for one consistent "N/day" rule
 across all three types; a longer multi-destination leg is also plausibly
 correlated with a longer stay at the destination it delivers you to, so it
-is not a pure mismatch either. If `getting_here` distance/time data becomes
-reliably available before normalization runs (e.g. if the geocode-based
-override in `_override_grouped_child_distance_from_geocode` is ever moved
-earlier in the pipeline), revisiting this basis would be reasonable.
+is not a pure mismatch either.
 
 ## Ranking basis differs per type (and why)
 - **Attractions**: `must_see` first, then `rating`/`votes` (from
@@ -104,11 +127,20 @@ earlier in the pipeline), revisiting this basis would be reasonable.
   `votes` when present (gracefully degrading to 0, same as attractions),
   then alphabetically by name for a deterministic trim.
 - **En-route stops**: `getting_here.en_route_stops` has no quality signal
-  at all in the schema (no `rating`, no `must_see`). Rather than fabricate a
-  ranking heuristic from data that carries no real signal, the cap performs
-  a **stable truncation**: non-seeded stops keep their existing relative
-  order and are simply cut off at the target count; seeded stops are pulled
-  to the front and always survive.
+  in the schema (no `rating`, no `must_see`), but it does have a real,
+  always-available, pre-search quantity: `detour_distance_miles` (the AI's
+  own self-reported estimate, requested by `prompts/destination_content.txt`
+  for every candidate and defaulted to `0` by `_normalize_getting_here` when
+  absent). A shorter detour is objectively more worth keeping for a
+  "can't-miss" quick stop -- the same real-world quantity
+  `DEFAULT_EN_ROUTE_DETOUR_MAX_MILES` (`generator/url_discovery.py`, a
+  same-night fix elsewhere) already uses to reject stops outright once real
+  geocoded detour metrics exist; this reuses the same intuition earlier in
+  the pipeline, on the AI's own self-reported estimate, to choose among too
+  many otherwise-plausible candidates. Non-seeded stops are sorted ascending
+  by `detour_distance_miles` before truncation (a stop whose figure doesn't
+  parse as a real number sorts last, not first); seeded stops are pulled to
+  the front and always survive regardless of detour length.
 
 ## Ordering fix bundled into this pass: restaurants must be trimmed before schedule generation
 `_normalize_destination_content` (in `generator/ai_content.py`) builds
