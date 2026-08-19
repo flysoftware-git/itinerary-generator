@@ -879,6 +879,140 @@ the first place before touching it -- not available in this session without
 API credentials. Left as a known follow-up rather than risked as a
 same-night change to a widely-shared code path.
 
+## En-Route Stop Geocode Resolving to a Completely Wrong Location
+Real screenshot evidence from the project owner, a fresh run (dipstick75)
+right after the Rockville/Grafton fix above shipped: on the St. George ->
+Zion leg, the "Can't-Miss Enroute" cards show 5 stops (Virgin River
+Petroglyph Site, Confluence Park, La Verkin Overlook, Toquerville Falls,
+Grafton Ghost Town), but the rendered Google Maps waypoint list's first two
+entries don't match their cards: "Virgin River Petroglyph Site" waypoints
+as the raw coordinate `36.9670932,-113.7249242`, which reverse-geocodes to
+"Veterans Memorial Highway, Mohave County, Arizona" -- a different state,
+nowhere near the real BLM petroglyph site (~37.05 N -113.53 W). "Confluence
+Park" waypoints as `37.0745819,-113.582935`, which resolves to a private
+residence in Bloomington Hills, St. George -- not the well-known riverfront
+park at the Santa Clara/Virgin River confluence (~37.07 N -113.62 W) the
+item's own AI-written description ("riverfront trails and historic site at
+Virgin River") clearly refers to.
+
+Traced both live against the real dipstick75 output
+(`C:\Temp\RoadTripRuns\SW2026-dipstick75\dev\index.html`) and real Nominatim
+queries. The two turned out to be genuinely different failure modes, not
+one bug wearing two names:
+
+### Bug 1 (fixed): "Virgin River Petroglyph Site" -- truncation recovery onto an oversized generic feature
+Confirmed live: Nominatim has no entry for the stop's full name, nor for
+the first truncation "Virgin River Petroglyph" (both verified empty against
+the real API). `_geocode_en_route_stop_for_route`'s progressive-truncation
+fallback (`_en_route_stop_name_truncations`, built for exactly this
+"AI-generated name has a real landmark plus a descriptive suffix Nominatim
+can't match" pattern -- see "Cedar Breaks National Monument Rim View" etc.
+in that method's own docstring) then retries the final truncation, "Virgin
+River" -- which *does* resolve, to OSM relation 10605393, the Virgin River
+itself (`class: waterway`, `type: river`, real bounding box
+`["36.1457610", "37.2935220", "-114.4173887", "-112.9404080"]`, live
+2026-08-18). That point happens to fall in Mohave County, Arizona.
+
+This is a real, previously-uncovered gap in `_geocode_result_name_plausible`
+(the exact function added for the Rockville/Grafton bug earlier tonight),
+and a structurally *different* one from that bug, not a re-occurrence of
+it: Rockville/Grafton was two distinctly-named real places sharing zero
+identifying tokens (only generic "historic"/"district" words in common).
+Here, "Virgin River" and "Virgin River Petroglyph Site" share *most* of
+their tokens -- because "Virgin River" is, by construction of the
+truncation that produced it, always a literal word-subset of the full
+query. The existing anchor-overlap check compares the candidate against the
+*original, untruncated* query name, so it trivially passes no matter how
+much of the query's real identifying content ("Petroglyph Site") was
+dropped to reach the match. No amount of token-overlap tuning can close
+this gap -- overlap is guaranteed by construction whenever a truncated
+query succeeds at all.
+
+The real, measurable difference between a legitimate truncation recovery
+and this bug is *scale*, not name or class. A bare "reject `class:
+waterway` results" rule was tried and rejected: the module's own
+pre-existing, intentional truncation case for "Willis Creek Slot Canyon
+Trailhead" -> "Willis Creek" *also* resolves to a `class: waterway` result
+(live-verified, real candidate streams near Bryce Canyon). The difference:
+Willis Creek is a short local stream (live bounding boxes ~10.8 mi and ~1.1
+mi diagonal); the Virgin River relation spans the entire river system
+(~114 mi diagonal, live-measured -- Virgin River flows across AZ/UT/NV).
+Real national park boundaries were checked too, since those are also large
+and sometimes waterway-adjacent named en-route stops (Capitol Reef NP ~71
+mi diagonal, Grand Canyon NP ~154 mi diagonal, live data) -- but neither is
+`class: waterway` (both are `leisure`/`nature_reserve` or `boundary`), so
+gating on class *and* size together, rather than size alone, avoids
+rejecting those.
+
+Fix: `_geocode_result_is_oversized_waterway(result)`
+(`generator/url_discovery.py`, just above `_geocode_result_name_plausible`)
+returns true only for a `class: waterway` result whose own bounding-box
+diagonal (via the existing `_haversine_miles` helper, reused rather than
+adding new distance math) exceeds `_GEOCODE_OVERSIZED_WATERWAY_SPAN_MILES`
+(`25.0` -- chosen with wide margin either side of the two real numbers
+above: comfortably below Virgin River's ~114 mi, comfortably above Willis
+Creek's ~1-11 mi). `_geocode_result_name_plausible` now calls it as an
+*additional* gate after the existing anchor-overlap check passes, not a
+replacement: a result must still share an identifying token with the query
+(unchanged Rockville/Grafton protection) AND, if it's an oversized
+waterway, be rejected regardless of token overlap. Fails open (never
+rejects) whenever `boundingbox`/`class` are missing or malformed, so every
+pre-existing geocode mock/test -- none of which carry these fields -- is
+unaffected; verified by running the full suite unchanged before adding this
+check.
+
+Tests: `test_geocode_result_name_plausible_rejects_oversized_waterway_
+truncation_match`, `test_geocode_result_name_plausible_accepts_small_
+waterway_truncation_match` (Willis Creek no-regression case), and
+`test_geocode_en_route_stop_rejects_virgin_river_oversized_waterway_
+truncation_match` (full-pipeline, real captured Nominatim response shapes)
+(`tests/test_url_discovery.py`). Confirmed the new full-pipeline test fails
+with the pre-fix code (`assert (36.9670932, -113.7249242) is None` ->
+`AssertionError`, reproducing the exact real wrong coordinate) and passes
+after the fix.
+
+### Bug 2 (investigated, not code-fixable): "Confluence Park" -- a genuine same-name collision in the underlying map data
+Different root cause entirely, despite superficially similar symptoms.
+Live investigation: querying "Confluence Park, St. George, Utah" against
+Nominatim (even at `limit=10`) returns exactly **one** result --
+`class: leisure`, `type: park`, at `(37.0745819, -113.582935)`, a small way
+in the Bloomington Hills neighborhood -- which is the same coordinate (to
+rounding) the real run's waypoint used and the same private-residence
+address the project owner's own live reverse-geocode found. Searching more
+broadly -- a plain "park" or "confluence" query restricted to a tight
+viewbox around the *real* confluence location (~37.07 N -113.62 W) -- turns
+up several other real St. George parks (Tonaquint Park, Bloomington Park,
+Thunder Junction All Abilities Park, Bloomington Petroglyph Park) but no
+second entity anywhere named "Confluence Park." A reverse-geocode of the
+real confluence coordinate itself returns only a residential street
+(Chandler Drive), not a distinctly-tagged park.
+
+Conclusion: OpenStreetMap/Nominatim's own data has exactly one place named
+"Confluence Park" in St. George, and it is not the one the item's
+AI-written description refers to -- a real naming collision in the
+underlying map data between two distinct, both-real places that happen to
+share an identical name, not a mismatch this codebase's search/query
+construction produced. This is fundamentally different from Bug 1 above:
+there, "Virgin River" was a *degraded, partial* match (a truncation artifact
+sharing some but not all of the query's identity) with an available
+distinguishing signal (bounding-box scale) once looked for. Here, the match
+is *exact and complete* -- "Confluence Park" resolves to a result literally
+named "Confluence Park" -- so no name-token heuristic, generic or
+otherwise, can or should reject it: rejecting an exact, unambiguous name
+match on principle would break far more legitimate geocodes than it could
+ever fix, and there is no second, better-matching candidate anywhere in
+Nominatim's data for a disambiguation check to prefer instead. Verified
+`_geocode_result_name_plausible` already correctly accepts this real
+result (as it must); pinned as
+`test_geocode_result_name_plausible_accepts_confluence_park_same_name_
+collision` (`tests/test_url_discovery.py`) so this is a documented,
+confirmed data-source limitation rather than a silent, unexplained gap.
+A future fix would need either a different/authoritative geocoding data
+source for this specific place, or a way to cross-reference the item's own
+AI-written description against candidate context -- neither available to
+this pass; not attempted given no real alternate candidate exists to
+prefer even in principle.
+
 ## Map-Link vs. Source-Link Icon Distinguishability
 Project owner, re: the "Belly of the Dragon" en-route-stop card and others:
 "the icons... indicating link to Map not source, and the links to the Map
