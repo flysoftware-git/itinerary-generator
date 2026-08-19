@@ -230,6 +230,40 @@ def test_assembled_html_includes_generator_footer_signature() -> None:
     assert "Itinerary output: 2026-07-26 17:41 UTC" in html
 
 
+def _minimal_trip_with_meta(privacy_redacted: bool | None) -> dict:
+    meta = {
+        "generator_version": "9.9.9",
+        "template_version": "2.5",
+        "generated_at_utc": "2026-07-26T17:41:23+00:00",
+        "llm": {"provider": "openai", "model": "test", "usage": {"models": [], "total_estimated_cost_usd": 0.0}},
+    }
+    if privacy_redacted is not None:
+        meta["privacy_redacted"] = privacy_redacted
+    return {
+        "trip": {"title": "Test Trip", "theme_color": "#C0623E"},
+        "_meta": meta,
+        "destinations": [],
+    }
+
+
+def test_assemble_disables_pwa_install_when_privacy_redacted() -> None:
+    """main._resolve_privacy_redaction's outcome (trip["_meta"]["privacy_redacted"])
+    must suppress the PWA Install App affordance -- see requirements.md's
+    privacy redaction policy. Guards the frozen-template PWA_INSTALL_ENABLED
+    toggle (templates/v2.5_template.html) via html_assembler's substitution."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+
+    redacted_html = assembler.assemble(_minimal_trip_with_meta(True))
+    assert "var PWA_INSTALL_ENABLED = false;" in redacted_html
+    assert "var PWA_INSTALL_ENABLED = true;" not in redacted_html
+
+    not_redacted_html = assembler.assemble(_minimal_trip_with_meta(False))
+    assert "var PWA_INSTALL_ENABLED = true;" in not_redacted_html
+
+    default_html = assembler.assemble(_minimal_trip_with_meta(None))
+    assert "var PWA_INSTALL_ENABLED = true;" in default_html
+
+
 def test_footer_issue_guidance_is_split_and_template_specific() -> None:
     assembler = HTMLAssembler(config_path="config.yaml")
     trip = {

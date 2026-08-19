@@ -527,11 +527,12 @@ skeleton — it carries all CSS, all JavaScript (Leaflet map, drive modal, tab n
 and scroll-spy, print export, PWA registration), the page chrome, and the CDN
 dependencies.
 
-The assembler fills four comment markers plus one source-string replacement:
+The assembler fills four comment markers plus two source-string replacements:
 `<!--TRIP_TITLE-->`, `<!--NAV_TABS-->`, `<!--DESTINATION_SECTIONS-->`,
 `'<!--MAP_MARKERS_JSON-->'` (the surrounding quotes are consumed, turning a JS string
-literal into an array literal), and `var DRIVE_DESCRIPTIONS = {};`. Substitution is plain
-`str.replace` — no template engine, by decision.
+literal into an array literal), `var DRIVE_DESCRIPTIONS = {};`, and
+`var PWA_INSTALL_ENABLED = true;` (flipped to `false` under privacy redaction, §4.3).
+Substitution is plain `str.replace` — no template engine, by decision.
 
 Because the template owns the CSS and JS, assembler output must conform to conventions the
 template does not declare: `class="dest-section"`, `data-tab="section-{id}"`,
@@ -613,6 +614,9 @@ redacting them would degrade itinerary quality, not just remove personal data. A
 once, immediately after environment resolution, by mutating the parsed trip in place —
 every downstream consumer (rendering, reports, anything written later) sees an
 already-redacted trip, so there's no side channel to individually patch and forget.
+The same switch also disables the PWA Install App affordance (§4.1's
+`PWA_INSTALL_ENABLED` substitution) — an installable home-screen icon is a stronger
+distribution signal than a redacted build should carry.
 
 > **Requires:** [§9 CLI Interface](requirements.md#9-cli-interface) ·
 > [§12 Output Structure](requirements.md#12-output-structure)

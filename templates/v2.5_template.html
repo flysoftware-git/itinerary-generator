@@ -735,6 +735,7 @@
         navigator.serviceWorker.register('./sw.js').catch(function() {});
       }
 
+      var PWA_INSTALL_ENABLED = true;
       var deferredPrompt = null;
       var installBtn = document.getElementById('pwa-install-btn');
       if (installBtn) {
@@ -742,14 +743,18 @@
       }
 
       window.addEventListener('beforeinstallprompt', function(e) {
+        // Always suppress the browser's own native install UI -- this app's
+        // styled button is the only install affordance, on purpose. When
+        // PWA_INSTALL_ENABLED is false that button never reveals itself
+        // either, so there is no install path left at all.
         e.preventDefault();
         deferredPrompt = e;
-        if (installBtn) {
+        if (PWA_INSTALL_ENABLED && installBtn) {
           installBtn.style.display = 'flex';
         }
       });
 
-      if (installBtn) {
+      if (PWA_INSTALL_ENABLED && installBtn) {
         installBtn.addEventListener('click', function() {
           if (!deferredPrompt) {
             return;

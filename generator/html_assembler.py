@@ -224,6 +224,18 @@ class HTMLAssembler:
             f"var DRIVE_DESCRIPTIONS = {drive_json};",
         )
 
+        # ── var PWA_INSTALL_ENABLED: suppress the Install App affordance for
+        # privacy-redacted builds (main._resolve_privacy_redaction), since an
+        # installable home-screen app is a stronger distribution signal than
+        # appropriate for a build meant to omit personal trip details.
+        # NOTE: `meta` here is trip["trip"] (reassigned above, line 96), not
+        # trip["_meta"] -- read _meta directly rather than reuse that name. ──
+        if bool(trip.get("_meta", {}).get("privacy_redacted")):
+            html = html.replace(
+                "var PWA_INSTALL_ENABLED = true;",
+                "var PWA_INSTALL_ENABLED = false;",
+            )
+
         # ── Footer credit ───────────────────────────────────────────────────
         html = self._inject_generator_footer(html, trip)
 
