@@ -1750,7 +1750,15 @@ def main(
     run_started_at = datetime.now(timezone.utc)
     run_started_at_perf = perf_counter()
     run_id = run_started_at.strftime("%Y%m%dT%H%M%S.%fZ")
-    ledger_path = Path(output) / "dev" / "run_ledger.jsonl"
+    # Environment isn't resolved until manifest parsing succeeds (it can come
+    # from the manifest itself, see "Hybrid environment selection" below), so
+    # default to "dev" here purely so a failure before that point still
+    # lands its ledger entry somewhere sane. Both names are corrected in
+    # place once the real environment is known -- _finalize_run reads them
+    # from this enclosing scope at call time, so the later reassignment is
+    # visible to it without extra plumbing.
+    environment_selected = "dev"
+    ledger_path = Path(output) / environment_selected / "run_ledger.jsonl"
     finalized = False
     stage_timings: dict[str, float] = {}
     runtime_metrics: dict[str, Any] = {}
@@ -1780,7 +1788,8 @@ def main(
             "manifest": manifest,
             "output": output,
             "config": config_path,
-            "environment": environment,
+            "environment": environment_selected,
+            "environment_cli_override": environment,
             "env_file": env_file,
             "llm_provider": llm_provider,
             "llm_model": llm_model,
@@ -1871,6 +1880,10 @@ def main(
     environment_selected = (
         (env_from_cli or env_from_manifest or env_from_env or "dev").lower()
     )
+    # Correct the pre-resolution "dev" placeholder now that the real
+    # environment is known, so the run ledger for this (and every later)
+    # environment lands in its own file instead of always under dev/.
+    ledger_path = Path(output) / environment_selected / "run_ledger.jsonl"
 
     click.echo(
         click.style("   Env      : ", fg="cyan") +
