@@ -11540,6 +11540,34 @@ def _make_nominatim_empty_response():
     return resp
 
 
+def _make_nominatim_response_full(
+    lat: str,
+    lon: str,
+    *,
+    name: str = "",
+    display_name: str = "",
+    osm_class: str = "",
+    osm_type: str = "",
+    boundingbox: list[str] | None = None,
+):
+    """Like _make_nominatim_response_named but also carries class/type/
+    boundingbox -- the fields the oversized-waterway check needs and real
+    Nominatim responses always include, but which the earlier helpers above
+    predate and omit (deliberately -- see _geocode_result_is_oversized_
+    waterway's docstring on why absence must fail open, not reject)."""
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    row = {"lat": lat, "lon": lon, "name": name, "display_name": display_name}
+    if osm_class:
+        row["class"] = osm_class
+    if osm_type:
+        row["type"] = osm_type
+    if boundingbox is not None:
+        row["boundingbox"] = boundingbox
+    resp.json.return_value = [row]
+    return resp
+
+
 def test_geocode_en_route_stop_uses_viewbox_to_disambiguate_common_place_name() -> None:
     """Full-pipeline regression for a real reported bug: Zion->Bryce en-route
     stops were rendered in AI-harvest order, not route order, forcing the
@@ -11707,6 +11735,94 @@ def test_geocode_result_name_plausible_accepts_superset_variant() -> None:
     assert URLDiscoverer._geocode_result_name_plausible("Sunrise Point", result) is True
 
 
+def test_geocode_result_name_plausible_rejects_oversized_waterway_truncation_match() -> None:
+    """Real dipstick75 bug (St. George -> Zion leg): en-route stop "Virgin
+    River Petroglyph Site" has no Nominatim entry under its full name.
+    _geocode_en_route_stop_for_route's progressive-truncation fallback
+    retries with "Virgin River Petroglyph" (also no match, live-verified)
+    and then "Virgin River" -- which resolves to the Virgin River itself
+    (OSM relation 10605393, live Nominatim response 2026-08-18): a real
+    place whose displayed reverse-geocoded address is "Veterans Memorial
+    Highway, Mohave County, Arizona" -- ~12 mi from St. George and nowhere
+    near the real BLM petroglyph site the stop refers to.
+
+    The anchor-overlap check alone passes this: "Virgin River" is, by
+    construction of the truncation that produced it, always a literal token
+    subset of "Virgin River Petroglyph Site", so "virgin"/"river" trivially
+    overlap no matter how much real identity ("Petroglyph Site") was
+    dropped to reach the match -- a structurally different gap from
+    Rockville/Grafton (zero token overlap there). Only the oversized-
+    waterway check (real bounding box, ~114 mi diagonal) catches this."""
+    virgin_river_result = {
+        "name": "Virgin River",
+        "display_name": "Virgin River, Arizona, United States",
+        "class": "waterway",
+        "type": "river",
+        "boundingbox": ["36.1457610", "37.2935220", "-114.4173887", "-112.9404080"],
+    }
+    assert URLDiscoverer._geocode_result_name_plausible(
+        "Virgin River Petroglyph Site", virgin_river_result
+    ) is False
+
+
+def test_geocode_result_name_plausible_accepts_small_waterway_truncation_match() -> None:
+    """No-regression counterpart to the oversized-waterway rejection above:
+    the module's own pre-existing, intentional truncation-recovery case for
+    "Willis Creek Slot Canyon Trailhead" -> "Willis Creek" also resolves to
+    a `class: waterway` Nominatim result (live-verified) -- a bare
+    "reject waterway class" rule would silently break this real, documented
+    recovery (see test_geocode_en_route_stop_recovers_real_landmark_behind_
+    descriptive_suffix). The real distinguishing signal is bounding-box
+    size: Willis Creek's real bounding box is ~10.8 mi diagonal (live
+    Nominatim data, Bryce Canyon area), far under the Virgin River case's
+    ~114 mi -- so this legitimate match must still pass."""
+    willis_creek_result = {
+        "name": "Willis Creek",
+        "display_name": "Willis Creek, Kane County, Utah, United States",
+        "class": "waterway",
+        "type": "stream",
+        "boundingbox": ["37.4732287", "37.5535466", "-112.2339599", "-112.0653402"],
+    }
+    assert URLDiscoverer._geocode_result_name_plausible(
+        "Willis Creek Slot Canyon Trailhead", willis_creek_result
+    ) is True
+
+
+def test_geocode_result_name_plausible_accepts_confluence_park_same_name_collision() -> None:
+    """Documents a real, investigated, but NOT code-fixable sibling bug from
+    the same dipstick75 report: en-route stop "Confluence Park" (AI
+    description: "riverfront trails and historic site at Virgin River",
+    referring to the well-known St. George park at the Santa Clara/Virgin
+    River confluence, ~37.07 N -113.62 W) geocoded instead to a real but
+    different, same-named "Confluence Park" -- a small leisure=park way in
+    the Bloomington Hills neighborhood (37.0745819, -113.5829350, live
+    Nominatim data), ~2 mi from the intended location and reverse-geocoding
+    to a private residence's address there.
+
+    Live investigation (2026-08-18) confirmed this is a genuine OSM/
+    Nominatim data limitation, not a code bug: querying "Confluence Park,
+    St. George, Utah" (even at limit=10) returns exactly one result --
+    the Bloomington Hills park -- and neither a broad "park"/"confluence"
+    search restricted to a tight viewbox around the real confluence
+    location, nor a reverse-geocode of that location, turns up any
+    alternate OSM entity distinctly named "Confluence Park" there. There is
+    no second, better candidate for a plausibility/disambiguation check to
+    prefer, and the name match itself is exact and unambiguous, so no
+    name-token heuristic can or should reject it -- this is pinned here as
+    a documented, confirmed limitation of the underlying geocoding data
+    source, not left as an unexplained gap."""
+    confluence_park_result = {
+        "name": "Confluence Park",
+        "display_name": "Confluence Park, Bloomington Hills, St. George, Washington County, Utah, United States",
+        "class": "leisure",
+        "type": "park",
+        "boundingbox": ["37.0740480", "37.0751066", "-113.5839812", "-113.5816287"],
+    }
+    assert URLDiscoverer._geocode_result_name_plausible(
+        "Confluence Park", confluence_park_result
+    ) is True
+
+
 def test_geocode_en_route_stop_rejects_name_mismatched_viewbox_match() -> None:
     """Full-pipeline regression for the real dipstick69 bug: en-route stop
     'Rockville Historic District' (a real Rockville, UT designation with no
@@ -11741,6 +11857,56 @@ def test_geocode_en_route_stop_rejects_name_mismatched_viewbox_match() -> None:
     with patch("generator.url_discovery.time.sleep"):
         coords = discoverer._geocode_en_route_stop_for_route(
             "Rockville Historic District",
+            origin_name="St. George",
+            dest_name="Zion National Park",
+            origin=origin,
+            dest=dest,
+        )
+
+    assert coords is None
+
+
+def test_geocode_en_route_stop_rejects_virgin_river_oversized_waterway_truncation_match() -> None:
+    """Full-pipeline regression for the real dipstick75 bug (St. George ->
+    Zion leg): en-route stop "Virgin River Petroglyph Site" published with
+    its badge-map coordinate as the raw pair (36.9670932, -113.7249242) --
+    reverse-geocoding live to "Veterans Memorial Highway, Mohave County,
+    Arizona", a different state, nowhere near the real BLM petroglyph site
+    (~37.05 N -113.53 W). Root cause traced live: Nominatim has no entry for
+    the stop's full name or "Virgin River Petroglyph" (both verified empty),
+    but the final truncation "Virgin River" resolves to the Virgin River
+    itself (`class: waterway`, real ~114 mi-diagonal bounding box) --
+    exactly reproduced below with the real captured response shape. Before
+    the oversized-waterway fix this mock would have returned that
+    coordinate; now the truncation match is rejected and geocoding
+    correctly gives up (no other real candidate exists for this name)."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = MagicMock()
+
+    origin = (37.0965, -113.5684)  # St. George, UT
+    dest = (37.2982, -113.0263)  # Zion National Park (Springdale)
+
+    def fake_get(_url, params=None, **_kwargs):
+        q = str((params or {}).get("q", "")).strip().lower()
+        if q == "virgin river":
+            return _make_nominatim_response_full(
+                "36.9670932",
+                "-113.7249242",
+                name="Virgin River",
+                display_name="Virgin River, Arizona, United States",
+                osm_class="waterway",
+                osm_type="river",
+                boundingbox=["36.1457610", "37.2935220", "-114.4173887", "-112.9404080"],
+            )
+        # The stop's full name and the first (less-truncated) fallback both
+        # have no real Nominatim entry -- live-verified.
+        return _make_nominatim_empty_response()
+
+    discoverer._url_validator.session.get.side_effect = fake_get
+
+    with patch("generator.url_discovery.time.sleep"):
+        coords = discoverer._geocode_en_route_stop_for_route(
+            "Virgin River Petroglyph Site",
             origin_name="St. George",
             dest_name="Zion National Park",
             origin=origin,

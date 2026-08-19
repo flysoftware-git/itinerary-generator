@@ -10551,6 +10551,87 @@ class URLDiscoverer:
         "town", "area", "neighbourhood", "neighborhood",
     })
 
+    # A "waterway" (river/stream/canal) Nominatim result whose own bounding
+    # box spans more than this many miles diagonally is a major, multi-county
+    # river system, not a short local creek -- see
+    # _geocode_result_is_oversized_waterway's docstring for the real,
+    # live-measured numbers that set this threshold (Virgin River ~114 mi vs.
+    # Willis Creek ~1-11 mi).
+    _GEOCODE_OVERSIZED_WATERWAY_SPAN_MILES = 25.0
+
+    @classmethod
+    def _geocode_result_is_oversized_waterway(cls, result: dict[str, Any] | None) -> bool:
+        """True when `result` is a Nominatim "waterway" (river/stream/canal)
+        feature whose own bounding box is too large to plausibly stand in
+        for a single point-of-interest.
+
+        Real case (dipstick75, St. George -> Zion leg): en-route stop
+        "Virgin River Petroglyph Site" has no Nominatim entry under its full
+        name (verified live), so _geocode_en_route_stop_for_route's
+        progressive-truncation fallback (see _en_route_stop_name_truncations)
+        retried with "Virgin River Petroglyph" (still no match) and then
+        "Virgin River" -- which DOES resolve, to OSM relation 10605393, the
+        Virgin River itself: `{"class": "waterway", "type": "river", "name":
+        "Virgin River", "lat": "36.9670932", "lon": "-113.7249242",
+        "boundingbox": ["36.1457610", "37.2935220", "-114.4173887",
+        "-112.9404080"]}` (live Nominatim response, 2026-08-18) -- a point
+        that happens to fall in Mohave County, Arizona, ~12 mi from St.
+        George and nowhere near the real BLM petroglyph site the stop
+        actually refers to. This slipped past `_geocode_result_name_plausible`
+        because the anchor-overlap check compares against the ORIGINAL,
+        untruncated query name -- "Virgin River" is, by construction of the
+        truncation itself, always a literal token subset of "Virgin River
+        Petroglyph Site", so the overlap check ("virgin"/"river" shared)
+        trivially passes no matter how much of the query's real identity
+        ("Petroglyph Site") was dropped to reach that match. This is a
+        genuinely different gap from the Rockville/Grafton bug the anchor-
+        overlap check was built for: that case had NO shared tokens at all
+        between two distinctly-named places; this case has near-total token
+        overlap because the "wrong" result's name is textually contained in
+        the query, and no name-overlap heuristic can ever catch that.
+
+        A bare "reject waterway-class matches" rule was tried and rejected:
+        the module's own documented, intentional truncation-recovery case
+        for "Willis Creek Slot Canyon Trailhead" -> "Willis Creek" *also*
+        resolves to a `class: waterway` result (live-verified, both real
+        candidate streams near Bryce Canyon: bounding boxes ~10.8 mi and
+        ~1.1 mi diagonal) -- rejecting on class alone would silently
+        reintroduce the exact zigzag-waypoint bug that truncation recovery
+        was built to fix (see test_geocode_en_route_stop_recovers_real_
+        landmark_behind_descriptive_suffix). The real, measurable difference
+        between the two cases is *scale*: Willis Creek is a short local
+        stream (bounding box a few miles across at most); the Virgin River
+        relation Nominatim returns spans the entire river system (~114 mi
+        diagonal, live-measured) -- while a bare river/stream *name* can't
+        distinguish "the specific creek this trailhead sits on" from "an
+        entire regional river", its own bounding-box size can: a "waterway"
+        match whose own extent already exceeds any plausible en-route-stop
+        detour is positive evidence it's an aggregate/coarse feature, not
+        the specific site queried for.
+
+        Fails open (returns False, i.e. "not oversized") whenever
+        `boundingbox` is missing or malformed -- this is an additional
+        rejection signal layered on top of the anchor-overlap check, not a
+        replacement for it, and every existing geocode mock/test predates
+        this field, so absence must never manufacture a rejection.
+        """
+        if not isinstance(result, dict):
+            return False
+        if str(result.get("class") or "").strip().lower() != "waterway":
+            return False
+        bbox = result.get("boundingbox")
+        if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            return False
+        try:
+            min_lat, max_lat, min_lon, max_lon = (float(v) for v in bbox)
+        except (TypeError, ValueError):
+            return False
+        corner_a = cls._parse_lat_lng(min_lat, min_lon)
+        corner_b = cls._parse_lat_lng(max_lat, max_lon)
+        if corner_a is None or corner_b is None:
+            return False
+        return cls._haversine_miles(corner_a, corner_b) > cls._GEOCODE_OVERSIZED_WATERWAY_SPAN_MILES
+
     @classmethod
     def _geocode_result_name_plausible(cls, query_name: str, result: dict[str, Any] | None) -> bool:
         """Reject a Nominatim result whose own place name shares no
@@ -10576,6 +10657,14 @@ class URLDiscoverer:
         pass: only "point" is generic there (already excluded by the
         shared _significant_tokens stop-word list), so "sunrise" anchors
         both sides.
+
+        Also rejects an oversized "waterway" match -- see
+        _geocode_result_is_oversized_waterway's docstring (dipstick75:
+        "Virgin River Petroglyph Site" truncation-recovered onto the Virgin
+        River itself, a different, distinct failure mode from Rockville/
+        Grafton that pure name-token overlap structurally cannot catch,
+        since a truncated query's successful match is -- by construction --
+        always a token subset of the original name).
         """
         query_tokens = set(cls._significant_tokens(query_name))
         if not query_tokens:
@@ -10603,8 +10692,12 @@ class URLDiscoverer:
         if not query_anchors:
             # Query itself is only generic designation words -- nothing to
             # anchor on, so fall back to plain overlap rather than rejecting.
-            return bool(query_tokens & result_tokens)
-        return bool(query_anchors & result_tokens)
+            anchor_overlap = bool(query_tokens & result_tokens)
+        else:
+            anchor_overlap = bool(query_anchors & result_tokens)
+        if not anchor_overlap:
+            return False
+        return not cls._geocode_result_is_oversized_waterway(result)
 
     def _geocode_en_route_stop_for_route(
         self,
