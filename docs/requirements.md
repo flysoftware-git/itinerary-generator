@@ -1,5 +1,11 @@
 # Road Trip Itinerary Generator — Requirements Document
-**Version 2.1 · August 2, 2026**
+**Version 2.2 · August 18, 2026**
+
+### Changelog for v2.2
+| # | Section | Change |
+|---|---|---|
+| 1 | §5 | Hardened closure-marker detection for both attractions and AllTrails trail pages: page text fetched via `URLValidator.get_text` is raw, unmodified `resp.text`, so a closure phrase sitting inside a non-visible HTML comment or `<script>`/`<style>` block (stale dev/CMS markup, or — on AllTrails' React/Next.js pages — inline JSON hydration state for an unrelated "nearby trails" widget) was previously read as evidence the whole entity was closed. Both detectors now strip comments and script/style content before matching. Attraction closure detection additionally evaluates at sentence granularity so a same-sentence sub-part qualifier (`wing`, `gallery`, `exhibit`, ...) is read as a partial closure, not a whole-venue one; no equivalent partial-closure exemption exists for AllTrails, since there is no confirmed evidence of an analogous pattern on trail pages |
+| 2 | §9, §12 | Fixed the run ledger being hardcoded to `<output>/dev/run_ledger.jsonl` regardless of the resolved `--environment`, silently conflating dev/eval/prod run history in the same file. The ledger path (and its `environment` field) now resolves to the same environment as the rest of the run; a pre-resolution `dev` placeholder is used only for the narrow window before the manifest is parsed (so a failure before that point still lands its ledger entry somewhere), and is corrected once the real environment is known |
 
 ### Changelog for v2.1
 | # | Section | Change |
@@ -538,6 +544,11 @@ For non-AllTrails candidates, page text must match enough of the item name to be
 
 The acceptance gate is stricter than HTTP liveness alone. Generic 404 pages, asset-detail pages, and other obviously non-target landing pages must be rejected even when they return 200.
 
+Closure-marker detection (attractions and AllTrails trail pages):
+- Fetched page text is raw, unmodified HTML; closure-marker matching must strip HTML comments and `<script>`/`<style>` content before matching, so a closure phrase sitting in non-visible markup (a stale dev/CMS comment, or inline JSON hydration state on a JS-rendered page) is not treated as evidence of a live closure.
+- For attractions, a closure marker's same sentence is checked for a sub-part qualifier (`wing`, `gallery`, `exhibit`, `annex`, `hall`, `section`, ...); when every marker sentence also names a sub-part, the page is treated as a partial closure, not a whole-venue closure.
+- AllTrails trail pages have no partial-closure exemption; a matched marker (after comment/script stripping) rejects the candidate outright.
+
 AllTrails-specific acceptance rules:
 - Non-hike attractions must reject AllTrails results even if those pages appear live.
 - Hike links may use `alltrails.com/trail/...`, but acceptance must require a strong trail-name match against the AllTrails slug plus page-body validation.
@@ -716,6 +727,10 @@ Output path policy:
 - By default, generated files write directly under the requested `--output` directory.
 - An environment subdirectory is created only when `--environment` is provided explicitly on the CLI.
 
+Run ledger policy:
+- Every run appends one JSON-lines record to `run_ledger.jsonl`, whose path resolves to the same `dev`/`eval`/`prod` environment as the rest of the run (`<output>/<environment>/run_ledger.jsonl`), not a hardcoded location.
+- A crashed run still writes a `terminated_without_finalize` record via an `atexit` guard.
+
 Logging policy:
 - Default console logging threshold is `INFO`.
 - `--log-level` must allow `DEBUG`, `INFO`, `WARNING`, `ERROR`, and `CRITICAL` thresholds.
@@ -787,7 +802,8 @@ output/
 │   └── ...
 ├── manifest.webmanifest    ← PWA companion asset
 ├── sw.js                   ← Service worker asset
-└── validation_report.json  ← Post-assembly validation results
+├── validation_report.json  ← Post-assembly validation results
+└── run_ledger.jsonl        ← Append-only per-run record (see Run ledger policy below)
 ```
 
 When `--environment` is provided explicitly, the above structure is created under `output/{environment}/` instead.

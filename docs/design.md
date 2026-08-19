@@ -1,8 +1,8 @@
 # Road Trip Itinerary Generator — Design Document
 
-**Version 2.1 · August 17, 2026**
+**Version 2.2 · August 18, 2026**
 Describes generator `v2.0.0`, template `v2.5`, branch `issue-6-v2`.
-Aligned with [`docs/requirements.md` v2.1](requirements.md).
+Aligned with [`docs/requirements.md` v2.2](requirements.md).
 
 > **Start here.** This is the top-level introduction to the codebase. It explains
 > *why the system is shaped the way it is* — the load-bearing ideas, the contracts
@@ -180,7 +180,8 @@ discovered is trusted:
 | Blocked vs dead | 404/410/DNS = dead; 401/403/timeout/5xx/SSL = blocked, fails *open* | `_is_definitively_dead_status` |
 | AllTrails links | publish-confidence tiers (`low`/`medium`/`high`) plus slug corroboration | `_meets_alltrails_publish_confidence` |
 | Restaurants | name denylist, page-text closure and pre-opening markers | `_is_restaurant_ineligible` |
-| Attractions | closure markers evaluated per *sentence*, so a closed wing ≠ a closed park | `_has_attraction_closure_marker` |
+| Attractions | closure markers evaluated per *sentence* over comment/script-stripped page text, so a closed wing ≠ a closed park and a stale HTML comment ≠ a live closure | `_has_attraction_closure_marker` |
+| AllTrails trail pages | closure markers matched over comment/script-stripped page text (same false-positive class as attractions; no partial-closure exemption — no evidence a trail-page analogue to "closed wing" exists) | `_has_alltrails_closure_marker` |
 | Places generally | rating and vote floors before a link is admitted | `_meets_place_interest_threshold` |
 | Candidate images | token/profile scoring, marine and blacklist rejects | `image_fetcher._rank_images_for_destination` |
 | Temperature claims | overwritten from Open-Meteo monthly normals | `ai_content` weather grounding |

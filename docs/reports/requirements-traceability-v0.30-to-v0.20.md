@@ -1,7 +1,7 @@
-# Requirements Traceability to Tests (v2.1 to v0.20)
+# Requirements Traceability to Tests (v2.2 to v0.20)
 
-Date: 2026-08-02
-Scope: Changelog requirements from v2.1 through v0.20 in docs/requirements.md,
+Date: 2026-08-02 (extended 2026-08-18 for v2.2)
+Scope: Changelog requirements from v2.2 through v0.20 in docs/requirements.md,
 plus post-triage quality-hardening linkage for current provenance/schedule updates.
 
 Legend:
@@ -13,6 +13,10 @@ Legend:
 
 | Req ID | Requirement (short) | Evidence | Status | Recommendation |
 |---|---|---|---|---|
+| v2.2-1a | Attraction closure-marker detection strips HTML comment/script noise before matching | tests/test_url_discovery.py::test_has_attraction_closure_marker_ignores_html_comment_noise; tests/test_url_discovery.py::test_discover_attractions_real_moifa_html_comment_closure_false_positive_keeps_real_link | Tested | Keep |
+| v2.2-1b | Attraction closure-marker partial-closure exemption (same-sentence sub-part qualifier) | tests/test_url_discovery.py::test_has_attraction_closure_marker_ignores_stale_partial_wing_closure; tests/test_url_discovery.py::test_has_attraction_closure_marker_still_detects_real_full_closure | Tested | Keep |
+| v2.2-1c | AllTrails closure-marker detection strips HTML comment/script noise before matching, no partial-closure exemption | tests/test_url_discovery.py::test_has_alltrails_closure_marker_ignores_html_comment_noise; tests/test_url_discovery.py::test_has_alltrails_closure_marker_ignores_script_json_noise; tests/test_url_discovery.py::test_has_alltrails_closure_marker_still_detects_real_full_closure; tests/test_url_discovery.py::test_alltrails_relevance_ignores_html_comment_closure_noise | Tested | Keep |
+| v2.2-2 | Run ledger path and `environment` field resolve to the run's actual `--environment`, not hardcoded `dev` | Verified via manual `--environment prod` / default-`dev` dry-run smoke test (generator/main.py); no automated test exists (no CliRunner harness for `generator.main` in this repo) | Inspect | Add a `tests/test_main.py` using `click.testing.CliRunner` to assert ledger path/`environment` field for at least one non-default `--environment` value |
 | v2.1-1 | Configurable schedule start time (`trip.default_day_start_time`, destination override) | tests/test_content_normalization.py::test_inject_travel_realism_uses_default_day_start_time_for_arrival_leg; tests/test_content_normalization.py::test_inject_travel_realism_honors_destination_start_time_override | Tested | Keep |
 | v2.1-2 | Configurable daily activity-hour budget (`trip.default_daily_activity_hours`, destination override) | tests/test_content_normalization.py::test_inject_travel_realism_packs_multiple_afternoon_activities_with_default_budget; tests/test_content_normalization.py::test_inject_travel_realism_respects_destination_activity_hour_override | Tested | Keep |
 | v2.1-3 | Afternoon multi-activity packing only when durations fit budget after transit | tests/test_content_normalization.py::test_inject_travel_realism_packs_multiple_afternoon_activities_with_default_budget; tests/test_content_normalization.py::test_inject_travel_realism_respects_destination_activity_hour_override | Tested | Keep |
@@ -96,6 +100,7 @@ single smoke run last).
 1. Restaurant credibility still benefits from more fixtures for historical-place and off-destination false positives.
 2. Category stoplist/offer-page suppression remains high-risk and should retain targeted regression pressure.
 3. A compact, dedicated quality-contract suite is still recommended before further optimization work.
+4. `generator/main.py`'s CLI entrypoint has no dedicated test file at all (no `tests/test_main.py`); every CLI-level behavior, including the v2.2-2 run-ledger environment-resolution fix, is currently verified only by manual smoke-testing. Lowest-effort fix: a `CliRunner`-based harness covering ledger path/record resolution and output-directory nesting.
 
 ## Requirements Better Verified by Inspection
 
@@ -103,3 +108,4 @@ single smoke run last).
 2. Footer second-line readability and spacing in real browser rendering (desktop + mobile).
 3. Getting There section placement/flow quality relative to schedule and attractions in full generated outputs.
 4. Scenic-drive route-intent heuristic precision across diverse destination domains (false positives/negatives).
+5. Run ledger environment-resolution (v2.2-2) — verified via manual dry-run smoke test only, no automated CLI test harness exists yet.
