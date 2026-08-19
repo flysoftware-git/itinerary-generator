@@ -715,6 +715,21 @@ Stated plainly, because a new contributor will otherwise find these the hard way
     `_build_group_lodging_pointer`, and `route_options` waypoints — which can never be
     produced because options key on `title` while the URL builder reads `name`, and the
     code relies on that accident.
+16. **Another en-route waypoint mismatch, same class as dipstick60/63/68** —
+    `_build_route_gmaps_url`'s fallback path (no `geocode_lat`/`geocode_lng` on the stop,
+    so a free-text name goes to Google's own geocoder) has twice before resolved a
+    same-word-fragment US-Southwest stop to an unrelated Washington-state place
+    ("Stan's Overlook Trail, Snoqualmie, WA"; "Optimize Health," a Washington clinic, from
+    a reverted `optimize:true` attempt). A 2026-08-19 build's Moab→Telluride en-route leg
+    showed the same signature: the Google Maps directions panel included "San Juan Island
+    National Historical Park" (Washington state) as a waypoint, in a slot where the
+    on-page card list showed "Rico Historic District" instead — screenshot evidence only,
+    not reproduced against a fresh run's raw stop data (an en-route stop set isn't stable
+    run-to-run, and another paid run wasn't authorized to chase it). Likely the same root
+    cause as before: that stop had no real geocoded coordinate and fell through to a
+    name-only or under-qualified query. Deferred per owner call ("can be a fix to 2.0") —
+    not fixed blind, consistent with this function's own history of a speculative fix
+    (`optimize:true`) making a similar case *worse* until it was reverted.
 
 > **Design notes:** [`url-quality-pr-backlog.md`](design/url-quality-pr-backlog.md) ·
 > [`side-trip-exploration.md`](design/side-trip-exploration.md)
@@ -1055,16 +1070,23 @@ tests/             1,044 tests      docs/requirements.md   v2.1
 
 ### 7.3 Testing posture
 
-**1,044 tests across 24 test files.** The distribution tells you where the risk was felt:
-`test_url_discovery.py` 559, `test_html_assembler.py` 155, `test_ai_content_normalization.py` 60,
-`test_main_requirements.py` 45, `test_grok_search.py` 29, `test_claude_search.py` 25.
-`docs/requirements.md` [§19](requirements.md#19-requirements-testing-linkage) establishes
-the requirements-to-tests linkage, and `test-coverage.md` tracks it.
+**1,219 tests across 25 test files**, all flat — no `pytest.ini`/`conftest.py`, no markers,
+one `pytest tests/` collection. The distribution tells you where the risk was felt:
+`test_url_discovery.py` 623, `test_html_assembler.py` 173, `test_ai_content_normalization.py`
+116, `test_main_requirements.py` 49, `test_grok_search.py` 30. `docs/requirements.md`
+[§19](requirements.md#19-requirements-testing-linkage) establishes the requirements-to-tests
+linkage, and `test-coverage.md` tracks it.
 
-Thin spots: `test_entity_registry.py` (8) and `test_pipeline_integration.py` (2) are light
+Thin spots: `test_entity_registry.py` (11) and `test_pipeline_integration.py` (2) are light
 relative to how much now depends on them, and `nps_resolver`, `report_writer`,
-`providers/grok` and `verify_links_until_clean` have one test each. There is still no CI —
-the suite runs from `bootstrap.ps1` on a developer machine, and `-SkipTests` exists.
+`providers/grok` and `verify_links_until_clean` have one test each.
+
+CI (`.github/workflows/tests.yml`) runs the full suite on push/PR to `main`/`issue-6-v2` —
+one job, Python 3.11, no coverage reporting (`pytest-cov` is in `requirements.txt` but never
+invoked with `--cov`). Separately, `requirements-traceability-v0.30-to-v0.20.md`'s "Focused
+Gate Sequence" documents four `pytest -k` gates (renderer fail-closed, URL-discovery
+credibility, schedule invariants, a compact contract suite) plus a smoke gate — a manual
+pre-full-run checklist, not something CI or any script executes automatically.
 
 > **Requires:** [§19 Requirements Testing Linkage](requirements.md#19-requirements-testing-linkage)
 

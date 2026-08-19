@@ -2370,6 +2370,7 @@ def main(
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "environment": environment_selected,
         "privacy_redacted": redact_privacy_details,
+        "manifest_name": Path(manifest).name,
         "development_build": development_build,
         "llm": {
             "provider": llm_client.provider,

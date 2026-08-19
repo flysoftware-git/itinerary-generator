@@ -230,6 +230,45 @@ def test_assembled_html_includes_generator_footer_signature() -> None:
     assert "Itinerary output: 2026-07-26 17:41 UTC" in html
 
 
+def test_generator_footer_includes_manifest_name_when_present() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {
+        "trip": {"title": "Test Trip", "theme_color": "#C0623E"},
+        "_meta": {
+            "generator_version": "9.9.9",
+            "template_version": "2.5",
+            "generated_at_utc": "2026-07-26T17:41:23+00:00",
+            "manifest_name": "sw_manifest.yaml",
+            "llm": {"provider": "openai", "model": "test", "usage": {"models": [], "total_estimated_cost_usd": 0.0}},
+        },
+        "destinations": [],
+    }
+
+    html = assembler.assemble(trip)
+
+    assert "Manifest: sw_manifest.yaml" in html
+
+
+def test_generator_footer_omits_manifest_segment_when_absent() -> None:
+    """Existing (pre-manifest-name) trips/tests must render unchanged --
+    no stray 'Manifest:  ·' when the field is missing."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {
+        "trip": {"title": "Test Trip", "theme_color": "#C0623E"},
+        "_meta": {
+            "generator_version": "9.9.9",
+            "template_version": "2.5",
+            "generated_at_utc": "2026-07-26T17:41:23+00:00",
+            "llm": {"provider": "openai", "model": "test", "usage": {"models": [], "total_estimated_cost_usd": 0.0}},
+        },
+        "destinations": [],
+    }
+
+    html = assembler.assemble(trip)
+
+    assert "Manifest:" not in html
+
+
 def _minimal_trip_with_meta(privacy_redacted: bool | None) -> dict:
     meta = {
         "generator_version": "9.9.9",
