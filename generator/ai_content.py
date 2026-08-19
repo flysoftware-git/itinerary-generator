@@ -1589,6 +1589,31 @@ class AIContentGenerator:
             if item.get("detour_time_minutes") in (None, ""):
                 item["detour_time_minutes"] = 0
             normalized_stops.append(item)
+
+        # Manifest en_route_exclude: a traveler-confirmed blocklist for the
+        # rare case where the discovery/geocode pipeline confidently proposes
+        # a real, live-verified match that's still the wrong same-named
+        # place (e.g. a known Nominatim same-name collision -- no automated
+        # heuristic can reliably tell these apart from a legitimate
+        # loosely-described real stop without also rejecting real ones, see
+        # docs/design/url-discovery-and-audit.md's En-Route Stop Geocode
+        # sections for the investigation behind that conclusion). Applied
+        # here, before the cap/prioritization below and well before
+        # url_discovery.py ever runs, so an excluded name also never costs a
+        # search call. Mirrors en_route_seeds' exact name-matching (case-
+        # insensitive, punctuation-normalized via _canonical_seed_name) with
+        # the opposite effect.
+        exclude_names = {
+            self._canonical_seed_name(str(n or ""))
+            for n in ((dest or {}).get("en_route_exclude", []) or [])
+            if self._canonical_seed_name(str(n or ""))
+        }
+        if exclude_names:
+            normalized_stops = [
+                item for item in normalized_stops
+                if self._canonical_seed_name(str(item.get("name", "") or "")) not in exclude_names
+            ]
+
         seed_names = [
             str(s or "").strip()
             for s in ((dest or {}).get("en_route_seeds", []) or [])

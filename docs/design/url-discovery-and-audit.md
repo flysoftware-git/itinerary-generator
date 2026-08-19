@@ -1119,6 +1119,21 @@ one same-name collision). No code change shipped for this follow-up;
 collision` (`tests/test_url_discovery.py`) remains the pinned regression
 confirming the existing, correct (accepting) behavior.
 
+### Manifest-level escape hatch: `en_route_exclude`
+Since no automated signal can reliably catch this class of bug, the
+traveler needs a way to fix a *specific, known* case themselves once they've
+spotted it -- the same way `en_route_seeds` already lets them add a specific
+known-good stop the pipeline missed. `en_route_exclude` (a destination-level
+manifest field, `generator/manifest_parser.py`'s schema, structurally
+identical to `en_route_seeds` -- plain names only, no URLs, matched
+case/punctuation-insensitively via `_canonical_seed_name`) blocklists a
+specific named en-route stop for the leg arriving at that destination.
+Applied in `generator/ai_content.py`'s `_normalize_getting_here`, before the
+cap/prioritization pass and well before `url_discovery.py` ever runs, so an
+excluded name also never costs a search call. Real application: Zion's
+manifest entry in `C:\Dev\Sandbox\sw_manifest.yaml` now carries
+`en_route_exclude: ["Confluence Park"]`.
+
 ## Map-Link vs. Source-Link Icon Distinguishability
 Project owner, re: the "Belly of the Dragon" en-route-stop card and others:
 "the icons... indicating link to Map not source, and the links to the Map

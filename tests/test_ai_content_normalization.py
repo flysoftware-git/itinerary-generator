@@ -1088,6 +1088,53 @@ def test_normalize_getting_here_applies_enroute_cap_and_preserves_seed() -> None
     assert len(names) == 4
 
 
+def test_normalize_getting_here_applies_en_route_exclude() -> None:
+    """Real bug: 'Confluence Park' geocodes to a real, live-verified match
+    that's a different, wrong same-named place in St. George -- a genuine
+    Nominatim same-name collision no automated heuristic could reliably
+    catch without also rejecting legitimate stops (see
+    docs/design/url-discovery-and-audit.md). en_route_exclude gives the
+    traveler a durable, manifest-level way to blocklist a specific
+    known-bad name -- applied before the cap/prioritization and before any
+    search call, so an excluded name is dropped even if there's room left
+    under the cap, not just deprioritized."""
+    g = _gen()
+    getting_here = {
+        "drive_time": "1 hr 30 min",
+        "en_route_stops": [
+            {"name": "Confluence Park", "detour_distance_miles": 1.0},
+            {"name": "La Verkin Overlook", "detour_distance_miles": 3.9},
+            {"name": "Toquerville Falls", "detour_distance_miles": 10.6},
+        ],
+    }
+    dest = {"name": "Zion National Park", "en_route_exclude": ["Confluence Park"]}
+
+    out = g._normalize_getting_here(getting_here, "Zion National Park", dates="October 18, 2026", trip_meta={}, dest=dest)
+
+    names = [s["name"] for s in out["en_route_stops"]]
+    assert "Confluence Park" not in names
+    assert "La Verkin Overlook" in names
+    assert "Toquerville Falls" in names
+
+
+def test_normalize_getting_here_en_route_exclude_matches_case_and_punctuation_insensitively() -> None:
+    g = _gen()
+    getting_here = {
+        "drive_time": "1 hr",
+        "en_route_stops": [
+            {"name": "confluence park", "detour_distance_miles": 1.0},
+            {"name": "Real Stop", "detour_distance_miles": 2.0},
+        ],
+    }
+    dest = {"name": "Zion National Park", "en_route_exclude": ["Confluence Park!"]}
+
+    out = g._normalize_getting_here(getting_here, "Zion National Park", dates="October 18, 2026", trip_meta={}, dest=dest)
+
+    names = [s["name"] for s in out["en_route_stops"]]
+    assert "confluence park" not in [n.lower() for n in names]
+    assert "Real Stop" in names
+
+
 from generator.ai_content import AIContentGenerator
 
 
