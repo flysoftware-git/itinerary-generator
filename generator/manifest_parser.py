@@ -176,8 +176,87 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                             "name": {"type": "string"},
                             "location": {"type": "string", "minLength": 2},
                             "checkin_time": {"type": "string"},
+                            "confirmation_number": {
+                                "type": "string",
+                                "description": "Optional booking/confirmation code for the stay. "
+                                               "Redacted in privacy-redacted builds "
+                                               "(main._apply_privacy_redaction) -- on most "
+                                               "booking sites a confirmation code plus a surname "
+                                               "is enough to view, change or cancel the "
+                                               "reservation, so this is the most sensitive field "
+                                               "in the lodging block, not merely an identifying "
+                                               "one.",
+                            },
+                            "website": {
+                                "type": "string",
+                                "description": "Optional public URL for the lodging property "
+                                               "(the hotel's own site, not a reservation or "
+                                               "account link). Rendered as a header pill so the "
+                                               "traveler can reach property details -- address, "
+                                               "amenities, check-in policy -- without logging in "
+                                               "anywhere. Redacted in privacy-redacted builds "
+                                               "alongside lodging.name (main._apply_privacy_redaction): "
+                                               "the URL identifies the property just as precisely "
+                                               "as the name, so exempting it would leak the same "
+                                               "where-the-traveler-sleeps-on-which-dates fact that "
+                                               "redacting the name exists to protect.",
+                            },
                         },
                         "additionalProperties": False,
+                    },
+                    "transportation": {
+                        "type": "array",
+                        "description": "Optional booked travel legs ARRIVING at this "
+                                       "destination (the flight/train/rental that gets the "
+                                       "traveler here), mirroring how en_route_seeds attaches "
+                                       "the inbound drive to the arriving destination rather "
+                                       "than the departing one. A rental car held across "
+                                       "several stops belongs on the destination where it is "
+                                       "picked up. Every field is cleared in privacy-redacted "
+                                       "builds (main._apply_privacy_redaction) -- a carrier plus "
+                                       "a record locator is typically enough to view or change "
+                                       "someone else's booking.",
+                        "items": {
+                            "type": "object",
+                            "required": ["type"],
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["plane", "train", "car", "other"],
+                                    "description": "Drives the category title and icon on the "
+                                                   "rendered card.",
+                                },
+                                "provider": {
+                                    "type": "string",
+                                    "description": "Airline, rail operator or rental company.",
+                                },
+                                "label": {
+                                    "type": "string",
+                                    "description": "Short human-readable identifier for the leg "
+                                                   "(e.g. 'UA 1234 SFO→LAS', 'Midsize SUV'). "
+                                                   "Falls back to provider, then to the type's "
+                                                   "own title, when omitted.",
+                                },
+                                "confirmation_number": {"type": "string"},
+                                "depart": {
+                                    "type": "string",
+                                    "description": "Free-text departure point and/or time, kept "
+                                                   "as a string for the same reason `dates` is: "
+                                                   "these are display strings, not scheduling "
+                                                   "inputs. Nothing in the pipeline parses them.",
+                                },
+                                "arrive": {
+                                    "type": "string",
+                                    "description": "Free-text arrival point and/or time. See "
+                                                   "`depart`.",
+                                },
+                                "website": {
+                                    "type": "string",
+                                    "description": "Carrier/rental manage-booking or info URL.",
+                                },
+                            },
+                            "additionalProperties": False,
+                        },
                     },
                     "planning_links": {
                         "type": "array",
@@ -263,6 +342,7 @@ class ManifestParser:
         except yaml.YAMLError as exc:
             raise ValueError(self._format_yaml_error(manifest_path, exc)) from exc
         self._validate_schema(data)
+        self._merge_reservations_sidecar(data, manifest_path)
         self._validate_seeds(data)
         self._validate_en_route_seeds(data)
         self._validate_en_route_exclude(data)
@@ -278,6 +358,57 @@ class ManifestParser:
     def load(self, manifest_path: Path | str) -> dict[str, Any]:
         """Backward-compatible alias used by CLI/tests."""
         return self.parse(manifest_path)
+
+    @staticmethod
+    def reservations_sidecar_path(manifest_path: Path | str) -> Path:
+        """Sidecar location for a manifest: `<stem>.reservations.yaml` beside it.
+
+        Named off the manifest stem rather than a fixed `reservations.yaml` so
+        several manifests can share a directory (sw_manifest.yaml and
+        Japan_manifest.yaml both live in Sandbox/) without one trip's bookings
+        bleeding into another's.
+        """
+        manifest_path = Path(manifest_path)
+        return manifest_path.with_name(f"{manifest_path.stem}.reservations.yaml")
+
+    def _merge_reservations_sidecar(self, data: dict[str, Any], manifest_path: Path) -> None:
+        """Fold ingested reservations into the parsed manifest, if any exist.
+
+        Runs after schema validation of the hand-authored manifest and
+        re-validates afterwards, so LLM-extracted email content cannot enter
+        the pipeline in a shape the schema forbids -- it fails the build
+        loudly instead. Ingested values fill empty fields only; anything the
+        manifest states wins, because a human wrote that and a model guessed
+        this. Absence of a sidecar is the normal case and is silent.
+        """
+        sidecar_path = self.reservations_sidecar_path(manifest_path)
+        if not sidecar_path.exists():
+            return
+
+        from generator.reservation_ingest import load_sidecar, merge_sidecar_into_trip
+
+        sidecar = load_sidecar(sidecar_path)
+        if not sidecar:
+            return
+
+        counts = merge_sidecar_into_trip(data, sidecar)
+        self._validate_schema(data)
+
+        pending = len(sidecar.get("pending", []) or [])
+        logger.info(
+            "Merged reservations from %s -- %d lodging field(s), %d transportation leg(s)%s",
+            sidecar_path.name,
+            counts["lodging_fields"],
+            counts["transportation_legs"],
+            f"; {pending} awaiting review" if pending else "",
+        )
+        if pending:
+            logger.warning(
+                "%d ingested reservation(s) in %s matched no destination confidently "
+                "and were NOT applied. Resolve them under 'pending:' in that file.",
+                pending,
+                sidecar_path.name,
+            )
 
     def _validate_schema(self, data: dict[str, Any]) -> None:
         try:

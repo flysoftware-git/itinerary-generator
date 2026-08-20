@@ -216,6 +216,44 @@
       .group-base-pointer a:hover { color: var(--terracotta); }
       .intro-note-text { font-size: 0.95rem; line-height: 1.7; color: #5c4a35; margin: 0; }
 
+      /* ── Lodging booking details (html_assembler._build_lodging_card) ──
+         Collapsed by default: these are the fields a traveler wants at the
+         check-in desk, not while reading the itinerary. Absent entirely from
+         privacy-redacted builds -- see _build_lodging_card's docstring. */
+      .lodging-card {
+        margin: 0 1.5rem 1.25rem; border: 1px solid #e2d9c8; border-radius: 12px;
+        background: #faf7f0; overflow: hidden;
+      }
+      .lodging-card > summary {
+        cursor: pointer; padding: 0.75rem 1.1rem; font-size: 0.95rem;
+        font-weight: 700; color: var(--dark); list-style: none;
+      }
+      .lodging-card > summary::-webkit-details-marker { display: none; }
+      .lodging-card > summary::after {
+        content: "▸"; float: right; color: var(--canyon); font-weight: 400;
+        transition: transform 0.15s ease;
+      }
+      .lodging-card[open] > summary::after { content: "▾"; }
+      .lodging-card > summary:hover { color: var(--terracotta); }
+      .lodging-body { padding: 0 1.1rem 0.9rem; }
+      .lodging-row {
+        display: flex; gap: 0.75rem; align-items: baseline;
+        padding: 0.35rem 0; border-top: 1px solid #ece4d6; font-size: 0.9rem;
+      }
+      .lodging-key {
+        flex: 0 0 7.5rem; color: #8a7a63; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.03em; font-size: 0.75rem;
+      }
+      .lodging-val { color: var(--dark); word-break: break-word; min-width: 0; }
+      .lodging-val a { color: var(--canyon); text-decoration: underline; text-underline-offset: 2px; }
+      .lodging-val a:hover { color: var(--terracotta); }
+      /* Confirmation codes are transcribed by hand at a desk -- monospace so
+         0/O and 1/I stay distinguishable. */
+      .lodging-conf {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-weight: 600; letter-spacing: 0.02em;
+      }
+
       /* ── Expected environment ── */
       .env-card { background: #fffbeb; border-top: 4px solid #f59e0b; }
       .env-card h3 { color: #d97706; }

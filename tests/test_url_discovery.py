@@ -16618,3 +16618,108 @@ def test_retain_discovered_url_keeps_remembered_url_for_the_same_item():
         )
 
     assert out == double_arch_url
+
+
+def test_persistent_cache_preserves_entry_age_across_resave(tmp_path) -> None:
+    """Re-saving must write each entry's ORIGINAL birth timestamp, not "now".
+
+    Regression: every save stamped ts=now, so an entry's age reset on each
+    build. With builds happening regularly no TTL here could ever expire
+    anything -- a dead URL stayed served from cache indefinitely, and the
+    `now if now >= cutoff else cutoff` guards were dead code (cutoff is
+    now - ttl, so the condition is always true)."""
+    cache_path = tmp_path / "persistent_cache.json"
+    old_ts = time.time() - (100 * 3600)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "updated_at": old_ts,
+                "search_results": {"q1": {"ts": old_ts, "results": [{"url": "https://a"}]}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    disc = URLDiscoverer.__new__(URLDiscoverer)
+    disc._persistent_cache_enabled = True
+    disc._persistent_cache_path = str(cache_path)
+    disc._search_results_cache = {}
+    disc._load_persistent_caches()
+    disc._persistent_cache_dirty = True
+    disc._save_persistent_caches()
+
+    resaved = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert resaved["search_results"]["q1"]["ts"] == pytest.approx(old_ts, abs=1.0)
+
+
+def test_persistent_cache_stamps_now_for_entries_first_seen_this_run(tmp_path) -> None:
+    """The age-preserving fix must not freeze new entries at someone else's
+    timestamp -- anything not loaded from disk is genuinely new."""
+    cache_path = tmp_path / "persistent_cache.json"
+
+    disc = URLDiscoverer.__new__(URLDiscoverer)
+    disc._persistent_cache_enabled = True
+    disc._persistent_cache_path = str(cache_path)
+    disc._search_results_cache = {"fresh": [{"url": "https://b"}]}
+    disc._persistent_cache_dirty = True
+    disc._save_persistent_caches()
+
+    saved = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert saved["search_results"]["fresh"]["ts"] == pytest.approx(time.time(), abs=5.0)
+
+
+def test_expired_entry_is_dropped_on_the_load_after_a_resave(tmp_path) -> None:
+    """End-to-end consequence of preserving age: an entry past its TTL must
+    still expire even after intervening saves have rewritten the file."""
+    cache_path = tmp_path / "persistent_cache.json"
+    old_ts = time.time() - (200 * 3600)  # past the 168h search TTL
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "updated_at": old_ts,
+                "search_results": {"q1": {"ts": old_ts, "results": [{"url": "https://a"}]}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # A run that loads (dropping the stale entry) and then rewrites the file.
+    first = URLDiscoverer.__new__(URLDiscoverer)
+    first._persistent_cache_enabled = True
+    first._persistent_cache_path = str(cache_path)
+    first._search_results_cache = {}
+    first._load_persistent_caches()
+    assert "q1" not in first._search_results_cache
+    first._search_results_cache["q2"] = [{"url": "https://b"}]
+    first._persistent_cache_dirty = True
+    first._save_persistent_caches()
+
+    second = URLDiscoverer.__new__(URLDiscoverer)
+    second._persistent_cache_enabled = True
+    second._persistent_cache_path = str(cache_path)
+    second._search_results_cache = {}
+    second._load_persistent_caches()
+
+    assert "q1" not in second._search_results_cache
+    assert "q2" in second._search_results_cache
+
+
+def test_conftest_isolates_default_cache_path_from_the_repo(tmp_path) -> None:
+    """The autouse fixture in tests/conftest.py must keep the default cache
+    path out of the repo working tree.
+
+    Regression: the default path is relative, so a pytest run started at the
+    repo root shared one file with real generator runs. Any test that built a
+    real URLDiscoverer and marked the cache dirty rewrote that file from its
+    own near-empty state, discarding the search results and harvest rows the
+    last real build had paid xAI for."""
+    from pathlib import Path as _Path
+
+    from generator import url_discovery as mod
+
+    default_path = _Path(mod.DEFAULT_PERSISTENT_CACHE_PATH)
+
+    assert default_path.is_absolute()
+    assert _Path.cwd() not in default_path.parents

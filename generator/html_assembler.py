@@ -500,6 +500,10 @@ class HTMLAssembler:
         # a grouped child's own pointer is built by _build_group_child_card.)
         section += self._build_group_lodging_pointer(dest, dest_by_id)
 
+        # Booking details: the leg(s) that get the traveler here, then the stay.
+        section += self._build_transportation_cards(dest)
+        section += self._build_lodging_card(dest)
+
         # Intro note or cultural event summary belongs directly under hero
         section += self._build_intro_note(dest, events)
 
@@ -1183,6 +1187,146 @@ class HTMLAssembler:
             f'<p class="{css_class}">'
             f'{icon} {html_escape.escape(label)}: see '
             f'<a href="#section-{base_id}">{html_escape.escape(base_name)}</a></p>\n'
+        )
+
+    #: Category title and icon per transportation type. "other" exists so an
+    #: ingested reservation that doesn't parse cleanly still renders with its
+    #: details intact rather than being dropped for want of a category.
+    _TRANSPORT_KINDS: dict[str, tuple[str, str]] = {
+        "plane": ("✈️", "Flight"),
+        "train": ("\U0001f686", "Train"),
+        "car": ("\U0001f697", "Rental Car"),
+        "other": ("\U0001f9f3", "Travel"),
+    }
+
+    def _build_transportation_cards(self, dest: dict[str, Any]) -> str:
+        """One collapsed disclosure per booked leg arriving at this stop.
+
+        Shares .lodging-card styling deliberately: to a reader these are the
+        same kind of object (a booking with a confirmation code), and giving
+        them separate visual treatments would imply a distinction that isn't
+        there.
+
+        Absent from privacy-redacted builds because
+        main._apply_privacy_redaction empties the list outright -- see its
+        comment for why these are dropped wholesale rather than field-by-field.
+        """
+        legs = dest.get("transportation")
+        if not isinstance(legs, list) or not legs:
+            return ""
+
+        cards: list[str] = []
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            kind = str(leg.get("type", "") or "").strip().lower()
+            icon, kind_title = self._TRANSPORT_KINDS.get(kind, self._TRANSPORT_KINDS["other"])
+
+            provider = str(leg.get("provider", "") or "").strip()
+            label = str(leg.get("label", "") or "").strip() or provider
+            confirmation = str(leg.get("confirmation_number", "") or "").strip()
+            depart = str(leg.get("depart", "") or "").strip()
+            arrive = str(leg.get("arrive", "") or "").strip()
+            website = self._normalize_external_url(str(leg.get("website", "") or ""))
+
+            rows: list[str] = []
+            for key, value in (("Operator", provider), ("Depart", depart), ("Arrive", arrive)):
+                # Operator is suppressed when the summary already shows it, so
+                # a leg with no label doesn't read "Flight — United / United".
+                if not value or (key == "Operator" and value == label):
+                    continue
+                rows.append(
+                    f'<div class="lodging-row"><span class="lodging-key">{key}</span>'
+                    f'<span class="lodging-val">{html_escape.escape(value)}</span></div>'
+                )
+            if confirmation:
+                rows.append(
+                    '<div class="lodging-row"><span class="lodging-key">Confirmation</span>'
+                    f'<span class="lodging-val lodging-conf">{html_escape.escape(confirmation)}</span></div>'
+                )
+            if website:
+                rows.append(
+                    '<div class="lodging-row"><span class="lodging-key">Manage</span>'
+                    f'<span class="lodging-val"><a href="{self._safe_href(website)}" '
+                    f'target="_blank" rel="noopener">{html_escape.escape(website)}</a></span></div>'
+                )
+            if not rows:
+                continue
+
+            summary = f"{icon} {kind_title}"
+            if label:
+                summary += f" — {html_escape.escape(label)}"
+            cards.append(
+                '<details class="lodging-card">\n'
+                f'  <summary>{summary}</summary>\n'
+                f'  <div class="lodging-body">{"".join(rows)}</div>\n'
+                '</details>\n'
+            )
+        return "".join(cards)
+
+    def _build_lodging_card(self, dest: dict[str, Any]) -> str:
+        """Collapsed disclosure carrying the booking details for this stop.
+
+        Renders only for a destination that owns a `lodging` block; grouped
+        day-trip children defer to their base and get nothing here, since the
+        banner's link back to the base section is the reference that matters
+        for them (see _build_group_child_card, 6da6fd9).
+
+        Deliberately omits `lodging.location` even though it is present and
+        unredacted: it is a geocoding/routing anchor
+        (main._resolve_privacy_redaction) rather than something the traveler
+        needs restated, and printing a street address here would put the one
+        lodging field that survives redaction on the page in every build.
+
+        Whether this card appears at all is therefore a privacy decision made
+        upstream: `name`, `website` and `confirmation_number` are blanked
+        together by main._apply_privacy_redaction, so in a redacted build
+        there is nothing left to show and the card disappears entirely.
+        It degrades to absence rather than to a placeholder pill (the way
+        planning_links does in _build_header_links) on purpose -- a visible
+        "Lodging" affordance would still announce that the traveler has a room
+        booked at this stop on these dates, which is most of what redaction is
+        protecting.
+        """
+        lodging = dest.get("lodging") if isinstance(dest.get("lodging"), dict) else {}
+        if not lodging:
+            return ""
+
+        name = str(lodging.get("name", "") or "").strip()
+        website = self._normalize_external_url(str(lodging.get("website", "") or ""))
+        confirmation = str(lodging.get("confirmation_number", "") or "").strip()
+        checkin = str(lodging.get("checkin_time", "") or "").strip()
+
+        # checkin_time alone is never enough to justify the card: it survives
+        # redaction (it drives arrival-day scheduling), so keying on it would
+        # resurrect the card in exactly the builds meant not to have one.
+        if not (name or website or confirmation):
+            return ""
+
+        rows: list[str] = []
+        if checkin:
+            rows.append(
+                '<div class="lodging-row"><span class="lodging-key">Check-in</span>'
+                f'<span class="lodging-val">{html_escape.escape(checkin)}</span></div>'
+            )
+        if confirmation:
+            rows.append(
+                '<div class="lodging-row"><span class="lodging-key">Confirmation</span>'
+                f'<span class="lodging-val lodging-conf">{html_escape.escape(confirmation)}</span></div>'
+            )
+        if website:
+            rows.append(
+                '<div class="lodging-row"><span class="lodging-key">Property</span>'
+                f'<span class="lodging-val"><a href="{self._safe_href(website)}" '
+                f'target="_blank" rel="noopener">{html_escape.escape(website)}</a></span></div>'
+            )
+
+        summary = f"\U0001f6cf️ Lodging — {html_escape.escape(name)}" if name else "\U0001f6cf️ Lodging"
+        return (
+            '<details class="lodging-card">\n'
+            f'  <summary>{summary}</summary>\n'
+            f'  <div class="lodging-body">{"".join(rows)}</div>\n'
+            '</details>\n'
         )
 
     def _build_group_lodging_pointer(

@@ -819,6 +819,14 @@ class URLDiscoverer:
         self._persistent_alltrails_cache_ttl_hours: float = float(DEFAULT_PERSISTENT_ALLTRAILS_CACHE_TTL_HOURS)
         self._persistent_wayback_cache_ttl_hours: float = float(DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS)
         self._persistent_harvest_cache_ttl_hours: float = float(DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS)
+        # Birth timestamps for entries read from the persistent cache, keyed by
+        # (payload section, entry key). The in-memory caches themselves hold
+        # only values, with no room for an age, so without this side table
+        # _save_persistent_caches has nothing to write but "now" -- which
+        # silently renews every entry on every save and makes the TTLs
+        # unenforceable (a 100h-old entry came back from a resave dated 0h).
+        # Entries first seen this run are absent here and correctly get "now".
+        self._persistent_entry_ts: dict[tuple[str, str], float] = {}
         self._persistent_cache_dirty: bool = False
         self._persistent_cache_write_every: int = 25
         self._persistent_cache_pending_writes: int = 0
@@ -1499,6 +1507,34 @@ class URLDiscoverer:
             if not isinstance(payload, dict):
                 return
 
+            # Capture every entry's birth timestamp in one generic pass before
+            # the per-section loads below, so _save_persistent_caches can write
+            # back the original age instead of renewing it to "now". Done here
+            # rather than per-section so a newly added cache section cannot
+            # forget to participate and silently become immortal. Entries the
+            # TTL checks below then reject stay out of the in-memory caches, so
+            # their presence in this map is inert.
+            # Tests (and any other caller) may construct URLDiscoverer via
+            # __new__, bypassing __init__; mirror the same defensive
+            # ensure-the-member-exists pattern _save_persistent_caches uses.
+            # Without it the AttributeError raised here would be swallowed by
+            # this method's own except clause and silently abort the entire
+            # load, not just the timestamp capture.
+            if not hasattr(self, "_persistent_entry_ts"):
+                self._persistent_entry_ts = {}
+            for section_name, section_entries in payload.items():
+                if not isinstance(section_entries, dict):
+                    continue
+                for entry_key, entry_value in section_entries.items():
+                    if not isinstance(entry_key, str) or not isinstance(entry_value, dict):
+                        continue
+                    try:
+                        self._persistent_entry_ts[(section_name, entry_key)] = float(
+                            entry_value.get("ts", 0) or 0
+                        )
+                    except (TypeError, ValueError):
+                        continue
+
             now = time.time()
             search_cutoff = now - (float(getattr(self, "_persistent_search_cache_ttl_hours", DEFAULT_PERSISTENT_SEARCH_CACHE_TTL_HOURS)) * 3600.0)
             page_cutoff = now - (float(getattr(self, "_persistent_page_text_cache_ttl_hours", DEFAULT_PERSISTENT_PAGE_TEXT_CACHE_TTL_HOURS)) * 3600.0)
@@ -1658,14 +1694,11 @@ class URLDiscoverer:
         cache_path = self._persistent_cache_file()
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # TTL cutoffs are computed on the LOAD side only. Save now writes each
+        # entry's preserved birth timestamp (see _entry_ts below) and lets the
+        # next load do the expiring, so the cutoffs that used to be recomputed
+        # here were both unused and misleading.
         now = time.time()
-        search_cutoff = now - (float(getattr(self, "_persistent_search_cache_ttl_hours", DEFAULT_PERSISTENT_SEARCH_CACHE_TTL_HOURS)) * 3600.0)
-        page_cutoff = now - (float(getattr(self, "_persistent_page_text_cache_ttl_hours", DEFAULT_PERSISTENT_PAGE_TEXT_CACHE_TTL_HOURS)) * 3600.0)
-        verify_cutoff = now - (float(getattr(self, "_persistent_verify_cache_ttl_hours", DEFAULT_PERSISTENT_VERIFY_CACHE_TTL_HOURS)) * 3600.0)
-        geocode_cutoff = now - (float(getattr(self, "_persistent_geocode_cache_ttl_hours", DEFAULT_PERSISTENT_GEOCODE_CACHE_TTL_HOURS)) * 3600.0)
-        alltrails_cutoff = now - (float(getattr(self, "_persistent_alltrails_cache_ttl_hours", DEFAULT_PERSISTENT_ALLTRAILS_CACHE_TTL_HOURS)) * 3600.0)
-        wayback_cutoff = now - (float(getattr(self, "_persistent_wayback_cache_ttl_hours", DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS)) * 3600.0)
-        harvest_cutoff = now - (float(getattr(self, "_persistent_harvest_cache_ttl_hours", DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS)) * 3600.0)
 
         payload: dict[str, Any] = {
             "version": 1,
@@ -1682,9 +1715,21 @@ class URLDiscoverer:
             "direct_batch_harvest_en_route": {},
         }
 
+        def _entry_ts(section_name: str, entry_key: str) -> float:
+            """Original birth timestamp for an entry, or now if first seen this
+            run. Without this every save renewed every entry's age, so no TTL
+            here could ever expire anything as long as builds kept happening --
+            a dead URL stayed cached indefinitely. Note the previous
+            `now if now >= cutoff else cutoff` guards were dead code: cutoff is
+            `now - ttl`, so the condition was always true and always yielded
+            `now`."""
+            return float(
+                getattr(self, "_persistent_entry_ts", {}).get((section_name, entry_key), now)
+            )
+
         for key, results in self._search_results_cache.items():
             payload["search_results"][key] = {
-                "ts": now,
+                "ts": _entry_ts("search_results", key),
                 "results": [dict(item) for item in results if isinstance(item, dict)],
             }
 
@@ -1692,7 +1737,7 @@ class URLDiscoverer:
             if not isinstance(result, tuple) or len(result) != 2:
                 continue
             payload["verify_results"][key] = {
-                "ts": now if now >= verify_cutoff else verify_cutoff,
+                "ts": _entry_ts("verify_results", key),
                 "ok": bool(result[0]),
                 "status": result[1],
             }
@@ -1702,7 +1747,7 @@ class URLDiscoverer:
                 continue
             final_url = str(getattr(self, "_fetch_final_url_cache", {}).get(key, "") or "")
             payload["page_text_results"][key] = {
-                "ts": now if now >= page_cutoff else page_cutoff,
+                "ts": _entry_ts("page_text_results", key),
                 "ok": bool(result[0]),
                 "status": result[1],
                 "text": str(result[2] or "")[: int(DEFAULT_PERSISTENT_PAGE_TEXT_MAX_CHARS)],
@@ -1716,7 +1761,7 @@ class URLDiscoverer:
             if not isinstance(result, tuple) or len(result) != 2:
                 continue
             payload["en_route_geocode"][key] = {
-                "ts": now if now >= geocode_cutoff else geocode_cutoff,
+                "ts": _entry_ts("en_route_geocode", key),
                 "lat": result[0],
                 "lng": result[1],
             }
@@ -1727,7 +1772,7 @@ class URLDiscoverer:
             if not isinstance(result, tuple) or len(result) != 3 or not result[0]:
                 continue
             payload["alltrails_fetch_results"][key] = {
-                "ts": now if now >= alltrails_cutoff else alltrails_cutoff,
+                "ts": _entry_ts("alltrails_fetch_results", key),
                 "ok": True,
                 "status": result[1],
                 "text": str(result[2] or "")[: int(DEFAULT_PERSISTENT_PAGE_TEXT_MAX_CHARS)],
@@ -1742,7 +1787,7 @@ class URLDiscoverer:
             if not isinstance(result, tuple) or len(result) != 3 or not result[0]:
                 continue
             payload["wayback_geo_fetch_results"][key] = {
-                "ts": now if now >= wayback_cutoff else wayback_cutoff,
+                "ts": _entry_ts("wayback_geo_fetch_results", key),
                 "ok": True,
                 "status": result[1],
                 "text": str(result[2] or "")[: int(DEFAULT_PERSISTENT_PAGE_TEXT_MAX_CHARS)],
@@ -1756,7 +1801,7 @@ class URLDiscoverer:
                     # hiccup, not "this destination has no attractions".
                     continue
                 payload[section_name][key] = {
-                    "ts": now if now >= harvest_cutoff else harvest_cutoff,
+                    "ts": _entry_ts(section_name, key),
                     "rows": [dict(item) for item in rows if isinstance(item, dict)],
                 }
 

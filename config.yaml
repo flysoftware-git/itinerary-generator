@@ -250,7 +250,25 @@ url_discovery:
   # evidence). Reverting to 1 (disabled) until a real fix lands and is
   # re-verified against a live run; DIRECT_BATCH_GROUP_SIZE env var still
   # allows opting back in for testing without editing this file.
-  direct_batch_group_size: 1
+  #
+  # 2026-08-19: re-enabled at 2 to retest, now that the diagnostic logging
+  # on _split_multi_destination_html / _match_destination_section failure
+  # paths is in place to capture the evidence the earlier attempts lacked.
+  # Two things changed since the dipstick58 revert that make this worth
+  # re-running rather than a straight repeat: that logging exists, and the
+  # persistent cache actually retains results between runs now (it was
+  # being clobbered by every pytest run -- see the conftest.py fix), so a
+  # grouped run's partial successes are no longer thrown away before the
+  # next attempt can build on them.
+  #
+  # This is an EXPERIMENT, not a settled default. Watch
+  # direct_batch_parity_report.json and the split/match failure logs on the
+  # next real run: if grouped jobs still fall through to per-destination
+  # calls at the earlier ~1-in-12 rate, this is net overhead (and possibly
+  # costing real URL matches, per the dipstick58 hypothesis) and should go
+  # back to 1. Reverting is a one-line change here, or DIRECT_BATCH_GROUP_SIZE=1
+  # for a single run without editing this file.
+  direct_batch_group_size: 2
   alltrails_source: direct_link_batch
   attraction_source: direct_link_batch
   restaurant_source: direct_link_batch
