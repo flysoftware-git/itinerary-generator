@@ -484,6 +484,15 @@ DEFAULT_EN_ROUTE_DETOUR_MAX_MINUTES = 20
 # route-proximity checks, just not this distance heuristic.
 DEFAULT_EN_ROUTE_DETOUR_MAX_MILES = 20.0
 DEFAULT_EN_ROUTE_REQUIRE_DETOUR_METADATA = True
+# Shared with _en_route_stop_geometry_grounded_detour_floor and
+# _resolve_en_route_stop_detour_metrics_against_geometry: a generous
+# highway-speed ceiling (rural Utah interstate limit is 80 mph; 70 leaves
+# margin for the slower stretches most detours actually run on). Used both
+# as a per-dimension floor (a round trip can never be quicker than this
+# implies) and, in the latter, to catch a text-mined miles/minutes *pair*
+# that independently clears both dimensions' floors but is still mutually
+# implausible together -- e.g. "22 mi in 15 min" (88 mph).
+MAX_PLAUSIBLE_EN_ROUTE_DETOUR_MPH = 70.0
 DEFAULT_DIRECT_BATCH_HTML_CAPTURE_ENABLED = True
 DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR = "dev/url_discovery_direct_batch_html"
 DEFAULT_URL_POLICY_BLOCKED_CLASSES = (
@@ -9851,12 +9860,9 @@ class URLDiscoverer:
         block comment above for why this is a provable floor, not an
         estimate."""
         min_round_trip_miles = max(0.0, perpendicular_miles) * 2.0
-        # A generous highway-speed ceiling (rural Utah interstate limit is
-        # 80 mph; 70 leaves margin for the slower stretches most detours
-        # actually run on) -- driving faster than this is never realistic,
-        # so a real round trip can never be quicker than this floor implies.
-        max_plausible_mph = 70.0
-        min_round_trip_minutes = (min_round_trip_miles / max_plausible_mph) * 60.0 if min_round_trip_miles else 0.0
+        min_round_trip_minutes = (
+            (min_round_trip_miles / MAX_PLAUSIBLE_EN_ROUTE_DETOUR_MPH) * 60.0 if min_round_trip_miles else 0.0
+        )
         return min_round_trip_miles, int(ceil(min_round_trip_minutes))
 
     @staticmethod
@@ -9909,6 +9915,19 @@ class URLDiscoverer:
         if text_minutes is None or text_minutes < min_minutes:
             final_minutes = estimate_minutes
             overridden = True
+        # The two checks above are independent: a stop only slightly off the
+        # route has a small floor in *both* dimensions, so a text-mined pair
+        # can clear each one separately while still being mutually
+        # implausible together (e.g. "22 mi in 15 min" = 88 mph -- real
+        # example, Kodachrome Basin State Park). Check the resulting pair's
+        # implied speed as a final pass; if it's still unrealistic, neither
+        # individual number can be trusted, so replace both with the
+        # geometry-grounded estimate rather than patching just one.
+        if final_miles and final_minutes:
+            implied_mph = final_miles / (final_minutes / 60.0)
+            if implied_mph > MAX_PLAUSIBLE_EN_ROUTE_DETOUR_MPH:
+                final_miles, final_minutes = estimate_miles, estimate_minutes
+                overridden = True
         return final_miles, final_minutes, overridden
 
     def _en_route_stop_within_threshold(self, stop: dict[str, Any]) -> tuple[bool, str]:
