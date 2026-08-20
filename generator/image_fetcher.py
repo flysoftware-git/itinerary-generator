@@ -24,6 +24,32 @@ NPS_API_BASE = "https://developer.nps.gov/api/v1"
 WIKIMEDIA_SEARCH = "https://commons.wikimedia.org/w/api.php"
 THUMB_WIDTH = 960
 MAX_FALLBACK_ATTEMPTS = 4
+
+# Wikimedia Commons throttles the search API, and a throttled call previously
+# looked exactly like "this destination has no images": _fetch_from_wikimedia
+# catches RequestException and returns [], so a 429 silently became an empty
+# candidate list. Run 20260820T032249 lost 'bryce' and 'capitolreef' this way
+# and failed validation at 1 image against a minimum of 2, even though the
+# same queries return 4 usable candidates each when not rate-limited.
+#
+# Two pressures combine to trip it: destinations are fetched 4-wide
+# (ThreadPoolExecutor in fetch_all), and each destination short of the minimum
+# fires MAX_FALLBACK_ATTEMPTS more queries. Serialize Commons requests behind a
+# minimum interval, mirroring the treatment AllTrails
+# (alltrails_request_delay_seconds) and Nominatim (geocoding.rate_limit_seconds)
+# already get.
+WIKIMEDIA_MIN_REQUEST_INTERVAL_SECONDS = 1.0
+WIKIMEDIA_RATE_LIMIT_RETRIES = 3
+_WIKIMEDIA_THROTTLE_LOCK = threading.Lock()
+_WIKIMEDIA_LAST_REQUEST_AT = 0.0
+
+# Wikimedia's User-Agent policy asks for a descriptive agent with contact info
+# and throttles generic ones harder.
+# https://meta.wikimedia.org/wiki/User-Agent_policy
+WIKIMEDIA_USER_AGENT = (
+    "RoadTripItineraryGenerator/2.0 "
+    "(https://github.com/flysoftware-git/road-trip-generator)"
+)
 # Brief pacing delay after each downloaded image file. This is NOT a
 # documented rate limit for any of the three hosts it applies to uniformly
 # (NPS gov content delivery, Unsplash's images CDN, Wikimedia's upload CDN) --
@@ -125,7 +151,7 @@ class ImageFetcher:
     def _get_session(self) -> requests.Session:
         if not hasattr(self._session_local, "session"):
             s = requests.Session()
-            s.headers.update({"User-Agent": "RoadTripItineraryGenerator/1.0"})
+            s.headers.update({"User-Agent": WIKIMEDIA_USER_AGENT})
             self._session_local.session = s
         return self._session_local.session
 
@@ -193,7 +219,22 @@ class ImageFetcher:
         while len(verified) < self._min_per_dest and attempt < MAX_FALLBACK_ATTEMPTS:
             query = fallback_queries[attempt % len(fallback_queries)]
             logger.warning("  Image fallback attempt %d for '%s': '%s'", attempt + 1, dest["name"], query)
-            extra = self._fetch_from_wikimedia(query, limit=4)
+            # Try BOTH remaining providers, not just Wikimedia. This loop only
+            # runs when a destination is already short of min_per_destination,
+            # so the extra call is bounded to the failing case -- and querying
+            # Unsplash here is the only way it gets reached at all in that
+            # case: the Source-2 gate above tests len(images), the CANDIDATE
+            # count, against _max_per_dest, so a destination whose candidates
+            # are plentiful but unusable (4 collected, 1 surviving
+            # verification) skips Unsplash and Wikimedia entirely and arrives
+            # here with nowhere left to look.
+            #
+            # Observed on run 20260820T032249: 'bryce' and 'capitolreef' each
+            # finished with 1 image against a minimum of 2 and failed
+            # validation, while unsplash_api_calls for the whole run was 0
+            # despite UNSPLASH_ACCESS_KEY being configured.
+            extra = self._fetch_from_unsplash(query, limit=4)
+            extra += self._fetch_from_wikimedia(query, limit=4)
             extra = self._rank_images_for_destination(extra, dest_name)
             verified = self._verify_and_materialize(verified + extra, dest_name)
             attempt += 1
@@ -502,9 +543,48 @@ class ImageFetcher:
 
     # ── Wikimedia images ─────────────────────────────────────────────────────
 
+    @staticmethod
+    def _wikimedia_throttle() -> None:
+        """Block until at least WIKIMEDIA_MIN_REQUEST_INTERVAL_SECONDS has
+        passed since the last Commons request, process-wide."""
+        global _WIKIMEDIA_LAST_REQUEST_AT
+        with _WIKIMEDIA_THROTTLE_LOCK:
+            wait = WIKIMEDIA_MIN_REQUEST_INTERVAL_SECONDS - (time.time() - _WIKIMEDIA_LAST_REQUEST_AT)
+            if wait > 0:
+                time.sleep(wait)
+            _WIKIMEDIA_LAST_REQUEST_AT = time.time()
+
     def _fetch_from_wikimedia(self, query: str, limit: int = 4) -> list[dict[str, Any]]:
+        for attempt in range(WIKIMEDIA_RATE_LIMIT_RETRIES):
+            result = self._fetch_from_wikimedia_once(query, limit)
+            if result is not None:
+                return result
+            # None means specifically "rate-limited", not "no results" -- back
+            # off and retry rather than reporting the destination imageless.
+            backoff = WIKIMEDIA_MIN_REQUEST_INTERVAL_SECONDS * (2 ** attempt)
+            logger.warning(
+                "Wikimedia rate-limited for '%s'; retrying in %.1fs (attempt %d/%d)",
+                query, backoff, attempt + 1, WIKIMEDIA_RATE_LIMIT_RETRIES,
+            )
+            time.sleep(backoff)
+        logger.error(
+            "Wikimedia still rate-limited for '%s' after %d attempts; "
+            "this destination may fall below min_per_destination.",
+            query, WIKIMEDIA_RATE_LIMIT_RETRIES,
+        )
+        return []
+
+    def _fetch_from_wikimedia_once(self, query: str, limit: int = 4) -> list[dict[str, Any]] | None:
+        """Returns a (possibly empty) result list, or None if rate-limited.
+
+        The None-vs-[] distinction is the point: previously a 429 was caught
+        alongside genuine failures and returned [], which is indistinguishable
+        from "Commons has no images for this query" and silently dropped
+        destinations below their image minimum.
+        """
         try:
             self._increment_counter("wikimedia_api_calls")
+            self._wikimedia_throttle()
             resp = self._get_session().get(
                 WIKIMEDIA_SEARCH,
                 params={
@@ -541,6 +621,10 @@ class ImageFetcher:
                 }))
             return results[:limit]
         except requests.RequestException as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in (429, 503):
+                # Signal "retry me" rather than "no images exist here".
+                return None
             logger.warning("Wikimedia search error for '%s': %s", query, exc)
             return []
         

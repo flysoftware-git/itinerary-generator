@@ -299,3 +299,116 @@ def test_normalize_image_record_sets_fallback_credit_when_sanitized_empty(tmp_pa
     assert normalized["title"] == "Beautiful Canyon"
     assert normalized["credit"] == "Wikimedia Commons"
     assert "<" not in normalized["license"]
+
+
+def test_image_fallback_loop_queries_unsplash_not_just_wikimedia(monkeypatch, tmp_path):
+    """A destination short of min_per_destination must reach Unsplash.
+
+    Regression (run 20260820T032249): 'bryce' and 'capitolreef' finished with
+    1 image against a minimum of 2 and failed validation, while the run made
+    ZERO Unsplash calls despite UNSPLASH_ACCESS_KEY being set. The Source-2
+    gate tests len(images) -- the CANDIDATE count -- against _max_per_dest, so
+    a destination with plentiful but unusable candidates (4 collected, 1
+    surviving verification) skips Unsplash and Wikimedia entirely and lands in
+    this loop as its only remaining chance.
+    """
+    from generator.image_fetcher import ImageFetcher
+
+    fetcher = ImageFetcher.__new__(ImageFetcher)
+    fetcher._min_per_dest = 2
+    fetcher._max_per_dest = 4
+    fetcher._force_refresh = True
+    fetcher._counters = {}
+    fetcher._cache_index = {"version": 1, "entries": {}}
+
+    calls = {"unsplash": 0, "wikimedia": 0}
+
+    def fake_unsplash(query, limit=4):
+        calls["unsplash"] += 1
+        return [{"url": f"https://u/{calls['unsplash']}.jpg", "source": "unsplash"}]
+
+    def fake_wikimedia(query, limit=4):
+        calls["wikimedia"] += 1
+        return []
+
+    monkeypatch.setattr(fetcher, "_fetch_from_unsplash", fake_unsplash, raising=False)
+    monkeypatch.setattr(fetcher, "_fetch_from_wikimedia", fake_wikimedia, raising=False)
+    monkeypatch.setattr(fetcher, "_fetch_from_nps", lambda code: [], raising=False)
+    monkeypatch.setattr(fetcher, "_rank_images_for_destination", lambda imgs, name: imgs, raising=False)
+    monkeypatch.setattr(fetcher, "_provider_query_for_destination", lambda name: name, raising=False)
+    monkeypatch.setattr(fetcher, "_cache_key", lambda dest: "k", raising=False)
+    monkeypatch.setattr(fetcher, "_set_cached_images", lambda k, v: None, raising=False)
+    # Never verifies anything, forcing the loop to exhaust its attempts.
+    monkeypatch.setattr(fetcher, "_verify_and_materialize", lambda imgs, name: [], raising=False)
+
+    fetcher._fetch_for_dest({"name": "Bryce Canyon National Park"})
+
+    assert calls["unsplash"] > 0, "fallback loop never queried Unsplash"
+    assert calls["wikimedia"] > 0, "fallback loop stopped querying Wikimedia"
+
+
+def test_wikimedia_rate_limit_is_retried_not_reported_as_no_images(monkeypatch):
+    """A 429 must be distinguishable from "Commons has no images for this".
+
+    Regression (run 20260820T032249): _fetch_from_wikimedia caught every
+    RequestException and returned [], so a rate-limited call was
+    indistinguishable from an empty result set. 'bryce' and 'capitolreef'
+    finished with 1 image against a minimum of 2 and failed validation, even
+    though the same queries return 4 usable candidates when not throttled.
+    """
+    import requests
+
+    from generator import image_fetcher as mod
+    from generator.image_fetcher import ImageFetcher
+
+    monkeypatch.setattr(mod, "WIKIMEDIA_MIN_REQUEST_INTERVAL_SECONDS", 0.0)
+    fetcher = ImageFetcher.__new__(ImageFetcher)
+
+    attempts = {"n": 0}
+
+    def flaky(query, limit=4):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return None  # rate-limited
+        return [{"url": "https://example.invalid/a.jpg", "source": "wikimedia"}]
+
+    monkeypatch.setattr(fetcher, "_fetch_from_wikimedia_once", flaky, raising=False)
+
+    results = fetcher._fetch_from_wikimedia("Bryce Canyon National Park")
+
+    assert attempts["n"] == 2, "a rate-limited call was not retried"
+    assert len(results) == 1
+
+
+def test_wikimedia_429_maps_to_none_and_other_errors_map_to_empty(monkeypatch):
+    """None means retry; [] means genuinely nothing found."""
+    import requests
+
+    from generator.image_fetcher import ImageFetcher
+
+    fetcher = ImageFetcher.__new__(ImageFetcher)
+    fetcher._session_local = type("L", (), {})()
+
+    class FakeResp:
+        def __init__(self, code):
+            self.status_code = code
+
+        def raise_for_status(self):
+            err = requests.HTTPError(f"{self.status_code}")
+            err.response = self
+            raise err
+
+    class FakeSession:
+        def __init__(self, code):
+            self._code = code
+
+        def get(self, *a, **k):
+            return FakeResp(self._code)
+
+    monkeypatch.setattr(ImageFetcher, "_wikimedia_throttle", staticmethod(lambda: None))
+
+    monkeypatch.setattr(fetcher, "_get_session", lambda: FakeSession(429), raising=False)
+    assert fetcher._fetch_from_wikimedia_once("q") is None
+
+    monkeypatch.setattr(fetcher, "_get_session", lambda: FakeSession(404), raising=False)
+    assert fetcher._fetch_from_wikimedia_once("q") == []
