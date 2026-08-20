@@ -353,6 +353,42 @@ def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, 
     return "transportation", fragment
 
 
+def _archive_message(conn: "imaplib.IMAP4_SSL", uid: bytes, folder: str) -> None:
+    """Move one ingested message out of the inbox into `folder`.
+
+    Marking a message \\Seen is what makes repeat polls cheap, but it leaves the
+    inbox as an ever-growing pile with no way to tell processed from pending at
+    a glance -- and if anything ever clears the flag (a client resync, a stray
+    click), the message is re-fetched and re-extracted, which costs LLM tokens
+    again even though confirmation-number dedup keeps the DATA correct.
+
+    Moving is best-effort and never fatal: the message has already been
+    extracted by this point, so failing to file it must not fail the run or
+    lose the reservation. IMAP MOVE (RFC 6851) is not universally supported, so
+    fall back to COPY + \\Deleted, which is the portable equivalent. Deliberately
+    no EXPUNGE -- that would permanently destroy mail, and a copy that silently
+    failed would take the original with it.
+    """
+    try:
+        conn.create(folder)  # no-op if it already exists
+    except Exception:
+        pass
+    try:
+        status, _ = conn.uid("MOVE", uid, folder) if hasattr(conn, "uid") else ("NO", None)
+        if status == "OK":
+            return
+    except Exception:
+        pass
+    try:
+        status, _ = conn.copy(uid, folder)
+        if status == "OK":
+            conn.store(uid, "+FLAGS", "\\Deleted")
+        else:
+            logger.warning("Could not archive uid %s to %s: COPY returned %s", uid, folder, status)
+    except Exception as exc:
+        logger.warning("Could not archive uid %s to %s: %s", uid, folder, exc)
+
+
 def fetch_unseen_messages(
     *,
     host: str,
@@ -361,6 +397,7 @@ def fetch_unseen_messages(
     mailbox: str = DEFAULT_MAILBOX,
     mark_seen: bool = True,
     limit: int = 50,
+    archive_folder: str | None = None,
 ) -> list[tuple[str, bytes]]:
     """Return [(uid, raw_rfc822)] for UNSEEN messages in `mailbox`.
 
@@ -429,6 +466,8 @@ def fetch_unseen_messages(
             messages.append((uid.decode("ascii", "replace"), fetched[0][1]))
             if mark_seen:
                 conn.store(uid, "+FLAGS", "\\Seen")
+                if archive_folder:
+                    _archive_message(conn, uid, archive_folder)
     finally:
         try:
             conn.logout()

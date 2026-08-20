@@ -57,12 +57,16 @@ logger = logging.getLogger("ingest_reservations")
               help="Minimum match confidence to attach a reservation automatically.")
 @click.option("--limit", default=50, show_default=True, type=int,
               help="Maximum messages to process in one run.")
+@click.option("--archive-folder", default="Ingested", show_default=True,
+              help="IMAP folder to move ingested messages into. Keeps the inbox showing "
+                   "only unprocessed mail, and stops a cleared \Seen flag causing a "
+                   "re-extraction. Pass an empty string to leave messages in place.")
 @click.option("--dry-run", is_flag=True,
               help="Extract and match, print the result, write nothing. Leaves "
                    "messages unread so a real run still picks them up.")
 @click.option("--log-level", default="info", show_default=True,
               type=click.Choice(["debug", "info", "warning", "error"]))
-def main(manifest, config_path, env_file, mailbox, threshold, limit, dry_run, log_level) -> None:
+def main(manifest, config_path, env_file, mailbox, threshold, limit, archive_folder, dry_run, log_level) -> None:
     # Reservation text is full of characters a Windows cp1252 console cannot
     # encode -- em-dashes in subjects, and route arrows in flight labels like
     # "UA 1234 SFO→LAS". Without this the whole run dies with UnicodeEncodeError
@@ -105,6 +109,8 @@ def main(manifest, config_path, env_file, mailbox, threshold, limit, dry_run, lo
         # A dry run must not consume messages -- leaving them unread is what
         # makes it safe to re-run against the same mailbox while tuning.
         mark_seen=not dry_run, limit=limit,
+        # A dry run files nothing, for the same reason it marks nothing read.
+        archive_folder=(archive_folder or None) if not dry_run else None,
     )
     click.echo(f"Unread mail : {len(messages)}")
     if not messages:
