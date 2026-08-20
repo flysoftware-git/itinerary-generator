@@ -259,7 +259,7 @@ output/index.html   ← Deploy to GitHub Pages
 
 ## Manifest Specification
 
-See [docs/requirements.md](docs/requirements.md) for the full v0.5 requirements specification including:
+See [docs/requirements.md](docs/requirements.md) for the full requirements specification (currently v2.2) including:
 - Complete manifest schema
 - AI content JSON schemas
 - URL discovery strategy

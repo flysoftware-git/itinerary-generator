@@ -1,146 +1,221 @@
 # Reservation Email Ingestion
 
-Forward a hotel, flight, train or rental-car confirmation to a dedicated
-mailbox; the next build shows it on the right destination as a collapsed
-booking card.
+How forwarded hotel, flight, train and rental-car confirmations become manifest
+data — and why almost every decision here is biased toward *not* attaching
+something rather than attaching it wrongly.
 
-Nothing here runs during a normal build. `scripts/ingest_reservations.py` is a
-separate command you run when you have new confirmations; the generator only
-ever reads the sidecar file it produces.
+> **Read first:** [`design.md`](../design.md) §1.1 (the manifest holds only what
+> the human provides) · §2.6 (honest fallback as a product surface)
+>
+> **Related:** [`html-assembly-pipeline.md`](html-assembly-pipeline.md) (how
+> booking cards and chips render)
 
 ---
 
-## Setup
+## 1. Shape
 
-### 1. Create a dedicated mailbox
-
-Use a purpose-made address, not your personal inbox. The credential below
-grants full read access to whatever mailbox it points at, and anyone who
-learns the address can send mail into your ingestion pipeline.
-
-### 2. Generate an app password
-
-Never use your account password.
-
-| Provider | IMAP host | App password |
-|---|---|---|
-| Gmail | `imap.gmail.com` | <https://myaccount.google.com/apppasswords> (needs 2FA on) |
-| Fastmail | `imap.fastmail.com` | Settings → Privacy & Security → App Passwords |
-| iCloud | `imap.mail.me.com` | <https://account.apple.com> → Sign-In & Security |
-
-### 3. Add credentials to `.env`
-
-```
-RESERVATION_IMAP_HOST=imap.gmail.com
-RESERVATION_IMAP_USER=trips@example.com
-RESERVATION_IMAP_PASSWORD=your-app-password-here
-```
-
-`.env` is gitignored. `.env.example` documents these without values.
-
-### 4. Forward some confirmations, then run it
+Ingestion is a **separate command**, never part of a build:
 
 ```bash
-python scripts/ingest_reservations.py --manifest trip_manifest.yaml --dry-run
+python scripts/ingest_reservations.py --manifest <path> --env-file <path> [--dry-run]
 ```
 
-`--dry-run` extracts, matches and prints, but writes nothing and leaves the
-messages unread — so you can tune `--threshold` and re-run against the same
-mailbox as often as you like. Drop the flag when the output looks right.
+It polls one IMAP mailbox, extracts bookings with the configured LLM, matches
+each to the trip, and writes `<manifest_stem>.reservations.yaml` beside the
+manifest. `manifest_parser` merges that sidecar at load, then **re-validates the
+merged result against the schema**.
+
+A build never reads a mailbox. That is deliberate: a build that silently depends
+on reachable mail, and spends LLM calls per message, fails for reasons that have
+nothing to do with the trip. It is also one-way — it flags mail read and files
+it — and one-way steps do not belong inside something you re-run freely.
+
+**With no sidecar the build is still valid.** It simply renders no booking cards
+and no trip-wide travel chips. That is invisible in the output, so the runner
+reports sidecar presence before generating and the merge counts after.
 
 ---
 
-## What happens to a message
+## 2. Why a sidecar and not the manifest
 
-1. **Fetch** — unread messages are pulled over IMAP with `BODY.PEEK`, so a
-   crash mid-run doesn't silently consume mail that was never ingested. They
-   are flagged read only on a real (non-dry) run, which is what keeps repeat
-   polls cheap and idempotent.
-2. **Extract** — the body (plain text, or HTML with tags stripped) goes to the
-   configured LLM, which returns a structured booking. It is instructed to
-   emit `""` rather than guess: a missing confirmation number is recoverable,
-   an invented one is not.
-3. **Match** — the booking is scored against each destination on city/name
-   overlap and month-day overlap with the stop's `dates`. Name agreement is
-   weighted 3:1 over dates, because dates alone match far too many stops on a
-   trip whose destinations sit days apart within one month.
-4. **File** — a confident match attaches; anything else goes to `pending`.
-5. **Merge** — the next build folds the sidecar into the manifest.
-
-## The sidecar
-
-Written to `<manifest_stem>.reservations.yaml` beside the manifest —
-`sw_manifest.yaml` → `sw_manifest.reservations.yaml`, so several trips can
-share a directory without bleeding into each other.
-
-```yaml
-destinations:
-  zion:
-    lodging:
-      name: Zion Lodge
-      confirmation_number: ZL-4471902
-    transportation:
-      - type: plane
-        provider: United Airlines
-        confirmation_number: XR7Q2M
-pending:
-  - reason: no confident destination match
-    source: {uid: "1841", subject: "Your reservation is confirmed"}
-    reservation: {kind: lodging, city: "Torrey, UT", confirmation_number: CR-88}
-    candidates: [{id: capitolreef, score: 0.41}, {id: moab, score: 0.12}]
-```
-
-To resolve a `pending` entry, move its `reservation` block under the right
-destination id and delete the entry. Nothing in `pending` reaches a build.
-
-**The sidecar is gitignored** (`*.reservations.yaml`). It holds confirmation
-numbers and property names. It is deliberately *not* written into
-`trip_manifest.yaml`: a PyYAML round-trip would strip every comment from that
-file, which is substantially documentation, and it would put booking details
-into a tracked file.
+- **PyYAML cannot preserve comments.** A load-and-dump round trip deletes every
+  one — a quarter of `trip_manifest.yaml` is comments, and they *are* the schema
+  documentation.
+- **Provenance.** The sidecar makes "your value wins over the model's"
+  enforceable and visible. Merged in place, nobody could later tell which
+  check-in time was typed by a human and which was read off an email by an LLM.
+- **The pending queue needs somewhere to live.** An unplaceable booking has no
+  destination block to sit in, by definition.
+- **Reversibility.** Delete the sidecar and the manifest is untouched.
+- **Secrets.** Confirmation numbers stay out of any tracked file; the sidecar is
+  gitignored (`*.reservations.yaml`).
 
 ---
 
-## Design decisions worth keeping
+## 3. Matching
 
-**Uncertain matches wait for a human.** A booking that scores below the
-threshold, or ties with a second destination inside 0.10, goes to `pending`
-rather than attaching to the best guess. A hotel filed under the wrong stop is
-worse than one filed nowhere, because nothing downstream will ever flag it.
-Raise `--threshold` to send more to review; lower it to attach more
-automatically.
+Deliberately crude, with a review queue. It ranks candidate stops; the
+thresholds turn a ranking into a decision.
 
-**Ingested values fill, never overwrite.** If the manifest already states a
-lodging name, the sidecar's is ignored. A human wrote one; a language model
-read the other out of an email. Transportation legs append, deduplicated by
-confirmation number, so re-forwarding an email is harmless.
+**Signals**, blended 75/25:
 
-**Email content is untrusted.** Anyone can mail the ingest address. Extracted
-values are re-validated against the manifest schema after merge, so a
-malformed or hostile extraction fails the build loudly instead of reaching the
-page; and every field is HTML-escaped at render.
+- **Name overlap** between the booking's city/location/label/provider and the
+  destination's name plus `lodging.location`
+- **Month and day overlap** with the destination's free-text `dates`
 
-**Extraction is LLM-based, not per-vendor parsers.** Confirmation formats are
-effectively unbounded and change without notice. This costs tokens per message
-— but only once per message, since ingested mail is flagged read.
+Three refinements exist because the naive version got real bookings wrong:
+
+**Normalize by the smaller side, with a floor of 3.** Dividing by the
+destination's token count punished stops with wordy addresses. But a bare `min()`
+let a *single* token carry a sparse booking: "Kanab, Utah" matched "St. George,
+Utah" on the lone word `utah`, scored 0.5, and attached — so any thinly-extracted
+Utah booking would land on whichever Utah stop came first. The floor means one
+token can never clear the bar alone.
+
+**Generic facility words are dropped.** `airport`, `international`, `hotel`,
+`resort` and similar appear in nearly every travel address and identify nothing.
+A gateway name reduces to very few tokens, so one shared generic word was worth
+half the score — it pulled a Las Vegas car pickup toward the Albuquerque gateway.
+
+**Endpoints are scored separately, best one wins.** A journey has two ends and
+usually only one is on the trip. Pooling both let the off-trip end mismatch:
+a rental collected at the departure gateway and returned at the return gateway
+attached to the *last* stop. Fixing that by scoring flights on arrival alone then
+broke the outbound flight home, which departs the return gateway and arrives
+somewhere not on the itinerary at all. Exception: for a **car**, an extracted
+pickup is the only end that counts — a rental belongs where it is collected. That
+exception keys on whether the reservation *has* a pickup, not on whether the
+pickup matches the stop being scored; the latter made every non-matching stop
+fall back to the drop-off.
+
+### 3.1 Gateways
+
+`trip.departure` and `trip.return` are real places people book travel to and
+from, but they are not itinerary stops — so nothing in `destinations` could ever
+match a flight into them. The inbound and outbound flights, the two most likely
+things anyone forwards, always went to review.
+
+Gateway matches are **trip-wide**, resolving to a `TRIP_LEVEL_ID` sentinel rather
+than to a destination. They render under the route overview map, because a flight
+that lands at the gateway and a rental that spans every stop do not belong to any
+one of them. A leg tied to a specific locale mid-trip still attaches to that
+destination normally.
+
+Lodging that somehow matches a gateway goes to review instead: a hotel is always
+*at* a place, so that is a mismatch a human should see, not a trip-level "stay".
+
+### 3.2 Three outcomes, not two
+
+| Best score | Outcome | Sidecar | Mailbox |
+|---|---|---|---|
+| ≥ threshold, clear winner | **attached** | destination or `trip:` block | filed |
+| ≥ `UNRELATED_SCORE_FLOOR`, below threshold or a near-tie | **pending** | `pending:` list | filed |
+| < `UNRELATED_SCORE_FLOOR` | **unrelated** | *nothing* | **left in inbox, unread** |
+
+The third row exists because people forward confirmations *as they book*, so mail
+arrives for trips whose manifest does not exist yet. Matched against whatever
+manifest happens to be running, those score ~0. Treated as ordinary
+review items they were buried in the wrong trip's pending list and — once
+archiving existed — moved out of the inbox, so the manifest they belonged to
+could never find them.
+
+The separation is wide and stable: measured against the real Southwest manifest,
+a Split hotel and a Tokyo hotel both score **0.0**, while Kanab UT — a genuinely
+SW-adjacent town — scores **0.25**.
+
+**A near-tie also defers.** Two stops within 0.10 of each other means picking one
+would be arbitrary, and nothing downstream ever flags a hotel filed under the
+wrong stop.
 
 ---
 
-## Privacy
+## 4. Merge
 
-Everything ingested here is redacted out of privacy-redacted builds — `prod` by
-default, see `main._resolve_privacy_redaction`:
+- **Fill, never overwrite.** A field the manifest already states wins. A human
+  wrote that; a model read this one off an email.
+- **Legs append, deduplicated by confirmation number**, so re-forwarding the same
+  email is harmless.
+- **Re-validated against the schema after merging.** LLM-extracted content is
+  untrusted, so a malformed or hostile extraction fails the build loudly rather
+  than reaching the page.
+- Unknown destination ids are logged and skipped — renaming a stop must not crash
+  a build.
 
-| Field | dev / test build | prod build |
-|---|---|---|
-| `lodging.name`, `.website`, `.confirmation_number` | shown | blank; card disappears |
-| `transportation` (all legs) | shown | list emptied; cards disappear |
-| `lodging.location`, `.checkin_time` | shown | **kept** — drives geocoding, routing and arrival-day scheduling |
+---
 
-The cards degrade to *absence* rather than to a greyed placeholder, unlike
-`planning_links`. A visible "Lodging" affordance would still announce that the
-traveler has a room booked at this stop on these dates, which is most of what
-redaction is protecting.
+## 5. The mailbox
 
-So: hand a travel companion the `dev` build folder and they get every booking
-detail with no login. The published `prod` copy carries none of it.
+**Filing is a second pass, not part of fetching.** `fetch_unseen_messages` only
+peeks (`BODY.PEEK`, no flag changes); `mark_messages_processed` files exactly the
+uids the caller says it handled. Only matching knows which messages deserve
+filing, and marking during the fetch consumed every message before anything knew.
+
+Handled messages are flagged `\Seen` and moved to an archive folder. Filing is
+**best-effort and never fatal** — the booking is already extracted by then, so a
+permissions problem must not fail the run. `MOVE` (RFC 6851) is not universal, so
+it falls back to `COPY` + `\Deleted`, with **deliberately no `EXPUNGE`**: that
+would destroy mail permanently, and a silently-failed copy would take the
+original with it. Nothing is ever deleted, so even a misclassified booking stays
+recoverable in the archive folder.
+
+Non-bookings (security alerts, newsletters) are filed too — no future manifest
+will want them, and leaving them would make the queue accumulate noise.
+
+`--dry-run` extracts, matches and prints, but writes nothing, marks nothing, and
+files nothing, so it is safe to repeat while tuning `--threshold`.
+
+### 5.1 Credentials
+
+Three env vars — `RESERVATION_IMAP_HOST` / `USER` / `PASSWORD`. Gmail answers
+every credential problem with the same opaque `[AUTHENTICATIONFAILED] Invalid
+credentials`, so login failures are diagnosed from the values' *shape* and the
+specific misconfiguration named. The two that actually occur:
+
+- A username with no `@` — Gmail requires the full address, not the mailbox name
+- An account password rather than a 16-character app password. Google removed
+  less-secure-app access in 2022, so basic-auth IMAP requires an app password,
+  which in turn requires 2-Step Verification enabled. With 2SV off, the
+  app-password page reports the setting as *unavailable* rather than explaining
+  why.
+
+App passwords are displayed as four space-separated groups; whitespace is
+stripped for providers whose app passwords are defined as space-free (Google,
+iCloud) but **not** universally, since another provider could legitimately allow
+a space in a password.
+
+---
+
+## 6. Security posture
+
+This is the component where a bug is a privacy incident rather than a quality
+defect, and it is treated accordingly.
+
+- **Email content is untrusted.** Anyone can send mail to an ingest address.
+  Extracted values are HTML-escaped at render and re-validated against the schema
+  after merge.
+- **Bookings redact out of published builds.** `lodging.name`, `.website`,
+  `.confirmation_number` and every `transportation` leg — trip-wide and
+  per-destination — are cleared in privacy-redacted builds.
+  `lodging.location` and `.checkin_time` are deliberately *kept*: they drive
+  geocoding, routing and arrival-day scheduling, so redacting them would degrade
+  itinerary content rather than protect anything the name does not already.
+- **The sidecar is gitignored**, and so are non-prod build directories — a dev or
+  eval `index.html` renders every booking detail verbatim.
+
+**Known limits.** Schema re-validation constrains the *shape* of what lands and
+escaping constrains rendering, but neither prevents a plausible-looking *wrong*
+address produced by a hostile or confused extraction. Whether a human review step
+is required before a customer-facing build is an open product question, not a
+solved one.
+
+---
+
+## 7. Non-goals
+
+- **No mailbox writes beyond flagging and filing.** Never deletes, never expunges.
+- **No multi-tenant routing.** One mailbox, one manifest per invocation. Mapping
+  a forwarding sender to a trip is a different problem with a different threat
+  model — a `From` header is not a credential.
+- **No booking, cancellation or price tracking.** Read-only.
+- **No structured date parsing.** `depart`/`arrive`/`dates` stay display strings;
+  nothing downstream parses them, and matching only needs month/day tokens.

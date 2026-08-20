@@ -340,7 +340,7 @@ The output file must remain usable when opened directly from disk (`file://`) an
 
 ---
 
-## 3. Trip Manifest Schema (v0.5)
+## 3. Trip Manifest Schema (v0.6)
 
 The manifest is intentionally minimal. All geocoding, NPS detection, URL discovery, and content generation happen automatically.
 
@@ -357,6 +357,8 @@ The manifest is intentionally minimal. All geocoding, NPS detection, URL discove
 | `return` | ❌ optional | Route final endpoint location name for full-route map |
 | `default_day_start_time` | ❌ optional | Default local start time anchor for schedule realism (e.g., `10:00 AM`) |
 | `default_daily_activity_hours` | ❌ optional | Default per-day activity-time budget in hours used for schedule packing (default `5`) |
+| `transportation[]` | ❌ optional | **Trip-wide** booked legs — the flight in, the flight home, a rental held for the whole trip. Same item shape as the per-destination list, sharing one schema definition. These bracket the itinerary rather than belonging to one stop, so they render under the route overview map. A leg tied to a specific locale mid-trip belongs in that destination's own list. **Cleared entirely** in privacy-redacted builds |
+
 
 `trip.llm.provider` supports: `openai`, `anthropic`, `deepseek`, `gemini`.
 
@@ -380,8 +382,46 @@ The manifest is intentionally minimal. All geocoding, NPS detection, URL discove
 | `daily_activity_hours` | ❌ optional | Destination-specific activity-time budget override (hours) |
 | `planning_links[]` | ✅ | Array of `{label, url}` — Notion, TripIt, reservation links |
 | `seeds[]` | ❌ optional | Attraction/hike/experience **name hints only** — things the user specifically intends to include. No URLs. No scenic drive titles (AI discovers those). |
+| `lodging.confirmation_number` | ❌ optional | Booking code for the stay. Rendered in the lodging card; **redacted** in privacy-redacted builds (§11.1) — on most booking sites this code plus a surname is enough to view, change or cancel a reservation |
+| `lodging.website` | ❌ optional | Public URL for the lodging property. **Redacted** alongside `lodging.name`: the URL identifies the property just as precisely as the name, so exempting it would leak the same where-the-traveler-sleeps-on-which-dates fact |
+| `transportation[]` | ❌ optional | Booked travel legs **arriving at this destination**, each `{type, provider, label, confirmation_number, depart, arrive, website}` with `type` one of `plane`/`train`/`car`/`other`. Attaches to the arriving destination, mirroring `en_route_seeds`. Rendered as header pills. **Cleared entirely** in privacy-redacted builds |
 
-### 3.4 Seeds Rules
+### 3.4 Reservation Sidecar (generated, not hand-authored)
+
+Booking fields above may be filled by hand or ingested from forwarded
+confirmation emails. Ingestion is a **separate command**, never part of a build:
+
+```bash
+python scripts/ingest_reservations.py --manifest <path> --env-file <path> [--dry-run]
+```
+
+It writes `<manifest_stem>.reservations.yaml` beside the manifest;
+`manifest_parser` merges that sidecar at load and **re-validates the merged
+result against this schema**, so LLM-extracted content cannot enter the pipeline
+in a shape the schema forbids.
+
+Requirements:
+
+- The sidecar is **never** written into the manifest. A PyYAML round trip would
+  strip every comment, and confirmation numbers must not enter a tracked file.
+  `*.reservations.yaml` is gitignored.
+- Ingested values **fill empty fields only** and never overwrite a value the
+  manifest states.
+- Transportation legs **append**, deduplicated by confirmation number, so
+  re-forwarding the same email is harmless.
+- A booking that cannot be placed confidently goes to a `pending:` list and is
+  **not** applied to the build; a warning is emitted and the count is reported
+  on the console.
+- A booking scoring below the unrelated-trip floor is judged to belong to a
+  **different trip**, is left out of this sidecar entirely, and its message is
+  left unread in the mailbox for a manifest that may not exist yet.
+- With no sidecar present the build is valid and simply renders no booking
+  cards or travel chips.
+
+Full behaviour, matching signals and security posture:
+[`docs/design/reservation-email-ingestion.md`](design/reservation-email-ingestion.md).
+
+### 3.5 Seeds Rules
 
 Seeds are lightweight hints that anchor AI content generation to specific user intentions. They are:
 - ✅ Attraction names: `"Angels Landing"`, `"The Narrows"`
@@ -880,6 +920,11 @@ Related popup requirement:
 
 - The authoritative requirements-to-tests linkage matrix is maintained in:
   `docs/reports/requirements-traceability-v0.30-to-v0.20.md`.
+- **Stale as of v2.0.1.** That matrix predates v2 entirely and does not cover
+  the booking fields (§3.3), the reservation sidecar (§3.4), trip-wide
+  transportation (§3.1) or their redaction behaviour (§11.1). Regenerating it
+  is a release prerequisite, not a documentation nicety: a linkage matrix that
+  silently omits a requirement area reads as coverage.
 - Post-triage quality-hardening linkage and gate sequencing (provenance control,
   fail-closed publication, category stoplist handling, multi-day schedule
   rationalization) are tracked in the same report under the v2.0 addendum.
