@@ -228,6 +228,12 @@ class HTMLAssembler:
         sections_html += self._build_packing_summary(destinations)
         html = html.replace("<!--DESTINATION_SECTIONS-->", sections_html)
 
+        # ── Trip-wide travel chips under the route overview map ──────────────
+        html = html.replace(
+            "<!--TRIP_TRANSPORTATION-->",
+            self._build_trip_transportation(trip),
+        )
+
         # ── var DRIVE_DESCRIPTIONS (keyed by raw title, matches template JS) ──
         drive_descriptions = self._build_drive_descriptions(trip["destinations"])
         drive_json = json.dumps(drive_descriptions, indent=2)
@@ -1212,6 +1218,76 @@ class HTMLAssembler:
         "car": ("\U0001f697", "Rental Car"),
         "other": ("\U0001f9f3", "Travel"),
     }
+
+    def _build_trip_transportation(self, trip: dict[str, Any]) -> str:
+        """Trip-wide travel chips rendered under the route overview map.
+
+        These legs bracket the itinerary rather than belonging to a stop: the
+        flight in lands at trip.departure, the flight home leaves from
+        trip.return, and a rental collected at the gateway spans every
+        destination. Filing them under the first or last stop misrepresented
+        them, which is what putting them here fixes. A leg tied to a specific
+        locale mid-trip still renders on that destination
+        (_build_transportation_pills).
+
+        Absent from privacy-redacted builds -- main._apply_privacy_redaction
+        empties trip["trip"]["transportation"] exactly as it does the
+        per-destination lists.
+        """
+        meta = trip.get("trip") if isinstance(trip.get("trip"), dict) else {}
+        legs = meta.get("transportation")
+        if not isinstance(legs, list) or not legs:
+            return ""
+
+        chips: list[str] = []
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            kind = str(leg.get("type", "") or "").strip().lower()
+            icon, kind_title = self._TRANSPORT_KINDS.get(kind, self._TRANSPORT_KINDS["other"])
+
+            label = str(leg.get("label", "") or "").strip() or str(leg.get("provider", "") or "").strip()
+            text = f"{icon} {html_escape.escape(kind_title)}"
+            if label:
+                text += f" — {html_escape.escape(label)}"
+
+            confirmation = str(leg.get("confirmation_number", "") or "").strip()
+            if confirmation:
+                # Shown rather than hidden in a tooltip: this row is the one
+                # place a traveler looks for the record locator before leaving.
+                text += (
+                    f' <span class="trip-transport-conf">'
+                    f"{html_escape.escape(confirmation)}</span>"
+                )
+
+            tooltip = html_escape.escape(
+                " · ".join(
+                    v for v in (
+                        str(leg.get("provider", "") or "").strip(),
+                        str(leg.get("depart", "") or "").strip(),
+                        str(leg.get("arrive", "") or "").strip(),
+                    ) if v
+                )
+            )
+            website = self._normalize_external_url(str(leg.get("website", "") or ""))
+            if website:
+                chips.append(
+                    f'<a href="{self._safe_href(website)}" class="trip-transport-btn" '
+                    f'target="_blank" rel="noopener" title="{tooltip}">{text}</a>'
+                )
+            else:
+                chips.append(
+                    f'<span class="trip-transport-btn" title="{tooltip}">{text}</span>'
+                )
+
+        if not chips:
+            return ""
+        return (
+            '<div class="trip-transport">'
+            '<span class="trip-transport-label">Travel</span>'
+            + "".join(chips)
+            + "</div>"
+        )
 
     def _build_transportation_pills(self, dest: dict[str, Any]) -> list[str]:
         """Header pills for booked legs arriving at this stop, styled like NPS.

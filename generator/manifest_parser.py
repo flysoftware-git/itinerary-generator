@@ -18,6 +18,52 @@ from generator.multi_site_grouping import VALID_BASE_OWNED_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
+#: One booked travel leg. Shared verbatim by the per-destination
+#: `transportation` list and the trip-level one, so the two can never
+#: drift into accepting different fields.
+TRANSPORTATION_ITEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["type"],
+    "properties": {
+        "type": {
+            "type": "string",
+            "enum": ["plane", "train", "car", "other"],
+            "description": "Drives the category title and icon on the "
+                           "rendered card.",
+        },
+        "provider": {
+            "type": "string",
+            "description": "Airline, rail operator or rental company.",
+        },
+        "label": {
+            "type": "string",
+            "description": "Short human-readable identifier for the leg "
+                           "(e.g. 'UA 1234 SFO→LAS', 'Midsize SUV'). "
+                           "Falls back to provider, then to the type's "
+                           "own title, when omitted.",
+        },
+        "confirmation_number": {"type": "string"},
+        "depart": {
+            "type": "string",
+            "description": "Free-text departure point and/or time, kept "
+                           "as a string for the same reason `dates` is: "
+                           "these are display strings, not scheduling "
+                           "inputs. Nothing in the pipeline parses them.",
+        },
+        "arrive": {
+            "type": "string",
+            "description": "Free-text arrival point and/or time. See "
+                           "`depart`.",
+        },
+        "website": {
+            "type": "string",
+            "description": "Carrier/rental manage-booking or info URL.",
+        },
+    },
+    "additionalProperties": False,
+}
+
+
 MANIFEST_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["trip", "destinations"],
@@ -41,6 +87,20 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                             },
                         },
                     ],
+                },
+                "transportation": {
+                    "type": "array",
+                    "description": "Optional TRIP-WIDE booked travel legs -- the flight in, "
+                                   "the flight home, a rental car held for the whole trip. "
+                                   "These bracket the itinerary rather than belonging to any "
+                                   "one stop: an inbound flight lands at trip.departure and a "
+                                   "rental collected there spans every destination, so filing "
+                                   "them under the first or last stop misrepresents them. "
+                                   "Rendered under the route overview map. A leg tied to a "
+                                   "specific locale mid-trip belongs in that destination's own "
+                                   "`transportation` list instead. Same item shape, and cleared "
+                                   "in privacy-redacted builds exactly the same way.",
+                    "items": TRANSPORTATION_ITEM_SCHEMA,
                 },
                 "departure": {
                     "type": "string",
@@ -216,47 +276,7 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                        "builds (main._apply_privacy_redaction) -- a carrier plus "
                                        "a record locator is typically enough to view or change "
                                        "someone else's booking.",
-                        "items": {
-                            "type": "object",
-                            "required": ["type"],
-                            "properties": {
-                                "type": {
-                                    "type": "string",
-                                    "enum": ["plane", "train", "car", "other"],
-                                    "description": "Drives the category title and icon on the "
-                                                   "rendered card.",
-                                },
-                                "provider": {
-                                    "type": "string",
-                                    "description": "Airline, rail operator or rental company.",
-                                },
-                                "label": {
-                                    "type": "string",
-                                    "description": "Short human-readable identifier for the leg "
-                                                   "(e.g. 'UA 1234 SFO→LAS', 'Midsize SUV'). "
-                                                   "Falls back to provider, then to the type's "
-                                                   "own title, when omitted.",
-                                },
-                                "confirmation_number": {"type": "string"},
-                                "depart": {
-                                    "type": "string",
-                                    "description": "Free-text departure point and/or time, kept "
-                                                   "as a string for the same reason `dates` is: "
-                                                   "these are display strings, not scheduling "
-                                                   "inputs. Nothing in the pipeline parses them.",
-                                },
-                                "arrive": {
-                                    "type": "string",
-                                    "description": "Free-text arrival point and/or time. See "
-                                                   "`depart`.",
-                                },
-                                "website": {
-                                    "type": "string",
-                                    "description": "Carrier/rental manage-booking or info URL.",
-                                },
-                            },
-                            "additionalProperties": False,
-                        },
+                        "items": TRANSPORTATION_ITEM_SCHEMA,
                     },
                     "planning_links": {
                         "type": "array",
@@ -396,10 +416,12 @@ class ManifestParser:
 
         pending = len(sidecar.get("pending", []) or [])
         logger.info(
-            "Merged reservations from %s -- %d lodging field(s), %d transportation leg(s)%s",
+            "Merged reservations from %s -- %d lodging field(s), "
+            "%d destination transportation leg(s), %d trip-wide leg(s)%s",
             sidecar_path.name,
             counts["lodging_fields"],
             counts["transportation_legs"],
+            counts["trip_legs"],
             f"; {pending} awaiting review" if pending else "",
         )
         if pending:

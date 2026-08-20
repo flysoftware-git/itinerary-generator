@@ -190,7 +190,7 @@ def test_merge_ignores_a_sidecar_pointing_at_an_unknown_destination() -> None:
 
     counts = merge_sidecar_into_trip(trip, {"destinations": {"gone": {"lodging": {"name": "X"}}}})
 
-    assert counts == {"lodging_fields": 0, "transportation_legs": 0}
+    assert counts == {"lodging_fields": 0, "transportation_legs": 0, "trip_legs": 0}
 
 
 def test_parser_merges_sidecar_and_revalidates(tmp_path) -> None:
@@ -256,23 +256,27 @@ TRIP_WITH_GATEWAYS = {
 }
 
 
-def test_gateways_resolve_to_the_first_and_last_destination() -> None:
-    from generator.reservation_ingest import build_match_candidates
+def test_gateways_resolve_to_the_trip_level_sentinel() -> None:
+    """A gateway match is TRIP-WIDE, not stop-specific: an inbound flight lands
+    at trip.departure and a rental collected there spans every destination, so
+    filing them under the first or last stop misrepresents them. They render
+    under the route overview map instead."""
+    from generator.reservation_ingest import TRIP_LEVEL_ID, build_match_candidates
 
     candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
     gateways = {c["_gateway"]: c for c in candidates if c.get("_gateway")}
 
     assert len(candidates) == 5
-    assert gateways["departure"]["id"] == "stgeorge"
-    assert gateways["return"]["id"] == "santafe"
+    assert gateways["departure"]["id"] == TRIP_LEVEL_ID
+    assert gateways["return"]["id"] == TRIP_LEVEL_ID
 
 
-def test_inbound_flight_to_a_gateway_airport_matches_the_first_stop() -> None:
+def test_inbound_flight_to_a_gateway_airport_matches_trip_level() -> None:
     """Regression: trip.departure/trip.return are real booked places that are
     NOT itinerary stops, so nothing in `destinations` could match them. The
     inbound and outbound flights -- the two most likely reservations anyone
     forwards -- always landed in `pending` (best score 0.125)."""
-    from generator.reservation_ingest import build_match_candidates
+    from generator.reservation_ingest import TRIP_LEVEL_ID, build_match_candidates
 
     candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
     inbound = {"kind": "transportation", "type": "plane", "provider": "United",
@@ -280,11 +284,11 @@ def test_inbound_flight_to_a_gateway_airport_matches_the_first_stop() -> None:
 
     dest_id, _ = match_destination(inbound, candidates)
 
-    assert dest_id == "stgeorge"
+    assert dest_id == TRIP_LEVEL_ID
 
 
-def test_outbound_flight_from_a_gateway_matches_the_last_stop() -> None:
-    from generator.reservation_ingest import build_match_candidates
+def test_outbound_flight_from_a_gateway_matches_trip_level() -> None:
+    from generator.reservation_ingest import TRIP_LEVEL_ID, build_match_candidates
 
     candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
     outbound = {"kind": "transportation", "type": "plane", "provider": "Southwest",
@@ -292,11 +296,11 @@ def test_outbound_flight_from_a_gateway_matches_the_last_stop() -> None:
 
     dest_id, _ = match_destination(outbound, candidates)
 
-    assert dest_id == "santafe"
+    assert dest_id == TRIP_LEVEL_ID
 
 
 def test_build_match_candidates_is_a_noop_without_gateways() -> None:
-    from generator.reservation_ingest import build_match_candidates
+    from generator.reservation_ingest import TRIP_LEVEL_ID, build_match_candidates
 
     trip = {"trip": {}, "destinations": TRIP_WITH_GATEWAYS["destinations"]}
 
@@ -448,7 +452,7 @@ def test_rental_car_matches_its_pickup_not_its_return() -> None:
     Regression from the first real mailbox: a car collected at the departure
     gateway and returned at the return gateway attached to the LAST stop,
     because the return city appeared in `arrive`."""
-    from generator.reservation_ingest import build_match_candidates
+    from generator.reservation_ingest import TRIP_LEVEL_ID, build_match_candidates
 
     candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
     rental = {
@@ -460,12 +464,12 @@ def test_rental_car_matches_its_pickup_not_its_return() -> None:
 
     dest_id, _ = match_destination(rental, candidates)
 
-    assert dest_id == "stgeorge"
+    assert dest_id == TRIP_LEVEL_ID
 
 
 def test_flight_matches_where_it_lands_not_where_it_left() -> None:
     """A flight is identified by its arrival; origin tokens are noise."""
-    from generator.reservation_ingest import build_match_candidates
+    from generator.reservation_ingest import TRIP_LEVEL_ID, build_match_candidates
 
     candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
     flight = {
@@ -477,7 +481,7 @@ def test_flight_matches_where_it_lands_not_where_it_left() -> None:
 
     dest_id, ranked = match_destination(flight, candidates)
 
-    assert dest_id == "stgeorge"
+    assert dest_id == TRIP_LEVEL_ID
     assert ranked[0]["score"] >= 0.45
 
 
@@ -497,7 +501,7 @@ def test_generic_facility_words_do_not_drive_a_match() -> None:
 def test_candidates_resolving_to_one_destination_are_collapsed() -> None:
     """A gateway resolves to a real stop, so both are candidates for one place.
     Left separate, the near-tie rule compared a destination against itself."""
-    from generator.reservation_ingest import build_match_candidates
+    from generator.reservation_ingest import TRIP_LEVEL_ID, build_match_candidates
 
     candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
     flight = {"kind": "transportation", "type": "plane",
@@ -517,3 +521,80 @@ def test_iso_dates_contribute_the_month_name() -> None:
     assert "october" in _month_day_tokens("2026-10-17 13:30")
     assert "17" in _month_day_tokens("2026-10-17 13:30")
     assert _month_day_tokens("2026-13-01") == _month_day_tokens("2026-13-01")  # invalid month, no crash
+
+
+def test_gateway_legs_land_in_the_trip_block_not_a_destination() -> None:
+    """Trip-wide legs must reach trip["trip"]["transportation"], which renders
+    under the route overview map, rather than being filed on a stop."""
+    from generator.reservation_ingest import build_match_candidates
+
+    candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
+    entries = [
+        {"source": {"uid": "1"}, "reservation": {
+            "kind": "transportation", "type": "plane", "provider": "Example Air",
+            "arrive": "Las Vegas International Airport", "confirmation_number": "AAA111",
+            "dates": "Oct 17, 2026"}},
+        {"source": {"uid": "2"}, "reservation": {
+            "kind": "transportation", "type": "car", "provider": "Example Rentals",
+            "depart": "Las Vegas International Airport", "confirmation_number": "BBB222",
+            "dates": "Oct 17, 2026"}},
+    ]
+
+    sidecar = build_sidecar(entries, candidates)
+
+    assert len(sidecar["trip"]["transportation"]) == 2
+    assert sidecar["destinations"] == {}
+    assert sidecar["pending"] == []
+
+
+def test_a_mid_trip_leg_still_belongs_to_its_destination() -> None:
+    """The locale nuance: only gateway matches are trip-wide. A rental picked
+    up at a specific stop renders there."""
+    from generator.reservation_ingest import build_match_candidates
+
+    candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
+    entries = [{"source": {"uid": "3"}, "reservation": {
+        "kind": "transportation", "type": "car", "provider": "Example Rentals",
+        "depart": "Zion National Park", "confirmation_number": "CCC333",
+        "dates": "October 18, 2026"}}]
+
+    sidecar = build_sidecar(entries, candidates)
+
+    assert "zion" in sidecar["destinations"]
+    assert sidecar["trip"].get("transportation") is None
+
+
+def test_lodging_matching_a_gateway_goes_to_review_not_trip_level() -> None:
+    """A hotel is always at a place. If the extractor pushed one to a gateway,
+    that is a mismatch a human should see -- not a trip-level "stay"."""
+    from generator.reservation_ingest import build_match_candidates
+
+    candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
+    entries = [{"source": {"uid": "4"}, "reservation": {
+        "kind": "lodging", "location": "Las Vegas International Airport",
+        "confirmation_number": "DDD444", "dates": "Oct 17, 2026"}}]
+
+    sidecar = build_sidecar(entries, candidates)
+
+    assert sidecar["trip"].get("transportation") is None
+    assert len(sidecar["pending"]) == 1
+    assert "gateway" in sidecar["pending"][0]["reason"]
+
+
+def test_merge_puts_trip_legs_on_the_trip_block_and_dedupes() -> None:
+    from generator.reservation_ingest import merge_sidecar_into_trip
+
+    trip = {"trip": {"title": "T"}, "destinations": [{"id": "zion"}]}
+    sidecar = {"trip": {"transportation": [
+        {"type": "plane", "confirmation_number": "AAA111"},
+        {"type": "car", "confirmation_number": "BBB222"},
+    ]}}
+
+    counts = merge_sidecar_into_trip(trip, sidecar)
+    assert counts["trip_legs"] == 2
+    assert len(trip["trip"]["transportation"]) == 2
+
+    # Re-merging the same sidecar must not duplicate.
+    counts2 = merge_sidecar_into_trip(trip, sidecar)
+    assert counts2["trip_legs"] == 0
+    assert len(trip["trip"]["transportation"]) == 2

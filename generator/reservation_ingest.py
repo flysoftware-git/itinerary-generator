@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 #: Below this, a reservation goes to `pending` instead of attaching.
 DEFAULT_MATCH_THRESHOLD = 0.45
 
+#: Sentinel destination id for trip-wide legs. Not a real destination -- the
+#: sidecar files these under `trip:` and the manifest merges them onto
+#: trip["trip"]["transportation"], rendering under the route overview map.
+TRIP_LEVEL_ID = "__trip__"
+
 #: Mailbox folder polled by default.
 DEFAULT_MAILBOX = "INBOX"
 
@@ -267,9 +272,13 @@ def build_match_candidates(trip: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         candidates.append(
             {
-                # Deliberately the anchor stop's id: the match must land on a
-                # destination that actually has a rendered section.
-                "id": anchor.get("id", ""),
+                # Gateway matches are TRIP-WIDE, not stop-specific. An inbound
+                # flight lands at trip.departure and a rental collected there
+                # spans every destination, so filing them under the first or
+                # last stop misrepresents them -- they render under the route
+                # overview map instead. A leg tied to a specific locale
+                # mid-trip still matches that destination normally.
+                "id": TRIP_LEVEL_ID,
                 "name": place,
                 # Prefer the trip-level datetime; fall back to the anchor
                 # stop's dates so the date signal still contributes.
@@ -453,11 +462,19 @@ def build_sidecar(
     """
     sidecar: dict[str, Any] = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
+        # Trip-wide legs matched to a gateway; rendered under the route
+        # overview map rather than inside any destination.
+        "trip": dict((existing or {}).get("trip", {}) or {}),
         "destinations": dict((existing or {}).get("destinations", {}) or {}),
         "pending": list((existing or {}).get("pending", []) or []),
     }
 
     seen_confirmations = {
+        str(leg.get("confirmation_number", "") or "")
+        for leg in (sidecar["trip"].get("transportation") or [])
+        if isinstance(leg, dict)
+    }
+    seen_confirmations |= {
         str(leg.get("confirmation_number", "") or "")
         for block in sidecar["destinations"].values()
         if isinstance(block, dict)
@@ -494,6 +511,24 @@ def build_sidecar(
             continue
 
         section, fragment = reservation_to_manifest_fragment(reservation)
+        if dest_id == TRIP_LEVEL_ID:
+            # A gateway match is trip-wide. Lodging cannot be: a hotel is
+            # always at a place, so if the extractor read one as a gateway
+            # match, that is a mismatch and a human should look rather than it
+            # silently becoming a trip-level "stay".
+            if section != "transportation":
+                sidecar["pending"].append({
+                    "reason": "lodging matched a trip gateway, which has no destination",
+                    "source": entry.get("source", {}),
+                    "reservation": reservation,
+                    "candidates": candidates[:3],
+                })
+                continue
+            sidecar["trip"].setdefault("transportation", []).append(fragment)
+            if confirmation:
+                seen_confirmations.add(confirmation)
+            continue
+
         block = sidecar["destinations"].setdefault(dest_id, {})
         if section == "lodging":
             block.setdefault("lodging", {}).update(fragment)
@@ -513,7 +548,33 @@ def merge_sidecar_into_trip(trip: dict[str, Any], sidecar: dict[str, Any]) -> di
     this one was read out of an email by a language model. Transportation legs
     append, deduplicated by confirmation number.
     """
-    counts = {"lodging_fields": 0, "transportation_legs": 0}
+    counts = {"lodging_fields": 0, "transportation_legs": 0, "trip_legs": 0}
+
+    # Trip-wide legs land on trip["trip"], beside title/subtitle/departure,
+    # and render under the route overview map rather than in any destination.
+    trip_block = sidecar.get("trip")
+    if isinstance(trip_block, dict):
+        trip_legs = trip_block.get("transportation")
+        if isinstance(trip_legs, list) and trip_legs:
+            meta = trip.setdefault("trip", {})
+            existing_trip_legs = meta.setdefault("transportation", [])
+            known_trip = {
+                str(leg.get("confirmation_number", "") or "")
+                for leg in existing_trip_legs
+                if isinstance(leg, dict)
+            }
+            known_trip.discard("")
+            for leg in trip_legs:
+                if not isinstance(leg, dict):
+                    continue
+                confirmation = str(leg.get("confirmation_number", "") or "").strip()
+                if confirmation and confirmation in known_trip:
+                    continue
+                existing_trip_legs.append(leg)
+                counts["trip_legs"] += 1
+                if confirmation:
+                    known_trip.add(confirmation)
+
     by_id = {
         str(d.get("id", "")): d
         for d in trip.get("destinations", []) or []

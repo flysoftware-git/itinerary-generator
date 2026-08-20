@@ -216,6 +216,34 @@
       .group-base-pointer a:hover { color: var(--terracotta); }
       .intro-note-text { font-size: 0.95rem; line-height: 1.7; color: #5c4a35; margin: 0; }
 
+      /* ── Trip-wide travel (html_assembler._build_trip_transportation) ──
+         Renders under the route overview map, not inside any destination: the
+         flight in, the flight home and a whole-trip rental bracket the
+         itinerary rather than belonging to one stop. Needs its own chip style
+         because .notion-header-btn is white-on-translucent for the dark hero
+         image and would be invisible on this sandstone panel. */
+      .trip-transport {
+        display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
+        margin-top: 0.85rem;
+      }
+      .trip-transport-label {
+        font-size: 0.75rem; font-weight: 700; letter-spacing: 0.04em;
+        text-transform: uppercase; color: #8a7a63; margin-right: 0.15rem;
+      }
+      .trip-transport-btn {
+        display: inline-flex; align-items: center; gap: 5px;
+        background: #fff; color: var(--dark);
+        border: 1px solid #d4c4a8; border-radius: 9999px;
+        padding: 5px 14px; font-size: 13px; font-weight: 600;
+        text-decoration: none; white-space: nowrap;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      a.trip-transport-btn:hover { background: var(--sandstone); border-color: var(--canyon); }
+      .trip-transport-conf {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-weight: 600; color: #6b5e50; font-size: 12px;
+      }
+
       /* ── Lodging booking details (html_assembler._build_lodging_card) ──
          Collapsed by default: these are the fields a traveler wants at the
          check-in desk, not while reading the itinerary. Absent entirely from
@@ -477,6 +505,7 @@
       <div data-id="12" style="max-width:72rem;margin:0 auto;padding:0 2rem;">
         <h2 data-id="13" style="font-family:Georgia,serif;color:#8B2E0A;font-size:1.2rem;font-weight:700;margin-bottom:0.75rem;letter-spacing:0.01em;">🗺️ Route Overview</h2>
         <div data-id="14" id="overview-map" style="height:340px;border-radius:12px;overflow:hidden;border:1.5px solid #d4c4a8;"></div>
+        <!--TRIP_TRANSPORTATION-->
       </div>
     </section>
 

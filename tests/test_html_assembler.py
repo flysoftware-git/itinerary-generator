@@ -4994,3 +4994,47 @@ def test_drive_entries_match_rendered_buttons_across_destinations() -> None:
     # The duplicated one produced neither; the distinct one produced both.
     assert "Arches Scenic Drive" not in dd
     assert "Arches National Park Scenic Drive" in dd
+
+
+def test_trip_transportation_renders_under_the_overview_map() -> None:
+    """Trip-wide legs render as chips beneath the route overview map, with
+    their own light-background style -- .notion-header-btn is white-on-
+    translucent for the dark hero image and would be invisible there."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {"trip": {"transportation": [
+        {"type": "plane", "provider": "Example Air", "label": "SEA-LAS",
+         "confirmation_number": "AAA111", "website": "https://air.example/"},
+        {"type": "car", "provider": "Example Rentals", "confirmation_number": "BBB222"},
+    ]}}
+
+    html = assembler._build_trip_transportation(trip)
+
+    assert 'class="trip-transport"' in html
+    assert html.count("trip-transport-btn") == 2
+    assert "Flight" in html and "Rental Car" in html
+    # The record locator is shown, not hidden in a tooltip: this row is where a
+    # traveler looks for it before leaving.
+    assert "AAA111" in html and "BBB222" in html
+    assert 'href="https://air.example/"' in html
+    # No website -> a span, never an anchor to nothing.
+    assert "<span class=\"trip-transport-btn\"" in html
+
+
+def test_trip_transportation_absent_when_redacted_or_empty() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+
+    assert assembler._build_trip_transportation({"trip": {"transportation": []}}) == ""
+    assert assembler._build_trip_transportation({"trip": {}}) == ""
+    assert assembler._build_trip_transportation({}) == ""
+
+
+def test_trip_transportation_escapes_untrusted_email_text() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {"trip": {"transportation": [
+        {"type": "plane", "label": "<script>alert(1)</script>", "confirmation_number": "A1"},
+    ]}}
+
+    html = assembler._build_trip_transportation(trip)
+
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html

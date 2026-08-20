@@ -294,6 +294,16 @@ def _apply_privacy_redaction(trip: dict[str, Any]) -> dict[str, int]:
         "lodging_confirmations": 0,
         "transportation": 0,
     }
+    # Trip-wide legs (the flight in, the flight home, a whole-trip rental) live
+    # on trip["trip"], not on any destination, and are exactly as sensitive.
+    # Missing this would leave record locators on a published page while every
+    # per-destination leg was correctly cleared.
+    trip_meta = trip.get("trip")
+    if isinstance(trip_meta, dict):
+        trip_legs = trip_meta.get("transportation")
+        if isinstance(trip_legs, list) and trip_legs:
+            counts["transportation"] += len(trip_legs)
+            trip_meta["transportation"] = []
     for dest in trip.get("destinations", []) or []:
         if not isinstance(dest, dict):
             continue
