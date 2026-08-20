@@ -297,6 +297,15 @@ def fetch_unseen_messages(
     not re-billed as LLM tokens) on the next poll. Pass False when testing
     against a real mailbox you don't want to disturb.
     """
+    # Google renders app passwords as four space-separated groups of four for
+    # readability; the credential is the 16 characters without them, and
+    # pasting the displayed form straight from the dialog is the obvious
+    # mistake. Strip whitespace for providers whose app passwords are defined
+    # as space-free (Google, iCloud) rather than universally, since another
+    # provider could legitimately allow a space in a password.
+    if any(p in host.lower() for p in ("gmail", "google", "icloud", "me.com")):
+        password = "".join(password.split())
+
     messages: list[tuple[str, bytes]] = []
     conn = imaplib.IMAP4_SSL(host)
     try:

@@ -371,3 +371,69 @@ def test_gmail_login_failure_falls_back_to_generic_guidance(monkeypatch) -> None
         )
 
     assert "IMAP is enabled" in str(excinfo.value)
+
+
+def test_gmail_app_password_spaces_are_stripped_before_login(monkeypatch) -> None:
+    """Google shows app passwords as four space-separated groups of four, so
+    pasting the displayed form is the obvious mistake. The credential is the
+    16 characters without spaces."""
+    from generator import reservation_ingest as mod
+
+    seen = {}
+
+    class FakeIMAP:
+        def __init__(self, host):
+            pass
+
+        def login(self, user, password):
+            seen["password"] = password
+
+        def select(self, mailbox):
+            pass
+
+        def search(self, charset, criterion):
+            return "OK", [b""]
+
+        def logout(self):
+            pass
+
+    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", FakeIMAP)
+
+    mod.fetch_unseen_messages(
+        host="imap.gmail.com", user="trips@gmail.com", password="abcd efgh ijkl mnop",
+    )
+
+    assert seen["password"] == "abcdefghijklmnop"
+    assert len(seen["password"]) == 16
+
+
+def test_non_app_password_providers_keep_spaces_intact(monkeypatch) -> None:
+    """Stripping must not be universal -- another provider could legitimately
+    allow a space inside a password."""
+    from generator import reservation_ingest as mod
+
+    seen = {}
+
+    class FakeIMAP:
+        def __init__(self, host):
+            pass
+
+        def login(self, user, password):
+            seen["password"] = password
+
+        def select(self, mailbox):
+            pass
+
+        def search(self, charset, criterion):
+            return "OK", [b""]
+
+        def logout(self):
+            pass
+
+    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", FakeIMAP)
+
+    mod.fetch_unseen_messages(
+        host="mail.example.net", user="trips@example.net", password="correct horse battery",
+    )
+
+    assert seen["password"] == "correct horse battery"
