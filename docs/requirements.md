@@ -920,11 +920,13 @@ Related popup requirement:
 
 - The authoritative requirements-to-tests linkage matrix is maintained in:
   `docs/reports/requirements-traceability-v0.30-to-v0.20.md`.
-- **Stale as of v2.0.1.** That matrix predates v2 entirely and does not cover
-  the booking fields (§3.3), the reservation sidecar (§3.4), trip-wide
-  transportation (§3.1) or their redaction behaviour (§11.1). Regenerating it
-  is a release prerequisite, not a documentation nicety: a linkage matrix that
-  silently omits a requirement area reads as coverage.
+- Areas added or changed since v2.0.1 are covered by
+  `docs/reports/requirements-traceability-v2.1.0.md`, which supersedes the
+  above for those areas. The older matrix predates v2 entirely and is retained
+  for history, not for coverage claims.
+- The v2.1.0 matrix lists **gaps explicitly** rather than omitting them: a
+  linkage matrix that quietly skips an uncovered area reads as coverage, which
+  is worse than having no matrix.
 - Post-triage quality-hardening linkage and gate sequencing (provenance control,
   fail-closed publication, category stoplist handling, multi-day schedule
   rationalization) are tracked in the same report under the v2.0 addendum.
