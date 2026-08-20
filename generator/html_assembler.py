@@ -107,6 +107,10 @@ class HTMLAssembler:
 
         # ── Nav tabs ────────────────────────────────────────────────────────
         html = html.replace("<!--NAV_TABS-->", self._build_nav_tabs(trip["destinations"], meta))
+        html = html.replace(
+            "<!--ROUTE_MAP_LINK-->",
+            self._build_route_map_link(trip["destinations"], meta),
+        )
 
         # ── Per-destination sections ─────────────────────────────────────────
         # Titles of drives that actually rendered a modal-trigger button,
@@ -456,11 +460,28 @@ class HTMLAssembler:
             dest_id = dest["id"]  # use manifest id directly
             label = _tab_label(display_number, dest)
             tabs.append(f'<button class="tab-btn{active}" data-tab="section-{dest_id}">{label}</button>')
-        tabs.append(
+
+        # The Full Route Map link is NOT part of this strip. It used to be the
+        # last flex item in the overflow-x-auto row with margin-left:auto, so
+        # with enough stops it straddled the container's clip edge -- rendered
+        # half on screen and half cut off (measured: 67px clipped at 1280px
+        # with 8 stops), reachable only by horizontal scrolling nobody thinks
+        # to try. It now renders beside the "Route Overview" heading, next to
+        # the map it actually opens, which leaves this strip free to scroll
+        # with nothing that can straddle an edge.
+        # See _build_route_map_link and the ROUTE_MAP_LINK template slot.
+        return "\n          ".join(tabs)
+
+    def _build_route_map_link(self, destinations: list[dict[str, Any]], trip_meta: dict[str, Any] | None = None) -> str:
+        """The Full Route Map button, rendered beside the Route Overview
+        heading rather than inside the scrolling tab strip."""
+        gmaps_url = self._build_google_maps_url(destinations, trip_meta)
+        if not gmaps_url:
+            return ""
+        return (
             f'<a href="{gmaps_url}" target="_blank" rel="noopener" class="map-tab-btn">'
             f'🗺️ Full Route Map</a>'
         )
-        return "\n          ".join(tabs)
 
     def _build_single_section(
         self,
