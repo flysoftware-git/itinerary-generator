@@ -1,4 +1,24 @@
 @echo off
+REM ─────────────────────────────────────────────────────────────────────────
+REM REFERENCE COPY. This example writes to a local OUTPUT_ROOT and does NOT
+REM publish anywhere -- no git add/commit/push. The working copy used for real
+REM runs lives outside the repo and does publish to the Travel-apps Pages site.
+REM
+REM If you ever add a publish step here, it MUST refuse to publish anything but
+REM prod. Only prod output is privacy-redacted (_resolve_privacy_redaction
+REM redacts in prod only), so dev/eval builds carry private planning links and
+REM lodging/booking confirmation details verbatim, and Travel-apps is a public
+REM repo whose Pages workflow uploads path: '.', the entire repository:
+REM
+REM     if /I not "%ENVIRONMENT%"=="prod" (
+REM         echo [INFO] Environment is "%ENVIRONMENT%", not prod -- skipping publish.
+REM         goto :end
+REM     )
+REM
+REM Note also that generator.main writes to output/<environment>/, not to
+REM OUTPUT_DIR itself -- a publish step checking OUTPUT_DIR/validation_report.json
+REM will never find it and will silently skip on every run.
+REM ─────────────────────────────────────────────────────────────────────────
 setlocal enabledelayedexpansion
 
 REM ────────────────────────────────────────────────────────────────
