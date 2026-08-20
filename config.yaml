@@ -261,14 +261,20 @@ url_discovery:
   # grouped run's partial successes are no longer thrown away before the
   # next attempt can build on them.
   #
-  # This is an EXPERIMENT, not a settled default. Watch
-  # direct_batch_parity_report.json and the split/match failure logs on the
-  # next real run: if grouped jobs still fall through to per-destination
-  # calls at the earlier ~1-in-12 rate, this is net overhead (and possibly
-  # costing real URL matches, per the dipstick58 hypothesis) and should go
-  # back to 1. Reverting is a one-line change here, or DIRECT_BATCH_GROUP_SIZE=1
-  # for a single run without editing this file.
-  direct_batch_group_size: 2
+  # RETEST RESULT (2026-08-19 dev run, run_id 20260820T032249): failed again,
+  # back to 1. Grouping avoided ZERO requests -- gate_a's
+  # batch_work_ratio.url_discovery_search reported
+  # requests_avoided_vs_naive: 0 and url_targets_per_provider_request: 0.92 --
+  # while raising url_discovery_search_calls to 181, against 166-176 on the
+  # four preceding group_size=1 prod runs. So it cost ~9% more calls and
+  # bought nothing, reproducing dipstick58's finding rather than refuting it.
+  # Two attempts, same outcome: treat this as needing a real root-cause fix in
+  # _split_multi_destination_html / _match_destination_section before it is
+  # worth a third run, not another config flip.
+  #
+  # DIRECT_BATCH_GROUP_SIZE=2 still opts back in for a single experiment
+  # without editing this file.
+  direct_batch_group_size: 1
   alltrails_source: direct_link_batch
   attraction_source: direct_link_batch
   restaurant_source: direct_link_batch
