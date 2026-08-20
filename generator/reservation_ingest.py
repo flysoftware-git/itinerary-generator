@@ -300,7 +300,38 @@ def fetch_unseen_messages(
     messages: list[tuple[str, bytes]] = []
     conn = imaplib.IMAP4_SSL(host)
     try:
-        conn.login(user, password)
+        try:
+            conn.login(user, password)
+        except imaplib.IMAP4.error as exc:
+            # Gmail answers every credential problem with the same opaque
+            # "[AUTHENTICATIONFAILED] Invalid credentials (Failure)", so
+            # surface the two misconfigurations that actually cause it rather
+            # than leaving the operator to guess from a traceback. Both are
+            # checked on the VALUES' shape only -- nothing is logged.
+            hints: list[str] = []
+            if "gmail" in host.lower() and "@" not in user:
+                hints.append(
+                    f"RESERVATION_IMAP_USER is {user!r}, which has no '@'. Gmail "
+                    "requires the full address (e.g. name@gmail.com), not the "
+                    "mailbox name."
+                )
+            if "gmail" in host.lower() and len(password.replace(" ", "")) != 16:
+                hints.append(
+                    "RESERVATION_IMAP_PASSWORD is "
+                    f"{len(password.replace(' ', ''))} characters. A Gmail app "
+                    "password is exactly 16. An ordinary account password is "
+                    "rejected for IMAP -- generate an app password at "
+                    "https://myaccount.google.com/apppasswords (requires 2FA)."
+                )
+            if not hints:
+                hints.append(
+                    "Check the address, the app password, and that IMAP is "
+                    "enabled for the mailbox."
+                )
+            raise RuntimeError(
+                "IMAP login failed for "
+                f"{user} @ {host}: {exc}\n  - " + "\n  - ".join(hints)
+            ) from exc
         conn.select(mailbox)
         status, data = conn.search(None, "UNSEEN")
         if status != "OK":

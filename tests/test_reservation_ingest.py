@@ -311,3 +311,63 @@ def test_abbreviated_month_contributes_to_the_date_signal() -> None:
 
     assert _month_day_tokens("Oct 17-19, 2026") == _month_day_tokens("October 17-19, 2026")
     assert "october" in _month_day_tokens("Oct 17, 2026")
+
+
+def test_gmail_login_failure_names_the_two_common_misconfigurations(monkeypatch) -> None:
+    """Gmail answers every credential problem with the same opaque
+    "[AUTHENTICATIONFAILED] Invalid credentials (Failure)". The first real
+    ingestion attempt hit it with BOTH causes present: a username with no
+    domain, and a 23-character value where an app password is exactly 16."""
+    import imaplib
+
+    from generator import reservation_ingest as mod
+
+    class FakeIMAP:
+        def __init__(self, host):
+            pass
+
+        def login(self, user, password):
+            raise imaplib.IMAP4.error(b"[AUTHENTICATIONFAILED] Invalid credentials (Failure)")
+
+        def logout(self):
+            pass
+
+    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", FakeIMAP)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        mod.fetch_unseen_messages(
+            host="imap.gmail.com", user="TripTips.Reservations", password="x" * 23,
+        )
+
+    message = str(excinfo.value)
+    assert "no '@'" in message
+    assert "23 characters" in message and "exactly 16" in message
+    # The secret itself must never appear in the error.
+    assert "x" * 23 not in message
+
+
+def test_gmail_login_failure_falls_back_to_generic_guidance(monkeypatch) -> None:
+    """Correctly-shaped credentials that still fail get actionable text rather
+    than a bare traceback -- e.g. IMAP disabled on the mailbox."""
+    import imaplib
+
+    from generator import reservation_ingest as mod
+
+    class FakeIMAP:
+        def __init__(self, host):
+            pass
+
+        def login(self, user, password):
+            raise imaplib.IMAP4.error(b"[AUTHENTICATIONFAILED] Invalid credentials (Failure)")
+
+        def logout(self):
+            pass
+
+    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", FakeIMAP)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        mod.fetch_unseen_messages(
+            host="imap.gmail.com", user="trips@gmail.com", password="abcd" * 4,
+        )
+
+    assert "IMAP is enabled" in str(excinfo.value)
