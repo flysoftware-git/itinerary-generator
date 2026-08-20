@@ -225,6 +225,27 @@ class CulturalEventsDiscoverer:
         query = f"{name} {scope}".strip() if scope and scope.lower() not in name.lower() else name
         return f"https://www.google.com/maps/search/?api=1&query={quote(query)}"
 
+    # Anchors a specific place name commonly follows in local_tip prose --
+    # "Check out live music at Alloy Kitchen, which hosts..." or "Check out
+    # Moab Farmers Market" (both real, project-owner-flagged examples of
+    # local_tip_name being omitted despite the tip clearly naming one
+    # findable place). Deliberately conservative: only fires on an explicit
+    # anchor phrase immediately followed by Title Case words, terminated by
+    # punctuation or a small set of connector words -- a miss here just
+    # means no link (matching this pipeline's existing fail-closed
+    # default), not a wrong one.
+    _LOCAL_TIP_VENUE_ANCHOR_RE = re.compile(
+        r"(?i:\b(?:at|check out|visit|try|head to|stop by)\s+)"
+        r"(?:the\s+|an?\s+)?"
+        r"([A-Z][\w'&.-]*(?:\s+[A-Z][\w'&.-]*){0,5})"
+        r"(?=[,.;:!?]|\s+[a-z]|$)"
+    )
+
+    @classmethod
+    def _extract_local_tip_venue_name(cls, tip_text: str) -> str:
+        match = cls._LOCAL_TIP_VENUE_ANCHOR_RE.search(str(tip_text or ""))
+        return match.group(1).strip() if match else ""
+
     def _verify_local_tip_url(self, result: dict[str, Any], dest_name: str = "") -> dict[str, Any]:
         """Verify (or maps-fallback) the local_tip's link, mirroring _verify_event_urls.
 
@@ -247,9 +268,19 @@ class CulturalEventsDiscoverer:
 
         tip_name = str(result.get("local_tip_name", "") or "").strip()
         if not tip_name:
-            result.pop("local_tip_url", None)
-            result.pop("local_tip_name", None)
-            return result
+            # AI synthesis omits local_tip_name more often than the prompt's
+            # instructions alone can prevent (project-owner flagged this
+            # exact failure mode repeatedly -- "Moab Farmers Market", then
+            # "Alloy Kitchen" -- despite both being unambiguously one named,
+            # findable place). Try a conservative text-extraction fallback
+            # before giving up on a link entirely.
+            tip_name = self._extract_local_tip_venue_name(result.get("local_tip", ""))
+            if tip_name:
+                result["local_tip_name"] = tip_name
+            else:
+                result.pop("local_tip_url", None)
+                result.pop("local_tip_name", None)
+                return result
 
         from generator.url_discovery import URLDiscoverer
         from generator.url_validator import URLValidator
