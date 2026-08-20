@@ -2046,6 +2046,34 @@ def main(
         sys.exit(1)
 
     click.echo(f"  ✓ {len(trip['destinations'])} destination(s) loaded")
+
+    # Booking counts reach the console rather than only the log, because the
+    # runner is expected to run at WARNING (a real run emits ~1700 INFO lines,
+    # 95% of them per-item URL-discovery chatter, which buries everything else).
+    # "How many bookings landed" is a run-summary fact, not debug detail: with
+    # no sidecar the build is still valid and simply renders no booking cards,
+    # which is otherwise invisible in the output.
+    booking_counts = trip.get("_meta", {}).get("reservations_merged")
+    if booking_counts:
+        click.echo(
+            click.style("   Bookings : ", fg="cyan")
+            + click.style(
+                f"{booking_counts.get('lodging_fields', 0)} lodging field(s), "
+                f"{booking_counts.get('transportation_legs', 0)} destination leg(s), "
+                f"{booking_counts.get('trip_legs', 0)} trip-wide leg(s)",
+                fg="green",
+            )
+        )
+        pending = booking_counts.get("pending", 0)
+        if pending:
+            click.echo(
+                click.style("   Bookings : ", fg="cyan")
+                + click.style(
+                    f"{pending} awaiting review -- resolve under 'pending:' in the "
+                    "sidecar; they are NOT in this build",
+                    fg="yellow",
+                )
+            )
     stage_timings["stage_1_parse_validate"] = _elapsed_seconds(stage_1_started)
     runtime_metrics["destination_count"] = len(trip.get("destinations", []) or [])
 

@@ -19,6 +19,12 @@ REM Note also that generator.main writes to output/<environment>/, not to
 REM OUTPUT_DIR itself -- a publish step checking OUTPUT_DIR/validation_report.json
 REM will never find it and will silently skip on every run.
 REM
+REM LOG LEVEL. Prefer --log-level warning for routine runs. A real 10-stop
+REM run emits ~1700 INFO lines, ~1650 of them per-item url_discovery
+REM chatter, which buries the ~30 warnings worth reading. Progress output
+REM is click.echo rather than logging, so it survives at any level.
+REM Re-run with --log-level info for an investigation.
+REM
 REM ENVIRONMENT POSTURES. Each environment is a posture, not just an output
 REM folder. Three separate mechanisms decide these, so the combination is easy
 REM to get wrong:

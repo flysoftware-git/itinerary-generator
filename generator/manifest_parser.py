@@ -415,6 +415,11 @@ class ManifestParser:
         self._validate_schema(data)
 
         pending = len(sidecar.get("pending", []) or [])
+        # Surfaced on the console by main, not only in the log: the runner is
+        # expected to run at WARNING, where these counts would otherwise be
+        # invisible -- and "no bookings appeared" is exactly the outcome that
+        # looks identical to "there were none to apply".
+        data.setdefault("_meta", {})["reservations_merged"] = {**counts, "pending": pending}
         logger.info(
             "Merged reservations from %s -- %d lodging field(s), "
             "%d destination transportation leg(s), %d trip-wide leg(s)%s",
