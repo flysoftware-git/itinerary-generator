@@ -3846,10 +3846,11 @@ def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_cluster
     assert 'data-tab="section-canyonlands"' not in html
     assert 'data-tab="section-moab"' in html
     # Consolidated day-trip banner on both grouped children: centered,
-    # linked back to Moab's section, and folded in the lodging name (no
-    # more separate "Based from X (see Y)" pointer line).
+    # linked back to Moab's section (no separate "Based from X (see Y)"
+    # pointer line, and no restated lodging text -- the link is the
+    # reference that matters).
     assert html.count('Day trip from <a href="#section-moab"') == 2
-    assert html.count("Based at Moab Springs Ranch") == 2
+    assert html.count("Based at") == 0
     assert "class=\"group-lodging-pointer\"" not in html
     # Restaurant deferral pointer on both grouped children, base keeps its own card
     # -- only the destination name itself is the anchor (dipstick60 Bug 3).
@@ -4156,7 +4157,7 @@ def test_build_group_child_card_omits_schedule_and_renders_nested_div() -> None:
     assert "Delicate Arch" in html
     assert 'Day trip from <a href="#section-moab"' in html
     assert ">Moab</a>" in html
-    assert "Based at Moab Springs Ranch" in html
+    assert "Based at" not in html
     assert "text-align:center" in html
     assert "class=\"group-lodging-pointer\"" not in html
 
@@ -4202,12 +4203,11 @@ def test_build_group_child_card_banner_carries_the_base_section_link() -> None:
     assert 'href="#section-moab"' in banner_div
 
 
-def test_build_group_child_card_banner_falls_back_without_lodging_name() -> None:
-    """When the grouped entry overrides lodging itself (own `lodging`
-    block present), the base's lodging name must not be folded into the
-    banner -- mirrors _build_group_lodging_pointer's own
-    own-lodging-overrides-dedup rule -- and the banner falls back to the
-    plain, still-centered, still-linked "Day trip from X" wording."""
+def test_build_group_child_card_banner_omits_lodging_when_own_lodging_present() -> None:
+    """The banner text is just "Day trip from X" regardless of lodging --
+    no lodging name is ever folded in (project-owner review, 2026-08-19).
+    Covers the case where the grouped entry overrides lodging itself (own
+    `lodging` block present) to confirm that doesn't change the banner."""
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     assembler._config = {}
     destinations = _moab_group_destinations()
