@@ -5038,3 +5038,39 @@ def test_trip_transportation_escapes_untrusted_email_text() -> None:
 
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
+
+
+def test_booked_leg_types_cover_carried_travel() -> None:
+    """A customer-arranged cruise is a BOOKED leg -- the traveler holds a
+    confirmation -- and unrelated to transit routing, which concerns services
+    nobody has bought. Before these types it had to be entered as "other" and
+    rendered as a generic "Travel" chip, losing the detail that makes it
+    legible."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    legs = [
+        {"type": t, "provider": "Example Line", "confirmation_number": f"C{i}"}
+        for i, t in enumerate(("ship", "ferry", "bus", "shuttle"))
+    ]
+
+    html = assembler._build_trip_transportation({"trip": {"transportation": legs}})
+
+    assert "Cruise" in html
+    assert "Ferry" in html
+    assert "Bus" in html
+    assert "Shuttle" in html
+    # None fell through to the fallback. Checked via the fallback's ICON rather
+    # than the word "Travel", which is also the section's own label.
+    assert "\U0001f9f3" not in html
+
+
+def test_unknown_booked_leg_type_still_renders_its_details() -> None:
+    """The fallback exists so an unrecognized booking keeps its confirmation
+    rather than being dropped."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+
+    html = assembler._build_trip_transportation(
+        {"trip": {"transportation": [{"type": "hovercraft", "confirmation_number": "Q1"}]}}
+    )
+
+    assert "Travel" in html
+    assert "Q1" in html

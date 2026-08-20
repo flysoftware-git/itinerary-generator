@@ -27,9 +27,19 @@ TRANSPORTATION_ITEM_SCHEMA: dict[str, Any] = {
     "properties": {
         "type": {
             "type": "string",
-            "enum": ["plane", "train", "car", "other"],
+            "enum": ["plane", "train", "car", "ship", "ferry", "bus", "shuttle", "other"],
             "description": "Drives the category title and icon on the "
-                           "rendered card.",
+                           "rendered card. `ship` covers a cruise or "
+                           "repositioning sailing that carries the traveler "
+                           "between stops; `ferry` a shorter crossing. Both "
+                           "are BOOKED legs like any other -- the traveler "
+                           "holds a confirmation -- and are unrelated to the "
+                           "transit-routing design in "
+                           "docs/design/multimodal-routing.md, which concerns "
+                           "services nobody has bought yet. `other` remains "
+                           "the fallback so an unrecognized booking still "
+                           "renders with its details intact rather than being "
+                           "dropped.",
         },
         "provider": {
             "type": "string",

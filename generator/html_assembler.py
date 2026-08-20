@@ -1237,6 +1237,15 @@ class HTMLAssembler:
         "plane": ("✈️", "Flight"),
         "train": ("\U0001f686", "Train"),
         "car": ("\U0001f697", "Rental Car"),
+        # A cruise or repositioning sailing is a BOOKED leg like any other --
+        # the traveler holds a confirmation -- and is unrelated to the
+        # transit-routing design, which concerns services nobody has bought.
+        # Without these, a cruise had to be entered as "other" and rendered as
+        # a generic "Travel" chip, losing the one detail that makes it legible.
+        "ship": ("\U0001f6a2", "Cruise"),
+        "ferry": ("⛴️", "Ferry"),
+        "bus": ("\U0001f68c", "Bus"),
+        "shuttle": ("\U0001f690", "Shuttle"),
         "other": ("\U0001f9f3", "Travel"),
     }
 

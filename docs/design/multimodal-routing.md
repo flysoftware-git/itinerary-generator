@@ -603,6 +603,55 @@ identically. If they behave the same, one is dead config. Proposed split in open
    happy-path candidate — confirm it covers useful legs.
 9. **Should Phase 1 corroborate operator names through `url_discovery`?** Off by default is
    the recommendation; it is the one choice here that could move run cost meaningfully.
+10. **How should a multi-day sea leg be scheduled?** See §9.
+
+---
+
+## 9. Multi-day carried legs (cruises, sleeper trains, ferries)
+
+Added 2026-08-20. `ship`, `ferry`, `bus` and `shuttle` are now accepted booked-leg
+types, so a customer-arranged cruise renders correctly as a chip. That part was
+additive and is done. **The scheduling model is not**, and it is a genuinely
+different problem from transit routing.
+
+**These are booked legs, not routing options.** A traveler holds a confirmation
+for a cruise; nothing here needs guessing, so §2's Phase 1/Phase 2 machinery does
+not apply. They belong in `transportation` and always did.
+
+**But they break two assumptions the schedule rests on.**
+
+*Travel consumes part of one day.* §1.2's chain treats the inbound leg as a
+subtraction from the arrival day's activity budget: arrival clock time is
+`day_start + drive_minutes`, and the afternoon budget is
+`activity_budget − drive_minutes`. A three-day repositioning sailing is not a
+`drive_time` in any sense that arithmetic can absorb. Clamping it to a single
+day's budget produces a nonsense arrival; leaving it out produces a page where
+the traveler teleports between stops.
+
+*Lodging and transport are separate things.* A cruise is **simultaneously
+both** — the traveler sleeps aboard. The manifest models them as independent
+blocks, so a sailing either duplicates as a lodging entry with no address (and
+`lodging.location` is a geocoding anchor, so a blank one degrades routing and
+the "restaurants near lodging" search), or it is absent from lodging entirely
+and the stay looks unaccounted for.
+
+**Three shapes, none obviously right:**
+
+| Shape | Consequence |
+|---|---|
+| Days at sea become **destinations** with `lodging` pointing at the ship | Fits the existing model exactly; every downstream feature works. But it invites URL discovery, weather grounding and attraction search for a moving vessel — mostly meaningless, some actively wrong |
+| A leg carries an explicit **duration in days**, and the schedule skips those days | Smallest schema change; the days simply do not exist in the itinerary. Loses the ability to say anything about them |
+| A distinct **`carried` leg kind** that owns both travel and accommodation for its span | Most honest to what a cruise is; largest change, touching scheduling, lodging and rendering together |
+
+Weather grounding is a further wrinkle under any of them: `expected_environment`
+is derived per destination from monthly normals at fixed coordinates, and a ship
+does not have fixed coordinates.
+
+**Recommendation: do not guess.** The chip renders today, which covers the
+common case of a cruise the traveler simply wants recorded. Deciding the
+scheduling shape should wait for a real manifest that contains one — the same
+discipline §2.2 applies to Phase 2, where a coverage probe precedes integration
+rather than following it.
 
 ---
 

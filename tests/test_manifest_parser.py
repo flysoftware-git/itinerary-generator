@@ -671,3 +671,20 @@ destinations:
     message = str(exc_info.value)
     assert "destinations[0]" in message
     assert "does not match" in message
+
+
+def test_transportation_type_enum_accepts_carried_travel() -> None:
+    """`ship`/`ferry` cover a cruise or crossing that carries the traveler
+    between stops. `cruise` is deliberately NOT a value -- one spelling per
+    concept, and `ship` also covers a repositioning sailing that nobody would
+    call a cruise."""
+    import jsonschema
+
+    from generator.manifest_parser import TRANSPORTATION_ITEM_SCHEMA
+
+    for accepted in ("plane", "train", "car", "ship", "ferry", "bus", "shuttle", "other"):
+        jsonschema.validate({"type": accepted}, TRANSPORTATION_ITEM_SCHEMA)
+
+    for rejected in ("cruise", "boat", ""):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({"type": rejected}, TRANSPORTATION_ITEM_SCHEMA)
