@@ -18,6 +18,24 @@ REM
 REM Note also that generator.main writes to output/<environment>/, not to
 REM OUTPUT_DIR itself -- a publish step checking OUTPUT_DIR/validation_report.json
 REM will never find it and will silently skip on every run.
+REM
+REM ENVIRONMENT POSTURES. Each environment is a posture, not just an output
+REM folder. Three separate mechanisms decide these, so the combination is easy
+REM to get wrong:
+REM
+REM   dev / eval   redaction OFF (planning links, lodging names, confirmation
+REM                numbers and travel legs render verbatim); never published.
+REM   prod         redaction ON; publishable.
+REM
+REM Bookings are NOT ingested by this script in any environment. Ingestion
+REM reads a mailbox, spends LLM calls per message, and is one-way -- it flags
+REM mail read and files it. A build that silently depends on a reachable
+REM mailbox fails for reasons unrelated to the trip. It is a separate step:
+REM   python scripts/ingest_reservations.py --manifest <path> --env-file <path>
+REM which writes <manifest_stem>.reservations.yaml beside the manifest; the
+REM build merges that file if it exists. Absent, the build is still valid and
+REM simply renders no booking cards -- which is invisible in the output, so a
+REM real runner should say so before generating.
 REM ─────────────────────────────────────────────────────────────────────────
 setlocal enabledelayedexpansion
 
