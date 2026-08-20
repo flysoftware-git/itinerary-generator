@@ -16723,3 +16723,44 @@ def test_conftest_isolates_default_cache_path_from_the_repo(tmp_path) -> None:
 
     assert default_path.is_absolute()
     assert _Path.cwd() not in default_path.parents
+
+
+def test_harvest_cache_ttl_is_one_week() -> None:
+    """Harvest rows are the highest-volume cached bucket; a 24h TTL only ever
+    helped same-day rebuilds and re-paid the search fee every morning."""
+    from generator import url_discovery as mod
+
+    assert mod.DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS == 168
+    assert (
+        mod.DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS
+        == mod.DEFAULT_PERSISTENT_SEARCH_CACHE_TTL_HOURS
+    ), "harvest and search answer the same class of question and should age alike"
+
+
+def test_liveness_ttls_stay_shorter_than_content_ttls() -> None:
+    """The safety argument for week-long content TTLs.
+
+    Caching "which candidates does this query yield, and where do they live"
+    for a week is safe ONLY because whether a page is still live, and whether a
+    place has closed, are re-checked on much shorter independent TTLs. Raising
+    those would genuinely let a closure or dead link go unnoticed for longer.
+    This test fails if someone raises a liveness TTL to match a content one.
+    """
+    from generator import url_discovery as mod
+
+    content_ttls = {
+        "search": mod.DEFAULT_PERSISTENT_SEARCH_CACHE_TTL_HOURS,
+        "harvest": mod.DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS,
+    }
+    liveness_ttls = {
+        "verify": mod.DEFAULT_PERSISTENT_VERIFY_CACHE_TTL_HOURS,
+        "page_text": mod.DEFAULT_PERSISTENT_PAGE_TEXT_CACHE_TTL_HOURS,
+        "alltrails": mod.DEFAULT_PERSISTENT_ALLTRAILS_CACHE_TTL_HOURS,
+    }
+
+    for live_name, live_ttl in liveness_ttls.items():
+        for content_name, content_ttl in content_ttls.items():
+            assert live_ttl < content_ttl, (
+                f"{live_name} ({live_ttl}h) is a liveness/closure check and must expire "
+                f"sooner than {content_name} content ({content_ttl}h)"
+            )

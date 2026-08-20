@@ -542,10 +542,33 @@ DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS = 720
 # Direct-batch harvest rows (the per-destination-per-kind Grok HTML-list
 # responses for attractions/restaurants/trails/en-route stops) are the most
 # expensive part of URL discovery and the most repeated across same-day
-# iterative validation runs of an unchanged manifest -- a full day's TTL lets
-# repeat runs skip re-harvesting entirely while still refreshing ratings/links
-# often enough to catch closures.
-DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS = 24
+# iterative validation runs of an unchanged manifest.
+#
+# Raised 24h -> 168h (7 days) on 2026-08-19, matching
+# DEFAULT_PERSISTENT_SEARCH_CACHE_TTL_HOURS and for the same reason. A day's
+# TTL only ever helped SAME-DAY rebuilds; a run the next morning re-paid xAI's
+# $5/1000 web_search fee to re-harvest candidate lists that had not
+# meaningfully changed. Measured on the 2026-08-19/20 pair: a cold run cost
+# $2.86 across 477 web_search calls, the warm rebuild $0.33 across 50 -- and
+# this bucket is the highest-volume contributor, so a 24h expiry was throwing
+# most of that saving away every night.
+#
+# Safe for the same reason the search TTL is. A harvest row answers "which
+# candidate places does this destination/kind query yield, and where do they
+# live" -- names, URLs, ratings, descriptions. Real places and their
+# authoritative pages do not turn over week to week. Whether a page is still
+# LIVE, and whether a place has CLOSED, are separate questions re-checked on
+# much shorter independent TTLs regardless of this one: _verify_url_cached at
+# 12h (DEFAULT_PERSISTENT_VERIFY_CACHE_TTL_HOURS) and page-text/AllTrails
+# fetches at 24h/12h, which is what feeds closure-marker detection
+# (_has_attraction_closure_marker et al). Raising THOSE would genuinely let a
+# closure or dead link go unnoticed for longer; raising this one cannot.
+#
+# What a week-old harvest can carry is stale ratings/vote counts feeding
+# _meets_place_interest_threshold, and a place opened in the last week being
+# absent. Both are quality-of-ranking drift, not correctness or liveness --
+# and both were already tolerated for up to a day.
+DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS = 168
 # A failed/empty direct-batch HTML harvest is deliberately never cached (an
 # empty result isn't authoritative), but multiple items at the same
 # destination each independently call the same per-destination-per-kind
