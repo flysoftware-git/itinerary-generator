@@ -128,11 +128,16 @@ def test_build_sidecar_routes_confident_and_unconfident_reservations() -> None:
         {"source": {"uid": "3"}, "reservation": {"kind": "none"}},
     ]
 
-    sidecar = build_sidecar(entries, DESTINATIONS)
+    outcomes: list[dict] = []
+    sidecar = build_sidecar(entries, DESTINATIONS, outcomes=outcomes)
 
     assert sidecar["destinations"]["zion"]["lodging"]["confirmation_number"] == "ZL-1"
-    assert len(sidecar["pending"]) == 1
-    assert sidecar["pending"][0]["reservation"]["confirmation_number"] == "RK-9"
+    # Reykjavik scores 0.0 against a Southwest trip, so it is another trip's
+    # booking rather than an unplaceable one on this trip: it stays out of this
+    # sidecar entirely and is left in the inbox for a manifest that may not
+    # exist yet.
+    assert sidecar["pending"] == []
+    assert {o["disposition"] for o in outcomes} == {"attached", "unrelated", "not_a_booking"}
 
 
 def test_build_sidecar_is_idempotent_on_the_same_confirmation() -> None:
@@ -255,6 +260,27 @@ TRIP_WITH_GATEWAYS = {
     ],
 }
 
+
+
+# Mirrors the shape of a REAL manifest: destinations carry street-address
+# lodging anchors, which is what gives matching enough tokens to work with.
+# TRIP_WITH_GATEWAYS above is deliberately sparse for gateway tests, and that
+# sparsity makes a bare state name ("Utah") dominate a match -- realistic for
+# neither production nor these assertions.
+TRIP_REALISTIC = {
+    "trip": {
+        "departure": "Las Vegas International Airport",
+        "return": "Albuquerque, NM airport",
+    },
+    "destinations": [
+        {"id": "stgeorge", "name": "St. George, Utah", "dates": "October 17, 2026",
+         "lodging": {"location": "1819 South 120 East, St. George, UT 84790"}},
+        {"id": "zion", "name": "Zion National Park", "dates": "October 18, 2026",
+         "lodging": {"location": "1215 Zion Park Blvd, Springdale, UT 84767"}},
+        {"id": "santafe", "name": "Santa Fe", "dates": "October 27-29, 2026",
+         "lodging": {"location": "100 Sandoval St, Santa Fe, NM 87501"}},
+    ],
+}
 
 def test_gateways_resolve_to_the_trip_level_sentinel() -> None:
     """A gateway match is TRIP-WIDE, not stop-specific: an inbound flight lands
@@ -709,3 +735,115 @@ def test_no_archive_folder_leaves_messages_in_place(monkeypatch) -> None:
 
     assert ("store", "\Seen") in actions
     assert not any(a[0] == "create" for a in actions)
+
+
+def test_a_booking_for_another_trip_is_not_filed_into_this_ones_pending() -> None:
+    """A traveler forwards confirmations as they book, so mail arrives for trips
+    whose manifest does not exist yet. Matched against whatever manifest happens
+    to be running, those score ~0. Treating them as ambiguous local bookings
+    buried them in the wrong trip's pending list -- and once archiving existed,
+    moved them out of the inbox, so the manifest they belonged to never saw
+    them."""
+    from generator.reservation_ingest import build_match_candidates
+
+    candidates = build_match_candidates(TRIP_REALISTIC)
+    entries = [
+        {"source": {"uid": "1", "subject": "Split hotel"}, "reservation": {
+            "kind": "lodging", "city": "Split, Croatia", "confirmation_number": "HR1"}},
+        {"source": {"uid": "2", "subject": "Zion hotel"}, "reservation": {
+            "kind": "lodging", "city": "Springdale, UT", "confirmation_number": "UT1",
+            "dates": "October 18, 2026"}},
+    ]
+
+    outcomes: list[dict] = []
+    sidecar = build_sidecar(entries, candidates, outcomes=outcomes)
+
+    by_uid = {o["uid"]: o for o in outcomes}
+    assert by_uid["1"]["disposition"] == "unrelated"
+    assert by_uid["2"]["disposition"] == "attached"
+    # The other trip's booking must NOT pollute this sidecar in any form.
+    assert sidecar["pending"] == []
+    assert "HR1" not in json.dumps(sidecar)
+
+
+def test_an_unplaceable_booking_on_THIS_trip_still_goes_to_pending() -> None:
+    """The floor must not swallow genuine near-misses. Kanab UT is plausibly
+    part of a Southwest trip; Split is not."""
+    from generator.reservation_ingest import build_match_candidates
+
+    candidates = build_match_candidates(TRIP_REALISTIC)
+    entries = [{"source": {"uid": "9", "subject": "Kanab hotel"}, "reservation": {
+        "kind": "lodging", "city": "Kanab, Utah", "confirmation_number": "KN1",
+        "dates": "October 18, 2026"}}]
+
+    outcomes: list[dict] = []
+    sidecar = build_sidecar(entries, candidates, outcomes=outcomes)
+
+    assert outcomes[0]["disposition"] == "pending"
+    assert len(sidecar["pending"]) == 1
+
+
+def test_every_message_gets_exactly_one_disposition() -> None:
+    """The caller decides each message's fate in the mailbox from these, so a
+    missing disposition would silently leave mail unfiled forever, and a
+    duplicate would file something twice."""
+    from generator.reservation_ingest import build_match_candidates
+
+    candidates = build_match_candidates(TRIP_REALISTIC)
+    entries = [
+        {"source": {"uid": "1"}, "reservation": {"kind": "none"}},
+        {"source": {"uid": "2"}, "reservation": {"kind": "lodging", "city": "Split, Croatia"}},
+        {"source": {"uid": "3"}, "reservation": {
+            "kind": "lodging", "city": "Springdale, UT", "confirmation_number": "D1",
+            "dates": "October 18, 2026"}},
+        {"source": {"uid": "4"}, "reservation": {
+            "kind": "lodging", "city": "Springdale, UT", "confirmation_number": "D1",
+            "dates": "October 18, 2026"}},  # duplicate confirmation
+    ]
+
+    outcomes: list[dict] = []
+    build_sidecar(entries, candidates, outcomes=outcomes)
+
+    assert len(outcomes) == len(entries)
+    assert len({o["uid"] for o in outcomes}) == len(entries)
+    assert {o["disposition"] for o in outcomes} == {
+        "not_a_booking", "unrelated", "attached", "duplicate"}
+
+
+def test_mark_messages_processed_only_touches_the_uids_it_is_given(monkeypatch) -> None:
+    """Finalization is a second pass precisely so an unrelated trip's mail can
+    be left untouched. It must file exactly what it is handed, nothing more."""
+    from generator import reservation_ingest as mod
+
+    touched = []
+
+    class FakeIMAP:
+        def __init__(self, host): pass
+        def login(self, u, p): pass
+        def select(self, mailbox): pass
+        def store(self, uid, flags, value): touched.append((uid.decode(), value))
+        def create(self, folder): pass
+        def uid(self, cmd, uid, folder): touched.append((uid.decode(), cmd)); return "OK", None
+        def logout(self): pass
+
+    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", FakeIMAP)
+
+    filed = mod.mark_messages_processed(
+        host="imap.example.net", user="u", password="p",
+        uids=["3", "7"], archive_folder="Ingested",
+    )
+
+    assert filed == 2
+    assert {u for u, _ in touched} == {"3", "7"}
+
+
+def test_mark_messages_processed_is_a_noop_with_no_uids(monkeypatch) -> None:
+    """Every message unrelated means no connection should even be opened."""
+    from generator import reservation_ingest as mod
+
+    def explode(host):
+        raise AssertionError("should not connect when there is nothing to file")
+
+    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", explode)
+
+    assert mod.mark_messages_processed(host="h", user="u", password="p", uids=[]) == 0

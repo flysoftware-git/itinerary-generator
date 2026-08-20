@@ -36,6 +36,7 @@ from generator.reservation_ingest import (
     extract_reservation,
     fetch_unseen_messages,
     load_sidecar,
+    mark_messages_processed,
     summarize,
     write_sidecar,
 )
@@ -108,9 +109,11 @@ def main(manifest, config_path, env_file, mailbox, threshold, limit, archive_fol
         host=host, user=user, password=password, mailbox=mailbox,
         # A dry run must not consume messages -- leaving them unread is what
         # makes it safe to re-run against the same mailbox while tuning.
-        mark_seen=not dry_run, limit=limit,
-        # A dry run files nothing, for the same reason it marks nothing read.
-        archive_folder=(archive_folder or None) if not dry_run else None,
+        # Never consume during the fetch. Only matching knows whether a
+        # booking landed, needs review, or belongs to a trip whose manifest
+        # does not exist yet -- and that last case must stay exactly where it
+        # is. Flagging and filing happen afterwards, per message.
+        mark_seen=False, limit=limit,
     )
     click.echo(f"Unread mail : {len(messages)}")
     if not messages:
@@ -137,9 +140,26 @@ def main(manifest, config_path, env_file, mailbox, threshold, limit, archive_fol
         entries.append({"source": {"uid": uid, "subject": subject}, "reservation": reservation})
 
     sidecar_path = ManifestParser.reservations_sidecar_path(manifest_path)
+    outcomes: list[dict] = []
     sidecar = build_sidecar(
         entries, candidates, threshold=threshold, existing=load_sidecar(sidecar_path),
+        outcomes=outcomes,
     )
+
+    by_disposition: dict[str, list[dict]] = {}
+    for o in outcomes:
+        by_disposition.setdefault(o["disposition"], []).append(o)
+    for name in ("attached", "pending", "duplicate", "not_a_booking", "unrelated"):
+        for o in by_disposition.get(name, []):
+            click.echo(f"  {name:14} {o['score']:<6} {o['subject'][:60]}")
+
+    unrelated = by_disposition.get("unrelated", [])
+    if unrelated:
+        click.echo(click.style(
+            f"\n{len(unrelated)} message(s) look like a different trip and were LEFT IN "
+            "THE INBOX, unread, for a manifest that may not exist yet:", fg="cyan"))
+        for o in unrelated:
+            click.echo(f"    - {o['subject'][:70]}")
 
     if dry_run:
         import yaml

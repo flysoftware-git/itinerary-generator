@@ -42,6 +42,23 @@ DEFAULT_MATCH_THRESHOLD = 0.45
 #: trip["trip"]["transportation"], rendering under the route overview map.
 TRIP_LEVEL_ID = "__trip__"
 
+#: Below this, a reservation is judged to belong to a DIFFERENT TRIP rather
+#: than to be an unplaceable booking on this one -- and the two need opposite
+#: handling.
+#:
+#: A traveler forwards confirmations as they book, which means mail arrives for
+#: trips whose manifest does not exist yet. Matched against whatever manifest
+#: happens to be running, those score at or near zero. Treating them like an
+#: ambiguous local booking buried them in the wrong trip's `pending` list and
+#: -- once archiving existed -- moved them out of the inbox entirely, so the
+#: manifest they actually belonged to could never see them.
+#:
+#: Measured against the real SW manifest: a Split hotel and a Tokyo hotel both
+#: score 0.0, while Kanab UT -- a genuinely SW-adjacent town this trip could
+#: plausibly include -- scores 0.25. The gap between "not this trip" and "this
+#: trip, unplaceable" is wide and stable, so a floor separates them reliably.
+UNRELATED_SCORE_FLOOR = 0.15
+
 #: Mailbox folder polled by default.
 DEFAULT_MAILBOX = "INBOX"
 
@@ -216,7 +233,16 @@ def score_destination_match(reservation: dict[str, Any], dest: dict[str, Any]) -
         # count punished stops with wordy lodging addresses: a booking stating
         # only "Springdale, UT" matched 1 of Zion's 5 tokens and scored 0.2,
         # landing a correct, unambiguous match in the review queue.
-        return len(dest_tokens & res_tokens) / max(1, min(len(dest_tokens), len(res_tokens)))
+        #
+        # The floor of 3 stops a SINGLE shared token from carrying a sparse
+        # reservation. "Kanab, Utah" reduces to two usable tokens, so matching
+        # the one word "utah" against "St. George, Utah" scored 0.5 and
+        # attached -- meaning any thinly-extracted Utah booking would land on
+        # whichever Utah stop came first. A state name is weak evidence, but so
+        # is any lone token; rather than enumerate weak words, require that a
+        # match resting on one token cannot alone clear the bar.
+        denominator = max(1, min(len(dest_tokens), max(len(res_tokens), 3)))
+        return len(dest_tokens & res_tokens) / denominator
 
     # For a car, the choice of endpoint is a property of the RESERVATION, not
     # of the destination being scored. Deciding per-destination -- "use the
@@ -353,6 +379,60 @@ def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, 
     return "transportation", fragment
 
 
+def _normalize_app_password(host: str, password: str) -> str:
+    """Google renders app passwords as four space-separated groups of four for
+    readability; the credential is the 16 characters without them, and pasting
+    the displayed form straight from the dialog is the obvious mistake. Strip
+    whitespace only for providers whose app passwords are defined as space-free
+    (Google, iCloud) rather than universally, since another provider could
+    legitimately allow a space in a password."""
+    if any(p in host.lower() for p in ("gmail", "google", "icloud", "me.com")):
+        return "".join(password.split())
+    return password
+
+
+def mark_messages_processed(
+    *,
+    host: str,
+    user: str,
+    password: str,
+    uids: list[str],
+    mailbox: str = DEFAULT_MAILBOX,
+    archive_folder: str | None = None,
+) -> int:
+    """Flag and file the messages that were actually dealt with.
+
+    Deliberately a second pass rather than part of fetching. Only matching
+    knows whether a booking landed, needs review, or belongs to a trip whose
+    manifest does not exist yet -- and the last of those must stay exactly
+    where it is, unread and in the inbox, so a future manifest can still find
+    it. Marking during the fetch consumed every message before anything knew
+    which was which.
+    """
+    if not uids:
+        return 0
+    processed = 0
+    conn = imaplib.IMAP4_SSL(host)
+    try:
+        conn.login(user, _normalize_app_password(host, password))
+        conn.select(mailbox)
+        for uid in uids:
+            raw = uid.encode("ascii", "replace")
+            try:
+                conn.store(raw, "+FLAGS", "\\Seen")
+                if archive_folder:
+                    _archive_message(conn, raw, archive_folder)
+                processed += 1
+            except Exception as exc:
+                logger.warning("Could not finalize uid %s: %s", uid, exc)
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+    return processed
+
+
 def _archive_message(conn: "imaplib.IMAP4_SSL", uid: bytes, folder: str) -> None:
     """Move one ingested message out of the inbox into `folder`.
 
@@ -406,14 +486,7 @@ def fetch_unseen_messages(
     not re-billed as LLM tokens) on the next poll. Pass False when testing
     against a real mailbox you don't want to disturb.
     """
-    # Google renders app passwords as four space-separated groups of four for
-    # readability; the credential is the 16 characters without them, and
-    # pasting the displayed form straight from the dialog is the obvious
-    # mistake. Strip whitespace for providers whose app passwords are defined
-    # as space-free (Google, iCloud) rather than universally, since another
-    # provider could legitimately allow a space in a password.
-    if any(p in host.lower() for p in ("gmail", "google", "icloud", "me.com")):
-        password = "".join(password.split())
+    password = _normalize_app_password(host, password)
 
     messages: list[tuple[str, bytes]] = []
     conn = imaplib.IMAP4_SSL(host)
@@ -486,12 +559,29 @@ def extract_reservation(llm_client: Any, subject: str, body: str) -> dict[str, A
     return result if isinstance(result, dict) else {}
 
 
+def _record(outcomes: list[dict[str, Any]] | None, entry: dict[str, Any],
+            disposition: str, score: float) -> None:
+    """Note what happened to one message so the caller can decide its fate in
+    the mailbox. Filing is the caller's job, not this function's -- but only
+    this function knows whether a booking landed, needs review, or belongs to
+    a trip that has no manifest yet."""
+    if outcomes is None:
+        return
+    outcomes.append({
+        "uid": str(entry.get("source", {}).get("uid", "")),
+        "subject": str(entry.get("source", {}).get("subject", "")),
+        "disposition": disposition,
+        "score": round(float(score), 4),
+    })
+
+
 def build_sidecar(
     entries: list[dict[str, Any]],
     destinations: list[dict[str, Any]],
     *,
     threshold: float = DEFAULT_MATCH_THRESHOLD,
     existing: dict[str, Any] | None = None,
+    outcomes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Fold extracted reservations into a sidecar document.
 
@@ -530,14 +620,34 @@ def build_sidecar(
     for entry in entries:
         reservation = entry.get("reservation") or {}
         if str(reservation.get("kind", "")).lower() == "none":
+            # Not a booking at all (a newsletter, a security alert). Safe to
+            # file: no future manifest will want it either.
+            _record(outcomes, entry, "not_a_booking", 0.0)
             continue
 
         confirmation = str(reservation.get("confirmation_number", "") or "").strip()
         if confirmation and confirmation in seen_confirmations:
             logger.info("Skipping already-ingested confirmation %s", confirmation)
+            _record(outcomes, entry, "duplicate", 0.0)
             continue
 
         dest_id, candidates = match_destination(reservation, destinations, threshold=threshold)
+        best = candidates[0]["score"] if candidates else 0.0
+
+        if not dest_id and best < UNRELATED_SCORE_FLOOR:
+            # Belongs to a DIFFERENT trip, not to this one ambiguously. Record
+            # the disposition so the caller can leave the message in the inbox
+            # for a manifest that does not exist yet -- and deliberately do NOT
+            # write it into this trip's pending list, where it would be noise a
+            # human has to reject rather than resolve.
+            _record(outcomes, entry, "unrelated", best)
+            logger.info(
+                "Reservation appears to belong to another trip (best score %.2f); "
+                "left for a future manifest: %s",
+                best, str(entry.get("source", {}).get("subject", ""))[:70],
+            )
+            continue
+
         if not dest_id:
             sidecar["pending"].append(
                 {
@@ -547,6 +657,7 @@ def build_sidecar(
                     "candidates": candidates[:3],
                 }
             )
+            _record(outcomes, entry, "pending", best)
             continue
 
         section, fragment = reservation_to_manifest_fragment(reservation)
@@ -566,6 +677,7 @@ def build_sidecar(
             sidecar["trip"].setdefault("transportation", []).append(fragment)
             if confirmation:
                 seen_confirmations.add(confirmation)
+            _record(outcomes, entry, "attached", best)
             continue
 
         block = sidecar["destinations"].setdefault(dest_id, {})
@@ -575,6 +687,7 @@ def build_sidecar(
             block.setdefault("transportation", []).append(fragment)
         if confirmation:
             seen_confirmations.add(confirmation)
+        _record(outcomes, entry, "attached", best)
 
     return sidecar
 
@@ -703,7 +816,9 @@ __all__ = [
     "email_to_text",
     "extract_reservation",
     "fetch_unseen_messages",
+    "UNRELATED_SCORE_FLOOR",
     "load_sidecar",
+    "mark_messages_processed",
     "match_destination",
     "merge_sidecar_into_trip",
     "reservation_to_manifest_fragment",
