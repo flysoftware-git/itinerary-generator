@@ -499,3 +499,65 @@ def test_verify_local_tip_url_noop_when_has_events_or_no_tip() -> None:
 
     result_no_tip = {"has_events": False, "honest_assessment": "Quiet scene."}
     assert d._verify_local_tip_url(result_no_tip, "Moab") == result_no_tip
+
+
+def test_extract_local_tip_venue_name_finds_at_anchored_venue() -> None:
+    """Real example: synthesis omitted local_tip_name for a tip that
+    unambiguously names one place ("Alloy Kitchen"), project-owner
+    reported. The text-extraction fallback must recover it."""
+    tip = (
+        "Check out live music at Alloy Kitchen, which hosts shows every "
+        "Sunday through October. It's a great way to experience local "
+        "talent in a relaxed setting."
+    )
+    assert CulturalEventsDiscoverer._extract_local_tip_venue_name(tip) == "Alloy Kitchen"
+
+
+def test_extract_local_tip_venue_name_finds_check_out_anchored_venue() -> None:
+    """Second real, previously-flagged example from this same docstring's
+    history: "Check out Moab Farmers Market" with no preposition before
+    the name at all."""
+    tip = "Check out Moab Farmers Market for local produce and crafts."
+    assert CulturalEventsDiscoverer._extract_local_tip_venue_name(tip) == "Moab Farmers Market"
+
+
+def test_extract_local_tip_venue_name_strips_leading_article() -> None:
+    tip = "Visit the Santa Fe Farmers Market on Saturday morning."
+    assert CulturalEventsDiscoverer._extract_local_tip_venue_name(tip) == "Santa Fe Farmers Market"
+
+
+def test_extract_local_tip_venue_name_returns_empty_for_generic_advice() -> None:
+    """Conservative by design: no anchor + Title Case match means no
+    extraction, matching this pipeline's fail-closed default (a miss here
+    is a missing link, never a wrong one)."""
+    assert CulturalEventsDiscoverer._extract_local_tip_venue_name(
+        "Enjoy the quiet mountain evenings and stargazing from your lodging."
+    ) == ""
+    assert CulturalEventsDiscoverer._extract_local_tip_venue_name(
+        "Check ranger talks posted at the visitor center desk."
+    ) == ""
+
+
+def test_verify_local_tip_url_recovers_missing_name_via_text_extraction() -> None:
+    """Full-path regression for the real Alloy Kitchen case: local_tip_name
+    was omitted by synthesis, but the tip text names one specific,
+    findable place -- _verify_local_tip_url must recover it via the
+    extraction fallback and still produce a maps-fallback link, rather
+    than silently dropping a real, linkable place."""
+    d = _discoverer()
+    result = {
+        "has_events": False,
+        "honest_assessment": "Pagosa Springs has a relaxed live-music scene.",
+        "local_tip": (
+            "Check out live music at Alloy Kitchen, which hosts shows every "
+            "Sunday through October."
+        ),
+        # local_tip_name deliberately absent, matching the real failure.
+    }
+
+    verified = d._verify_local_tip_url(result, "Pagosa Springs")
+
+    assert verified["local_tip_name"] == "Alloy Kitchen"
+    assert verified["local_tip_url"] == (
+        "https://www.google.com/maps/search/?api=1&query=Alloy%20Kitchen%20Pagosa%20Springs"
+    )

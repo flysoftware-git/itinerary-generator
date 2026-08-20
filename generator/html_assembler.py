@@ -1314,25 +1314,17 @@ class HTMLAssembler:
         # separate _build_group_lodging_pointer line right under the header
         # ("Based from Hyatt Moab (see Moab)") duplicated the same "this is
         # a day trip from the base" fact in two visually disconnected
-        # places, and only the lower one was a link. Consolidate into one
-        # centered, linked top banner row that carries both facts, and drop
-        # the redundant pointer call entirely. Mirrors
-        # _build_group_lodging_pointer's own own-lodging-overrides-dedup /
-        # lodging-name-optional fallback logic, just folded into the banner
-        # instead of a second line.
-        own_lodging = dest.get("lodging")
-        lodging_name = ""
-        if not (isinstance(own_lodging, dict) and own_lodging):
-            base_lodging = base.get("lodging") if isinstance(base.get("lodging"), dict) else {}
-            lodging_name = str(base_lodging.get("name") or base_lodging.get("location") or "").strip()
-
+        # places, and only the lower one was a link. Consolidated into one
+        # centered, linked top banner row, dropping the redundant pointer
+        # call entirely -- and later trimmed further (project-owner review,
+        # 2026-08-19) to drop the appended "· Based at {lodging}" clause too:
+        # the link to the base section is the reference that matters here,
+        # not a restatement of its lodging.
         banner_text = (
             f'\U0001f9ed Day trip from <a href="#section-{base_id}" '
             'style="color:#fff;text-decoration:underline;text-underline-offset:2px;">'
             f'{html_escape.escape(base_name)}</a>'
         )
-        if lodging_name:
-            banner_text += f' · Based at {html_escape.escape(lodging_name)}'
 
         html = (
             f'<div id="section-{child_id}" class="group-child-card" '

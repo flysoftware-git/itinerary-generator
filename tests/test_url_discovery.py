@@ -15250,6 +15250,58 @@ def test_en_route_stop_geometry_grounded_detour_estimate_exceeds_floor() -> None
     assert est_minutes > 0
 
 
+def test_resolve_en_route_stop_detour_metrics_rejects_implausible_speed_pair() -> None:
+    """Real example (Kodachrome Basin State Park): '22 mi detour | 15 min'
+    implies an 88 mph average -- unrealistic for any detour road. Each
+    number individually clears its own geometric floor (the stop sits only
+    ~5 mi perpendicular off the route, so the per-dimension floor is small:
+    10 mi / 9 min), so the existing independent-per-dimension checks don't
+    catch it. The combined-pair check must still override both numbers to
+    the geometry-grounded estimate."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    stop = {
+        "name": "Kodachrome Basin State Park",
+        "detour_distance_miles": 22,
+        "detour_time_minutes": 15,
+        "geocode_lat": 37.5,
+        "geocode_lng": -111.9,
+    }
+    with patch.object(discoverer, "_route_perpendicular_distance_miles", return_value=5.0):
+        final_miles, final_minutes, overridden = discoverer._resolve_en_route_stop_detour_metrics_against_geometry(
+            stop, origin=(37.0, -112.0), dest=(38.0, -111.0)
+        )
+
+    assert overridden is True
+    implied_mph = final_miles / (final_minutes / 60.0)
+    assert implied_mph <= 70.0, (final_miles, final_minutes, implied_mph)
+    # Confirms it's the geometry-grounded *estimate*, not a value that just
+    # barely squeaks under the speed ceiling.
+    est_miles, est_minutes = discoverer._en_route_stop_geometry_grounded_detour_estimate(5.0)
+    assert final_miles == est_miles
+    assert final_minutes == est_minutes
+
+
+def test_resolve_en_route_stop_detour_metrics_keeps_plausible_pair_unmodified() -> None:
+    """Control: a text-mined pair that clears both individual floors AND
+    implies a realistic speed must not be touched."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    stop = {
+        "name": "Realistic Overlook",
+        "detour_distance_miles": 12,
+        "detour_time_minutes": 15,
+        "geocode_lat": 37.5,
+        "geocode_lng": -111.9,
+    }
+    with patch.object(discoverer, "_route_perpendicular_distance_miles", return_value=5.0):
+        final_miles, final_minutes, overridden = discoverer._resolve_en_route_stop_detour_metrics_against_geometry(
+            stop, origin=(37.0, -112.0), dest=(38.0, -111.0)
+        )
+
+    assert overridden is False
+    assert final_miles == 12
+    assert final_minutes == 15
+
+
 def test_discover_en_route_stops_corrects_geometrically_impossible_detour_distance() -> None:
     """Regression for dipstick63 Bug 2: 'Kolob Canyons Scenic Drive' rendered
     '(10 mi detour | 15 min)' on the real St. George -> Springdale (Zion)
