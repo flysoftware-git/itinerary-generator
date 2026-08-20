@@ -109,6 +109,18 @@ class HTMLAssembler:
         html = html.replace("<!--NAV_TABS-->", self._build_nav_tabs(trip["destinations"], meta))
 
         # ── Per-destination sections ─────────────────────────────────────────
+        # Titles of drives that actually rendered a modal-trigger button,
+        # recorded as the buttons are emitted and consumed by
+        # _build_drive_descriptions below. This is the single source of truth
+        # for which drives get a DRIVE_DESCRIPTIONS entry: the validator
+        # requires the two sets to match EXACTLY in both directions, and every
+        # previous attempt to keep them in step by recomputing the same
+        # drive/attraction dedup in both places has drifted (2026-08-15
+        # 'Potash Road' orphan key; 2026-08-19 'Arches National Park Scenic
+        # Drive' orphan button, which survived a first fix that only aligned
+        # the URL-survival filter). Sections are built before the JS is
+        # injected, so by the time descriptions are built this set is complete.
+        self._rendered_drive_titles: set[str] = set()
         sections_html = ""
         destinations = trip.get("destinations", [])
         # GH #68 multi-site grouping: id -> destination lookup so a grouped
@@ -2010,6 +2022,13 @@ class HTMLAssembler:
                 f'<a href="#" class="attr-link drive-link" data-drive-title="{safe}">'
                 f'{html_escape.escape(title)}</a>'
             )
+            # Record the button so _build_drive_descriptions emits an entry for
+            # exactly this title -- the modal it opens would otherwise be empty.
+            # Keyed on the raw title, matching the template's JS lookup and the
+            # validator's data-drive-title comparison.
+            if not hasattr(self, "_rendered_drive_titles"):
+                self._rendered_drive_titles = set()
+            self._rendered_drive_titles.add(title)
 
             html += (
                 '  <div class="attr-item attr-drive-item">'
@@ -2757,49 +2776,37 @@ class HTMLAssembler:
         return html + "\n" + footer_html
 
     def _build_drive_descriptions(self, destinations: list[dict]) -> dict[str, Any]:
-        """Build DRIVE_DESCRIPTIONS keyed by raw title string (matches template JS lookup)."""
+        """Build DRIVE_DESCRIPTIONS keyed by raw title string (matches template JS lookup).
+
+        Emits an entry for exactly the drives that rendered a modal-trigger
+        button, recorded in self._rendered_drive_titles as those buttons were
+        emitted. The validator requires the two sets to match exactly in BOTH
+        directions -- an orphan button opens an empty modal, an orphan key is
+        unreachable -- and deriving one from the other is the only way to
+        guarantee that.
+
+        This previously recomputed _build_attractions' drive/attraction dedup
+        independently, and drifted twice: 'Potash Road' produced an orphan KEY
+        (2026-08-15), then 'Arches National Park Scenic Drive' produced an
+        orphan BUTTON (2026-08-19). The second survived a fix that aligned the
+        two sides' URL-survival filter, because the real divergence was
+        elsewhere: Moab carried the drive as "Arches National Park Scenic
+        Drive" while Arches National Park carried the same real drive as
+        "Arches Scenic Drive", so per-destination dedup decisions could not be
+        reconciled by matching filters at all. Recomputation is the bug class;
+        this removes it rather than patching another instance.
+        """
         result: dict[str, Any] = {}
+        rendered_titles = getattr(self, "_rendered_drive_titles", None)
         for dest in destinations:
             dest_name = str(dest.get("name", "") or "").strip()
-            ai = dest.get("ai_content", {})
-            # Only attractions that actually RENDER may suppress a drive's
-            # entry. _build_attractions skips any attraction with no usable
-            # URL (`if not url and not _should_render_without_url: continue`)
-            # and so never adds it to rendered_attraction_names -- meaning it
-            # never suppresses the drive's button either. Deduping here against
-            # the raw top_attractions list instead let a dropped attraction
-            # suppress the ENTRY while the button still rendered, producing an
-            # orphan button that opens an empty modal.
-            #
-            # Found 2026-08-19: prod run 20260820T050108 failed validation with
-            # "Drive modal buttons with no DRIVE_DESCRIPTIONS entry:
-            # ['Arches National Park Scenic Drive']" while the same manifest
-            # passed in dev minutes earlier -- the two runs pruned different
-            # numbers of unverified attractions (18 vs 21), so whether this
-            # tripped depended on which attractions happened to resolve a URL
-            # that run.
-            attraction_names: list[str] = []
-            for attr in ai.get("top_attractions", []):
-                if not isinstance(attr, dict):
-                    continue
-                attr_url, _ = self._select_preferred_external_link(attr, section="attraction")
-                if not attr_url and not self._should_render_without_url(attr, section="attraction"):
-                    continue
-                attraction_names.append(str(attr.get("name", "") or ""))
             for drive in dest.get("scenic_drives", []):
                 key = drive.get("title", "")
-                # Must mirror _build_attractions' inline drive-link dedup: a
-                # drive sharing its name -- or plausibly describing the same
-                # real place under different wording, see
-                # _attraction_names_are_duplicates -- with an already-rendered
-                # attraction never gets a modal-trigger button there, so it
-                # can't get a DRIVE_DESCRIPTIONS entry here either -- otherwise
-                # this produces an orphan key with no button to open it (found
-                # 2026-08-15: validator caught 'Potash Road' doing exactly
-                # this for a Moab run).
-                if key and any(
-                    self._attraction_names_are_duplicates(key, name) for name in attraction_names
-                ):
+                # None means the caller built descriptions without building
+                # sections first (older call order, and some unit tests); fall
+                # back to emitting every drive rather than silently emitting
+                # nothing, which would strip every modal's content.
+                if rendered_titles is not None and key not in rendered_titles:
                     continue
                 entry = {
                     "title": drive.get("title", ""),

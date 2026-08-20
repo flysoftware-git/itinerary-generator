@@ -2463,8 +2463,14 @@ def test_drive_descriptions_omit_drive_duplicating_a_rendered_attraction() -> No
     but _build_drive_descriptions built the JS DRIVE_DESCRIPTIONS object
     independently and still emitted an entry for it -- an orphan key with no
     modal-trigger button to open it, caught by HTMLValidator's
-    'DRIVE_DESCRIPTIONS keys with no modal button' check."""
+    'DRIVE_DESCRIPTIONS keys with no modal button' check.
+
+    Entries are now derived from the buttons actually rendered
+    (self._rendered_drive_titles), so a drive whose card was dropped emits no
+    key by construction. An empty set here represents "sections rendered, no
+    drive buttons among them"."""
     assembler = HTMLAssembler.__new__(HTMLAssembler)
+    assembler._rendered_drive_titles = set()
     destinations = [
         {
             "name": "Moab",
@@ -4796,18 +4802,23 @@ def test_drive_description_kept_when_matching_attraction_is_dropped_for_no_url()
         }
     ]
 
+    assembler._rendered_drive_titles = {"Arches National Park Scenic Drive"}
     dd = assembler._build_drive_descriptions(destinations)
 
     assert "Arches National Park Scenic Drive" in dd, (
-        "drive entry was suppressed by an attraction that never renders"
+        "a drive that rendered a button must get an entry to fill its modal"
     )
 
 
 def test_drive_description_still_suppressed_when_attraction_does_render() -> None:
     """The original dedup must survive: a drive sharing its name with an
     attraction that DOES render gets no button, so it must get no entry either
-    (the inverse orphan -- an entry with no button -- is also a hard error)."""
+    (the inverse orphan -- an entry with no button -- is also a hard error).
+
+    Expressed against the new contract: _build_attractions rendered no button
+    for this drive, so its title never entered _rendered_drive_titles."""
     assembler = HTMLAssembler(config_path="config.yaml")
+    assembler._rendered_drive_titles = set()
     destinations = [
         {
             "name": "Moab",
@@ -4928,3 +4939,58 @@ def test_transportation_pills_appear_in_the_header_actions_row() -> None:
 
     assert "Rental Car" in html
     assert "NPS" in html
+
+
+def test_drive_entries_match_rendered_buttons_across_destinations() -> None:
+    """The invariant the validator enforces, exercised end to end.
+
+    Reproduces the 2026-08-19 prod failure shape: Moab carries the drive as
+    "Arches National Park Scenic Drive" while Arches National Park carries the
+    same real drive as "Arches Scenic Drive". Because the titles differ, no
+    amount of aligning per-destination dedup filters can reconcile the two
+    sides -- the entry set must be DERIVED from the buttons.
+    """
+    import re
+
+    assembler = HTMLAssembler(config_path="config.yaml")
+    assembler._rendered_drive_titles = set()
+
+    destinations = [
+        {
+            "id": "moab", "name": "Moab",
+            "ai_content": {"top_attractions": [
+                {"name": "Sand Flats Recreation Area", "url": "https://example.invalid/sf"},
+            ]},
+            "scenic_drives": [
+                {"title": "Arches National Park Scenic Drive", "description": "Paved climb."},
+            ],
+        },
+        {
+            "id": "arches", "name": "Arches National Park",
+            "ai_content": {"top_attractions": [
+                # Duplicates the drive below -- its card is dropped, so it must
+                # produce no button AND no entry.
+                {"name": "Arches Scenic Drive", "url": "https://example.invalid/asd"},
+            ]},
+            "scenic_drives": [
+                {"title": "Arches Scenic Drive", "description": "Same road, other name."},
+            ],
+        },
+    ]
+
+    rendered = ""
+    for dest in destinations:
+        rendered += assembler._build_attractions(
+            dest["ai_content"], dest["scenic_drives"], dest["name"], dest=dest,
+        )
+
+    dd = assembler._build_drive_descriptions(destinations)
+    buttons = set(re.findall(r'data-drive-title="([^"]+)"', rendered))
+
+    assert buttons == set(dd), (
+        f"buttons {sorted(buttons)} != entries {sorted(dd)} -- "
+        "an orphan button opens an empty modal; an orphan key is unreachable"
+    )
+    # The duplicated one produced neither; the distinct one produced both.
+    assert "Arches Scenic Drive" not in dd
+    assert "Arches National Park Scenic Drive" in dd
