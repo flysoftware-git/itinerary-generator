@@ -44,6 +44,12 @@ _MONTHS = (
     "january", "february", "march", "april", "may", "june",
     "july", "august", "september", "october", "november", "december",
 )
+#: Abbreviated forms normalized to the same token as the full name. Airlines
+#: and hotels abbreviate constantly ("Oct 17-19"), and without this the month
+#: contributed nothing at all: "Oct 17-19, 2026" scored 0.5 against a stop
+#: where "October 17-19, 2026" scored 0.625 -- the entire 25% date weight
+#: silently lost, with no signal that it had been.
+_MONTH_ALIASES = {m[:3]: m for m in _MONTHS}
 
 EXTRACTION_SYSTEM_PROMPT = """\
 You extract travel booking details from forwarded confirmation emails.
@@ -130,6 +136,10 @@ def _month_day_tokens(text: str) -> set[str]:
     """
     lowered = (text or "").lower()
     tokens = {m for m in _MONTHS if m in lowered}
+    # Normalize abbreviations to the full name so "Oct" and "October" agree.
+    for abbrev, full in _MONTH_ALIASES.items():
+        if re.search(r"\b" + abbrev + r"\b", lowered):
+            tokens.add(full)
     tokens |= {d for d in re.findall(r"\b([0-3]?\d)\b", lowered)}
     return tokens
 
@@ -171,6 +181,50 @@ def score_destination_match(reservation: dict[str, Any], dest: dict[str, Any]) -
     # Name agreement dominates: dates alone match far too many stops on a trip
     # whose destinations sit days apart within one month.
     return round(min(1.0, (0.75 * name_overlap) + (0.25 * date_overlap)), 4)
+
+
+def build_match_candidates(trip: dict[str, Any]) -> list[dict[str, Any]]:
+    """Destinations plus virtual entries for the trip's gateway endpoints.
+
+    `trip.departure`/`trip.return` are real places the traveler books travel to
+    and from -- "Las Vegas International Airport", "Albuquerque, NM airport" --
+    but they are not itinerary stops, so nothing in `destinations` can ever
+    match a flight into them. Without this the inbound and outbound flights,
+    the two most likely reservations anyone forwards, always land in `pending`.
+
+    Each gateway is a candidate that RESOLVES to a real destination id: the
+    departure gateway to the first stop, the return gateway to the last. So a
+    flight into Las Vegas attaches to St. George -- the stop it delivers the
+    traveler to -- rather than inventing a destination the itinerary has no
+    section for.
+    """
+    destinations = [d for d in (trip.get("destinations") or []) if isinstance(d, dict)]
+    if not destinations:
+        return []
+
+    candidates = list(destinations)
+    meta = trip.get("trip") if isinstance(trip.get("trip"), dict) else {}
+
+    for key, anchor, date_key in (
+        ("departure", destinations[0], "departure_datetime"),
+        ("return", destinations[-1], "return_datetime"),
+    ):
+        place = str(meta.get(key, "") or "").strip()
+        if not place:
+            continue
+        candidates.append(
+            {
+                # Deliberately the anchor stop's id: the match must land on a
+                # destination that actually has a rendered section.
+                "id": anchor.get("id", ""),
+                "name": place,
+                # Prefer the trip-level datetime; fall back to the anchor
+                # stop's dates so the date signal still contributes.
+                "dates": str(meta.get(date_key, "") or "") or str(anchor.get("dates", "") or ""),
+                "_gateway": key,
+            }
+        )
+    return candidates
 
 
 def match_destination(

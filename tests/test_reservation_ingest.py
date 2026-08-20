@@ -239,3 +239,75 @@ def test_parser_is_silent_without_a_sidecar(tmp_path) -> None:
     trip = ManifestParser().parse(manifest)
 
     assert trip["destinations"]
+
+
+TRIP_WITH_GATEWAYS = {
+    "trip": {
+        "departure": "Las Vegas International Airport",
+        "departure_datetime": "2026-10-17 13:30",
+        "return": "Albuquerque, NM airport",
+        "return_datetime": "2026-10-29 14:30",
+    },
+    "destinations": [
+        {"id": "stgeorge", "name": "St. George, Utah", "dates": "October 17, 2026"},
+        {"id": "zion", "name": "Zion National Park", "dates": "October 18, 2026"},
+        {"id": "santafe", "name": "Santa Fe", "dates": "October 27-29, 2026"},
+    ],
+}
+
+
+def test_gateways_resolve_to_the_first_and_last_destination() -> None:
+    from generator.reservation_ingest import build_match_candidates
+
+    candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
+    gateways = {c["_gateway"]: c for c in candidates if c.get("_gateway")}
+
+    assert len(candidates) == 5
+    assert gateways["departure"]["id"] == "stgeorge"
+    assert gateways["return"]["id"] == "santafe"
+
+
+def test_inbound_flight_to_a_gateway_airport_matches_the_first_stop() -> None:
+    """Regression: trip.departure/trip.return are real booked places that are
+    NOT itinerary stops, so nothing in `destinations` could match them. The
+    inbound and outbound flights -- the two most likely reservations anyone
+    forwards -- always landed in `pending` (best score 0.125)."""
+    from generator.reservation_ingest import build_match_candidates
+
+    candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
+    inbound = {"kind": "transportation", "type": "plane", "provider": "United",
+               "arrive": "Las Vegas International Airport", "dates": "October 17, 2026"}
+
+    dest_id, _ = match_destination(inbound, candidates)
+
+    assert dest_id == "stgeorge"
+
+
+def test_outbound_flight_from_a_gateway_matches_the_last_stop() -> None:
+    from generator.reservation_ingest import build_match_candidates
+
+    candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
+    outbound = {"kind": "transportation", "type": "plane", "provider": "Southwest",
+                "depart": "Albuquerque, NM airport", "dates": "October 29, 2026"}
+
+    dest_id, _ = match_destination(outbound, candidates)
+
+    assert dest_id == "santafe"
+
+
+def test_build_match_candidates_is_a_noop_without_gateways() -> None:
+    from generator.reservation_ingest import build_match_candidates
+
+    trip = {"trip": {}, "destinations": TRIP_WITH_GATEWAYS["destinations"]}
+
+    assert len(build_match_candidates(trip)) == 3
+    assert build_match_candidates({"trip": {}, "destinations": []}) == []
+
+
+def test_abbreviated_month_contributes_to_the_date_signal() -> None:
+    """Airlines and hotels abbreviate constantly; the month token previously
+    contributed nothing, silently dropping the whole 25% date weight."""
+    from generator.reservation_ingest import _month_day_tokens
+
+    assert _month_day_tokens("Oct 17-19, 2026") == _month_day_tokens("October 17-19, 2026")
+    assert "october" in _month_day_tokens("Oct 17, 2026")

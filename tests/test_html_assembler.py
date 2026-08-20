@@ -4764,87 +4764,6 @@ def test_lodging_card_escapes_untrusted_field_text() -> None:
     assert "&lt;script&gt;" in html
 
 
-def test_transportation_cards_render_plane_train_and_car_categories() -> None:
-    """Each type gets its own category title so a traveler scanning the stop
-    can tell a flight from a rental at a glance."""
-    assembler = HTMLAssembler(config_path="config.yaml")
-    dest = {
-        "id": "vegas",
-        "transportation": [
-            {"type": "plane", "provider": "United", "label": "UA 1234 SFO→LAS",
-             "confirmation_number": "XR7Q2M", "depart": "SFO 8:15 AM", "arrive": "LAS 10:05 AM"},
-            {"type": "train", "provider": "Amtrak", "label": "California Zephyr",
-             "confirmation_number": "AMT-889"},
-            {"type": "car", "provider": "Hertz", "label": "Midsize SUV",
-             "confirmation_number": "H99120", "website": "https://www.hertz.com/"},
-        ],
-    }
-
-    html = assembler._build_transportation_cards(dest)
-
-    assert html.count("<details") == 3
-    assert "Flight — UA 1234 SFO→LAS" in html
-    assert "Train — California Zephyr" in html
-    assert "Rental Car — Midsize SUV" in html
-    assert "XR7Q2M" in html and "AMT-889" in html and "H99120" in html
-    assert 'href="https://www.hertz.com/"' in html
-
-
-def test_transportation_card_falls_back_to_category_title_without_label() -> None:
-    """An ingested leg that parsed only a confirmation code must still render
-    rather than being dropped for want of a display name."""
-    assembler = HTMLAssembler(config_path="config.yaml")
-    dest = {"id": "vegas", "transportation": [{"type": "plane", "confirmation_number": "ZZ1"}]}
-
-    html = assembler._build_transportation_cards(dest)
-
-    assert "✈️ Flight" in html
-    assert "Flight —" not in html
-    assert "ZZ1" in html
-
-
-def test_transportation_card_uses_other_category_for_unknown_type() -> None:
-    assembler = HTMLAssembler(config_path="config.yaml")
-    dest = {"id": "x", "transportation": [{"type": "hovercraft", "confirmation_number": "Q1"}]}
-
-    html = assembler._build_transportation_cards(dest)
-
-    assert "Travel" in html
-    assert "Q1" in html
-
-
-def test_transportation_cards_absent_after_redaction_empties_the_list() -> None:
-    assembler = HTMLAssembler(config_path="config.yaml")
-
-    assert assembler._build_transportation_cards({"id": "vegas", "transportation": []}) == ""
-    assert assembler._build_transportation_cards({"id": "vegas"}) == ""
-
-
-def test_transportation_card_omits_operator_already_shown_in_summary() -> None:
-    """Avoid 'Flight — United' followed by a redundant 'Operator: United' row."""
-    assembler = HTMLAssembler(config_path="config.yaml")
-    dest = {"id": "v", "transportation": [
-        {"type": "plane", "provider": "United", "confirmation_number": "A1"},
-    ]}
-
-    html = assembler._build_transportation_cards(dest)
-
-    assert "Flight — United" in html
-    assert "Operator" not in html
-
-
-def test_transportation_card_escapes_untrusted_email_parsed_text() -> None:
-    assembler = HTMLAssembler(config_path="config.yaml")
-    dest = {"id": "v", "transportation": [
-        {"type": "plane", "label": "<script>alert(1)</script>", "confirmation_number": "A1"},
-    ]}
-
-    html = assembler._build_transportation_cards(dest)
-
-    assert "<script>" not in html
-    assert "&lt;script&gt;" in html
-
-
 def test_drive_description_kept_when_matching_attraction_is_dropped_for_no_url() -> None:
     """An attraction that never renders must not suppress a drive's entry.
 
@@ -4909,3 +4828,103 @@ def test_drive_description_still_suppressed_when_attraction_does_render() -> Non
     dd = assembler._build_drive_descriptions(destinations)
 
     assert "Potash Road" not in dd
+
+
+def test_transportation_pills_render_by_type_like_the_nps_pill() -> None:
+    """Legs render as header chips labelled by TYPE, styled as notion-header-btn
+    exactly like the NPS/Weather pills, linking to the carrier."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {
+        "id": "vegas",
+        "transportation": [
+            {"type": "plane", "provider": "United", "label": "UA 1234 SFO→LAS",
+             "confirmation_number": "XR7Q2M", "website": "https://www.united.com/"},
+            {"type": "train", "provider": "Amtrak", "confirmation_number": "AMT-889",
+             "website": "https://www.amtrak.com/"},
+            {"type": "car", "provider": "Hertz", "confirmation_number": "H99120",
+             "website": "https://www.hertz.com/"},
+        ],
+    }
+
+    pills = assembler._build_transportation_pills(dest)
+    html = "".join(pills)
+
+    assert len(pills) == 3
+    assert "Flight" in html and "Train" in html and "Rental Car" in html
+    assert html.count('class="notion-header-btn"') == 3
+    assert 'href="https://www.hertz.com/"' in html
+    assert html.count('target="_blank" rel="noopener"') == 3
+
+
+def test_transportation_pill_carries_confirmation_in_its_tooltip() -> None:
+    """A chip has no room for the booking details, but the confirmation code is
+    the part worth keeping, so it rides in the title attribute."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {"id": "v", "transportation": [
+        {"type": "plane", "provider": "United", "label": "UA 1234",
+         "depart": "SFO 8:15 AM", "confirmation_number": "XR7Q2M",
+         "website": "https://www.united.com/"},
+    ]}
+
+    html = "".join(assembler._build_transportation_pills(dest))
+
+    assert "Confirmation XR7Q2M" in html
+    assert "United" in html and "SFO 8:15 AM" in html
+
+
+def test_transportation_pill_without_website_is_a_span_not_a_dead_link() -> None:
+    """A leg with nowhere to click still renders -- the confirmation code
+    matters even without a URL -- but must not be an anchor to nothing."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {"id": "v", "transportation": [
+        {"type": "train", "provider": "Amtrak", "confirmation_number": "AMT-889"},
+    ]}
+
+    html = "".join(assembler._build_transportation_pills(dest))
+
+    assert "<span" in html and "<a " not in html
+    assert "AMT-889" in html
+
+
+def test_transportation_pills_absent_after_redaction() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+
+    assert assembler._build_transportation_pills({"id": "v", "transportation": []}) == []
+    assert assembler._build_transportation_pills({"id": "v"}) == []
+
+
+def test_transportation_pill_unknown_type_falls_back_to_travel() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {"id": "v", "transportation": [{"type": "hovercraft", "confirmation_number": "Q1"}]}
+
+    html = "".join(assembler._build_transportation_pills(dest))
+
+    assert "Travel" in html
+
+
+def test_transportation_pill_escapes_untrusted_email_text() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {"id": "v", "transportation": [
+        {"type": "plane", "provider": '"><script>alert(1)</script>',
+         "confirmation_number": "A1", "website": "https://x.example/"},
+    ]}
+
+    html = "".join(assembler._build_transportation_pills(dest))
+
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_transportation_pills_appear_in_the_header_actions_row() -> None:
+    """End-to-end: the pill must reach _build_header_links alongside NPS."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {
+        "id": "zion", "lat": 37.2982, "lng": -113.0263,
+        "transportation": [{"type": "car", "provider": "Hertz",
+                            "website": "https://www.hertz.com/"}],
+    }
+
+    html = assembler._build_header_links([], nps_code="zion", dest=dest, attractions=[])
+
+    assert "Rental Car" in html
+    assert "NPS" in html

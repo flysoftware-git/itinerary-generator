@@ -30,6 +30,7 @@ from generator.manifest_parser import ManifestParser
 from generator.reservation_ingest import (
     DEFAULT_MAILBOX,
     DEFAULT_MATCH_THRESHOLD,
+    build_match_candidates,
     build_sidecar,
     email_to_text,
     extract_reservation,
@@ -78,7 +79,14 @@ def main(manifest, config_path, env_file, mailbox, threshold, limit, dry_run, lo
     manifest_path = Path(manifest)
     trip = ManifestParser(config_path=config_path).parse(manifest_path)
     destinations = trip.get("destinations", []) or []
+    # Gateways (trip.departure/trip.return) are matchable places that are not
+    # itinerary stops; without them the inbound and outbound flights can never
+    # match anything. Each resolves to the first/last real destination id.
+    candidates = build_match_candidates(trip)
+    gateways = [c for c in candidates if c.get("_gateway")]
     click.echo(f"Manifest    : {manifest_path.name} ({len(destinations)} destinations)")
+    for gw in gateways:
+        click.echo(f"  gateway   : {gw['_gateway']} '{gw['name']}' -> {gw['id']}")
 
     click.echo(f"Mailbox     : {user} @ {host} / {mailbox}")
     messages = fetch_unseen_messages(
@@ -113,7 +121,7 @@ def main(manifest, config_path, env_file, mailbox, threshold, limit, dry_run, lo
 
     sidecar_path = ManifestParser.reservations_sidecar_path(manifest_path)
     sidecar = build_sidecar(
-        entries, destinations, threshold=threshold, existing=load_sidecar(sidecar_path),
+        entries, candidates, threshold=threshold, existing=load_sidecar(sidecar_path),
     )
 
     if dry_run:

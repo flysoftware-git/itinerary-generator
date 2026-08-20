@@ -500,8 +500,9 @@ class HTMLAssembler:
         # a grouped child's own pointer is built by _build_group_child_card.)
         section += self._build_group_lodging_pointer(dest, dest_by_id)
 
-        # Booking details: the leg(s) that get the traveler here, then the stay.
-        section += self._build_transportation_cards(dest)
+        # Lodging keeps its own card; transportation now renders as header
+        # pills (_build_transportation_pills) rather than a second card here,
+        # so the two are not competing blocks in the same section.
         section += self._build_lodging_card(dest)
 
         # Intro note or cultural event summary belongs directly under hero
@@ -624,6 +625,7 @@ class HTMLAssembler:
             pills.append(
                 f'<a href="https://www.nps.gov/{nps_code}/" class="notion-header-btn" target="_blank" rel="noopener">NPS</a>'
             )
+        pills.extend(self._build_transportation_pills(dest))
         for link in links:
             if link.get("redacted"):
                 label = html_escape.escape(link.get("label", "Trip Plans"))
@@ -1199,70 +1201,58 @@ class HTMLAssembler:
         "other": ("\U0001f9f3", "Travel"),
     }
 
-    def _build_transportation_cards(self, dest: dict[str, Any]) -> str:
-        """One collapsed disclosure per booked leg arriving at this stop.
+    def _build_transportation_pills(self, dest: dict[str, Any]) -> list[str]:
+        """Header pills for booked legs arriving at this stop, styled like NPS.
 
-        Shares .lodging-card styling deliberately: to a reader these are the
-        same kind of object (a booking with a confirmation code), and giving
-        them separate visual treatments would imply a distinction that isn't
-        there.
+        Labelled by TYPE (Flight / Train / Rental Car), linking to the
+        carrier's manage-booking page. Legs attach to the ARRIVING destination
+        only -- a flight renders on the stop it delivers you to, and nothing
+        appears on the stop you left, since the header pill sits on the card
+        for the place you are going.
+
+        The booking's own details -- operator, confirmation code, times -- ride
+        in the pill's title attribute rather than a separate card, so the
+        header stays one line of chips. A leg with no website still renders,
+        as a non-link chip carrying the same tooltip, because the confirmation
+        code is the part worth keeping even when there is nowhere to click;
+        this mirrors how a redacted planning-link renders as a span below.
 
         Absent from privacy-redacted builds because
-        main._apply_privacy_redaction empties the list outright -- see its
-        comment for why these are dropped wholesale rather than field-by-field.
+        main._apply_privacy_redaction empties the list outright.
         """
         legs = dest.get("transportation")
         if not isinstance(legs, list) or not legs:
-            return ""
+            return []
 
-        cards: list[str] = []
+        pills: list[str] = []
         for leg in legs:
             if not isinstance(leg, dict):
                 continue
             kind = str(leg.get("type", "") or "").strip().lower()
             icon, kind_title = self._TRANSPORT_KINDS.get(kind, self._TRANSPORT_KINDS["other"])
 
-            provider = str(leg.get("provider", "") or "").strip()
-            label = str(leg.get("label", "") or "").strip() or provider
+            detail_bits = [
+                str(leg.get(field, "") or "").strip()
+                for field in ("provider", "label", "depart", "arrive")
+            ]
             confirmation = str(leg.get("confirmation_number", "") or "").strip()
-            depart = str(leg.get("depart", "") or "").strip()
-            arrive = str(leg.get("arrive", "") or "").strip()
-            website = self._normalize_external_url(str(leg.get("website", "") or ""))
-
-            rows: list[str] = []
-            for key, value in (("Operator", provider), ("Depart", depart), ("Arrive", arrive)):
-                # Operator is suppressed when the summary already shows it, so
-                # a leg with no label doesn't read "Flight — United / United".
-                if not value or (key == "Operator" and value == label):
-                    continue
-                rows.append(
-                    f'<div class="lodging-row"><span class="lodging-key">{key}</span>'
-                    f'<span class="lodging-val">{html_escape.escape(value)}</span></div>'
-                )
             if confirmation:
-                rows.append(
-                    '<div class="lodging-row"><span class="lodging-key">Confirmation</span>'
-                    f'<span class="lodging-val lodging-conf">{html_escape.escape(confirmation)}</span></div>'
-                )
-            if website:
-                rows.append(
-                    '<div class="lodging-row"><span class="lodging-key">Manage</span>'
-                    f'<span class="lodging-val"><a href="{self._safe_href(website)}" '
-                    f'target="_blank" rel="noopener">{html_escape.escape(website)}</a></span></div>'
-                )
-            if not rows:
-                continue
+                detail_bits.append(f"Confirmation {confirmation}")
+            tooltip = html_escape.escape(" · ".join(b for b in detail_bits if b))
 
-            summary = f"{icon} {kind_title}"
-            if label:
-                summary += f" — {html_escape.escape(label)}"
-            cards.append(
-                '<details class="lodging-card">\n'
-                f'  <summary>{summary}</summary>\n'
-                f'  <div class="lodging-body">{"".join(rows)}</div>\n'
-                '</details>\n'
-            )
-        return "".join(cards)
+            label = f"{icon} {html_escape.escape(kind_title)}"
+            website = self._normalize_external_url(str(leg.get("website", "") or ""))
+            if website:
+                pills.append(
+                    f'<a href="{self._safe_href(website)}" class="notion-header-btn" '
+                    f'target="_blank" rel="noopener" title="{tooltip}">{label}</a>'
+                )
+            else:
+                pills.append(
+                    f'<span class="notion-header-btn" style="cursor:default;" '
+                    f'title="{tooltip}">{label}</span>'
+                )
+        return pills
 
     def _build_lodging_card(self, dest: dict[str, Any]) -> str:
         """Collapsed disclosure carrying the booking details for this stop.
