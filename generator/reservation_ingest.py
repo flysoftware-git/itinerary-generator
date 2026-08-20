@@ -122,8 +122,24 @@ def email_to_text(raw_bytes: bytes, *, max_chars: int = 12000) -> tuple[str, str
     return subject, body[:max_chars]
 
 
+#: Facility-type words that appear in almost every travel address and identify
+#: nothing. They were inflating scores badly: "Albuquerque, NM airport" reduces
+#: to two usable tokens, so matching the single word "airport" from a rental's
+#: pickup address scored 0.5 on name overlap and pulled a Las Vegas pickup
+#: toward the Albuquerque gateway. Place names are left alone -- "national" and
+#: "park" stay, since they genuinely distinguish destinations here.
+_GENERIC_PLACE_TOKENS = frozenset({
+    "airport", "airports", "international", "intl", "terminal", "terminals",
+    "station", "regional", "municipal", "field", "hotel", "inn", "resort",
+})
+
+
 def _normalize_tokens(text: str) -> set[str]:
-    return {t for t in re.split(r"[^a-z0-9]+", (text or "").lower()) if len(t) > 2}
+    return {
+        t
+        for t in re.split(r"[^a-z0-9]+", (text or "").lower())
+        if len(t) > 2 and t not in _GENERIC_PLACE_TOKENS
+    }
 
 
 def _month_day_tokens(text: str) -> set[str]:
@@ -136,6 +152,16 @@ def _month_day_tokens(text: str) -> set[str]:
     """
     lowered = (text or "").lower()
     tokens = {m for m in _MONTHS if m in lowered}
+    # ISO dates carry the month as a NUMBER, so they shared no token with a
+    # reservation saying "Oct 17, 2026". That matters because the gateway
+    # candidates take their dates from trip.departure_datetime /
+    # return_datetime, which are ISO -- so the inbound flight was scoring on
+    # name overlap alone and landed at 0.4375, just under the 0.45 threshold.
+    for iso_year, iso_month, iso_day in re.findall(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", lowered):
+        month_index = int(iso_month)
+        if 1 <= month_index <= 12:
+            tokens.add(_MONTHS[month_index - 1])
+        tokens.add(str(int(iso_day)))
     # Normalize abbreviations to the full name so "Oct" and "October" agree.
     for abbrev, full in _MONTH_ALIASES.items():
         if re.search(r"\b" + abbrev + r"\b", lowered):
@@ -157,20 +183,47 @@ def score_destination_match(reservation: dict[str, Any], dest: dict[str, Any]) -
     lodging = dest.get("lodging") if isinstance(dest.get("lodging"), dict) else {}
     dest_tokens |= _normalize_tokens(str(lodging.get("location", "") or ""))
 
-    res_tokens = _normalize_tokens(
-        " ".join(
-            str(reservation.get(k, "") or "")
-            for k in ("city", "location", "label", "arrive", "depart", "provider")
-        )
-    )
+    # A journey has two endpoints and usually only ONE of them is on the trip.
+    # Pooling both endpoints' tokens lets the off-trip end pull the booking to
+    # the wrong stop; using a fixed end breaks the opposite direction. So score
+    # each endpoint separately against this destination and take the better.
+    #
+    # Both failure modes were observed on the first real mailbox:
+    #  - An Avis rental picked up at LAS and returned at ABQ attached to the
+    #    LAST stop, because "Albuquerque" sat in `arrive`. A rental spanning
+    #    the trip belongs where it is picked up.
+    #  - Fixing that by scoring flights on `arrive` alone then broke the
+    #    outbound flight home, which DEPARTS the return gateway and arrives
+    #    somewhere that is not on the itinerary at all.
+    base_fields = ("city", "location", "label", "provider")
+    base_text = " ".join(str(reservation.get(k, "") or "") for k in base_fields)
 
-    # Normalize by the SMALLER side. Dividing by the destination's token count
-    # punished stops with wordy lodging addresses: a flight stating only
-    # "Springdale, UT" matched 1 of Zion's 5 tokens and scored 0.2, landing a
-    # correct, unambiguous match in the review queue. What matters is that the
-    # tokens the reservation does carry point at this stop, not that it failed
-    # to restate the whole address.
-    name_overlap = len(dest_tokens & res_tokens) / max(1, min(len(dest_tokens), len(res_tokens)))
+    kind = str(reservation.get("type", "") or "").strip().lower()
+    # A rental is identified by its pickup; its drop-off is often the far end
+    # of the trip. Consider the return only when no pickup was extracted.
+    endpoint_fields = ("depart", "arrive") if kind == "car" else ("arrive", "depart")
+
+    def _overlap(extra_text: str) -> float:
+        res_tokens = _normalize_tokens(base_text + " " + extra_text)
+        if not res_tokens:
+            return 0.0
+        # Normalize by the SMALLER side. Dividing by the destination's token
+        # count punished stops with wordy lodging addresses: a booking stating
+        # only "Springdale, UT" matched 1 of Zion's 5 tokens and scored 0.2,
+        # landing a correct, unambiguous match in the review queue.
+        return len(dest_tokens & res_tokens) / max(1, min(len(dest_tokens), len(res_tokens)))
+
+    # For a car, the choice of endpoint is a property of the RESERVATION, not
+    # of the destination being scored. Deciding per-destination -- "use the
+    # pickup if it matches, else the drop-off" -- means every stop the pickup
+    # does not match silently falls back to the drop-off, which is how the
+    # LAS-pickup rental still scored 1.0 against the Albuquerque gateway.
+    # If a pickup was extracted at all, it is the only endpoint that counts.
+    if kind == "car" and str(reservation.get("depart", "") or "").strip():
+        name_overlap = _overlap(str(reservation.get("depart", "")))
+    else:
+        endpoint_scores = [_overlap(str(reservation.get(f, "") or "")) for f in endpoint_fields]
+        name_overlap = max(endpoint_scores) if endpoint_scores else 0.0
 
     dest_dates = _month_day_tokens(str(dest.get("dates", "") or ""))
     res_dates = _month_day_tokens(str(reservation.get("dates", "") or ""))
@@ -239,12 +292,22 @@ def match_destination(
     threshold, or the top two scored close enough together that picking one
     would be arbitrary.
     """
+    # Collapse candidates that resolve to the SAME destination id, keeping the
+    # best score. A gateway candidate resolves to the first/last stop, so the
+    # gateway and that stop are two candidates for one place -- which made the
+    # near-tie rule below compare a destination against itself and could defer
+    # a booking for being "ambiguous" between two identical answers.
+    best_by_id: dict[str, float] = {}
+    for d in destinations:
+        if not isinstance(d, dict) or not d.get("id"):
+            continue
+        dest_id = str(d["id"])
+        score = score_destination_match(reservation, d)
+        if score > best_by_id.get(dest_id, -1.0):
+            best_by_id[dest_id] = score
+
     ranked = sorted(
-        (
-            {"id": str(d.get("id", "")), "score": score_destination_match(reservation, d)}
-            for d in destinations
-            if isinstance(d, dict) and d.get("id")
-        ),
+        ({"id": k, "score": v} for k, v in best_by_id.items()),
         key=lambda c: c["score"],
         reverse=True,
     )

@@ -437,3 +437,83 @@ def test_non_app_password_providers_keep_spaces_intact(monkeypatch) -> None:
     )
 
     assert seen["password"] == "correct horse battery"
+
+
+# Shapes below mirror real confirmation emails; every address and confirmation
+# code is fabricated. Real booking details must never enter a public repo.
+
+def test_rental_car_matches_its_pickup_not_its_return() -> None:
+    """A rental spanning the trip belongs where it is PICKED UP.
+
+    Regression from the first real mailbox: a car collected at the departure
+    gateway and returned at the return gateway attached to the LAST stop,
+    because the return city appeared in `arrive`."""
+    from generator.reservation_ingest import build_match_candidates
+
+    candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
+    rental = {
+        "kind": "transportation", "type": "car", "provider": "Example Rentals",
+        "depart": "Las Vegas International Airport, Sat Oct 17, 2026",
+        "arrive": "Albuquerque, NM airport, Thu Oct 29, 2026",
+        "dates": "Oct 17, 2026",
+    }
+
+    dest_id, _ = match_destination(rental, candidates)
+
+    assert dest_id == "stgeorge"
+
+
+def test_flight_matches_where_it_lands_not_where_it_left() -> None:
+    """A flight is identified by its arrival; origin tokens are noise."""
+    from generator.reservation_ingest import build_match_candidates
+
+    candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
+    flight = {
+        "kind": "transportation", "type": "plane", "provider": "Example Air",
+        "depart": "Seattle (SEA) Sat Oct 17 10:39 AM",
+        "arrive": "Las Vegas (LAS) Sat Oct 17 1:25 PM",
+        "dates": "Oct 17, 2026", "city": "Las Vegas",
+    }
+
+    dest_id, ranked = match_destination(flight, candidates)
+
+    assert dest_id == "stgeorge"
+    assert ranked[0]["score"] >= 0.45
+
+
+def test_generic_facility_words_do_not_drive_a_match() -> None:
+    """"airport" appears in nearly every travel address and identifies nothing.
+
+    Both gateways here end in "airport", and a gateway name reduces to very few
+    tokens, so a single shared generic word was scoring 0.5 on name overlap."""
+    from generator.reservation_ingest import _normalize_tokens
+
+    assert "airport" not in _normalize_tokens("Albuquerque, NM airport")
+    assert "albuquerque" in _normalize_tokens("Albuquerque, NM airport")
+    assert "international" not in _normalize_tokens("Las Vegas International Airport")
+    assert {"las", "vegas"} <= _normalize_tokens("Las Vegas International Airport")
+
+
+def test_candidates_resolving_to_one_destination_are_collapsed() -> None:
+    """A gateway resolves to a real stop, so both are candidates for one place.
+    Left separate, the near-tie rule compared a destination against itself."""
+    from generator.reservation_ingest import build_match_candidates
+
+    candidates = build_match_candidates(TRIP_WITH_GATEWAYS)
+    flight = {"kind": "transportation", "type": "plane",
+              "arrive": "Las Vegas International Airport", "dates": "Oct 17, 2026"}
+
+    _, ranked = match_destination(flight, candidates)
+
+    ids = [c["id"] for c in ranked]
+    assert len(ids) == len(set(ids)), f"duplicate destination ids in {ids}"
+
+
+def test_iso_dates_contribute_the_month_name() -> None:
+    """Gateway candidates take their dates from trip.departure_datetime, which
+    is ISO -- so the month was a number and shared no token with "Oct 17"."""
+    from generator.reservation_ingest import _month_day_tokens
+
+    assert "october" in _month_day_tokens("2026-10-17 13:30")
+    assert "17" in _month_day_tokens("2026-10-17 13:30")
+    assert _month_day_tokens("2026-13-01") == _month_day_tokens("2026-13-01")  # invalid month, no crash

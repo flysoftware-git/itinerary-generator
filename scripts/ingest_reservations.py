@@ -63,6 +63,17 @@ logger = logging.getLogger("ingest_reservations")
 @click.option("--log-level", default="info", show_default=True,
               type=click.Choice(["debug", "info", "warning", "error"]))
 def main(manifest, config_path, env_file, mailbox, threshold, limit, dry_run, log_level) -> None:
+    # Reservation text is full of characters a Windows cp1252 console cannot
+    # encode -- em-dashes in subjects, and route arrows in flight labels like
+    # "UA 1234 SFO→LAS". Without this the whole run dies with UnicodeEncodeError
+    # at the moment it tries to PRINT the result, after every message has
+    # already been fetched and billed for extraction.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass  # not a reconfigurable stream (redirected/wrapped); fine
+
     logging.basicConfig(level=getattr(logging, log_level.upper()), format="%(levelname)s %(message)s")
     load_dotenv(env_file)
 
