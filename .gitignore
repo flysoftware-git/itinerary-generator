@@ -37,3 +37,8 @@ htmlcov/
 sw-trip_manifest.yaml
 .archiver_shadow/
 .snapshots/
+
+# Ingested reservation sidecars: confirmation numbers, property names and
+# traveler-identifying booking details. Written by
+# scripts/ingest_reservations.py, merged at manifest load. Never commit.
+*.reservations.yaml

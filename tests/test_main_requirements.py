@@ -204,6 +204,36 @@ def test_apply_privacy_redaction_blanks_lodging_name_keeps_location_and_checkin(
     assert trip["destinations"][0]["lodging"]["checkin_time"] == "4:00 PM"
 
 
+def test_apply_privacy_redaction_blanks_lodging_website_with_the_name() -> None:
+    """A link to the property's own site names the property just as precisely
+    as lodging.name does, so it is redacted alongside the name rather than
+    treated as harmless-public-URL and exempted."""
+    trip = {
+        "destinations": [
+            {
+                "id": "zion",
+                "lodging": {
+                    "name": "Zion Lodge",
+                    "location": "Springdale, UT",
+                    "checkin_time": "4:00 PM",
+                    "website": "https://www.zionlodge.com/",
+                },
+            },
+            {"id": "moab", "lodging": {"location": "Moab, UT"}},
+        ]
+    }
+
+    counts = main_mod._apply_privacy_redaction(trip)
+
+    assert counts["lodging_websites"] == 1
+    assert trip["destinations"][0]["lodging"]["website"] == ""
+    assert trip["destinations"][0]["lodging"]["name"] == ""
+    # Routing/scheduling inputs stay intact -- redaction is display-only.
+    assert trip["destinations"][0]["lodging"]["location"] == "Springdale, UT"
+    assert trip["destinations"][0]["lodging"]["checkin_time"] == "4:00 PM"
+    assert "website" not in trip["destinations"][1]["lodging"]
+
+
 def test_resolve_privacy_redaction_auto_follows_environment() -> None:
     assert main_mod._resolve_privacy_redaction("auto", "prod") is True
     assert main_mod._resolve_privacy_redaction("auto", "dev") is False
@@ -1680,3 +1710,27 @@ def test_write_direct_batch_parity_report_persists_summary_to_disk(tmp_path) -> 
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["run_id"] == "run-xyz"
     assert payload["destinations_missing_captured_url_names"] == ["Moab"]
+
+
+def test_apply_privacy_redaction_empties_transportation_legs() -> None:
+    """Dropped wholesale rather than field-by-field: there is no routing or
+    scheduling consumer to keep alive, and carrier + record locator is enough
+    to view or change someone else's booking."""
+    trip = {
+        "destinations": [
+            {
+                "id": "vegas",
+                "transportation": [
+                    {"type": "plane", "provider": "United", "confirmation_number": "XR7Q2M"},
+                    {"type": "car", "provider": "Hertz", "confirmation_number": "H99120"},
+                ],
+            },
+            {"id": "zion"},
+        ]
+    }
+
+    counts = main_mod._apply_privacy_redaction(trip)
+
+    assert counts["transportation"] == 2
+    assert trip["destinations"][0]["transportation"] == []
+    assert trip["destinations"][1].get("transportation", []) == []

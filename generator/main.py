@@ -258,9 +258,9 @@ def _strip_destination_seeds(trip: dict[str, Any]) -> int:
 
 def _resolve_privacy_redaction(mode: str | None, environment_selected: str) -> bool:
     """`planning_links` (Notion/reservation links) and lodging property
-    names carry personal data that must never reach a build meant for wider
-    eyes. `auto` (the default) redacts only in `prod`, since that's the only
-    environment whose output is ever committed/published; `on`/`off`
+    names/websites carry personal data that must never reach a build meant
+    for wider eyes. `auto` (the default) redacts only in `prod`, since that's
+    the only environment whose output is ever committed/published; `on`/`off`
     override the environment-based default explicitly either direction.
 
     Deliberately NOT redacted: `lodging.location` and `lodging.checkin_time`.
@@ -287,7 +287,13 @@ def _apply_privacy_redaction(trip: dict[str, Any]) -> dict[str, int]:
     lodging.location when name is empty (html_assembler._build_group_lodging_pointer
     and the grouped-destination banner), so no placeholder is needed there.
     """
-    counts = {"planning_links": 0, "lodging_names": 0}
+    counts = {
+        "planning_links": 0,
+        "lodging_names": 0,
+        "lodging_websites": 0,
+        "lodging_confirmations": 0,
+        "transportation": 0,
+    }
     for dest in trip.get("destinations", []) or []:
         if not isinstance(dest, dict):
             continue
@@ -299,6 +305,28 @@ def _apply_privacy_redaction(trip: dict[str, Any]) -> dict[str, int]:
         if isinstance(lodging, dict) and str(lodging.get("name", "") or "").strip():
             counts["lodging_names"] += 1
             lodging["name"] = ""
+        # Blanked for the same reason as name, not as a separate policy: a
+        # link to the property's own site names the property. Redacting the
+        # name while leaving "https://www.zionlodge.com/" one pill away would
+        # protect nothing.
+        if isinstance(lodging, dict) and str(lodging.get("website", "") or "").strip():
+            counts["lodging_websites"] += 1
+            lodging["website"] = ""
+        # Highest-sensitivity field in the block: on most booking sites this
+        # code plus a surname is enough to view, modify or cancel the stay.
+        if isinstance(lodging, dict) and str(lodging.get("confirmation_number", "") or "").strip():
+            counts["lodging_confirmations"] += 1
+            lodging["confirmation_number"] = ""
+        # Dropped wholesale rather than field-by-field like lodging above.
+        # There is no routing or scheduling consumer downstream to keep alive
+        # (unlike lodging.location/checkin_time), and no useful redacted
+        # remainder: "a flight, to somewhere, at some time" is not worth
+        # rendering, while carrier + record locator is enough to view or
+        # change someone else's booking.
+        legs = dest.get("transportation")
+        if isinstance(legs, list) and legs:
+            counts["transportation"] += len(legs)
+            dest["transportation"] = []
     return counts
 
 
@@ -1960,14 +1988,20 @@ def main(
             click.style("   Privacy  : ", fg="cyan") +
             click.style(
                 f"redacted ({redaction_counts['planning_links']} planning_link(s), "
-                f"{redaction_counts['lodging_names']} lodging name(s))",
+                f"{redaction_counts['lodging_names']} lodging name(s), "
+                f"{redaction_counts['lodging_websites']} lodging website(s), "
+                f"{redaction_counts['lodging_confirmations']} confirmation number(s), "
+                f"{redaction_counts['transportation']} transportation leg(s))",
                 fg="yellow",
             )
         )
     else:
         click.echo(
             click.style("   Privacy  : ", fg="cyan") +
-            click.style("off (planning_links and lodging names rendered as-is)", fg="green")
+            click.style(
+                "off (planning_links, lodging names and websites rendered as-is)",
+                fg="green",
+            )
         )
     runtime_metrics["privacy_redacted"] = redact_privacy_details
 

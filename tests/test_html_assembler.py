@@ -4663,3 +4663,183 @@ def test_template_drive_popup_offers_distinct_route_map_icon() -> None:
 
     assert "desc.route_map_url && desc.route_map_url !== desc.url" in template_text
     assert "🗺️ Route Map" in template_text
+
+
+def test_lodging_card_renders_confirmation_website_and_checkin() -> None:
+    """The card is the traveler-facing home for booking details that have no
+    place in a header pill -- notably the confirmation number."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {
+        "id": "zion",
+        "name": "Zion National Park",
+        "lodging": {
+            "name": "Zion Lodge",
+            "location": "Zion Lodge, Springdale, UT",
+            "checkin_time": "4:00 PM",
+            "confirmation_number": "ZL-4471902",
+            "website": "https://www.zionlodge.com/",
+        },
+    }
+
+    html = assembler._build_lodging_card(dest)
+
+    assert "<details" in html and 'class="lodging-card"' in html
+    assert "Lodging — Zion Lodge" in html
+    assert "ZL-4471902" in html
+    assert "4:00 PM" in html
+    assert 'href="https://www.zionlodge.com/"' in html
+    assert 'target="_blank" rel="noopener"' in html
+    # Collapsed by default -- booking details are desk-time, not reading-time.
+    assert "<details open" not in html
+
+
+def test_lodging_card_omits_location_even_though_it_survives_redaction() -> None:
+    """lodging.location is a geocoding/routing anchor that is deliberately
+    never redacted (main._resolve_privacy_redaction). Printing it in the card
+    would put a street address on the page in every build, including redacted
+    ones, defeating the rest of the lodging redaction."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {
+        "id": "zion",
+        "lodging": {
+            "name": "Zion Lodge",
+            "location": "1 Zion Lodge Rd, Springdale, UT",
+            "confirmation_number": "ZL-4471902",
+        },
+    }
+
+    html = assembler._build_lodging_card(dest)
+
+    assert "Springdale" not in html
+    assert "Zion Lodge Rd" not in html
+
+
+def test_lodging_card_absent_entirely_for_redacted_build() -> None:
+    """After main._apply_privacy_redaction blanks name/website/confirmation,
+    nothing renders -- not even a greyed placeholder. A visible 'Lodging'
+    affordance would still announce a booked room at this stop on these
+    dates, which is most of what redaction protects."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {
+        "id": "zion",
+        "lodging": {
+            "name": "",
+            "website": "",
+            "confirmation_number": "",
+            # Both survive redaction by design; neither may resurrect the card.
+            "location": "Zion Lodge, Springdale, UT",
+            "checkin_time": "4:00 PM",
+        },
+    }
+
+    assert assembler._build_lodging_card(dest) == ""
+
+
+def test_lodging_card_absent_when_destination_owns_no_lodging() -> None:
+    """Grouped day-trip children defer to their base and must not restate its
+    lodging -- the banner's link back to the base section is the reference
+    that matters (6da6fd9)."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+
+    assert assembler._build_lodging_card({"id": "arches", "group_with": "moab"}) == ""
+
+
+def test_lodging_card_escapes_untrusted_field_text() -> None:
+    """Confirmation codes and property names arrive from parsed email in the
+    ingestion path, so they are untrusted input, not hand-authored manifest
+    text."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {
+        "id": "zion",
+        "lodging": {
+            "name": '<script>alert(1)</script>',
+            "confirmation_number": '"><img src=x onerror=alert(1)>',
+        },
+    }
+
+    html = assembler._build_lodging_card(dest)
+
+    assert "<script>" not in html
+    assert "<img" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_transportation_cards_render_plane_train_and_car_categories() -> None:
+    """Each type gets its own category title so a traveler scanning the stop
+    can tell a flight from a rental at a glance."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {
+        "id": "vegas",
+        "transportation": [
+            {"type": "plane", "provider": "United", "label": "UA 1234 SFO→LAS",
+             "confirmation_number": "XR7Q2M", "depart": "SFO 8:15 AM", "arrive": "LAS 10:05 AM"},
+            {"type": "train", "provider": "Amtrak", "label": "California Zephyr",
+             "confirmation_number": "AMT-889"},
+            {"type": "car", "provider": "Hertz", "label": "Midsize SUV",
+             "confirmation_number": "H99120", "website": "https://www.hertz.com/"},
+        ],
+    }
+
+    html = assembler._build_transportation_cards(dest)
+
+    assert html.count("<details") == 3
+    assert "Flight — UA 1234 SFO→LAS" in html
+    assert "Train — California Zephyr" in html
+    assert "Rental Car — Midsize SUV" in html
+    assert "XR7Q2M" in html and "AMT-889" in html and "H99120" in html
+    assert 'href="https://www.hertz.com/"' in html
+
+
+def test_transportation_card_falls_back_to_category_title_without_label() -> None:
+    """An ingested leg that parsed only a confirmation code must still render
+    rather than being dropped for want of a display name."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {"id": "vegas", "transportation": [{"type": "plane", "confirmation_number": "ZZ1"}]}
+
+    html = assembler._build_transportation_cards(dest)
+
+    assert "✈️ Flight" in html
+    assert "Flight —" not in html
+    assert "ZZ1" in html
+
+
+def test_transportation_card_uses_other_category_for_unknown_type() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {"id": "x", "transportation": [{"type": "hovercraft", "confirmation_number": "Q1"}]}
+
+    html = assembler._build_transportation_cards(dest)
+
+    assert "Travel" in html
+    assert "Q1" in html
+
+
+def test_transportation_cards_absent_after_redaction_empties_the_list() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+
+    assert assembler._build_transportation_cards({"id": "vegas", "transportation": []}) == ""
+    assert assembler._build_transportation_cards({"id": "vegas"}) == ""
+
+
+def test_transportation_card_omits_operator_already_shown_in_summary() -> None:
+    """Avoid 'Flight — United' followed by a redundant 'Operator: United' row."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {"id": "v", "transportation": [
+        {"type": "plane", "provider": "United", "confirmation_number": "A1"},
+    ]}
+
+    html = assembler._build_transportation_cards(dest)
+
+    assert "Flight — United" in html
+    assert "Operator" not in html
+
+
+def test_transportation_card_escapes_untrusted_email_parsed_text() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {"id": "v", "transportation": [
+        {"type": "plane", "label": "<script>alert(1)</script>", "confirmation_number": "A1"},
+    ]}
+
+    html = assembler._build_transportation_cards(dest)
+
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html

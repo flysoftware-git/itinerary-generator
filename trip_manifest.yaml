@@ -15,6 +15,17 @@
 #
 # PLANNING LINKS: Replace placeholder URLs with your actual
 #                 Notion, TripIt, or reservation links.
+#
+# BOOKINGS:       `lodging.confirmation_number`/`lodging.website` and the
+#                 `transportation` list (plane/train/car/other) render as
+#                 collapsed detail cards on the destination. All of it is
+#                 redacted out of privacy-redacted builds -- prod by
+#                 default -- so a published copy carries none of it while
+#                 a dev build you hand to a travel companion carries all
+#                 of it with no login. See docs/design/
+#                 reservation-email-ingestion.md for filling these from
+#                 forwarded confirmation emails instead of by hand.
+#                 Every confirmation number below is a made-up example.
 # ============================================================
 
 trip:
@@ -28,10 +39,45 @@ destinations:
   - id: zion
     name: "Zion National Park"
     dates: "October 7–9, 2026"
+    # Booking details. `name`, `website` and `confirmation_number` are all
+    # blanked in privacy-redacted builds (prod by default) -- a link to the
+    # property's own site identifies it just as precisely as its name, and a
+    # confirmation code plus a surname is often enough to change or cancel
+    # someone else's stay. `location` and `checkin_time` are deliberately NOT
+    # redacted: they drive geocoding/routing and arrival-day scheduling, so
+    # they are load-bearing well beyond display.
     lodging:
       name: "Zion Lodge"
       location: "Zion Lodge, Springdale, UT"
       checkin_time: "4:00 PM"
+      confirmation_number: "ZL-4471902"        # EXAMPLE VALUE -- not a real booking
+      website: "https://www.zionlodge.com/"
+
+    # Booked travel legs ARRIVING at this destination -- the flight, train or
+    # rental that gets you here. This mirrors en_route_seeds, which attaches
+    # the inbound drive to the arriving destination rather than the departing
+    # one. A rental car held across several stops belongs on the destination
+    # where it is picked up, as below.
+    #
+    # type: plane | train | car | other. Every field is cleared entirely in
+    # privacy-redacted builds -- unlike lodging there is no routing consumer
+    # to keep alive, and carrier + record locator is enough to view or change
+    # a booking.
+    transportation:
+      - type: plane
+        provider: "United Airlines"
+        label: "UA 1234 SFO→LAS"
+        confirmation_number: "XR7Q2M"          # EXAMPLE VALUE -- not a real booking
+        depart: "SFO 8:15 AM, October 7"
+        arrive: "LAS 10:05 AM, October 7"
+        website: "https://www.united.com/"
+      - type: car
+        provider: "Hertz"
+        label: "Midsize SUV"
+        confirmation_number: "H99120445"       # EXAMPLE VALUE -- not a real booking
+        depart: "Picked up LAS, October 7"
+        arrive: "Returned LAS, October 19"
+        website: "https://www.hertz.com/"
 
     planning_links:
       - label: "Zion Trip Notes"
@@ -122,6 +168,18 @@ destinations:
       name: "Telluride Lodging"
       location: "Madeline Hotel, Telluride, CO"
       checkin_time: "4:00 PM"
+
+    # `train` example. A leg needs only `type`; everything else is optional,
+    # so a reservation whose email parsed incompletely still renders with
+    # whatever details did come through rather than being dropped. An
+    # unrecognized type falls back to the "other" category.
+    transportation:
+      - type: train
+        provider: "Amtrak"
+        label: "California Zephyr"
+        confirmation_number: "AMT-889301"      # EXAMPLE VALUE -- not a real booking
+        depart: "Grand Junction, CO 10:42 AM"
+        arrive: "Denver, CO 6:38 PM"
 
     planning_links:
       - label: "Telluride Trip Notes"
