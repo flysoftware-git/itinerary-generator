@@ -4843,3 +4843,69 @@ def test_transportation_card_escapes_untrusted_email_parsed_text() -> None:
 
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
+
+
+def test_drive_description_kept_when_matching_attraction_is_dropped_for_no_url() -> None:
+    """An attraction that never renders must not suppress a drive's entry.
+
+    Regression: prod run 20260820T050108 failed validation with "Drive modal
+    buttons with no DRIVE_DESCRIPTIONS entry: ['Arches National Park Scenic
+    Drive']". _build_attractions skips an attraction with no usable URL and so
+    never records it in rendered_attraction_names -- meaning it never
+    suppresses the drive's button. But _build_drive_descriptions deduped
+    against the RAW top_attractions list, so the dropped attraction still
+    suppressed the ENTRY, leaving a button that opens an empty modal.
+    """
+    assembler = HTMLAssembler(config_path="config.yaml")
+    destinations = [
+        {
+            "name": "Moab",
+            "ai_content": {
+                "top_attractions": [
+                    # Same name as the drive, but no URL of any kind -- pruned
+                    # by the verified-link-or-seed policy before rendering.
+                    {"name": "Arches National Park Scenic Drive", "url": "", "maps_url": ""},
+                ]
+            },
+            "scenic_drives": [
+                {
+                    "title": "Arches National Park Scenic Drive",
+                    "description": "A paved route climbing past Balanced Rock.",
+                    "category": "scenic_drive",
+                }
+            ],
+        }
+    ]
+
+    dd = assembler._build_drive_descriptions(destinations)
+
+    assert "Arches National Park Scenic Drive" in dd, (
+        "drive entry was suppressed by an attraction that never renders"
+    )
+
+
+def test_drive_description_still_suppressed_when_attraction_does_render() -> None:
+    """The original dedup must survive: a drive sharing its name with an
+    attraction that DOES render gets no button, so it must get no entry either
+    (the inverse orphan -- an entry with no button -- is also a hard error)."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    destinations = [
+        {
+            "name": "Moab",
+            "ai_content": {
+                "top_attractions": [
+                    {
+                        "name": "Potash Road",
+                        "url": "https://www.blm.gov/visit/potash-road",
+                    },
+                ]
+            },
+            "scenic_drives": [
+                {"title": "Potash Road", "description": "Petroglyphs along the Colorado."},
+            ],
+        }
+    ]
+
+    dd = assembler._build_drive_descriptions(destinations)
+
+    assert "Potash Road" not in dd

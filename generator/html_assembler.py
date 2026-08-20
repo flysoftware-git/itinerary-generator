@@ -2772,11 +2772,30 @@ class HTMLAssembler:
         for dest in destinations:
             dest_name = str(dest.get("name", "") or "").strip()
             ai = dest.get("ai_content", {})
-            attraction_names = [
-                str(attr.get("name", "") or "")
-                for attr in ai.get("top_attractions", [])
-                if isinstance(attr, dict)
-            ]
+            # Only attractions that actually RENDER may suppress a drive's
+            # entry. _build_attractions skips any attraction with no usable
+            # URL (`if not url and not _should_render_without_url: continue`)
+            # and so never adds it to rendered_attraction_names -- meaning it
+            # never suppresses the drive's button either. Deduping here against
+            # the raw top_attractions list instead let a dropped attraction
+            # suppress the ENTRY while the button still rendered, producing an
+            # orphan button that opens an empty modal.
+            #
+            # Found 2026-08-19: prod run 20260820T050108 failed validation with
+            # "Drive modal buttons with no DRIVE_DESCRIPTIONS entry:
+            # ['Arches National Park Scenic Drive']" while the same manifest
+            # passed in dev minutes earlier -- the two runs pruned different
+            # numbers of unverified attractions (18 vs 21), so whether this
+            # tripped depended on which attractions happened to resolve a URL
+            # that run.
+            attraction_names: list[str] = []
+            for attr in ai.get("top_attractions", []):
+                if not isinstance(attr, dict):
+                    continue
+                attr_url, _ = self._select_preferred_external_link(attr, section="attraction")
+                if not attr_url and not self._should_render_without_url(attr, section="attraction"):
+                    continue
+                attraction_names.append(str(attr.get("name", "") or ""))
             for drive in dest.get("scenic_drives", []):
                 key = drive.get("title", "")
                 # Must mirror _build_attractions' inline drive-link dedup: a
