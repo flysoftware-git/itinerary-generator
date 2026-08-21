@@ -16895,3 +16895,142 @@ class TestEnRouteStopsMayCarryAllTrailsWhenTrailLike:
             kind="en-route stop",
         )
         assert kept == ""
+
+
+class TestBackfillAttractionsFromTrailBatch:
+    """Refill attraction slots emptied by URL removal with trails already bought.
+
+    Measured on the 2026-08-21 cold-start run: the trail batch harvested 84
+    rows across 10 destinations, all carrying AllTrails URLs, and only 24 were
+    published -- 60 discarded (71%). The same run removed 23 attractions for
+    having no verified URL. Both ends of the same problem.
+    """
+
+    @staticmethod
+    def _discoverer():
+        mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            return URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+
+    def _seed(self, disc, rows, dest="Bryce Canyon National Park", dates="October 19-21, 2026"):
+        disc._alltrails_direct_batch_cache = {
+            disc._batch_cache_key(dest, f"{dates}|html|trail"): rows
+        }
+
+    @staticmethod
+    def _rows(*names):
+        return [
+            {"name": n, "url": f"https://www.alltrails.com/trail/us/utah/{n.lower().replace(chr(32), '-')}",
+             "description": f"{n} desc", "practical_note": "note", "rating": 4.7}
+            for n in names
+        ]
+
+    def _call(self, disc, eligible, original_count, ai=None, dest=None, **kw):
+        return disc._backfill_attractions_from_trail_batch(
+            dest=dest if dest is not None else {},
+            ai=ai if ai is not None else {},
+            dest_name=kw.get("dest_name", "Bryce Canyon National Park"),
+            dest_dates=kw.get("dest_dates", "October 19-21, 2026"),
+            eligible=eligible,
+            original_count=original_count,
+        )
+
+    def test_backfills_only_up_to_the_emptied_slots(self):
+        """ai_content sized the list to attractions_per_day * day_count; this
+        refills what removal emptied and must not exceed it."""
+        disc = self._discoverer()
+        self._seed(disc, self._rows("Queens Garden", "Bristlecone Loop", "Rim Trail", "Whale Rock"))
+        eligible = [{"name": "Sunrise Point", "url": "https://x/1"}]
+        with patch.object(disc, "_retain_discovered_url", side_effect=lambda u, *a, **k: u):
+            added = self._call(disc, eligible, original_count=3)
+        assert added == 2
+        assert len(eligible) == 3
+
+    def test_no_backfill_when_nothing_was_removed(self):
+        disc = self._discoverer()
+        self._seed(disc, self._rows("Queens Garden"))
+        eligible = [{"name": "A", "url": "https://x/1"}, {"name": "B", "url": "https://x/2"}]
+        with patch.object(disc, "_retain_discovered_url", side_effect=lambda u, *a, **k: u):
+            added = self._call(disc, eligible, original_count=2)
+        assert added == 0
+        assert len(eligible) == 2
+
+    def test_never_fetches_when_no_trail_batch_ran(self):
+        disc = self._discoverer()
+        disc._alltrails_direct_batch_cache = {}
+        with patch.object(disc, "_get_alltrails_direct_batch_rows_for_destination") as fetch:
+            added = self._call(disc, [], original_count=4)
+        assert added == 0
+        fetch.assert_not_called()
+
+    def test_skips_a_trail_the_itinerary_already_carries(self):
+        """Including one already published as an en-route stop or scenic drive
+        -- promoting it would render the same place twice."""
+        disc = self._discoverer()
+        self._seed(disc, self._rows("Mossy Cave", "Bristlecone Loop"))
+        eligible = []
+        ai = {"getting_here": {"en_route_stops": [{"name": "Mossy Cave"}]}}
+        dest = {"scenic_drives": [{"title": "Bristlecone Loop"}]}
+        with patch.object(disc, "_retain_discovered_url", side_effect=lambda u, *a, **k: u):
+            added = self._call(disc, eligible, original_count=4, ai=ai, dest=dest)
+        assert added == 0
+
+    def test_strips_markdown_artifacts_from_names(self):
+        """The batch emitted '**Balanced Rock Loop**' style names on the
+        2026-08-21 run; the asterisks would become part of the rendered name."""
+        disc = self._discoverer()
+        self._seed(disc, [{"name": "**Balanced Rock Loop**",
+                           "url": "https://www.alltrails.com/trail/us/utah/balanced-rock-loop"}])
+        eligible = []
+        with patch.object(disc, "_retain_discovered_url", side_effect=lambda u, *a, **k: u):
+            self._call(disc, eligible, original_count=2)
+        assert eligible[0]["name"] == "Balanced Rock Loop"
+
+    def test_promoted_trails_must_clear_the_quality_gate(self):
+        """Promotions are not seeds -- an unvetted trail cannot enter the
+        itinerary through this path."""
+        disc = self._discoverer()
+        self._seed(disc, self._rows("Sketchy Unverified Trail"))
+        eligible = []
+        with patch.object(disc, "_retain_discovered_url", return_value=""):
+            added = self._call(disc, eligible, original_count=4)
+        assert added == 0
+        assert eligible == []
+
+    def test_ignores_rows_without_an_alltrails_trail_url(self):
+        disc = self._discoverer()
+        self._seed(disc, [
+            {"name": "Browse Page", "url": "https://www.alltrails.com/us/colorado/pagosa-springs/easy"},
+            {"name": "Park Page", "url": "https://www.nps.gov/brca/"},
+        ])
+        eligible = []
+        with patch.object(disc, "_retain_discovered_url", side_effect=lambda u, *a, **k: u):
+            added = self._call(disc, eligible, original_count=4)
+        assert added == 0
+
+    def test_does_not_reuse_a_url_already_published(self):
+        """Two batch rows sharing one URL was observed on the 2026-08-21 run
+        ('Chimney Rock Trail' and 'Great Kiva Trail' both resolved to
+        chimney-rock-trail)."""
+        disc = self._discoverer()
+        dup = "https://www.alltrails.com/trail/us/colorado/chimney-rock-trail"
+        self._seed(disc, [
+            {"name": "Chimney Rock Trail", "url": dup},
+            {"name": "Great Kiva Trail", "url": dup},
+        ])
+        eligible = []
+        with patch.object(disc, "_retain_discovered_url", side_effect=lambda u, *a, **k: u):
+            added = self._call(disc, eligible, original_count=4)
+        assert added == 1
+
+    def test_promoted_entry_is_marked_and_carries_its_batch_content(self):
+        disc = self._discoverer()
+        self._seed(disc, self._rows("Queens Garden"))
+        eligible = []
+        with patch.object(disc, "_retain_discovered_url", side_effect=lambda u, *a, **k: u):
+            self._call(disc, eligible, original_count=2)
+        entry = eligible[0]
+        assert entry["promoted_from_trail_batch"] is True
+        assert entry["type"] == "trail"
+        assert entry["is_seed"] is False
+        assert entry["description"] == "Queens Garden desc"

@@ -2419,6 +2419,10 @@ class URLDiscoverer:
 
             max_trail_miles = float(getattr(self, "_max_trail_miles", DEFAULT_MAX_TRAIL_MILES) or 0)
             eligible_attractions: list[dict[str, Any]] = []
+            # Captured BEFORE any removal, so the trail-batch backfill below
+            # can refill emptied slots without ever exceeding the count
+            # ai_content already sized to attractions_per_day * day_count.
+            original_attraction_count = len(ai.get("top_attractions", []) or [])
             for attr in ai.get("top_attractions", []) or []:
                 attr_name = str(attr.get("name", "") or "")
                 attr_key = re.sub(r"[^a-z0-9]+", " ", attr_name.lower()).strip()
@@ -2715,6 +2719,15 @@ class URLDiscoverer:
                     dest_name=dest_name,
                 ):
                     eligible_attractions.append(attr)
+
+            self._backfill_attractions_from_trail_batch(
+                dest=dest,
+                ai=ai,
+                dest_name=dest_name,
+                dest_dates=dest_dates,
+                eligible=eligible_attractions,
+                original_count=original_attraction_count,
+            )
 
             if len(eligible_attractions) != len(ai.get("top_attractions", []) or []):
                 ai["top_attractions"] = eligible_attractions
@@ -6809,6 +6822,118 @@ class URLDiscoverer:
                 }
             )
         return rows
+
+    def _backfill_attractions_from_trail_batch(
+        self,
+        *,
+        dest: dict[str, Any],
+        ai: dict[str, Any],
+        dest_name: str,
+        dest_dates: str,
+        eligible: list[dict[str, Any]],
+        original_count: int,
+    ) -> int:
+        """Refill attraction slots emptied by URL removal, using trails already bought.
+
+        The trail direct batch harvests far more than the itinerary consumes.
+        Measured on the 2026-08-21 cold-start run: 84 rows across 10
+        destinations, every one carrying an AllTrails URL, and only 24
+        published -- 60 harvested and discarded (71%). Bryce alone harvested
+        10 and published 2.
+
+        Meanwhile the same run removed 23 attractions for having no verified
+        URL. Those two facts are the same problem seen from both ends: slots
+        were emptied for want of a link while verified, trail-specific links
+        sat unused in a batch we had already paid for.
+
+        Bounded deliberately by `original_count` -- the number of attractions
+        ai_content produced for this destination BEFORE removals. This
+        backfills emptied slots and never exceeds what content generation
+        already decided was right, so `attractions_per_day * day_count` is
+        honoured without this function needing to know either value.
+
+        Promoted trails are NOT treated as seeds. They face the full
+        publish-confidence and post-search filters, so an unvetted trail
+        cannot enter the itinerary through this path.
+        """
+        headroom = original_count - len(eligible)
+        if headroom <= 0:
+            return 0
+        cache = getattr(self, "_alltrails_direct_batch_cache", None)
+        if not isinstance(cache, dict) or not cache:
+            return 0
+        rows = cache.get(self._batch_cache_key(dest_name, f"{dest_dates}|html|trail")) or []
+        if not rows:
+            return 0
+
+        def _key(value: str) -> str:
+            return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+        # Never duplicate something the itinerary already carries, in any
+        # section -- an entity promoted here would otherwise appear twice.
+        taken_names = {_key(a.get("name", "")) for a in eligible}
+        taken_names |= {
+            _key(s.get("name", ""))
+            for s in (ai.get("getting_here", {}) or {}).get("en_route_stops", []) or []
+        }
+        taken_names |= {_key(d.get("title", "")) for d in (dest.get("scenic_drives", []) or [])}
+        taken_urls = {str(a.get("url", "") or "").strip() for a in eligible}
+
+        added = 0
+        for row in rows:
+            if added >= headroom:
+                break
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or row.get("title") or "").strip()
+            # The batch has been observed emitting literal markdown in names
+            # ("**Balanced Rock Loop**"); those asterisks would otherwise
+            # become part of the rendered name and of every match key.
+            name = name.replace("*", "").strip()
+            if not name or _key(name) in taken_names:
+                continue
+            url = self._normalize_direct_batch_authoritative_url(row.get("url", ""))
+            if not url or url in taken_urls or not self._is_alltrails_trail_url(url):
+                continue
+            if self._candidate_mentions_conflicting_destination(row, dest_name, item_name=name):
+                continue
+            cleaned = self._retain_discovered_url(
+                url,
+                name,
+                dest_name,
+                allow_alltrails=True,
+                kind="attraction",
+                is_seed=False,
+                candidate=row,
+            )
+            if not cleaned:
+                continue
+            promoted = {
+                "name": name,
+                "type": "trail",
+                "url": cleaned,
+                "description": str(row.get("description", "") or ""),
+                "practical_note": str(row.get("practical_note", "") or ""),
+                "is_seed": False,
+                "promoted_from_trail_batch": True,
+            }
+            if row.get("rating") is not None:
+                promoted["rating"] = row.get("rating")
+            if str(row.get("maps_url", "") or "").strip():
+                promoted["maps_url"] = str(row.get("maps_url", "")).strip()
+            eligible.append(promoted)
+            taken_names.add(_key(name))
+            taken_urls.add(cleaned)
+            added += 1
+            self._log_decision(
+                kind="attraction",
+                dest_name=dest_name,
+                item_name=name,
+                reason="promoted_from_trail_batch",
+                message=f"backfilled an emptied attraction slot with an already-harvested trail: {cleaned}",
+                url=cleaned,
+            )
+        return added
 
     def _cached_alltrails_batch_url_for_item(self, dest_name: str, dates: str, item_name: str) -> str:
         """An AllTrails URL the trail direct batch ALREADY harvested for this item.
