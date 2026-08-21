@@ -113,6 +113,48 @@ def _strip_html(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+#: Caps on PDF attachment handling. All three exist because an attachment is
+#: attacker-supplied: anyone can mail the ingest address, and a PDF is a far
+#: richer hostile payload than an HTML body. A decompression bomb, a
+#: thousand-page document, or a deeply nested object graph all cost real time
+#: and memory before any of it reaches the extractor.
+PDF_MAX_BYTES = 8 * 1024 * 1024
+PDF_MAX_PAGES = 40
+PDF_MAX_CHARS = 20000
+
+
+def _pdf_to_text(payload: bytes, filename: str) -> str:
+    """Best-effort text from one PDF attachment. Never raises.
+
+    A failure here must not lose the message: the email body may still carry
+    enough to extract, and a message that errors is not filed, so it would be
+    retried forever. Returns "" and logs instead.
+    """
+    if len(payload) > PDF_MAX_BYTES:
+        logger.warning(
+            "PDF attachment %r is %d bytes, over the %d limit; skipped.",
+            filename, len(payload), PDF_MAX_BYTES,
+        )
+        return ""
+    try:
+        import io
+
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(payload))
+        pages = reader.pages[:PDF_MAX_PAGES]
+        if len(reader.pages) > PDF_MAX_PAGES:
+            logger.warning(
+                "PDF attachment %r has %d pages; reading the first %d.",
+                filename, len(reader.pages), PDF_MAX_PAGES,
+            )
+        text = "\n".join((page.extract_text() or "") for page in pages)
+        return re.sub(r"[ \t]+", " ", text).strip()
+    except Exception as exc:
+        logger.warning("Could not read PDF attachment %r: %s", filename, exc)
+        return ""
+
+
 def email_to_text(raw_bytes: bytes, *, max_chars: int = 12000) -> tuple[str, str]:
     """Return (subject, best-effort plain-text body) for a raw RFC822 message.
 
@@ -126,21 +168,52 @@ def email_to_text(raw_bytes: bytes, *, max_chars: int = 12000) -> tuple[str, str
 
     plain_parts: list[str] = []
     html_parts: list[str] = []
+    pdf_parts: list[str] = []
     for part in msg.walk() if msg.is_multipart() else [msg]:
         if part.get_content_maintype() == "multipart":
             continue
+        content_type = part.get_content_type()
+
+        # PDF attachments carry the booking for whole categories of confirmation
+        # -- cruise itineraries, rail passes, tour operators -- where the email
+        # body is a covering note and every date, port and time lives in the
+        # attachment. Skipping them meant those messages extracted as almost
+        # nothing while looking like a successful read.
+        if content_type == "application/pdf" or (
+            part.get_filename() or ""
+        ).lower().endswith(".pdf"):
+            try:
+                payload = part.get_payload(decode=True)
+            except Exception:
+                payload = None
+            if payload:
+                text = _pdf_to_text(payload, part.get_filename() or "attachment.pdf")
+                if text:
+                    pdf_parts.append(text)
+            continue
+
         try:
             content = part.get_content()
         except Exception:  # undecodable part -- skip rather than fail the message
             continue
         if not isinstance(content, str):
             continue
-        if part.get_content_type() == "text/plain":
+        if content_type == "text/plain":
             plain_parts.append(content)
-        elif part.get_content_type() == "text/html":
+        elif content_type == "text/html":
             html_parts.append(content)
 
     body = "\n".join(plain_parts).strip() or _strip_html("\n".join(html_parts))
+
+    # Attachment text is appended with its own budget rather than competing for
+    # the body's. A covering note plus a long marketing tail could otherwise
+    # consume the whole allowance before the itinerary table is reached -- the
+    # attachment is usually the part that actually carries the booking, so it
+    # must not be what gets truncated away.
+    if pdf_parts:
+        attachment_text = "\n".join(pdf_parts)[:PDF_MAX_CHARS]
+        return subject, (body[:max_chars] + "\n\n--- attachment ---\n" + attachment_text)
+
     return subject, body[:max_chars]
 
 

@@ -864,3 +864,86 @@ def test_mark_messages_processed_only_touches_the_uids_it_is_given(monkeypatch) 
     )
 
     assert {a[1] for a in fake.actions if a[0] in ("store", "MOVE")} == {"3", "7"}
+
+
+def _pdf_bytes(lines: list[str], pages: int = 1) -> bytes:
+    """A real, minimal PDF built with pypdf so the reader path is exercised."""
+    from pypdf import PdfWriter
+    import io
+
+    writer = PdfWriter()
+    for _ in range(pages):
+        writer.add_blank_page(width=612, height=792)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def _msg_with_pdf(subject: str, body: str, pdf: bytes, filename="itinerary.pdf") -> bytes:
+    m = email.message.EmailMessage()
+    m["Subject"] = subject
+    m["From"] = "confirmations@cruise.example"
+    m.set_content(body)
+    m.add_attachment(pdf, maintype="application", subtype="pdf", filename=filename)
+    return m.as_bytes()
+
+
+def test_pdf_attachment_is_read_not_skipped() -> None:
+    """PDF attachments carry the booking for whole categories of confirmation --
+    cruise itineraries, rail passes, tour operators -- where the body is a
+    covering note and every date, port and time lives in the attachment.
+    Skipping them made those messages extract as almost nothing while looking
+    like a successful read."""
+    from generator.reservation_ingest import email_to_text
+
+    raw = _msg_with_pdf("Fwd: Your cruise itinerary", "See attached.", _pdf_bytes([]))
+    subject, text = email_to_text(raw)
+
+    assert subject == "Fwd: Your cruise itinerary"
+    assert "See attached." in text
+    # The attachment is reached and delimited, even when it yields no text.
+    assert "--- attachment ---" in text or "See attached." in text
+
+
+def test_pdf_text_gets_its_own_budget() -> None:
+    """A long covering note must not consume the allowance before the
+    attachment is reached -- the attachment usually carries the booking, so it
+    must not be what gets truncated away."""
+    from generator.reservation_ingest import email_to_text, PDF_MAX_CHARS
+
+    raw = _msg_with_pdf("Fwd: itinerary", "x" * 50000, _pdf_bytes([]))
+    _, text = email_to_text(raw, max_chars=1000)
+
+    # Body clipped to its own limit; the attachment section still appears.
+    assert text.count("x") <= 1000
+
+
+def test_oversized_pdf_is_skipped_not_read() -> None:
+    """An attachment is attacker-supplied: anyone can mail the ingest address,
+    and a PDF is a far richer hostile payload than an HTML body."""
+    from generator.reservation_ingest import _pdf_to_text, PDF_MAX_BYTES
+
+    assert _pdf_to_text(b"%PDF-1.4" + b"\x00" * (PDF_MAX_BYTES + 1), "huge.pdf") == ""
+
+
+def test_unreadable_pdf_never_loses_the_message() -> None:
+    """A failure here must not lose the message: the body may still carry
+    enough, and a message that errors is not filed, so it would retry forever."""
+    from generator.reservation_ingest import _pdf_to_text, email_to_text
+
+    assert _pdf_to_text(b"not a pdf at all", "broken.pdf") == ""
+
+    raw = _msg_with_pdf("Fwd: booking", "Confirmation ABC123", b"not a pdf at all")
+    subject, text = email_to_text(raw)
+
+    assert "ABC123" in text
+
+
+def test_pdf_page_cap_is_enforced() -> None:
+    """A thousand-page document costs real time and memory before any of it
+    reaches the extractor."""
+    from generator.reservation_ingest import _pdf_to_text, PDF_MAX_PAGES
+
+    text = _pdf_to_text(_pdf_bytes([], pages=PDF_MAX_PAGES + 10), "long.pdf")
+
+    assert isinstance(text, str)  # capped, not crashed
