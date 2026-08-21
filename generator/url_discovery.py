@@ -2429,6 +2429,23 @@ class URLDiscoverer:
                 attr_context = self._attraction_trail_context(attr)
                 url = str(attr.get("url", "") or "").strip()
                 trail_like = self._is_trail_like_attraction(attr_name, attr_type, attr_context) or self._is_alltrails_trail_url(url)
+                # Prefer a trail-specific AllTrails URL the trail batch already
+                # bought for this same item over whatever this category found.
+                # Deliberately BEATS the incumbent rather than only filling a
+                # gap: the links it displaces are generic park pages that pass
+                # validation while promising a specific place (see
+                # _cached_alltrails_batch_url_for_item for the measurement).
+                if trail_like and not self._is_alltrails_trail_url(url):
+                    batch_trail_url = self._cached_alltrails_batch_url_for_item(dest_name, dest_dates, attr_name)
+                    if batch_trail_url:
+                        self._log_decision(
+                            kind="attraction",
+                            dest_name=dest_name,
+                            item_name=attr_name,
+                            reason="alltrails_batch_url_preferred",
+                            message=f"replacing {url or '(none)'} with already-harvested {batch_trail_url}",
+                        )
+                        url = batch_trail_url
                 direct_batch_authoritative_url = self._is_remembered_direct_batch_authoritative_url(url, attr_name)
                 maps_url = str(attr.get("maps_url", "") or "").strip()
                 if not maps_url and self._classify_url_policy_class(url) in {"google_maps_search", "google_maps_dir"}:
@@ -2726,6 +2743,30 @@ class URLDiscoverer:
                 )
                 stop["is_seed"] = stop_is_seed
                 url = str(stop.get("url", "") or "").strip()
+                # An en-route stop can be a trail -- Canyon Overlook Trail is
+                # one. Until now this path hard-coded allow_alltrails=False, so
+                # a trail that happened to be classified as an en-route stop
+                # could never carry an AllTrails link even when the trail batch
+                # had already bought one for it, and fell back to a generic
+                # park page. Mirror the attraction path's allow_alltrails=
+                # trail_like instead of forbidding outright; a non-trail stop
+                # still refuses AllTrails exactly as before.
+                stop_trail_like = self._is_trail_like_attraction(
+                    stop_name,
+                    str(stop.get("type", "") or ""),
+                    self._attraction_trail_context(stop),
+                ) or self._is_alltrails_trail_url(url)
+                if stop_trail_like and not self._is_alltrails_trail_url(url):
+                    batch_trail_url = self._cached_alltrails_batch_url_for_item(dest_name, dest_dates, stop_name)
+                    if batch_trail_url:
+                        self._log_decision(
+                            kind="en-route stop",
+                            dest_name=dest_name,
+                            item_name=stop_name,
+                            reason="alltrails_batch_url_preferred",
+                            message=f"replacing {url or '(none)'} with already-harvested {batch_trail_url}",
+                        )
+                        url = batch_trail_url
                 direct_batch_authoritative_url = self._is_remembered_direct_batch_authoritative_url(url, stop_name)
                 maps_url = str(stop.get("maps_url", "") or "").strip()
                 if not maps_url and self._classify_url_policy_class(url) in {"google_maps_search", "google_maps_dir"}:
@@ -2734,7 +2775,7 @@ class URLDiscoverer:
                     url,
                     stop_name,
                     dest_name,
-                    allow_alltrails=False,
+                    allow_alltrails=stop_trail_like,
                     kind="en-route stop",
                     is_seed=stop_is_seed,
                 )
@@ -6768,6 +6809,42 @@ class URLDiscoverer:
                 }
             )
         return rows
+
+    def _cached_alltrails_batch_url_for_item(self, dest_name: str, dates: str, item_name: str) -> str:
+        """An AllTrails URL the trail direct batch ALREADY harvested for this item.
+
+        Reads the trail batch cache only -- never triggers a fetch -- so this
+        can never add a paid search call. A destination whose trail batch has
+        not run yet simply yields nothing.
+
+        Why this exists: each category reads its own direct batch
+        (`_search_attraction_from_direct_batch`, `_search_en_route_stop_...`,
+        `_search_alltrails_for_trail_...`), so an item never sees a URL a
+        different category already bought for it. Measured on the 2026-08-21
+        cold-start run, 11 items appeared in both the trail batch and another
+        category's batch, and 4 of them published the weaker link -- two of
+        those being the bare park homepage `nps.gov/brca/` where the trail
+        batch held a trail-specific AllTrails URL.
+
+        Canyon Overlook Trail is the worked example: harvested from Zion's
+        trail batch with its AllTrails URL, then classified as an en-route
+        stop and published with a generic nps.gov page instead.
+        """
+        cache = getattr(self, "_alltrails_direct_batch_cache", None)
+        if not isinstance(cache, dict) or not cache:
+            return ""
+        rows = cache.get(self._batch_cache_key(dest_name, f"{dates}|html|trail")) or []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if self._candidate_mentions_conflicting_destination(row, dest_name, item_name=item_name):
+                continue
+            url = self._normalize_direct_batch_authoritative_url(row.get("url", ""))
+            if not url or not self._is_alltrails_trail_url(url):
+                continue
+            if self._direct_batch_url_matches_item(url, item_name, dest_name):
+                return url
+        return ""
 
     def _search_alltrails_for_trail_from_direct_batch(self, item_name: str, dest_name: str, dates: str = "") -> str | None:
         rows = self._get_alltrails_direct_batch_rows_for_destination(dest_name, dates)

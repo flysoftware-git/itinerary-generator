@@ -16764,3 +16764,134 @@ def test_liveness_ttls_stay_shorter_than_content_ttls() -> None:
                 f"{live_name} ({live_ttl}h) is a liveness/closure check and must expire "
                 f"sooner than {content_name} content ({content_ttl}h)"
             )
+
+
+class TestCachedAllTrailsBatchUrlForItem:
+    """Cross-category reuse of an AllTrails URL a different batch already bought.
+
+    Each category reads its own direct batch, so an item classified into one
+    category never sees a URL another category harvested for it. Measured on
+    the 2026-08-21 cold-start run: 11 items appeared in both the trail batch
+    and another category's batch, and 4 published the weaker link -- two of
+    them the bare park homepage `nps.gov/brca/`.
+    """
+
+    @staticmethod
+    def _discoverer():
+        mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            return URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+
+    def _seed_trail_cache(self, disc, dest, dates, rows):
+        disc._alltrails_direct_batch_cache = {
+            disc._batch_cache_key(dest, f"{dates}|html|trail"): rows
+        }
+
+    def test_returns_url_harvested_by_the_trail_batch(self):
+        disc = self._discoverer()
+        self._seed_trail_cache(disc, "Zion National Park", "October 18, 2026", [
+            {"name": "Canyon Overlook Trail",
+             "url": "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"},
+        ])
+        found = disc._cached_alltrails_batch_url_for_item(
+            "Zion National Park", "October 18, 2026", "Canyon Overlook Trail"
+        )
+        assert found == "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail"
+
+    def test_never_fetches_when_the_trail_batch_has_not_run(self):
+        """The whole point of reading cache-only: this must not add a paid call.
+
+        A destination whose trail batch has not run yields nothing rather than
+        triggering one.
+        """
+        disc = self._discoverer()
+        disc._alltrails_direct_batch_cache = {}
+        with patch.object(disc, "_get_alltrails_direct_batch_rows_for_destination") as fetch:
+            found = disc._cached_alltrails_batch_url_for_item("Zion National Park", "October 18, 2026", "Whatever Trail")
+        assert found == ""
+        fetch.assert_not_called()
+
+    def test_ignores_rows_for_a_different_item(self):
+        disc = self._discoverer()
+        self._seed_trail_cache(disc, "Zion National Park", "October 18, 2026", [
+            {"name": "Emerald Pools Trail",
+             "url": "https://www.alltrails.com/trail/us/utah/emerald-pools-trail"},
+        ])
+        assert disc._cached_alltrails_batch_url_for_item(
+            "Zion National Park", "October 18, 2026", "Canyon Overlook Trail"
+        ) == ""
+
+    def test_ignores_non_alltrails_rows(self):
+        """A trail batch row that came back as an nps.gov page is not a
+        substitute -- this preference exists specifically to promote
+        trail-specific AllTrails links."""
+        disc = self._discoverer()
+        self._seed_trail_cache(disc, "Zion National Park", "October 18, 2026", [
+            {"name": "Canyon Overlook Trail",
+             "url": "https://www.nps.gov/thingstodo/hike-canyon-overlook.htm"},
+        ])
+        assert disc._cached_alltrails_batch_url_for_item(
+            "Zion National Park", "October 18, 2026", "Canyon Overlook Trail"
+        ) == ""
+
+
+class TestEnRouteStopsMayCarryAllTrailsWhenTrailLike:
+    """En-route stops used to hard-code allow_alltrails=False.
+
+    That is why Canyon Overlook Trail, harvested from Zion's trail batch with
+    its AllTrails URL, published a generic nps.gov page instead: reclassifying
+    it as an en-route stop moved it behind a gate that forbids AllTrails
+    outright. The gate now mirrors the attraction path's allow_alltrails=
+    trail_like.
+    """
+
+    @staticmethod
+    def _discoverer():
+        mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            return URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+
+    def test_trail_like_seed_stop_keeps_an_alltrails_url(self):
+        """Canyon Overlook Trail is a manifest seed, so it takes the relaxed
+        seed standard rather than the length/gain/difficulty confidence gate.
+        Before the allow_alltrails change this returned "" no matter what."""
+        disc = self._discoverer()
+        kept = disc._retain_discovered_url(
+            "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail",
+            "Canyon Overlook Trail",
+            "Zion National Park",
+            allow_alltrails=True,
+            kind="en-route stop",
+            is_seed=True,
+        )
+        assert "alltrails.com" in kept
+
+    def test_non_seed_trail_stop_still_faces_the_publish_confidence_gate(self):
+        """Opening allow_alltrails does NOT bypass the trail-quality gate.
+
+        A non-seed trail still has to clear _meets_alltrails_publish_confidence
+        and _passes_alltrails_post_search_filters, which need real trail stats.
+        This is why the change helps seeded trails most.
+        """
+        disc = self._discoverer()
+        with patch.object(disc, "_meets_alltrails_publish_confidence", return_value=False):
+            kept = disc._retain_discovered_url(
+                "https://www.alltrails.com/trail/us/utah/some-unverified-trail",
+                "Some Unverified Trail",
+                "Zion National Park",
+                allow_alltrails=True,
+                kind="en-route stop",
+            )
+        assert kept == ""
+
+    def test_non_trail_stop_still_refuses_alltrails(self):
+        """The gate is narrowed, not removed."""
+        disc = self._discoverer()
+        kept = disc._retain_discovered_url(
+            "https://www.alltrails.com/trail/us/utah/canyon-overlook-trail",
+            "Some Roadside Diner",
+            "Zion National Park",
+            allow_alltrails=False,
+            kind="en-route stop",
+        )
+        assert kept == ""
