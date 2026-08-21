@@ -435,8 +435,10 @@ def test_gmail_app_password_spaces_are_stripped_before_login(monkeypatch) -> Non
         def select(self, mailbox):
             pass
 
-        def search(self, charset, criterion):
-            return "OK", [b""]
+        def uid(self, cmd, *args):
+            # UID-addressed: sequence numbers are session-scoped and unsafe to
+            # replay against the second-pass connection.
+            return ("OK", [b""]) if cmd == "SEARCH" else ("OK", None)
 
         def logout(self):
             pass
@@ -468,8 +470,10 @@ def test_non_app_password_providers_keep_spaces_intact(monkeypatch) -> None:
         def select(self, mailbox):
             pass
 
-        def search(self, charset, criterion):
-            return "OK", [b""]
+        def uid(self, cmd, *args):
+            # UID-addressed: sequence numbers are session-scoped and unsafe to
+            # replay against the second-pass connection.
+            return ("OK", [b""]) if cmd == "SEARCH" else ("OK", None)
 
         def logout(self):
             pass
@@ -640,117 +644,6 @@ def test_merge_puts_trip_legs_on_the_trip_block_and_dedupes() -> None:
     assert len(trip["trip"]["transportation"]) == 2
 
 
-def test_ingested_messages_are_moved_out_of_the_inbox(monkeypatch) -> None:
-    """Marking \Seen keeps repeat polls cheap but leaves an ever-growing inbox
-    with no way to tell processed from pending -- and if anything clears the
-    flag, the message is re-fetched and re-extracted, costing LLM tokens again
-    even though confirmation-number dedup keeps the DATA correct."""
-    from generator import reservation_ingest as mod
-
-    actions = []
-
-    class FakeIMAP:
-        def __init__(self, host): pass
-        def login(self, u, p): pass
-        def select(self, mailbox): pass
-        def search(self, charset, criterion): return "OK", [b"1"]
-        def fetch(self, uid, spec): return "OK", [(b"1 (BODY[]", b"Subject: x\r\n\r\nbody")]
-        def store(self, uid, flags, value): actions.append(("store", value))
-        def create(self, folder): actions.append(("create", folder))
-        def uid(self, cmd, uid, folder): actions.append((cmd, folder)); return "OK", None
-        def logout(self): pass
-
-    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", FakeIMAP)
-
-    mod.fetch_unseen_messages(
-        host="imap.example.net", user="u", password="p", archive_folder="Ingested",
-    )
-
-    assert ("store", "\Seen") in actions
-    assert ("create", "Ingested") in actions
-    assert ("MOVE", "Ingested") in actions
-
-
-def test_archiving_falls_back_to_copy_when_move_is_unsupported(monkeypatch) -> None:
-    """IMAP MOVE (RFC 6851) is not universal; COPY + \Deleted is the portable
-    equivalent. Deliberately no EXPUNGE -- that would permanently destroy mail,
-    and a silently-failed copy would take the original with it."""
-    from generator import reservation_ingest as mod
-
-    actions = []
-
-    class FakeIMAP:
-        def __init__(self, host): pass
-        def login(self, u, p): pass
-        def select(self, mailbox): pass
-        def search(self, charset, criterion): return "OK", [b"1"]
-        def fetch(self, uid, spec): return "OK", [(b"1 (BODY[]", b"Subject: x\r\n\r\nbody")]
-        def store(self, uid, flags, value): actions.append(("store", value))
-        def create(self, folder): pass
-        def uid(self, cmd, uid, folder): raise mod.imaplib.IMAP4.error(b"MOVE unsupported")
-        def copy(self, uid, folder): actions.append(("copy", folder)); return "OK", None
-        def logout(self): pass
-
-    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", FakeIMAP)
-
-    mod.fetch_unseen_messages(
-        host="imap.example.net", user="u", password="p", archive_folder="Ingested",
-    )
-
-    assert ("copy", "Ingested") in actions
-    assert ("store", "\Deleted") in actions
-    assert not any(a[0] == "expunge" for a in actions)
-
-
-def test_archiving_failure_never_loses_the_reservation(monkeypatch) -> None:
-    """The message is already extracted by the time it is filed. Failing to
-    move it must not fail the run or drop the booking."""
-    from generator import reservation_ingest as mod
-
-    class FakeIMAP:
-        def __init__(self, host): pass
-        def login(self, u, p): pass
-        def select(self, mailbox): pass
-        def search(self, charset, criterion): return "OK", [b"1"]
-        def fetch(self, uid, spec): return "OK", [(b"1 (BODY[]", b"Subject: x\r\n\r\nbody")]
-        def store(self, uid, flags, value): pass
-        def create(self, folder): raise RuntimeError("no permission")
-        def uid(self, cmd, uid, folder): raise RuntimeError("nope")
-        def copy(self, uid, folder): raise RuntimeError("nope either")
-        def logout(self): pass
-
-    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", FakeIMAP)
-
-    messages = mod.fetch_unseen_messages(
-        host="imap.example.net", user="u", password="p", archive_folder="Ingested",
-    )
-
-    assert len(messages) == 1
-
-
-def test_no_archive_folder_leaves_messages_in_place(monkeypatch) -> None:
-    from generator import reservation_ingest as mod
-
-    actions = []
-
-    class FakeIMAP:
-        def __init__(self, host): pass
-        def login(self, u, p): pass
-        def select(self, mailbox): pass
-        def search(self, charset, criterion): return "OK", [b"1"]
-        def fetch(self, uid, spec): return "OK", [(b"1 (BODY[]", b"Subject: x\r\n\r\nbody")]
-        def store(self, uid, flags, value): actions.append(("store", value))
-        def create(self, folder): actions.append(("create", folder))
-        def logout(self): pass
-
-    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", FakeIMAP)
-
-    mod.fetch_unseen_messages(host="imap.example.net", user="u", password="p")
-
-    assert ("store", "\Seen") in actions
-    assert not any(a[0] == "create" for a in actions)
-
-
 def test_a_booking_for_another_trip_is_not_filed_into_this_ones_pending() -> None:
     """A traveler forwards confirmations as they book, so mail arrives for trips
     whose manifest does not exist yet. Matched against whatever manifest happens
@@ -824,33 +717,6 @@ def test_every_message_gets_exactly_one_disposition() -> None:
         "not_a_booking", "unrelated", "attached", "duplicate"}
 
 
-def test_mark_messages_processed_only_touches_the_uids_it_is_given(monkeypatch) -> None:
-    """Finalization is a second pass precisely so an unrelated trip's mail can
-    be left untouched. It must file exactly what it is handed, nothing more."""
-    from generator import reservation_ingest as mod
-
-    touched = []
-
-    class FakeIMAP:
-        def __init__(self, host): pass
-        def login(self, u, p): pass
-        def select(self, mailbox): pass
-        def store(self, uid, flags, value): touched.append((uid.decode(), value))
-        def create(self, folder): pass
-        def uid(self, cmd, uid, folder): touched.append((uid.decode(), cmd)); return "OK", None
-        def logout(self): pass
-
-    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", FakeIMAP)
-
-    filed = mod.mark_messages_processed(
-        host="imap.example.net", user="u", password="p",
-        uids=["3", "7"], archive_folder="Ingested",
-    )
-
-    assert filed == 2
-    assert {u for u, _ in touched} == {"3", "7"}
-
-
 def test_mark_messages_processed_is_a_noop_with_no_uids(monkeypatch) -> None:
     """Every message unrelated means no connection should even be opened."""
     from generator import reservation_ingest as mod
@@ -861,3 +727,140 @@ def test_mark_messages_processed_is_a_noop_with_no_uids(monkeypatch) -> None:
     monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", explode)
 
     assert mod.mark_messages_processed(host="h", user="u", password="p", uids=[]) == 0
+
+
+class _FakeIMAP:
+    """Records UID-addressed commands. Everything is UID-addressed on purpose:
+    plain SEARCH/FETCH/STORE use message SEQUENCE numbers, which are scoped to
+    one session and shift as the mailbox changes -- so a number captured during
+    the fetch addresses a DIFFERENT message when the second pass reconnects to
+    file it. That is not a failed no-op; it flags and moves the wrong mail."""
+
+    def __init__(self, host, *, move_ok=True, copy_ok=True, create_ok=True):
+        self.actions: list[tuple] = []
+        self._move_ok = move_ok
+        self._copy_ok = copy_ok
+        self._create_ok = create_ok
+
+    def login(self, u, p): pass
+    def select(self, mailbox): pass
+    def logout(self): pass
+
+    def create(self, folder):
+        if not self._create_ok:
+            raise RuntimeError("no permission")
+        self.actions.append(("create", folder))
+
+    def uid(self, cmd, *args):
+        if cmd == "SEARCH":
+            return "OK", [b"41"]
+        if cmd == "FETCH":
+            return "OK", [(b"41 (BODY[]", b"Subject: x\r\n\r\nbody")]
+        if cmd == "STORE":
+            self.actions.append(("store", args[0].decode(), args[2]))
+            return "OK", None
+        if cmd == "MOVE":
+            if not self._move_ok:
+                raise imaplib.IMAP4.error(b"MOVE unsupported")
+            self.actions.append(("MOVE", args[0].decode(), args[1]))
+            return "OK", None
+        if cmd == "COPY":
+            if not self._copy_ok:
+                raise RuntimeError("copy failed")
+            self.actions.append(("COPY", args[0].decode(), args[1]))
+            return "OK", None
+        return "OK", None
+
+
+import imaplib  # noqa: E402  (used by _FakeIMAP above)
+
+
+def test_mailbox_commands_are_uid_addressed(monkeypatch) -> None:
+    """The bug this prevents: sequence numbers captured during the fetch were
+    replayed against a NEW connection in the second pass, where they address
+    whatever message now sits in that position."""
+    from generator import reservation_ingest as mod
+
+    fake = _FakeIMAP("h")
+    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", lambda host: fake)
+
+    messages = mod.fetch_unseen_messages(host="imap.example.net", user="u", password="p")
+
+    # The uid returned to the caller is the real UID, stable across connections.
+    assert messages[0][0] == "41"
+
+
+def test_ingested_messages_are_flagged_and_filed(monkeypatch) -> None:
+    from generator import reservation_ingest as mod
+
+    fake = _FakeIMAP("h")
+    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", lambda host: fake)
+
+    filed = mod.mark_messages_processed(
+        host="imap.example.net", user="u", password="p",
+        uids=["41"], archive_folder="Ingested",
+    )
+
+    assert filed == 1
+    assert ("store", "41", "\Seen") in fake.actions
+    assert ("MOVE", "41", "Ingested") in fake.actions
+
+
+def test_archiving_falls_back_to_copy_when_move_is_unsupported(monkeypatch) -> None:
+    """IMAP MOVE (RFC 6851) is not universal; COPY + \Deleted is the portable
+    equivalent. Deliberately no EXPUNGE -- that destroys mail permanently, and a
+    silently-failed copy would take the original with it."""
+    from generator import reservation_ingest as mod
+
+    fake = _FakeIMAP("h", move_ok=False)
+    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", lambda host: fake)
+
+    mod.mark_messages_processed(
+        host="imap.example.net", user="u", password="p",
+        uids=["41"], archive_folder="Ingested",
+    )
+
+    assert ("COPY", "41", "Ingested") in fake.actions
+    assert ("store", "41", "\Deleted") in fake.actions
+    assert not any(a[0] == "EXPUNGE" for a in fake.actions)
+
+
+def test_filing_failure_never_loses_the_reservation(monkeypatch) -> None:
+    """The booking is already extracted by the time it is filed, so a
+    permissions problem must not fail the run."""
+    from generator import reservation_ingest as mod
+
+    fake = _FakeIMAP("h", move_ok=False, copy_ok=False, create_ok=False)
+    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", lambda host: fake)
+
+    assert mod.mark_messages_processed(
+        host="imap.example.net", user="u", password="p",
+        uids=["41"], archive_folder="Ingested",
+    ) == 1
+
+
+def test_no_archive_folder_flags_but_does_not_file(monkeypatch) -> None:
+    from generator import reservation_ingest as mod
+
+    fake = _FakeIMAP("h")
+    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", lambda host: fake)
+
+    mod.mark_messages_processed(host="imap.example.net", user="u", password="p", uids=["41"])
+
+    assert ("store", "41", "\Seen") in fake.actions
+    assert not any(a[0] in ("MOVE", "COPY", "create") for a in fake.actions)
+
+
+def test_mark_messages_processed_only_touches_the_uids_it_is_given(monkeypatch) -> None:
+    """Filing is a second pass precisely so another trip's mail stays untouched."""
+    from generator import reservation_ingest as mod
+
+    fake = _FakeIMAP("h")
+    monkeypatch.setattr(mod.imaplib, "IMAP4_SSL", lambda host: fake)
+
+    mod.mark_messages_processed(
+        host="imap.example.net", user="u", password="p",
+        uids=["3", "7"], archive_folder="Ingested",
+    )
+
+    assert {a[1] for a in fake.actions if a[0] in ("store", "MOVE")} == {"3", "7"}

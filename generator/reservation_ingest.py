@@ -427,7 +427,7 @@ def mark_messages_processed(
         for uid in uids:
             raw = uid.encode("ascii", "replace")
             try:
-                conn.store(raw, "+FLAGS", "\\Seen")
+                conn.uid("STORE", raw, "+FLAGS", "\\Seen")
                 if archive_folder:
                     _archive_message(conn, raw, archive_folder)
                 processed += 1
@@ -462,15 +462,15 @@ def _archive_message(conn: "imaplib.IMAP4_SSL", uid: bytes, folder: str) -> None
     except Exception:
         pass
     try:
-        status, _ = conn.uid("MOVE", uid, folder) if hasattr(conn, "uid") else ("NO", None)
+        status, _ = conn.uid("MOVE", uid, folder)
         if status == "OK":
             return
     except Exception:
         pass
     try:
-        status, _ = conn.copy(uid, folder)
+        status, _ = conn.uid("COPY", uid, folder)
         if status == "OK":
-            conn.store(uid, "+FLAGS", "\\Deleted")
+            conn.uid("STORE", uid, "+FLAGS", "\\Deleted")
         else:
             logger.warning("Could not archive uid %s to %s: COPY returned %s", uid, folder, status)
     except Exception as exc:
@@ -532,7 +532,13 @@ def fetch_unseen_messages(
                 f"{user} @ {host}: {exc}\n  - " + "\n  - ".join(hints)
             ) from exc
         conn.select(mailbox)
-        status, data = conn.search(None, "UNSEEN")
+        # UID SEARCH, not SEARCH. Plain SEARCH returns message SEQUENCE numbers,
+        # which are scoped to one session and shift as the mailbox changes -- so
+        # handing them to a later connection (see mark_messages_processed)
+        # addresses whatever message now occupies that position. That is not a
+        # failed no-op; it flags and moves the WRONG mail. UIDs are stable for
+        # the life of the mailbox, which is what makes the two-pass design safe.
+        status, data = conn.uid("SEARCH", None, "UNSEEN")
         if status != "OK":
             logger.warning("IMAP search failed in mailbox %s: %s", mailbox, status)
             return []
@@ -540,13 +546,13 @@ def fetch_unseen_messages(
         for uid in uids:
             # BODY.PEEK leaves \Seen alone so a crash mid-run doesn't silently
             # consume messages that were never actually ingested.
-            status, fetched = conn.fetch(uid, "(BODY.PEEK[])")
+            status, fetched = conn.uid("FETCH", uid, "(BODY.PEEK[])")
             if status != "OK" or not fetched or not isinstance(fetched[0], tuple):
                 logger.warning("IMAP fetch failed for uid %s", uid)
                 continue
             messages.append((uid.decode("ascii", "replace"), fetched[0][1]))
             if mark_seen:
-                conn.store(uid, "+FLAGS", "\\Seen")
+                conn.uid("STORE", uid, "+FLAGS", "\\Seen")
                 if archive_folder:
                     _archive_message(conn, uid, archive_folder)
     finally:

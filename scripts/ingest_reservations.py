@@ -131,8 +131,12 @@ def main(manifest, config_path, env_file, mailbox, threshold, limit, archive_fol
         try:
             reservation = extract_reservation(llm, subject, body)
         except Exception as exc:
-            # One unparseable email must not abandon the rest of the mailbox --
-            # and the message stays flagged read either way, so log loudly.
+            # One unparseable email must not abandon the rest of the mailbox.
+            # It also never reaches build_sidecar, so it gets no disposition and
+            # is therefore NOT filed below -- it stays unread for the next run.
+            # That is what makes a transient provider timeout recoverable: the
+            # first real ingestion lost a car rental to an xAI read timeout and
+            # picked it up on the retry.
             logger.error("uid %s (%r): extraction failed: %s", uid, subject[:60], exc)
             continue
         kind = str(reservation.get("kind", "")).lower()
