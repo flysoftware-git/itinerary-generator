@@ -997,3 +997,16 @@ def test_rasterized_pdf_is_reported_not_silently_empty(caplog) -> None:
 
     assert text == ""
     assert "rasterized" in caplog.text, caplog.text
+
+
+def test_extraction_prompt_lists_every_schema_type() -> None:
+    """The prompt was a third place restating the accepted types, and it was
+    not updated when the enum gained ship/ferry/bus/shuttle -- so the model
+    could not emit them however well it understood the email. Verified against
+    a real Silversea booking, which extracted as type "other"."""
+    from generator.manifest_parser import TRANSPORTATION_ITEM_SCHEMA
+    from generator.reservation_ingest import EXTRACTION_SYSTEM_PROMPT
+
+    for t in TRANSPORTATION_ITEM_SCHEMA["properties"]["type"]["enum"]:
+        assert f'"{t}"' in EXTRACTION_SYSTEM_PROMPT, f"{t} missing from the prompt"
+    assert "{TRANSPORT_TYPES}" not in EXTRACTION_SYSTEM_PROMPT

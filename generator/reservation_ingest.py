@@ -73,13 +73,13 @@ _MONTHS = (
 #: silently lost, with no signal that it had been.
 _MONTH_ALIASES = {m[:3]: m for m in _MONTHS}
 
-EXTRACTION_SYSTEM_PROMPT = """\
+_EXTRACTION_PROMPT_TEMPLATE = """\
 You extract travel booking details from forwarded confirmation emails.
 
 Return STRICT JSON with this shape:
 {
   "kind": "lodging" | "transportation" | "none",
-  "type": "plane" | "train" | "car" | "other",
+  "type": {TRANSPORT_TYPES},
   "provider": string,
   "label": string,
   "confirmation_number": string,
@@ -96,8 +96,9 @@ Rules:
 - "kind": "lodging" for hotel/rental-property stays; "transportation" for
   flights, trains and rental cars; "none" if the email is not a booking
   confirmation at all (newsletters, receipts for something else, spam).
-- "type" is only meaningful when kind is "transportation". Use "other" for a
-  transportation booking that is none of plane/train/car.
+- "type" is only meaningful when kind is "transportation". Use "ship" for a
+  cruise or sailing that carries the traveler between places, "ferry" for a
+  shorter crossing. Use "other" only when none of the listed values fit.
 - "city" must be the destination city or park the booking is FOR, as plainly
   as possible (e.g. "Springdale, UT"), since it is used to match the booking
   to an itinerary stop.
@@ -105,6 +106,26 @@ Rules:
   number, price, date or URL. An empty string is always better than a guess.
 - Return only the JSON object, no prose.
 """
+
+
+def _build_extraction_prompt() -> str:
+    """Fill the accepted transportation types in from the schema.
+
+    The prompt was a third place restating them, and it was not updated when
+    the enum gained ship/ferry/bus/shuttle -- so the model could not emit those
+    values however well it understood the email. Verified on a real Silversea
+    booking: it extracted as type "other". Deriving the list means the schema,
+    the icon map and the extractor cannot disagree about what a booking may be.
+    """
+    from generator.manifest_parser import TRANSPORTATION_ITEM_SCHEMA
+
+    types = TRANSPORTATION_ITEM_SCHEMA["properties"]["type"]["enum"]
+    return _EXTRACTION_PROMPT_TEMPLATE.replace(
+        "{TRANSPORT_TYPES}", " | ".join('"' + t + '"' for t in types)
+    )
+
+
+EXTRACTION_SYSTEM_PROMPT = _build_extraction_prompt()
 
 
 def _strip_html(text: str) -> str:
