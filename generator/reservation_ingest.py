@@ -149,7 +149,35 @@ def _pdf_to_text(payload: bytes, filename: str) -> str:
                 filename, len(reader.pages), PDF_MAX_PAGES,
             )
         text = "\n".join((page.extract_text() or "") for page in pages)
-        return re.sub(r"[ \t]+", " ", text).strip()
+        text = re.sub(r"[ \t]+", " ", text).strip()
+
+        if not text:
+            # A PDF with images but no fonts is rasterized -- every page is a
+            # picture of text. Common with "Microsoft Print to PDF" and with
+            # scanners, and indistinguishable from an empty attachment unless
+            # said out loud. Without this the booking extracts as almost
+            # nothing and the run still reports success, which is the worst
+            # failure shape: silent, and looking like a correct read.
+            has_images = any(
+                "/XObject" in (page.get("/Resources") or {}) for page in pages
+            )
+            has_fonts = any(
+                "/Font" in (page.get("/Resources") or {}) for page in pages
+            )
+            if has_images and not has_fonts:
+                logger.warning(
+                    "PDF attachment %r contains no extractable text -- it is "
+                    "rasterized (images, no fonts), so every page is a picture "
+                    "of text. Re-export it with a text-preserving printer "
+                    "(a browser's 'Save as PDF' rather than 'Print to PDF'), "
+                    "or forward the original confirmation email instead.",
+                    filename,
+                )
+            else:
+                logger.warning(
+                    "PDF attachment %r yielded no text.", filename
+                )
+        return text
     except Exception as exc:
         logger.warning("Could not read PDF attachment %r: %s", filename, exc)
         return ""

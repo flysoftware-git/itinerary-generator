@@ -947,3 +947,53 @@ def test_pdf_page_cap_is_enforced() -> None:
     text = _pdf_to_text(_pdf_bytes([], pages=PDF_MAX_PAGES + 10), "long.pdf")
 
     assert isinstance(text, str)  # capped, not crashed
+
+
+def _image_only_pdf() -> bytes:
+    """A structurally valid PDF whose one page carries an image XObject and no
+    font -- the shape a rasterizing printer produces. Real xref offsets are
+    required: pypdf rejects a hand-waved table before it ever reaches the
+    no-text check this exercises."""
+    NL = bytes([10])
+    objs = [
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 5 0 R"
+        b"/Resources<</XObject<</Im0 4 0 R>>>>>>",
+        b"<</Type/XObject/Subtype/Image/Width 1/Height 1/ColorSpace/DeviceGray"
+        b"/BitsPerComponent 8/Length 1>>" + NL + b"stream" + NL + bytes([0]) + NL + b"endstream",
+        b"<</Length 0>>" + NL + b"stream" + NL + NL + b"endstream",
+    ]
+    out = bytearray(b"%PDF-1.4" + NL)
+    offsets = []
+    for i, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += str(i).encode() + b" 0 obj" + NL + body + NL + b"endobj" + NL
+    xref_at = len(out)
+    out += b"xref" + NL + b"0 " + str(len(objs) + 1).encode() + NL
+    out += b"0000000000 65535 f " + NL
+    for off in offsets:
+        out += ("%010d 00000 n " % off).encode() + NL
+    out += b"trailer" + NL + b"<</Size " + str(len(objs) + 1).encode() + b"/Root 1 0 R>>" + NL
+    out += b"startxref" + NL + str(xref_at).encode() + NL + b"%%EOF" + NL
+    return bytes(out)
+
+
+def test_rasterized_pdf_is_reported_not_silently_empty(caplog) -> None:
+    """A PDF with images but no fonts is a picture of text. That is
+    indistinguishable from an empty attachment unless said out loud -- the
+    booking would extract as almost nothing while the run reported success,
+    which is the worst failure shape.
+
+    Reproduced from a real 1.7 MB print-to-PDF cruise itinerary: 7 images,
+    3 JPEG streams, zero /Font objects, zero extractable characters.
+    """
+    import logging
+
+    from generator.reservation_ingest import _pdf_to_text
+
+    with caplog.at_level(logging.WARNING):
+        text = _pdf_to_text(_image_only_pdf(), "scanned.pdf")
+
+    assert text == ""
+    assert "rasterized" in caplog.text, caplog.text
