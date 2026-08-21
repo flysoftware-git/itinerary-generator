@@ -1010,3 +1010,30 @@ def test_extraction_prompt_lists_every_schema_type() -> None:
     for t in TRANSPORTATION_ITEM_SCHEMA["properties"]["type"]["enum"]:
         assert f'"{t}"' in EXTRACTION_SYSTEM_PROMPT, f"{t} missing from the prompt"
     assert "{TRANSPORT_TYPES}" not in EXTRACTION_SYSTEM_PROMPT
+
+
+def test_cli_actually_calls_the_filing_pass() -> None:
+    """An import is not a call. mark_messages_processed was imported by the CLI
+    and never invoked -- a patch that silently failed to match -- so no message
+    was ever filed, across several real runs, while the code read as though
+    filing existed. Nothing failed; the inbox just never emptied.
+
+    A source-level assertion is crude, but the alternative is driving a click
+    command against a live mailbox, and crude beats absent for a defect whose
+    signature is silence.
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "scripts" / "ingest_reservations.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "mark_messages_processed(" in src.split("import", 1)[1], (
+        "mark_messages_processed is imported but never called"
+    )
+    # Only dispositions this manifest actually dealt with may be consumed;
+    # 'unrelated' must never appear in the handled set.
+    handled_block = src[src.index("handled = ["):src.index("filed = mark_messages_processed")]
+    assert "unrelated" not in handled_block, (
+        "another trip's booking would be filed away and lost to its own manifest"
+    )

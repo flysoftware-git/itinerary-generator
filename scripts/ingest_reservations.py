@@ -174,6 +174,20 @@ def main(manifest, config_path, env_file, mailbox, threshold, limit, archive_fol
         write_sidecar(sidecar_path, sidecar)
         click.echo(f"\nWrote {sidecar_path}")
 
+        # Consume ONLY what this manifest actually dealt with. A booking judged
+        # to belong to another trip stays unread and in place, so a manifest
+        # that does not exist yet can still find it.
+        handled = [
+            o["uid"] for o in outcomes
+            if o["disposition"] in ("attached", "pending", "duplicate", "not_a_booking")
+        ]
+        filed = mark_messages_processed(
+            host=host, user=user, password=password, mailbox=mailbox, uids=handled,
+            archive_folder=(archive_folder or None),
+        )
+        click.echo(f"Filed {filed} of {len(handled)} handled message(s); "
+                   f"{len(unrelated)} left in the inbox.")
+
     click.echo(summarize(sidecar))
     pending = sidecar.get("pending", []) or []
     if pending:
