@@ -21,7 +21,7 @@ Write a manifest in minutes. Get a polished, deployable trip guide with:
 
 ```bash
 git clone https://github.com/flysoftware-git/itinerary-generator.git
-cd road-trip-generator
+cd itinerary-generator
 ```
 
 ### 2. Bootstrap environment (Windows)
@@ -340,7 +340,7 @@ output/
 
 ## Nested Folder Cleanup (Windows)
 
-If you accidentally extracted or cloned the repo into itself (for example `road-trip-generator/road-trip-generator`), keep one canonical root and remove the duplicate copy.
+If you accidentally extracted or cloned the repo into itself (for example `itinerary-generator/itinerary-generator`), keep one canonical root and remove the duplicate copy.
 
 Safe process:
 
@@ -349,10 +349,10 @@ Safe process:
 git status --short
 
 # 2) Compare duplicate folder contents (optional)
-Get-ChildItem .\road-trip-generator -Recurse | Select-Object FullName
+Get-ChildItem .\itinerary-generator -Recurse | Select-Object FullName
 
 # 3) Remove accidental nested copy if not needed
-Remove-Item -Recurse -Force .\road-trip-generator
+Remove-Item -Recurse -Force .\itinerary-generator
 
 # 4) Verify tree is clean
 git status --short

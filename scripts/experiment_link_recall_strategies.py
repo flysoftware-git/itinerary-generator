@@ -354,7 +354,7 @@ def evaluate_candidate(discoverer: URLDiscoverer, url: str, item_name: str, dest
 
 
 def verify_url(url: str, timeout: int = 8) -> tuple[bool | None, str]:
-    headers = {"User-Agent": "Mozilla/5.0 (research probe; road-trip-generator link-recall experiment)"}
+    headers = {"User-Agent": "Mozilla/5.0 (research probe; itinerary-generator link-recall experiment)"}
     try:
         resp = requests.head(url, timeout=timeout, allow_redirects=True, headers=headers)
         if resp.status_code in (405, 403):

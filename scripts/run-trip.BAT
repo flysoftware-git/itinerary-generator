@@ -47,6 +47,10 @@ setlocal enabledelayedexpansion
 
 REM ────────────────────────────────────────────────────────────────
 REM Correct repo root (match actual casing exactly)
+REM NOTE: this is a LOCAL FILESYSTEM PATH, not the repo name. The GitHub repo
+REM was renamed to itinerary-generator on 2026-08-21; the working directory
+REM deliberately was NOT renamed, because the venv's Scripts\*.exe shims embed
+REM absolute paths and would need rebuilding. Do not "fix" this to match.
 REM ────────────────────────────────────────────────────────────────
 set REPO_ROOT=C:\Dev\road-trip-generator
 

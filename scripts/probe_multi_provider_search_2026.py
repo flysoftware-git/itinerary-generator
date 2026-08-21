@@ -104,7 +104,7 @@ def _verify_url(url: str, timeout: int = 6) -> tuple[bool, str]:
     """Cheap live-liveness check: HEAD request, fall back to a short-timeout
     GET if the host rejects HEAD (common for bot-defensive sites). Returns
     (alive, status_description)."""
-    headers = {"User-Agent": "Mozilla/5.0 (probe; road-trip-generator research)"}
+    headers = {"User-Agent": "Mozilla/5.0 (probe; itinerary-generator research)"}
     try:
         resp = requests.head(url, timeout=timeout, allow_redirects=True, headers=headers)
         if resp.status_code in (405, 403):
