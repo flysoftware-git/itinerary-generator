@@ -375,7 +375,15 @@ def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, 
 
     fragment = _clean(("provider", "label", "confirmation_number", "depart", "arrive", "website"))
     kind = str(reservation.get("type", "") or "").strip().lower()
-    fragment["type"] = kind if kind in {"plane", "train", "car", "other"} else "other"
+    # Derived from the schema rather than restated. A local copy of this set
+    # silently downgraded every type the schema gained -- a forwarded cruise
+    # confirmation extracted as `ship` was flattened to `other`, so the enum
+    # extension never reached ingested bookings at all. Same drift class as the
+    # DRIVE_DESCRIPTIONS/button pair: two places computing one answer.
+    from generator.manifest_parser import TRANSPORTATION_ITEM_SCHEMA
+
+    allowed = set(TRANSPORTATION_ITEM_SCHEMA["properties"]["type"]["enum"])
+    fragment["type"] = kind if kind in allowed else "other"
     return "transportation", fragment
 
 

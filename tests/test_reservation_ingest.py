@@ -112,9 +112,23 @@ def test_fragment_drops_fields_the_email_never_stated() -> None:
 
 
 def test_fragment_maps_unknown_transport_type_to_other() -> None:
-    _, fragment = reservation_to_manifest_fragment({"kind": "transportation", "type": "ferry"})
+    _, fragment = reservation_to_manifest_fragment({"kind": "transportation", "type": "hovercraft"})
 
     assert fragment["type"] == "other"
+
+
+def test_fragment_type_whitelist_follows_the_schema() -> None:
+    """Ingestion must not keep its own copy of the accepted types. It did, and
+    every type the schema gained was silently downgraded -- a forwarded cruise
+    confirmation extracted as `ship` became `other`, so the enum extension
+    never reached ingested bookings at all."""
+    from generator.manifest_parser import TRANSPORTATION_ITEM_SCHEMA
+
+    for accepted in TRANSPORTATION_ITEM_SCHEMA["properties"]["type"]["enum"]:
+        _, fragment = reservation_to_manifest_fragment(
+            {"kind": "transportation", "type": accepted}
+        )
+        assert fragment["type"] == accepted, f"{accepted} was downgraded"
 
 
 def test_build_sidecar_routes_confident_and_unconfident_reservations() -> None:

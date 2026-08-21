@@ -27,30 +27,25 @@ coverage, which is worse than having no matrix.
 | §10 | Persistent cache | `conftest.py` (test isolation) · `test_url_discovery.py` (TTL preservation, expiry, liveness-vs-content invariant) | warm-vs-cold cost on consecutive real runs |
 | §6 | Wikimedia throttle / 429 | `test_image_fetcher.py` (429 → retry not "no images", fallback to Unsplash) | real rate-limit behaviour under a full run |
 | §15 | Drive modal integrity | `test_html_assembler.py` (buttons == entries, cross-destination) · `test_html_validator.py` (validator check) | — |
-| §15 | **Full Route Map placement** | **NONE — see §2.1** | button visible at laptop/tablet widths |
+| §15 | Full Route Map placement | `test_html_assembler.py` (absent from nav strip, anchor well-formed, empty when no route, exactly one template slot) | button visible at laptop/tablet widths |
 | §9 | Runner postures | none (the runner is outside the repo) | environment validation, sidecar reporting, publish guard |
 
 ---
 
 ## 2. Gaps
 
-### 2.1 Full Route Map relocation is untested
+### 2.1 Full Route Map relocation — closed 2026-08-20
 
-Moving the button out of the nav strip and beside the Route Overview heading
-changed `_build_nav_tabs`, added `_build_route_map_link`, and edited the
-template. A search of the suite for `map-tab-btn` or `route_map_link` returns
-**no tests**.
+Was uncovered. Now asserted structurally: the button is absent from
+`_build_nav_tabs`' output, `_build_route_map_link` returns a well-formed anchor
+and an empty string when no route URL exists, and the template carries exactly
+one `ROUTE_MAP_LINK` slot (zero means the button silently disappears from every
+build; two leaves a raw HTML comment in the output).
 
-The original defect — the button straddling the scroll container's clip edge,
-67px cut off at 1280px — was found by eye and fixed by restructuring, then
-verified by measuring the rendered page in a browser. That verification was
-real but is not repeatable in CI.
-
-Minimum worth adding: `_build_nav_tabs` no longer emits `map-tab-btn`;
-`_build_route_map_link` returns a well-formed anchor and an empty string when
-no route URL exists; the template contains exactly one `ROUTE_MAP_LINK`
-placeholder. None of these catch a visual regression, but all three catch the
-structural mistake of the button silently vanishing.
+These do not catch a *visual* regression — the original defect, the button
+straddling a scroll container's clip edge, was found by eye and confirmed by
+measuring a rendered page. They do catch the structural mistake of the button
+vanishing, which is the failure a future edit is most likely to cause.
 
 ### 2.2 The runner is outside the repository
 

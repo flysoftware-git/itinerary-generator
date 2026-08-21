@@ -5074,3 +5074,53 @@ def test_unknown_booked_leg_type_still_renders_its_details() -> None:
 
     assert "Travel" in html
     assert "Q1" in html
+
+
+def test_full_route_map_link_is_not_in_the_nav_strip() -> None:
+    """The button used to be the last flex item in the nav's overflow-x-auto
+    row with margin-left:auto, so with enough stops it straddled that
+    container's clip edge -- 67px cut off at 1280px with 8 stops, reachable
+    only by horizontal scrolling nobody thinks to try. It now renders beside
+    the Route Overview heading, so nothing in the strip can be clipped."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    destinations = [
+        {"id": "zion", "name": "Zion National Park", "lat": 37.2, "lng": -113.0},
+        {"id": "moab", "name": "Moab", "lat": 38.5, "lng": -109.5},
+    ]
+
+    tabs = assembler._build_nav_tabs(destinations, {})
+
+    assert "map-tab-btn" not in tabs
+    assert tabs.count("tab-btn") == 2
+
+
+def test_route_map_link_renders_a_real_anchor() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+    destinations = [
+        {"id": "zion", "name": "Zion National Park", "lat": 37.2, "lng": -113.0},
+        {"id": "moab", "name": "Moab", "lat": 38.5, "lng": -109.5},
+    ]
+
+    link = assembler._build_route_map_link(destinations, {})
+
+    assert 'class="map-tab-btn"' in link
+    assert link.startswith("<a href=")
+    assert 'target="_blank" rel="noopener"' in link
+    assert "Full Route Map" in link
+
+
+def test_route_map_link_is_empty_when_there_is_no_route() -> None:
+    """An anchor to nothing is worse than no button: it looks live and isn't."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+
+    assert assembler._build_route_map_link([], {}) == ""
+
+
+def test_template_has_exactly_one_route_map_link_slot() -> None:
+    """The assembler replaces this placeholder unconditionally. Zero slots means
+    the button silently disappears from every build; two means one is left as a
+    raw HTML comment in the output."""
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert template.count("<!--ROUTE_MAP_LINK-->") == 1
+    assert template.count('class="route-overview-head"') == 1
