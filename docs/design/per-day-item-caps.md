@@ -33,13 +33,14 @@ day**, where "day" is the arriving destination's inferred day count
 
 | Item type | Method pair | Manifest field (trip/destination level) | Default |
 |---|---|---|---|
-| Attractions | `_resolve_attraction_target` / `_apply_manifest_attraction_target` | `attractions_per_day` | 4/day |
+| Attractions | `_resolve_attraction_target` / `_apply_manifest_attraction_target` | `attractions_per_day` | 5/day |
 | Restaurants | `_resolve_restaurant_target` / `_apply_manifest_restaurant_target` | `restaurants_per_day` | 4/day |
 | En-route stops | `_resolve_enroute_target` / `_apply_manifest_enroute_target` | `en_route_stops_per_day` | **4 flat, not scaled** |
-| Scenic drives | `_resolve_scenic_drive_target` / `_apply_manifest_scenic_drive_target` | `scenic_drives_per_day` | **2/day** |
+| Scenic drives | `_resolve_scenic_drive_target` / `_apply_manifest_scenic_drive_target` | `scenic_drives_per_day` | **1/day** |
 
-Scenic drives are the exception to the shared 4/day default -- see
-"Scenic-Drive Cap" below for why 2/day and where it's actually applied
+Scenic drives are the exception to the shared default -- see
+"Scenic-Drive Cap" below for why they are capped hardest, and where the cap
+is actually applied
 (not in the same `_normalize_destination_content` pipeline as the other
 three).
 
@@ -333,3 +334,31 @@ default, it directly respects that primacy convention.
   item counts), and "Predictive No-Verified-URL Skip Investigation" for a
   related same-night investigation (evaluated, not built) into predicting
   and skipping searches likely to fail before spending the call.
+
+## Revision: 2026-08-21 (attractions 4 -> 5, scenic drives 2 -> 1)
+
+Both changed together at the owner's request, to favour trails over scenic
+drives. The pairing is deliberate: dropping scenic drives frees more search
+budget than raising attractions spends, because the two types have very
+different costs per published item.
+
+Measured on the 2026-08-21 cold-start run (`coldstart-cal`, sw_manifest):
+
+| Type | Slots | Published | Search cost |
+|---|---|---|---|
+| Attractions/trails | 80 (4/day x 20 days) | ~30 | direct batch, ~5 candidates per call |
+| Scenic drives | 40 (2/day x 20 days) | 9 | one dedicated live call each |
+
+9 scenic drives consumed ~9 dedicated calls; 10 trail batch calls returned 50
+candidate rows. Roughly **5x the search cost per published item**, which is
+why this type is capped hardest rather than merely lower.
+
+### Do not expect the attraction raise to add much on its own
+
+The same run shows the attraction ceiling was **not the binding constraint**:
+80 slots available, ~30 published. What limits attraction volume today is
+candidate generation plus the verified-link-or-seed policy, which removed 23
+attractions for lacking a verified URL (of 13 logged rejections, 8 were
+nps.gov pages failing the promise-to-target check). The raise to 5/day only
+helps destinations that actually reach the ceiling -- short stopovers, where
+day_count is 1.

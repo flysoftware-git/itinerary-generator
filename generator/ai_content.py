@@ -1752,14 +1752,24 @@ class AIContentGenerator:
         """Scenic-drive counterpart to `_resolve_attraction_target`/
         `_resolve_restaurant_target`/`_resolve_enroute_target` -- same
         manifest-config precedence (destination override wins over trip
-        default, both optional) -- but a default of **2**/day, not 4. Per
-        the project owner's explicit "cap scenic drives at 2/day" ask: this
-        is intentionally HALF the other three types' default, not a typo,
-        since scenic drives are typically fewer/bigger commitments than
-        attractions. See docs/design/per-day-item-caps.md for the real-run
-        measurement behind this cap (dipstick64-73 run-console.log analysis).
+        default, both optional) -- but a default of **1**/day, not 5. This
+        is intentionally the lowest of the four types, not a typo. See
+        docs/design/per-day-item-caps.md for the real-run measurement behind
+        the original cap (dipstick64-73 run-console.log analysis).
+
+        History: 2/day per the project owner's original "cap scenic drives at
+        2/day" ask; lowered to 1/day on 2026-08-21 at the same owner's
+        request, to favour trails.
+
+        The cost asymmetry is why this type is capped hardest. Scenic drives
+        have no direct-batch harvest fallback, so each published drive costs
+        its own individual paid web_search, while attractions and trails
+        arrive roughly five per batch call. Measured on the 2026-08-21
+        cold-start run: 9 scenic drives ~= 9 dedicated calls, against 10
+        trail batch calls that returned 50 candidate rows -- about 5x the
+        search cost per published item.
         """
-        default_target = 2
+        default_target = 1
         trip_value = trip_meta.get("scenic_drives_per_day") if isinstance(trip_meta, dict) else None
         dest_value = dest.get("scenic_drives_per_day") if isinstance(dest, dict) else None
         candidate = dest_value if dest_value is not None else trip_value
@@ -3322,7 +3332,20 @@ class AIContentGenerator:
         # searches whatever ai_content.py hands it, so a lower per-type ceiling
         # here is what actually keeps the number of paid Grok web_search calls
         # down, not a change anywhere in url_discovery.py itself.
-        default_target = 4
+        #
+        # 2026-08-21: raised 4 -> 5 at the owner's request, paired with dropping
+        # scenic drives 2 -> 1 (which frees more search budget than this spends,
+        # since every scenic drive costs an individual live call and attractions
+        # come five-at-a-time from a direct batch).
+        #
+        # Measured caveat, recorded so the next reader does not expect too much:
+        # on the 2026-08-21 cold-start run this ceiling was NOT the binding
+        # constraint. The trip had 80 attraction slots (4/day x 20 days) and the
+        # run published roughly 30. What limits attraction volume today is
+        # candidate generation plus the verified-link-or-seed policy, which
+        # removed 23 attractions for lacking a verified URL. Raising the ceiling
+        # only helps destinations that actually hit it.
+        default_target = 5
         trip_value = trip_meta.get("attractions_per_day") if isinstance(trip_meta, dict) else None
         dest_value = dest.get("attractions_per_day") if isinstance(dest, dict) else None
         candidate = dest_value if dest_value is not None else trip_value

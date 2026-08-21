@@ -502,12 +502,12 @@ def test_generate_destination_content_strips_markdown_before_url_discovery_would
 
 def test_generate_destination_content_applies_scenic_drive_cap_before_url_discovery_would_see_it() -> None:
     """Integration-level check that generate_destination_content trims
-    dest['scenic_drives'] to the 2/day cap itself (via
+    dest['scenic_drives'] to the 1/day cap itself (via
     _apply_manifest_scenic_drive_target), not just that a later
     normalize_trip_content pass eventually cleans it up -- URL discovery
     reads dest['scenic_drives'] before normalize_trip_content ever runs, so
     an uncapped list here would still cost one live search call per extra
-    drive. A 1-day destination (dates spans a single day) caps at 2."""
+    drive. A 1-day destination (dates spans a single day) caps at 1."""
     g = _gen_with_bundle_templates()
     g._llm = type("MockLLM", (), {"provider": "openai"})()
     g._max_concurrent_destinations = 5
@@ -527,7 +527,7 @@ def test_generate_destination_content_applies_scenic_drive_cap_before_url_discov
         g.generate_destination_content(trip)
 
     dest = trip["destinations"][0]
-    assert [d["title"] for d in dest["scenic_drives"]] == ["Drive 0", "Drive 1"]
+    assert [d["title"] for d in dest["scenic_drives"]] == ["Drive 0"]
 
 
 def test_resolve_grouping_aware_prev_next_names_skips_day_trip_children() -> None:
@@ -836,12 +836,13 @@ def test_manifest_attraction_target_keeps_seeded_names_in_output() -> None:
     assert "Sunrise Point" in names
 
 
-def test_resolve_attraction_target_default_is_four_per_day() -> None:
-    """Cost-reduction pass: attractions' default per-day cap was raised from
-    2 to 4 so all three item types (attractions/restaurants/en-route stops)
-    share the same uniform ceiling. See docs/design/per-day-item-caps.md."""
+def test_resolve_attraction_target_default_is_five_per_day() -> None:
+    """Cost-reduction pass raised attractions 2 -> 4 to share a uniform
+    ceiling with restaurants/en-route stops; 2026-08-21 raised it again to 5,
+    paired with dropping scenic drives to 1/day. See
+    docs/design/per-day-item-caps.md."""
     g = _gen()
-    assert g._resolve_attraction_target({}, {}) == 4
+    assert g._resolve_attraction_target({}, {}) == 5
 
 
 def test_resolve_attraction_target_destination_override_wins_over_trip() -> None:
@@ -851,8 +852,9 @@ def test_resolve_attraction_target_destination_override_wins_over_trip() -> None
 
 def test_manifest_attraction_target_scales_with_bryce_canyon_three_day_stay() -> None:
     """Grounded in the real sw_manifest.yaml Bryce Canyon National Park entry
-    (a 3-day stay, 'October 19-21, 2026'): at the new default of 4/day, up to
-    12 attractions should survive instead of the old 2/day * 3 = 6 ceiling."""
+    (a 3-day stay, 'October 19-21, 2026'): at the 2026-08-21 default of
+    5/day, up to 15 attractions should survive, against 12 at the previous
+    4/day and 6 at the original 2/day."""
     g = _gen()
     items = [
         {"name": f"Attraction {i}", "type": "attraction", "rating": 4.9 - i * 0.05, "votes": 100, "must_see": False}
@@ -863,13 +865,13 @@ def test_manifest_attraction_target_scales_with_bryce_canyon_three_day_stay() ->
         items, dates="October 19-21, 2026", attractions_per_day=g._resolve_attraction_target({}, {})
     )
 
-    assert len(out) == 12
+    assert len(out) == 15
 
 
 def test_manifest_attraction_target_scales_with_st_george_one_day_stopover() -> None:
     """Grounded in the real sw_manifest.yaml St. George, Utah entry (a 1-day
-    stopover, 'October 17, 2026'): at the new default of 4/day, up to 4
-    attractions should survive instead of the old 2/day * 1 = 2 ceiling."""
+    stopover, 'October 17, 2026'): at the 2026-08-21 default of 5/day, up to
+    5 attractions should survive, against 4 at the previous 4/day."""
     g = _gen()
     items = [
         {"name": f"Attraction {i}", "type": "attraction", "rating": 4.9 - i * 0.05, "votes": 100, "must_see": False}
@@ -880,7 +882,7 @@ def test_manifest_attraction_target_scales_with_st_george_one_day_stopover() -> 
         items, dates="October 17, 2026", attractions_per_day=g._resolve_attraction_target({}, {})
     )
 
-    assert len(out) == 4
+    assert len(out) == 5
 
 
 def test_resolve_restaurant_target_default_is_four_per_day() -> None:
@@ -1024,11 +1026,17 @@ def test_manifest_enroute_target_is_flat_not_scaled_by_day_count() -> None:
     assert len(three_day) == 4
 
 
-def test_resolve_scenic_drive_target_default_is_two_per_day() -> None:
-    """Half the other three types' 4/day default, per the explicit
-    'cap scenic drives at 2/day' ask -- not a typo."""
+def test_resolve_scenic_drive_target_default_is_one_per_day() -> None:
+    """The lowest cap of the four types, not a typo. Originally 2/day per
+    the explicit 'cap scenic drives at 2/day' ask, lowered to 1/day on
+    2026-08-21 to favour trails.
+
+    Scenic drives are capped hardest because they are the most expensive
+    type per published item: no direct-batch harvest fallback exists, so
+    each drive costs its own individual paid web_search, while attractions
+    and trails arrive ~5 per batch call."""
     g = _gen()
-    assert g._resolve_scenic_drive_target({}, {}) == 2
+    assert g._resolve_scenic_drive_target({}, {}) == 1
 
 
 def test_resolve_scenic_drive_target_destination_override_wins_over_trip() -> None:
