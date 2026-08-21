@@ -48,7 +48,7 @@ _WIKIMEDIA_LAST_REQUEST_AT = 0.0
 # https://meta.wikimedia.org/wiki/User-Agent_policy
 WIKIMEDIA_USER_AGENT = (
     "RoadTripItineraryGenerator/2.0 "
-    "(https://github.com/flysoftware-git/road-trip-generator)"
+    "(https://github.com/flysoftware-git/itinerary-generator)"
 )
 # Brief pacing delay after each downloaded image file. This is NOT a
 # documented rate limit for any of the three hosts it applies to uniformly

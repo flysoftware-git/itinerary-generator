@@ -1,4 +1,4 @@
-# Road Trip Itinerary Generator — Design Document
+# Itinerary Generator — Design Document
 
 **Version 2.2 · August 18, 2026**
 Describes generator `v2.1.0`, template `v2.5`, branch `v2`.

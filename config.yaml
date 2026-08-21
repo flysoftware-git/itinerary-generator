@@ -1,4 +1,4 @@
-# Road Trip Itinerary Generator — Configuration
+# Itinerary Generator — Configuration
 # Version: 1.2.0
 # All secrets come from environment variables. Never store keys here.
 

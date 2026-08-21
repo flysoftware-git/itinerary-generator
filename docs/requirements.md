@@ -1,4 +1,4 @@
-# Road Trip Itinerary Generator — Requirements Document
+# Itinerary Generator — Requirements Document
 **Version 2.2 · August 18, 2026**
 
 ### Changelog for v2.2

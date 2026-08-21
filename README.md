@@ -1,4 +1,4 @@
-# Road Trip Itinerary Generator
+# Itinerary Generator
 
 A Python CLI tool that transforms a minimal YAML trip manifest into a single self-contained `index.html` road trip itinerary — visually and functionally identical to the [Southwest Road Trip Itinerary v2.5](https://swiftsure-pro.github.io/Travel-apps/dev), with AI-generated content tailored to any destinations worldwide.
 
@@ -20,7 +20,7 @@ Write a manifest in minutes. Get a polished, deployable trip guide with:
 ### 1. Clone
 
 ```bash
-git clone https://github.com/flysoftware-git/road-trip-generator.git
+git clone https://github.com/flysoftware-git/itinerary-generator.git
 cd road-trip-generator
 ```
 

@@ -1,5 +1,5 @@
 """
-main.py — CLI entry point for the Road Trip Itinerary Generator.
+main.py — CLI entry point for the Itinerary Generator.
 
 Usage:
   python -m generator.main --manifest trip_manifest.yaml --output output/
@@ -1928,7 +1928,7 @@ def main(
     output_dir = Path(output)
     retry_policy = _load_destination_retry_policy(config_path)
 
-    click.echo(f"🗺  Road Trip Itinerary Generator")
+    click.echo(f"🗺  Itinerary Generator")
     click.echo(f"   Manifest : {manifest}")
     click.echo(f"   Output   : {output_dir.resolve()}")
     click.echo(f"   Config   : {config_path}")
