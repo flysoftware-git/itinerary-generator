@@ -1,3 +1,4 @@
+import logging
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -510,3 +511,72 @@ def test_call_gemini_warns_when_response_truncated(monkeypatch, caplog) -> None:
         client._call_gemini("sys prompt", "user prompt", 0.2, 512)
 
     assert any("truncated" in rec.message for rec in caplog.records)
+
+class TestCostReportingBlindSpotWarnings:
+    """Guards against silently reporting $0.00 for cost that is really being billed.
+
+    On 2026-08-16 and 08-17 the ledger recorded ~$0.00 of token cost against
+    ~$24/day of real xAI billing, because the configured model had no pricing
+    entry and _estimate_cost returned 0.0 without saying anything. Each guard
+    below turns one such silent zero into a warning.
+    """
+
+    def test_unpriced_model_warns_once(self, caplog):
+        tracker = UsageTracker()
+        with caplog.at_level(logging.WARNING):
+            tracker.add(provider="grok", model="grok-9-not-a-real-model",
+                        operation="x", prompt_tokens=1000, completion_tokens=100)
+            tracker.add(provider="grok", model="grok-9-not-a-real-model",
+                        operation="y", prompt_tokens=1000, completion_tokens=100)
+        hits = [r for r in caplog.records if "no pricing entry" in r.message]
+        # Once per run, not once per call -- a run makes hundreds of these.
+        assert len(hits) == 1
+        assert tracker.summary()["total_estimated_cost_usd"] == 0.0
+
+    def test_priced_model_does_not_warn(self, caplog):
+        tracker = UsageTracker()
+        with caplog.at_level(logging.WARNING):
+            tracker.add(provider="grok", model="grok-latest", operation="x",
+                        prompt_tokens=1000, completion_tokens=100)
+        assert not [r for r in caplog.records if "blind spot" in r.message]
+
+    def test_tool_calls_for_unpriced_provider_warn(self, caplog):
+        tracker = UsageTracker(tool_call_pricing_map={"grok": 5.00})
+        with caplog.at_level(logging.WARNING):
+            tracker.add(provider="anthropic", model="claude-sonnet-5", operation="search",
+                        prompt_tokens=100, completion_tokens=10, tool_calls=7)
+        assert [r for r in caplog.records if "tool-call pricing table" in r.message]
+
+    def test_search_provider_reporting_no_tool_counts_warns_at_summary(self, caplog):
+        """The claude_search.py hole: token usage recorded, tool count never read."""
+        tracker = UsageTracker()
+        for _ in range(5):
+            tracker.add(provider="anthropic", model="claude-sonnet-5",
+                        operation="claude:search", prompt_tokens=100, completion_tokens=10)
+        with caplog.at_level(logging.WARNING):
+            tracker.summary()
+        assert [r for r in caplog.records if "ZERO tool invocations" in r.message]
+
+    def test_occasional_zero_tool_call_search_does_not_warn(self, caplog):
+        """A model may decide a query needs no search. That is not a blind spot.
+
+        This is why the check is per-run and not per-call: warning on every
+        zero-tool search call would fire constantly against grok, which
+        reports the count correctly.
+        """
+        tracker = UsageTracker()
+        tracker.add(provider="grok", model="grok-latest", operation="grok:search",
+                    prompt_tokens=100, completion_tokens=10, tool_calls=0)
+        tracker.add(provider="grok", model="grok-latest", operation="grok:search",
+                    prompt_tokens=100, completion_tokens=10, tool_calls=2)
+        with caplog.at_level(logging.WARNING):
+            tracker.summary()
+        assert not [r for r in caplog.records if "ZERO tool invocations" in r.message]
+
+    def test_non_search_operations_never_warn_about_tool_counts(self, caplog):
+        tracker = UsageTracker()
+        tracker.add(provider="grok", model="grok-latest", operation="grok:chat_completion",
+                    prompt_tokens=100, completion_tokens=10)
+        with caplog.at_level(logging.WARNING):
+            tracker.summary()
+        assert not [r for r in caplog.records if "blind spot" in r.message]

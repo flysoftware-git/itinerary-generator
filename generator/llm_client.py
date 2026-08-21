@@ -165,6 +165,17 @@ class UsageTracker:
         self._tool_call_pricing = tool_call_pricing_map or DEFAULT_TOOL_CALL_PRICING_USD_PER_1000
         self._records: list[UsageRecord] = []
         self._lock = threading.Lock()
+        # Keys already warned about, so a blind spot is reported once per run
+        # rather than once per call. Guarded by _lock -- _warn_once is reached
+        # from the parallel stages.
+        self._warned: set[str] = set()
+
+    def _warn_once(self, key: str, message: str, *args: Any) -> None:
+        with self._lock:
+            if key in self._warned:
+                return
+            self._warned.add(key)
+        logger.warning(message, *args)
 
     def add(
         self,
@@ -211,6 +222,17 @@ class UsageTracker:
                     prices = pricing_val
                     best_match_len = len(m)
         if not prices:
+            # Silently returning 0.0 here is how token cost reported $0.00/day
+            # against $24/day of real xAI billing on 2026-08-16 and 08-17: the
+            # configured model had no pricing entry and nothing said so. The
+            # ledger looked healthy because search fees still totalled up.
+            self._warn_once(
+                f"unpriced-model:{key}",
+                "Cost reporting blind spot: no pricing entry for %r (and no prefix match). "
+                "Token cost is being recorded as $0.00 for every call to this model. Add it "
+                "to DEFAULT_PRICING_USD_PER_1M or the config pricing map.",
+                key,
+            )
             return 0.0
         in_cost = (in_tokens / 1_000_000) * prices.get("input", 0.0)
         out_cost = (out_tokens / 1_000_000) * prices.get("output", 0.0)
@@ -221,8 +243,51 @@ class UsageTracker:
             return 0.0
         price_per_1000 = self._tool_call_pricing.get(provider)
         if not price_per_1000:
+            # Only reachable once the provider HAS reported tool calls, so this
+            # is always a real unbilled cost, never a no-op path.
+            self._warn_once(
+                f"unpriced-tool-calls:{provider}",
+                "Cost reporting blind spot: %d tool call(s) recorded for provider %r, which "
+                "has no entry in the tool-call pricing table. Search fees are being recorded "
+                "as $0.00. Add it to DEFAULT_TOOL_CALL_PRICING_USD_PER_1000.",
+                tool_calls, provider,
+            )
             return 0.0
         return round((tool_calls / 1000) * price_per_1000, 6)
+
+    def _warn_on_missing_tool_counts(self) -> None:
+        """Flag a provider whose search calls never reported a tool-invocation count.
+
+        Checked once per run rather than per call, deliberately. A single
+        search call legitimately reports zero tool invocations -- the model
+        can decide the answer needs no search -- so a per-call warning would
+        fire constantly on grok, which reports the count correctly. Across a
+        whole run, though, a search-performing provider that reports zero
+        every single time is not being frugal: its usage field is not being
+        read at all, and its per-invocation search fees (the largest single
+        line on the real bill) are silently absent from the ledger.
+
+        This is not hypothetical: claude_search.py records token usage but
+        never reads Anthropic's tool-count field, so it would report $0.00 of
+        search fees for an entire run. It is latent only because the current
+        config routes search to grok.
+        """
+        searched: dict[str, int] = {}
+        for rec in self._records:
+            if "search" not in rec.operation:
+                continue
+            searched[rec.provider] = searched.get(rec.provider, 0) + rec.tool_calls
+        for provider, tool_calls in searched.items():
+            if tool_calls > 0:
+                continue
+            self._warn_once(
+                f"no-tool-count:{provider}",
+                "Cost reporting blind spot: provider %r ran search operations this run but "
+                "reported ZERO tool invocations across all of them. Per-invocation search "
+                "fees are absent from this run's cost estimate. The provider's usage block "
+                "almost certainly has a tool-count field that is not being read.",
+                provider,
+            )
 
     def summary(self) -> dict[str, Any]:
         by_model: dict[str, dict[str, Any]] = {}
@@ -249,6 +314,8 @@ class UsageTracker:
             bucket["tool_calls"] += rec.tool_calls
             bucket["tool_call_cost_usd"] = round(bucket["tool_call_cost_usd"] + rec.tool_call_cost_usd, 6)
             bucket["estimated_cost_usd"] = round(bucket["estimated_cost_usd"] + rec.estimated_cost_usd, 6)
+
+        self._warn_on_missing_tool_counts()
 
         rows = sorted(by_model.values(), key=lambda x: x["estimated_cost_usd"], reverse=True)
         total = round(sum(x["estimated_cost_usd"] for x in rows), 6)
