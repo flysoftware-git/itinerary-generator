@@ -1506,6 +1506,22 @@ def _append_run_ledger(ledger_path: Path, record: dict) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _record_observed_models(llm_client, llm_effective: dict) -> dict:
+    """Return the usage summary, recording the provider-reported model names.
+
+    Pricing is keyed on the name the provider reports back, not the name we
+    configured, so this is the field that explains a cost estimate. Returns
+    the summary unchanged so it can be used inline where usage_summary() was.
+    """
+    usage = llm_client.usage_summary()
+    llm_effective["observed_models"] = sorted({
+        f"{m.get('provider')}:{m.get('model')}"
+        for m in (usage.get("models") or [])
+        if m.get("model")
+    })
+    return usage
+
+
 def _filter_destinations(
     trip: dict,
     destination_ids: tuple[str, ...],
@@ -1861,6 +1877,19 @@ def main(
     finalized = False
     stage_timings: dict[str, float] = {}
     runtime_metrics: dict[str, Any] = {}
+    # What the run ACTUALLY used, as opposed to the llm_provider/llm_model
+    # fields in the ledger record, which are the CLI overrides and are
+    # therefore null on every run that does not pass --llm-model. That gap
+    # cost real time on 2026-08-21: reconciling the ledger against xAI's
+    # billing needed to know which model each historical run had used, and
+    # the ledger had never recorded it.
+    #
+    # `configured_model` is what we asked for; `observed_models` is what the
+    # provider says it served. These differ whenever the configured name is
+    # an ALIAS -- asking for "grok-latest" was answered as "grok-4-fast" --
+    # and that difference is exactly what makes cost attribution wrong,
+    # because pricing is looked up on the observed name.
+    llm_effective: dict[str, Any] = {}
     image_counter_delta: dict[str, int] = {}
     url_validator_counter_delta: dict[str, int] = {}
     repo_root = Path(__file__).resolve().parent.parent
@@ -1892,8 +1921,11 @@ def main(
             "env_file": env_file,
             "privacy_mode": privacy_mode,
             "privacy_redacted": bool(redact_privacy_details),
+            # CLI overrides only -- null unless --llm-provider/--llm-model was
+            # passed. See llm_effective for what the run actually used.
             "llm_provider": llm_provider,
             "llm_model": llm_model,
+            "llm_effective": llm_effective,
             "search_provider_override": search_provider,
             "build_tag": build_tag,
             "dry_run": bool(dry_run),
@@ -2192,6 +2224,10 @@ def main(
         click.style(", model = ", fg="cyan") +
         click.style(llm_client.model, fg="green")
     )
+    # Seeded here rather than at the end so a run that dies mid-pipeline
+    # still records what it was configured to use.
+    llm_effective["provider"] = llm_client.provider
+    llm_effective["configured_model"] = llm_client.model
 
     ai_gen = AIContentGenerator(config_path, llm_client=llm_client)
     ai_gen.generate_all(trip)
@@ -2447,7 +2483,7 @@ def main(
         "llm": {
             "provider": llm_client.provider,
             "model": llm_client.model,
-            "usage": llm_client.usage_summary(),
+            "usage": _record_observed_models(llm_client, llm_effective),
         },
     }
     assembler = HTMLAssembler(config_path)
