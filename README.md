@@ -1,6 +1,6 @@
 # Itinerary Generator
 
-A Python CLI tool that transforms a minimal YAML trip manifest into a single self-contained `index.html` road trip itinerary — visually and functionally identical to the [Southwest Road Trip Itinerary v2.5](https://swiftsure-pro.github.io/Travel-apps/dev), with AI-generated content tailored to any destinations worldwide.
+A Python CLI tool that transforms a minimal YAML trip manifest into a single self-contained `index.html` travel itinerary — visually and functionally identical to the [Southwest Road Trip Itinerary v2.5](https://swiftsure-pro.github.io/Travel-apps/sw/prod/), with AI-generated content tailored to any destinations worldwide.
 
 Write a manifest in minutes. Get a polished, deployable trip guide with:
 - AI-generated environment descriptions, attraction writeups, en-route stops, and daily schedules
