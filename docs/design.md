@@ -1136,6 +1136,7 @@ Every note in [`docs/design/`](design/README.md), and where it connects to this 
 | [`reservation-email-ingestion.md`](design/reservation-email-ingestion.md) | forwarded confirmations → manifest data | §1.1, §2.6 |
 | [`multimodal-routing.md`](design/multimodal-routing.md) | transit-aware legs (GH #2, design only) | §1.4, §2.6 |
 | [`per-day-item-caps.md`](design/per-day-item-caps.md) | per-day item targets and trimming | §2.5 |
+| [`cost-accounting-and-reduction.md`](design/cost-accounting-and-reduction.md) | measuring run spend against the provider's bill; benchmarking procedure | §2.5 |
 | [`building-attractions.md`](design/building-attractions.md) | generation, normalization, ordering | §2.5, §5.1, §6.3 |
 | [`url-discovery-and-audit.md`](design/url-discovery-and-audit.md) | discovery, scoring, filtering | §1.3, §1.4, §2.1, §7.2 |
 | [`fallback-curation-contract.md`](design/fallback-curation-contract.md) | harvest → qualify → curate → publish ownership | §1.4, §2.1, §3.2, §7.2, principle 2 |

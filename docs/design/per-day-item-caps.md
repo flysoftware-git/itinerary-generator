@@ -362,3 +362,5 @@ attractions for lacking a verified URL (of 13 logged rejections, 8 were
 nps.gov pages failing the promise-to-target check). The raise to 5/day only
 helps destinations that actually reach the ceiling -- short stopovers, where
 day_count is 1.
+
+> **See also:** `cost-accounting-and-reduction.md` — the per-day caps are one cost lever among several, and that note carries the measured spend breakdown they were tuned against (URL discovery is 91% of tokens; these caps bound what discovery is asked to find).
