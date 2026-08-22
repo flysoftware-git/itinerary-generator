@@ -286,7 +286,16 @@ url_discovery:
   alltrails_source: direct_link_batch
   attraction_source: direct_link_batch
   restaurant_source: direct_link_batch
-  en_route_source: direct_link_batch
+  # En-route stops resolve to a Google Maps link, not a website. They are
+  # waypoints on a drive -- the traveller needs to FIND the pullout, not read
+  # about it. Measured 2026-08-21: chasing websites for them produced 253 of
+  # 301 batch candidate rejections (~4 per stop), because the candidates were
+  # land-agency landing pages (blm.gov, nps.gov, fs.usda.gov) offered for a
+  # specific roadside stop. That granularity does not exist to be found, so
+  # the searches could not be tuned into succeeding. The Maps link is built
+  # locally and costs nothing. Set back to direct_link_batch to restore
+  # website discovery.
+  en_route_source: maps
   direct_batch_authoritative: true
   direct_link_batch_count: 20
   restaurant_direct_batch_item_count: 8

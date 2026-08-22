@@ -17165,3 +17165,60 @@ class TestAttractionBatchPrewarmWithItineraryItems:
             disc._prewarm_attraction_batch_with_itinerary_items(
                 ai=ai, dest_name="Arches National Park", dest_dates="", seed_names=None
             )  # must not raise
+
+
+class TestEnRouteStopsResolveToMaps:
+    """En-route stops resolve to a Google Maps link, not a website.
+
+    They are waypoints on a drive: the traveller needs to find the pullout,
+    not read about it. Measured on the 2026-08-21 cold-start run, chasing
+    websites for them produced 253 of 301 batch candidate rejections -- about
+    four rejected candidates per stop -- because the candidates were
+    land-agency landing pages (blm.gov 55, nps.gov 48, fs.usda.gov 24)
+    offered for a specific roadside stop. That page granularity does not
+    exist, so the searches could not be tuned into succeeding.
+    """
+
+    @staticmethod
+    def _discoverer():
+        mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            return URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+
+    def test_verified_geocode_produces_a_coordinate_link(self):
+        """Coordinates beat a name search: they resolve to the exact spot,
+        and _prune_en_route_stops_by_geometry has already checked that
+        coordinate against the real route."""
+        disc = self._discoverer()
+        # lat/lng must be numeric: _item_has_verified_route_geocode requires
+        # int/float, so a stringified coordinate is deliberately NOT trusted.
+        stop = {"name": "Canyon Overlook", "route_waypoint_eligible": True,
+                "geocode_lat": 37.2128153, "geocode_lng": -112.9445374}
+        url = disc._en_route_maps_url(stop, "Canyon Overlook", "Zion National Park")
+        assert "google.com/maps/search/" in url
+        assert "37.2128153%2C-112.9445374" in url or "37.2128153,-112.9445374" in url
+
+    def test_without_a_geocode_it_falls_back_to_a_name_query(self):
+        disc = self._discoverer()
+        url = disc._en_route_maps_url({"name": "Shafer Canyon Overlook"}, "Shafer Canyon Overlook", "Canyonlands National Park")
+        assert "google.com/maps/search/" in url
+        assert "Shafer" in url
+
+    def test_maps_mode_is_an_accepted_en_route_source(self):
+        disc = self._discoverer()
+        assert getattr(disc, "_en_route_source", "") == "maps"
+
+    def test_stringified_coordinates_are_not_trusted_and_fall_back_to_name(self):
+        """_item_has_verified_route_geocode requires numeric lat/lng. A stop
+        carrying strings has not been through the geometry check, so it must
+        not be presented as an exact pin."""
+        disc = self._discoverer()
+        stop = {"name": "Canyon Overlook", "route_waypoint_eligible": True,
+                "geocode_lat": "37.2128153", "geocode_lng": "-112.9445374"}
+        url = disc._en_route_maps_url(stop, "Canyon Overlook", "Zion National Park")
+        assert "37.2128153" not in url
+        assert "Canyon" in url
+
+    def test_a_nameless_stop_yields_no_link_rather_than_a_bare_destination_pin(self):
+        disc = self._discoverer()
+        assert disc._en_route_maps_url({}, "", "") == ""

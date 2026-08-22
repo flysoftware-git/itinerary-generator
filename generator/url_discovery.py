@@ -894,7 +894,7 @@ class URLDiscoverer:
         if restaurant_override in {"search", "direct_link_batch"}:
             self._restaurant_source = restaurant_override
         en_route_override = str(en_route_source or "").strip().lower().replace("-", "_")
-        if en_route_override in {"search", "direct_link_batch"}:
+        if en_route_override in {"search", "direct_link_batch", "maps"}:
             self._en_route_source = en_route_override
         self._load_url_policy_allowlist()
         self._load_persistent_caches()
@@ -1332,7 +1332,7 @@ class URLDiscoverer:
                 url_cfg.get("en_route_source", DEFAULT_EN_ROUTE_SOURCE)
                 or DEFAULT_EN_ROUTE_SOURCE
             ).strip().lower().replace("-", "_")
-            if en_route_source in {"search", "direct_link_batch"}:
+            if en_route_source in {"search", "direct_link_batch", "maps"}:
                 self._en_route_source = en_route_source
 
             direct_link_batch_count = url_cfg.get("direct_link_batch_count", DEFAULT_DIRECT_LINK_BATCH_COUNT)
@@ -2804,6 +2804,25 @@ class URLDiscoverer:
                         )
                         url = batch_trail_url
                 direct_batch_authoritative_url = self._is_remembered_direct_batch_authoritative_url(url, stop_name)
+                # "maps" mode: resolve the stop to a Google Maps link instead
+                # of hunting a website. An AllTrails URL already harvested by
+                # the trail batch still wins -- it is free, trail-specific,
+                # and strictly more useful than a pin.
+                en_route_maps_mode = (
+                    str(getattr(self, "_en_route_source", DEFAULT_EN_ROUTE_SOURCE) or "") == "maps"
+                )
+                if en_route_maps_mode and not self._is_alltrails_trail_url(url):
+                    maps_primary = self._en_route_maps_url(stop, stop_name, dest_name)
+                    if maps_primary:
+                        self._log_decision(
+                            kind="en-route stop",
+                            dest_name=dest_name,
+                            item_name=stop_name,
+                            reason="en_route_resolved_to_maps",
+                            message=f"resolved to a Maps link instead of a website (was {url or '(none)'})",
+                            url=maps_primary,
+                        )
+                        url = maps_primary
                 maps_url = str(stop.get("maps_url", "") or "").strip()
                 if not maps_url and self._classify_url_policy_class(url) in {"google_maps_search", "google_maps_dir"}:
                     maps_url = url
@@ -2814,6 +2833,9 @@ class URLDiscoverer:
                     allow_alltrails=stop_trail_like,
                     kind="en-route stop",
                     is_seed=stop_is_seed,
+                    # A Maps link IS the intended answer in this mode, so it
+                    # must not be rejected as a vague search result.
+                    allow_google_maps_search=en_route_maps_mode,
                 )
                 if cleaned != url:
                     self._log_rejected_url("en-route stop", dest_name, stop_name, url)
@@ -4249,6 +4271,35 @@ class URLDiscoverer:
             "google_maps_search",
             "google_maps_dir",
         }
+
+    def _en_route_maps_url(self, stop: dict[str, Any], stop_name: str, dest_name: str) -> str:
+        """A Google Maps link for an en-route stop, built locally at zero cost.
+
+        Why en-route stops resolve to Maps rather than a website: they are
+        waypoints on a drive. The traveller needs to *find* the pullout, not
+        read about it. Chasing websites for them was the single largest
+        source of wasted discovery on the 2026-08-21 cold-start run -- 253 of
+        301 batch candidate rejections were en-route stops, roughly four
+        rejected candidates per stop. The domains show why it could not be
+        tuned away: blm.gov (55), nps.gov (48), roadtripryan.com (31),
+        fs.usda.gov (24). Those are the right domains offering the wrong
+        page -- a land-agency landing page for a specific roadside pullout.
+        The granularity simply does not exist to be found.
+
+        Prefers the coordinate form when the stop carries a route-verified
+        geocode, because it resolves to the exact spot rather than whatever
+        a name search happens to match -- and `_prune_en_route_stops_by_geometry`
+        has already sanity-checked that coordinate against the actual route.
+        """
+        if self._item_has_verified_route_geocode(stop):
+            lat = str(stop.get("geocode_lat", "") or "").strip()
+            lng = str(stop.get("geocode_lng", "") or "").strip()
+            if lat and lng:
+                return f"https://www.google.com/maps/search/?api=1&query={quote(f'{lat},{lng}')}"
+        query_text = self._maps_fallback_query_text(stop_name, dest_name)
+        if not query_text:
+            return ""
+        return f"https://www.google.com/maps/search/?api=1&query={quote(query_text)}"
 
     @staticmethod
     def _item_has_verified_route_geocode(item: dict[str, Any]) -> bool:
@@ -10468,6 +10519,11 @@ class URLDiscoverer:
             else (getting_here.get("en_route_stops", []) if isinstance(getting_here.get("en_route_stops", []), list) else [])
         )
 
+        # "maps" mode buys nothing from the harvest: the stop resolves to a
+        # Google Maps link built locally, so there is no website to find.
+        # Skipping the batch here is most of the saving -- on the 2026-08-21
+        # cold-start run the en-route batches were 10 of 38 harvest calls at
+        # ~24,000 tokens each.
         if source_mode == "direct_link_batch" and not en_route_stop_deferred:
             en_route_seed_names = [
                 str(seed or "").strip()
