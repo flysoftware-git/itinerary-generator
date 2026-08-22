@@ -653,6 +653,53 @@ long as `tool_call_cost_usd` did not exist.
 
 ---
 
+### 6.4 Maps Platform terms — researched 2026-08-21, and they are the blocker
+
+Open question 6 asked whether the ToS posture is acceptable for a `prod` build published to
+public GitHub Pages. Researched, and **cost is not the deciding factor — licensing is.**
+
+**Pricing, for completeness.** Routes API bills in three tiers, roughly $5 / $10 / $15 per
+1,000 requests depending on which fields the request includes. Google's own
+usage-and-billing page does not state which tier a `TRANSIT` route falls into, nor whether
+asking for transit details (departure/arrival times, line info) promotes the request to a
+higher tier, nor any free allowance. **Treat the per-leg cost as unconfirmed.** At ~20
+destination-legs per trip it is small either way — this was never going to be the problem.
+
+**The problem is three clauses that interact badly with what this product actually does.**
+
+| Clause | Source | Our situation |
+| --- | --- | --- |
+| "Directions API results displayed on a map must be shown on a Google Map" | Directions policies | Our output renders a **Leaflet** map (`leaflet@1.9.4`, confirmed in the 2026-08-21 build) |
+| Displayed *without* a map: requires a visible Google logo and "Google Maps" attribution, with prescribed styling and placement | Directions policies | Feasible, but constrains the card design |
+| Caching/storage is restricted — lat/lng for at most 30 consecutive days, then deletion; other Directions data per the agreement (place IDs exempt) | Maps service terms | **This is the fatal one.** See below |
+
+**Why the caching clause is fatal to the current model.** This product generates a static
+HTML page and publishes it. A trip built in August for an October departure sits on GitHub
+Pages for months, with any transit times baked into the HTML. That is not caching, it is
+indefinite republication of Directions content — and the page is public, so it is
+republication to the world. No 30-day window survives that.
+
+**The EEA terms are stricter still**, prohibiting use of Directions summaries, addresses or
+steps *with any map* — which a page carrying a Leaflet map plausibly is.
+
+**What this changes.** Phase 2 as drafted — fetch transit times, bake them into a published
+static page — does not look compatible with Maps Platform terms at any price. The remaining
+shapes:
+
+1. **A different data source.** Direct GTFS feeds, or an aggregator over them, are the
+   natural fit: many are open data under licences that permit redistribution. This is now
+   the recommended direction and deserves its own research pass.
+2. **Client-side fetch at view time, on a Google Map.** Satisfies the terms, but inverts the
+   architecture — a key shipped to the browser, a Google map replacing Leaflet, and a page
+   that is no longer self-contained. That contradicts this project's single-file output.
+3. **Never publish the times.** Show them in `dev`/`eval` only and redact for `prod`, the
+   way personal data already is. Cheap, and leaves the published artefact — the actual
+   product — without the feature.
+
+**Recommendation: do not buy a Maps Platform key for this.** Research GTFS-based sources
+instead, as a separate note. Phase 1's approximate-durations model (open question 5) is
+unaffected and remains the right near-term answer.
+
 ## 7. Risks and non-goals
 
 ### 7.1 Risks
@@ -728,28 +775,51 @@ identically. If they behave the same, one is dead config. Proposed split in open
    transit is the direction of travel, which inverts it. Confirmed cheap: `drive_time` is
    generated content, absent from `manifest_parser.py`, so no user manifest migrates. See
    §4.1.
-5. **The big product call: is a Phase 1 with zero clock times acceptable?** The issue's
-   example card reads "Departs 09:00 • Arrives 12:15". That is not honestly deliverable
-   AI-only. If you want times in Phase 1 anyway, that is a decision to publish unverified
-   schedule claims and should be made explicitly, not inherited from an example.
-6. **Phase 2 funding and terms.** Willing to add a Maps Platform key? Is its ToS posture
-   acceptable for a `prod` build published to public GitHub Pages?
-7. **Scenic drives on a transit trip** — keep (recommended) or suppress?
-8. **Which corridor is the acceptance case?** Bryce → Capitol Reef will only ever exercise
-   Format B. `Japan_manifest.yaml` exists in the Sandbox directory and is the natural
-   happy-path candidate — confirm it covers useful legs.
-9. **Should Phase 1 corroborate operator names through `url_discovery`?** Off by default is
-   the recommendation; it is the one choice here that could move run cost meaningfully.
-10. **How should a multi-day sea leg be scheduled?** See §9.
+5. ~~**Is a Phase 1 with zero clock times acceptable?**~~ **RESOLVED 2026-08-21: yes —
+   approximate durations only, with one exception.** Generated legs carry an approximate
+   journey time and no clock times. **Ingested reservations are exempt:** a forwarded
+   confirmation's `depart`/`arrive` are facts the traveller already holds a ticket for, not
+   guesses, so they render as times. See §4.6 and the parsing consequence noted there.
+6. **Phase 2 funding and terms.** ~~Not researched~~ — **researched 2026-08-21, and the
+   answer is a problem. See §6.4.** Short version: Maps Platform terms appear incompatible
+   with this product's publish-a-static-page model, independently of cost. Still open, but
+   the question is now "what source instead?" rather than "is the key worth it?".
+7. ~~**Scenic drives on a transit trip**~~ **RESOLVED 2026-08-21: keep.** A traveller who
+   takes a train to Moab may still rent a jeep there. `has_high_clearance_vehicle` remains
+   the orthogonal flag, and scenic drives are destination content, not leg content.
+8. ~~**Which corridor is the acceptance case?**~~ **RESOLVED 2026-08-21: `Japan_manifest.yaml`,
+   confirmed suitable.** This is acceptance testing — which real corridor proves the feature
+   end to end. Bryce → Capitol Reef has no transit at all, so it exercises only the
+   honest-negative path (Format B); shipping on that alone would mean never having run the
+   success path. Japan's four legs are all rail-served with strong feed coverage:
+   Shinagawa→Hakone (Odakyu Romancecar/JR), Hakone→Kyoto (Shinkansen via Odawara),
+   Kyoto→Kanazawa (Thunderbird), Kanazawa→Tokyo (Hokuriku Shinkansen). Real, tight schedules
+   are what will stress the parsing and scheduling work.
+9. ~~**Should Phase 1 corroborate operator names through `url_discovery`?**~~ **RESOLVED
+   2026-08-21: not in Phase 1.** Deferred to a future issue rather than built off-by-default,
+   so Phase 1 carries no dormant cost lever.
+10. **How should a multi-day sea leg be scheduled?** See §9. **Scope resolved 2026-08-21:
+    not deferred — cruise manifests already contain these legs (most sail overnight), and
+    one has already been ingested. The shape question in §9 remains open; the timing
+    question does not.**
 
 ---
 
 ## 9. Multi-day carried legs (cruises, sleeper trains, ferries)
 
-Added 2026-08-20. `ship`, `ferry`, `bus` and `shuttle` are now accepted booked-leg
-types, so a customer-arranged cruise renders correctly as a chip. That part was
-additive and is done. **The scheduling model is not**, and it is a genuinely
-different problem from transit routing.
+Added 2026-08-20. **In scope, not deferred — owner call 2026-08-21 (open question 10).**
+
+`ship`, `ferry`, `bus` and `shuttle` are now accepted booked-leg types, so a
+customer-arranged cruise renders correctly as a chip. That part was additive and is
+done. **The scheduling model is not**, and it is a genuinely different problem from
+transit routing.
+
+**Why this cannot wait for a later phase.** Cruise manifests already contain multi-day
+sea legs — most sailings run overnight, so the overnight leg is the normal case rather
+than an exotic one. This is not speculative: a real cruise confirmation was ingested on
+2026-08-21 and produced exactly these legs. The gap is live in data the pipeline is
+already receiving, so deferring it means shipping a scheduler that is wrong on every
+cruise itinerary it sees.
 
 **These are booked legs, not routing options.** A traveler holds a confirmation
 for a cruise; nothing here needs guessing, so §2's Phase 1/Phase 2 machinery does
