@@ -62,6 +62,10 @@ Required variables:
 | `GEMINI_API_KEY` | Gemini API key (when `ai.provider: gemini`) |
 | `GROK_API_KEY` | Grok API key (when `ai.provider: grok`) |
 | `XAI_API_KEY` | xAI Grok API key |
+| `XAI_CONTENT_TIMEOUT_SECONDS` | Pins the Grok content-generation read timeout, skipping the size-based calculation below |
+| `XAI_CONNECT_TIMEOUT_SECONDS` | Connect timeout for Grok content generation (default 10) |
+| `XAI_OUTPUT_TOKENS_PER_SECOND` | Assumed generation rate used to size the read timeout (default 25) |
+| `XAI_CONTENT_TIMEOUT_FLOOR_SECONDS` / `_CEILING_SECONDS` | Bounds on the computed read timeout (defaults 120 / 600) |
 
 Optional:
 | Variable | Description |
