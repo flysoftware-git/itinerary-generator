@@ -715,8 +715,14 @@ class URLDiscoverer:
         #
         # Unset leaves both on the content model -- exactly today's behaviour.
         self._link_type_site_filters: dict[str, str] = self._read_link_type_site_filters(config_path)
+        # NOT gated on the CONTENT provider. That was the original bug: this
+        # project generates content with openai and searches with grok, so
+        # `self._llm.provider == "grok"` was false and the override silently
+        # never applied -- the 2026-08-22 baseline run still billed the
+        # expensive tier. `grok_model` is consumed only by GrokSearch, so
+        # setting it is inert unless the search provider is actually grok.
         search_model_override = self._read_search_model_override(config_path)
-        if search_model_override and self._llm.provider == "grok":
+        if search_model_override:
             logger.info(
                 "URL discovery using search model '%s' (content generation stays on '%s')",
                 search_model_override, self._llm.model,
@@ -3496,7 +3502,23 @@ class URLDiscoverer:
                     # elsewhere in this file) that unconditionally appends
                     # "near {dest}" whenever the destination isn't already
                     # present -- reused here rather than duplicated.
-                    if kind in {"en-route stop", "en_route_stop"}:
+                    #
+                    # EXCEPTION (2026-08-22): this rebuild exists to sanitize
+                    # AI-AUTHORED query text. A bare "lat,lng" query is not
+                    # that -- it is a coordinate this code built itself from a
+                    # geocode that `_prune_en_route_stops_by_geometry` already
+                    # resolved and sanity-checked against the actual route. It
+                    # is strictly more precise than any name query, so
+                    # rebuilding it into one is a downgrade.
+                    #
+                    # Caught on the 2026-08-22 baseline run, where every
+                    # coordinate link built by en_route_source: "maps" was
+                    # silently rewritten into a name search here -- the mode
+                    # still produced a Maps link, so it looked like it worked,
+                    # while the precision it exists for was being discarded.
+                    if self._is_coordinate_maps_query_url(url):
+                        rebuilt_query = ""
+                    elif kind in {"en-route stop", "en_route_stop"}:
                         rebuilt_query = self._en_route_maps_fallback_query_text(item_name, "", dest_name)
                     else:
                         rebuilt_query = self._maps_fallback_query_text(item_name, dest_name)
@@ -4271,6 +4293,24 @@ class URLDiscoverer:
             "google_maps_search",
             "google_maps_dir",
         }
+
+    @staticmethod
+    def _is_coordinate_maps_query_url(url: str | None) -> bool:
+        """True for a Maps search URL whose query is a bare `lat,lng` pair.
+
+        Distinguishes a coordinate this code constructed from a verified
+        geocode from an AI-authored place-name query. The two need opposite
+        treatment: name queries are sanitized and rebuilt, coordinates must be
+        left exactly as they are.
+        """
+        candidate = str(url or "")
+        if "google.com/maps/search/" not in candidate:
+            return False
+        match = re.search(r"[?&]query=([^&]+)", candidate)
+        if not match:
+            return False
+        query = unquote(match.group(1)).strip()
+        return bool(re.fullmatch(r"-?\d{1,3}(?:\.\d+)?\s*,\s*-?\d{1,3}(?:\.\d+)?", query))
 
     def _en_route_maps_url(self, stop: dict[str, Any], stop_name: str, dest_name: str) -> str:
         """A Google Maps link for an en-route stop, built locally at zero cost.

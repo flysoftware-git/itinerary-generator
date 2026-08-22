@@ -4522,16 +4522,23 @@ def test_url_discoverer_search_model_override_splits_discovery_from_content():
     assert mock_llm.model == "grok-4.5"
 
 
-def test_search_model_override_ignored_for_non_grok_content_provider():
-    """The override names a grok model, so it must not be applied when the
-    content provider is something else -- that would hand Claude a grok
-    model name."""
+def test_search_model_override_applies_even_when_content_provider_is_not_grok():
+    """Regression, 2026-08-22: the override was gated on the CONTENT
+    provider being grok. This project generates content with openai and
+    searches with grok, so the gate was always false and the override
+    silently never applied -- a whole baseline run billed the expensive
+    tier while config said otherwise.
+
+    grok_model is consumed only by GrokSearch, so setting it is inert
+    unless the search provider is grok. Gating it on the content provider
+    was never meaningful.
+    """
     mock_llm = type("MockLLM", (), {"provider": "openai", "model": "gpt-4o-mini", "usage_tracker": None})()
     with patch("generator.search_provider.GrokSearch") as mock_grok_search_cls, patch(
         "generator.search_provider.ClaudeSearch"
     ), patch.object(URLDiscoverer, "_read_search_model_override", staticmethod(lambda _p: "grok-4.3")):
         URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
-    assert mock_grok_search_cls.call_args.kwargs["model"] is None
+    assert mock_grok_search_cls.call_args.kwargs["model"] == "grok-4.3"
 
 
 class TestAllowedDomainsForBatchKind:
@@ -4563,10 +4570,18 @@ class TestAllowedDomainsForBatchKind:
 
 
 def test_url_discoverer_leaves_grok_search_model_alone_when_provider_is_not_grok():
+    """A non-grok CONTENT model must never leak into GrokSearch.
+
+    The search_model override is neutralised here so this asserts what it
+    always meant to: absent an explicit override, GrokSearch gets None
+    rather than "gpt-4o-mini". (With the override set -- as config.yaml
+    does -- it correctly gets that grok model instead; see
+    test_search_model_override_applies_even_when_content_provider_is_not_grok.)
+    """
     mock_llm = type("MockLLM", (), {"provider": "openai", "model": "gpt-4o-mini", "usage_tracker": None})()
     with patch("generator.search_provider.GrokSearch") as mock_grok_search_cls, patch(
         "generator.search_provider.ClaudeSearch"
-    ):
+    ), patch.object(URLDiscoverer, "_read_search_model_override", staticmethod(lambda _p: "")):
         URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
     assert mock_grok_search_cls.call_args.kwargs["model"] is None
 
@@ -17222,3 +17237,49 @@ class TestEnRouteStopsResolveToMaps:
     def test_a_nameless_stop_yields_no_link_rather_than_a_bare_destination_pin(self):
         disc = self._discoverer()
         assert disc._en_route_maps_url({}, "", "") == ""
+
+
+class TestCoordinateMapsUrlSurvivesTheQueryRebuild:
+    """A coordinate Maps link must not be rewritten into a name search.
+
+    _retain_discovered_url rebuilds google_maps_search queries to sanitize
+    AI-authored query text (the dipstick67 "Sunrise Point ... UT" case). A
+    bare lat,lng query is not AI-authored -- this code built it from a
+    geocode _prune_en_route_stops_by_geometry already resolved and checked
+    against the route, so rebuilding it into a name query is a downgrade.
+
+    Caught on the 2026-08-22 baseline run: every coordinate link produced by
+    en_route_source "maps" was being silently rewritten. The mode still
+    emitted a Maps link, so it looked correct while losing the precision it
+    exists for.
+    """
+
+    def test_detects_a_bare_coordinate_query(self):
+        f = URLDiscoverer._is_coordinate_maps_query_url
+        assert f("https://www.google.com/maps/search/?api=1&query=38.5142197%2C-109.7387738")
+        assert f("https://www.google.com/maps/search/?api=1&query=37.2128153,-112.9445374")
+
+    def test_a_place_name_query_is_not_a_coordinate(self):
+        """These MUST still be rebuilt -- that path is load-bearing."""
+        f = URLDiscoverer._is_coordinate_maps_query_url
+        assert not f("https://www.google.com/maps/search/?api=1&query=Dead%20Horse%20Point%20near%20Moab")
+        assert not f("https://www.google.com/maps/search/?api=1&query=Route%2066")
+
+    def test_a_non_maps_url_is_not_a_coordinate(self):
+        assert not URLDiscoverer._is_coordinate_maps_query_url("https://moabmuseum.org/")
+        assert not URLDiscoverer._is_coordinate_maps_query_url("")
+
+    def test_coordinate_link_is_retained_unchanged_for_an_en_route_stop(self):
+        mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            disc = URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+        coord = "https://www.google.com/maps/search/?api=1&query=38.5142197%2C-109.7387738"
+        kept = disc._retain_discovered_url(
+            coord,
+            "Dead Horse Point State Park",
+            "Canyonlands National Park",
+            allow_alltrails=False,
+            kind="en-route stop",
+            allow_google_maps_search=True,
+        )
+        assert kept == coord, "coordinate was rewritten into a name query"
