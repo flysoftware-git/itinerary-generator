@@ -305,6 +305,7 @@ class GrokSearch:
         response_format: dict[str, Any] | None = None,
         live_search: bool = False,
         max_tokens: int | None = None,
+        allowed_domains: list[str] | None = None,
     ) -> str:
         """Execute a single Grok completion and return message content.
 
@@ -320,10 +321,28 @@ class GrokSearch:
         and no way to verify provenance at all with live_search=False.
         """
         if live_search:
+            # allowed_domains constrains where the server-side tool searches
+            # AND browses. This matters for cost, not just relevance: the
+            # retrieved page content is billed back as INPUT tokens on the
+            # next turn of the agentic loop, and on the 2026-08-21 cold-start
+            # run that was 87% of all token spend -- a batch call carried a
+            # ~300-token prompt and ~24,000 tokens of retrieved content.
+            # Searching the open web and then discarding everything off-domain
+            # means paying to read pages we always intended to throw away.
+            #
+            # xAI caps this at 5 domains, and it cannot be combined with
+            # excluded_domains. Callers pass it only for categories that
+            # declare a single authoritative source (link_types.*
+            # .discovery_site_filter); heterogeneous categories must NOT be
+            # constrained, which is why this defaults to None.
+            web_search_tool: dict[str, Any] = {"type": "web_search"}
+            domains = [d for d in (allowed_domains or []) if str(d or "").strip()][:5]
+            if domains:
+                web_search_tool["filters"] = {"allowed_domains": domains}
             payload: dict[str, Any] = {
                 "model": self._model,
                 "input": f"{str(system_prompt or '')}\n\n{str(user_prompt or '')}",
-                "tools": [{"type": "web_search"}],
+                "tools": [web_search_tool],
             }
             if response_format is not None:
                 # /v1/responses uses "text.format", not chat-completions'

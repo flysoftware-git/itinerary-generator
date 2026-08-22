@@ -80,17 +80,35 @@ DEFAULT_PRICING_USD_PER_1M: dict[str, dict[str, float]] = {
     # empirically-grounded but not re-verified against xAI's docs each time
     # "latest" silently repoints to a new underlying model.
     "grok:grok-latest": {"input": 2.00, "output": 10.00},
-    "grok:grok-4.5": {"input": 3.00, "output": 15.00},
-    # Added 2026-08-15 after discovering grok-4-fast calls were silently
-    # costed at $0.00 (same class of bug as claude-sonnet-5's missing entry
-    # above) -- this model completed real production-shaped calls in
-    # 14-20s using ~22-27K tokens each, dramatically faster/cheaper than
-    # grok-latest's typical 68-250s/~79K tokens. Pricing not yet confirmed
-    # against a real xAI invoice (unlike grok-latest above) -- $0.20/$0.50
-    # is the best available figure (third-party aggregator, xAI's own docs
-    # page didn't list this model at all despite the API accepting it), so
-    # treat this entry as provisional until checked against real billing.
-    "grok:grok-4-fast": {"input": 0.20, "output": 0.50},
+    # Catalog rates, read from docs.x.ai/docs/models on 2026-08-21 (the
+    # <200k-prompt tier; both models double above 200k, which our calls do
+    # not reach -- the largest observed was ~24K).
+    "grok:grok-4.5": {"input": 2.00, "output": 6.00},
+    "grok:grok-4.6": {"input": 2.00, "output": 6.00},
+    "grok:grok-4.3": {"input": 1.25, "output": 2.50},
+    "grok:grok-4.20-0309-reasoning": {"input": 1.25, "output": 2.50},
+    "grok:grok-4.20-0309-non-reasoning": {"input": 1.25, "output": 2.50},
+    "grok:grok-4.20-multi-agent-0309": {"input": 1.25, "output": 2.50},
+    "grok:grok-build-0.1": {"input": 1.00, "output": 2.00},
+    # CORRECTED 2026-08-21. This entry was $0.20/$0.50 and it was wrong by
+    # ~9x, which is the single largest cost-reporting error this project has
+    # had. Its own comment said the figure came from a third-party
+    # aggregator and was "provisional until checked against real billing" --
+    # then it was trusted for six days without that check.
+    #
+    # The check, finally done: xAI's hourly usage export for the 2026-08-20
+    # 19:00 hour isolates one run exactly (console 1,760,982 tokens against
+    # our ledger's 1,760,607 -- 0.02% apart). That hour billed $3.75296,
+    # i.e. $2.131/M blended, against the $0.239/M this entry implied.
+    #
+    # $2.00/$6.00 is the grok-4.5/4.6 catalog rate and reproduces the
+    # observed bill to within 18% ($4.45 computed vs $3.75 billed). The gap
+    # is consistent with xAI's cached-input discount, which this table
+    # cannot model; the residual therefore OVERSTATES cost slightly, which
+    # is the safe direction. "grok-4-fast" is not in xAI's model catalog at
+    # all -- it is what the API reports back for an aliased request, so
+    # pricing it at the served tier is the honest choice.
+    "grok:grok-4-fast": {"input": 2.00, "output": 6.00},
     "anthropic:claude-3-5-sonnet-latest": {"input": 3.00, "output": 15.00},
     "anthropic:claude-3-7-sonnet-latest": {"input": 3.00, "output": 15.00},
     # Confirmed 2026-08-15 against platform.claude.com/docs/en/about-claude/pricing

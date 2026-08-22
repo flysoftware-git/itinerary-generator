@@ -4499,9 +4499,67 @@ def test_url_discoverer_shares_llm_model_with_grok_search_when_provider_is_grok(
     # search_provider=grok) matters for this assertion.
     with patch("generator.search_provider.GrokSearch") as mock_grok_search_cls, patch(
         "generator.search_provider.ClaudeSearch"
-    ):
+    ), patch.object(URLDiscoverer, "_read_search_model_override", staticmethod(lambda _p: "")):
         URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
     assert mock_grok_search_cls.call_args.kwargs["model"] == "grok-4.5"
+
+
+def test_url_discoverer_search_model_override_splits_discovery_from_content():
+    """Discovery may run on a cheaper model than content generation.
+
+    Measured 2026-08-21: URL discovery is 91% of all tokens and is extraction
+    from retrieved pages, while the destination content bundles are 0.4%
+    each. Splitting the two moves the dominant cost term without touching
+    the quality of what the traveller actually reads.
+    """
+    mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+    with patch("generator.search_provider.GrokSearch") as mock_grok_search_cls, patch(
+        "generator.search_provider.ClaudeSearch"
+    ), patch.object(URLDiscoverer, "_read_search_model_override", staticmethod(lambda _p: "grok-4.3")):
+        URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+    # discovery gets the cheap model; the content client is untouched
+    assert mock_grok_search_cls.call_args.kwargs["model"] == "grok-4.3"
+    assert mock_llm.model == "grok-4.5"
+
+
+def test_search_model_override_ignored_for_non_grok_content_provider():
+    """The override names a grok model, so it must not be applied when the
+    content provider is something else -- that would hand Claude a grok
+    model name."""
+    mock_llm = type("MockLLM", (), {"provider": "openai", "model": "gpt-4o-mini", "usage_tracker": None})()
+    with patch("generator.search_provider.GrokSearch") as mock_grok_search_cls, patch(
+        "generator.search_provider.ClaudeSearch"
+    ), patch.object(URLDiscoverer, "_read_search_model_override", staticmethod(lambda _p: "grok-4.3")):
+        URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+    assert mock_grok_search_cls.call_args.kwargs["model"] is None
+
+
+class TestAllowedDomainsForBatchKind:
+    """Constrain server-side search where a category has one authoritative source.
+
+    link_types.hike.discovery_site_filter has declared "alltrails.com" since
+    the taxonomy was written and was read by no module -- the filter was
+    applied only to results, so we paid to search the whole web and then
+    discarded whatever was off-domain. Retrieved content is billed back as
+    input tokens, which was 87% of spend on the 2026-08-21 run.
+    """
+
+    @staticmethod
+    def _discoverer():
+        mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            return URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+
+    def test_trail_batch_is_constrained_to_alltrails(self):
+        assert self._discoverer()._allowed_domains_for_batch_kind("trail") == ["alltrails.com"]
+
+    def test_heterogeneous_kinds_are_left_unconstrained(self):
+        """Attractions, restaurants and en-route stops legitimately live on
+        many domains. Constraining them would trade cost for coverage, and
+        link_types.scenic_drive sets discovery_site_filter: null explicitly."""
+        d = self._discoverer()
+        for kind in ("attraction", "restaurant", "en_route_stop", "scenic_drive"):
+            assert d._allowed_domains_for_batch_kind(kind) == [], kind
 
 
 def test_url_discoverer_leaves_grok_search_model_alone_when_provider_is_not_grok():

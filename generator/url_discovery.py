@@ -699,6 +699,29 @@ class URLDiscoverer:
         # claude_search.py (docs/design/search-provider-capability-probe.md).
         grok_model = self._llm.model if self._llm.provider == "grok" else None
         claude_model = self._llm.model if self._llm.provider == "anthropic" else None
+        # Split the discovery model from the content-generation model.
+        #
+        # Measured on the 2026-08-21 cold-start run: URL discovery is 91% of
+        # all tokens (batches 49.3%, per-item fallbacks 41.8%), while the ten
+        # destination content bundles -- the actual product -- are 0.4% each.
+        # 87% of discovery's tokens are INPUT, because each batch call carries
+        # a ~300-token prompt and ~24,000 tokens of injected search results.
+        #
+        # That work is extraction from retrieved pages, not the reasoning the
+        # top tier is worth paying for, so it does not need the same model as
+        # content generation. Keeping content generation expensive costs
+        # almost nothing at 0.4%; making discovery cheaper moves the dominant
+        # term directly.
+        #
+        # Unset leaves both on the content model -- exactly today's behaviour.
+        self._link_type_site_filters: dict[str, str] = self._read_link_type_site_filters(config_path)
+        search_model_override = self._read_search_model_override(config_path)
+        if search_model_override and self._llm.provider == "grok":
+            logger.info(
+                "URL discovery using search model '%s' (content generation stays on '%s')",
+                search_model_override, self._llm.model,
+            )
+            grok_model = search_model_override
         self._search = build_search_client(
             config_path,
             config_section="url_discovery",
@@ -6084,6 +6107,7 @@ class URLDiscoverer:
                 temperature=0.1,
                 response_format=None,
                 live_search=True,
+                allowed_domains=self._allowed_domains_for_batch_kind(kind),
             )
             or ""
         )
@@ -6338,6 +6362,7 @@ class URLDiscoverer:
                     # cases (582 citations); the previous behavior produced
                     # zero citations and no way to verify provenance at all.
                     live_search=True,
+                    allowed_domains=self._allowed_domains_for_batch_kind(kind),
                 )
                 or ""
             )
@@ -6383,6 +6408,7 @@ class URLDiscoverer:
                     # cases (582 citations); the previous behavior produced
                     # zero citations and no way to verify provenance at all.
                     live_search=True,
+                    allowed_domains=self._allowed_domains_for_batch_kind(kind),
                 )
                 or ""
             )
@@ -6934,6 +6960,63 @@ class URLDiscoverer:
                 url=cleaned,
             )
         return added
+
+    # Batch `kind` values are not link_types keys: the trail batch is kind
+    # "trail" while its taxonomy entry is link_types.hike. Only categories
+    # with a single authoritative source belong here -- attractions,
+    # restaurants and en-route stops are heterogeneous by nature, and
+    # link_types.scenic_drive sets discovery_site_filter: null explicitly.
+    _BATCH_KIND_TO_LINK_TYPE: dict[str, str] = {"trail": "hike"}
+
+    @staticmethod
+    def _read_link_type_site_filters(config_path: str) -> dict[str, str]:
+        """link_types.<key>.discovery_site_filter, for keys that declare one.
+
+        This config existed since the taxonomy was written and was never read
+        by any module -- the site filter was applied only after results came
+        back, so we paid to search the whole web and then discarded whatever
+        was off-domain. Read defensively: a bad config must not fail a run.
+        """
+        try:
+            import yaml
+
+            with open(config_path, "r", encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {}
+            out: dict[str, str] = {}
+            for key, entry in (cfg.get("link_types") or {}).items():
+                if not isinstance(entry, dict):
+                    continue
+                site = str(entry.get("discovery_site_filter") or "").strip()
+                if site:
+                    out[str(key)] = site
+            return out
+        except Exception:
+            return {}
+
+    def _allowed_domains_for_batch_kind(self, kind: str) -> list[str]:
+        """Domains to constrain the server-side search to, or [] for unconstrained."""
+        link_type = self._BATCH_KIND_TO_LINK_TYPE.get(str(kind or "").strip().lower())
+        if not link_type:
+            return []
+        site = (getattr(self, "_link_type_site_filters", None) or {}).get(link_type, "")
+        return [site] if site else []
+
+    @staticmethod
+    def _read_search_model_override(config_path: str) -> str:
+        """`url_discovery.search_model` from config, or "" when unset.
+
+        Deliberately read defensively and never raised from: a malformed or
+        missing config must leave discovery on the content model rather than
+        failing the run over a cost optimisation.
+        """
+        try:
+            import yaml
+
+            with open(config_path, "r", encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {}
+            return str(((cfg.get("url_discovery") or {}).get("search_model") or "")).strip()
+        except Exception:
+            return ""
 
     def _cached_alltrails_batch_url_for_item(self, dest_name: str, dates: str, item_name: str) -> str:
         """An AllTrails URL the trail direct batch ALREADY harvested for this item.

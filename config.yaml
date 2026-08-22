@@ -274,6 +274,14 @@ url_discovery:
   #
   # DIRECT_BATCH_GROUP_SIZE=2 still opts back in for a single experiment
   # without editing this file.
+  # Discovery runs on a cheaper model than content generation. Measured
+  # 2026-08-21: URL discovery is 91% of all tokens (87% of it INPUT, from
+  # search results injected back into context), while the destination
+  # content bundles -- the actual product -- are 0.4% each. Discovery is
+  # extraction from retrieved pages, not the reasoning the top tier is
+  # worth paying for. grok-4.3 is $1.25/$2.50 against grok-4.5/4.6's
+  # $2.00/$6.00. Unset leaves discovery on the content model.
+  search_model: "grok-4.3"
   direct_batch_group_size: 1
   alltrails_source: direct_link_batch
   attraction_source: direct_link_batch

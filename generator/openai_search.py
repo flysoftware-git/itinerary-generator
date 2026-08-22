@@ -236,6 +236,7 @@ class OpenAiSearch:
         response_format: dict[str, Any] | None = None,
         live_search: bool = False,
         max_tokens: int | None = None,
+        allowed_domains: list[str] | None = None,  # accepted for interface parity; see GrokSearch
     ) -> str:
         """Execute a single OpenAI completion with real web search and
         return the output text. Matches GrokSearch.chat_completion's

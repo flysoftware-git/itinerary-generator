@@ -293,6 +293,7 @@ class ClaudeSearch:
         response_format: dict[str, Any] | None = None,
         live_search: bool = False,
         max_tokens: int | None = None,
+        allowed_domains: list[str] | None = None,  # accepted for interface parity; see GrokSearch
     ) -> str:
         """Execute a single Claude completion and return message text.
 
