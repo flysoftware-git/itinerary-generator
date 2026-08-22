@@ -271,27 +271,70 @@ message via `_format_schema_error`, which already names the offending destinatio
 **Naming.** Recommend plain `transport_mode` on the destination, with "inbound leg"
 semantics in the description, rather than the issue's `transport_mode_from_previous`. It
 matches the existing convention exactly — `en_route_seeds` and `transportation` both attach
-to the arriving destination and neither carries a suffix. Open question #1 if you disagree.
+to the arriving destination and neither carries a suffix. Resolved 2026-08-21: accepted.
 
-### 3.2 The `legs:` list — recommend against, as the primary form
+### 3.2 The `legs:` list — accepted, with a validation contract
 
-The issue proposes a `legs:` list with `from`/`to`/`mode`. This is a third way to express
-adjacency in a document that already expresses it twice (destination order; `group_with`).
-Concrete problems:
+**Decided 2026-08-21: both.** Per-destination `transport_mode` (§3.1) *and* a `legs:`
+list. This section previously recommended against `legs:`; that recommendation is
+withdrawn. What survives it is the contract below, because the original objection was
+never "`legs:` is a bad idea" — it was "`legs:` as the issue specifies it fails silently."
 
-- `from`/`to` are free text matched against `name`, so `"Zion NP"` vs `"Zion National Park"`
-  silently matches nothing and the leg silently stays `auto`. The existing referential
-  check (`_validate_group_with`) exists precisely because dangling references are a real
-  authoring failure — but it validates `id`s, which are pattern-constrained slugs.
-- A leg list can contradict destination order with no defined resolution.
-- It duplicates state: two places can specify the same leg's mode.
+The issue proposes `from`/`to` as free text matched against `name`. That is the part that
+does not survive. `"Zion NP"` against a manifest saying `"Zion National Park"` matches
+nothing, the leg quietly stays `auto`, the build succeeds, and the output renders a normal
+drive card. The failure is invisible to schema validation, to the runtime, and to the
+reader — you would notice only by remembering you wanted a train there.
 
-Per-destination `transport_mode` expresses everything `legs:` does with no new referential
-surface. **If you want `legs:` anyway** — and there is a fair argument it reads better for a
-mostly-transit trip — it must validate against destination `id`s, reject unmatched
-references the way `_validate_group_with` does, and reject legs contradicting adjacency. Do
-not make it lenient: a silently-ignored leg is worse than a build failure, because nothing
-downstream will flag it.
+**A silently-ignored leg is worse than a build failure.** A build failure costs thirty
+seconds. A silent fallback ships a traveller an itinerary telling them to drive a leg they
+have no car for.
+
+#### The contract
+
+`from`/`to` are destination **`id`s** — pattern-constrained slugs (`^[a-z0-9_]+$`) — never
+display names:
+
+```yaml
+legs:
+  - from: zion
+    to: bryce_canyon
+    mode: transit
+```
+
+Validated in `_validate_legs`, mirroring `_validate_group_with` (which exists precisely
+because dangling references are a real, observed authoring failure here). Every one of
+these **raises**, naming the offending leg:
+
+| Condition | Why it cannot merely warn |
+| --- | --- |
+| `from` or `to` is not an existing destination `id` | The typo case. This is the whole reason for the contract |
+| `from == to` | Not a leg |
+| `from`/`to` are not adjacent in destination order | The issue's own example is adjacency-shaped; a non-adjacent pair has no defined meaning |
+| The same leg appears twice | Two answers, no rule for choosing |
+
+#### Collision with `transport_mode` — also an error
+
+Accepting both mechanisms creates a case the single-mechanism design did not have: a
+`legs:` entry and the arriving destination's `transport_mode` can name **the same leg**,
+since "the leg from `zion` to `bryce_canyon`" and "`bryce_canyon`'s inbound leg" are the
+same thing.
+
+Resolution: **agreement is fine, disagreement raises.** Not last-wins, not
+most-specific-wins.
+
+This is the one place worth spending a build failure, because it is the drift bug class
+this project has already hit four times — one value restated in two places, free to
+diverge. Silent precedence would mean an author edits `transport_mode`, sees no change
+because a `legs:` entry outranks it, and has no way to discover why. Raising converts a
+mystery into a located message.
+
+#### What this costs
+
+A third expression of adjacency, on top of destination order and `group_with`. That cost is
+real and is the reason for the original recommendation. The contract above is what makes it
+payable: every way the redundancy could diverge is a build failure rather than a silent
+wrong answer.
 
 ### 3.3 Should routing legs reuse `TRANSPORTATION_ITEM_SCHEMA`?
 
@@ -442,7 +485,7 @@ bus stop is worse off still.
 
 | File | What to assert |
 |---|---|
-| `tests/test_manifest_parser.py` | `transport_mode` accepted at both levels for each enum value; unknown value fails naming the destination; omitting it leaves the parsed manifest byte-identical to today's; `legs:` referential integrity if implemented |
+| `tests/test_manifest_parser.py` | `transport_mode` accepted at both levels for each enum value; unknown value fails naming the destination; omitting it leaves the parsed manifest byte-identical to today's. **`legs:` (confirmed 2026-08-21, §3.2):** each raise case separately — unknown `from`/`to` id, `from == to`, non-adjacent pair, duplicate leg — each asserting the message names the offending leg; a `legs:` entry agreeing with the arriving destination's `transport_mode` parses clean, and one disagreeing raises naming **both** sources; `from`/`to` given as display names rather than ids fails loudly rather than matching nothing |
 | **`tests/test_transit_routing.py`** (new) | Normalizer against fixture payloads: missing keys; `options` not a list; **an ISO datetime is stripped**; **a URL is stripped**; `has_transit: false` produces Format B; provider factory selects from config; `ZERO_RESULTS` degrades to Format B rather than an empty card |
 | `tests/test_ai_content_normalization.py` | `drive_time` populated from transit duration; arrival-clock and afternoon-budget derivations transit-consistent; `mixed` retains the car estimate while attaching options |
 | `tests/test_url_discovery.py` | `_update_route_distance_and_time` returns early on a transit leg and does **not** overwrite `drive_time` (§4.1) |
@@ -580,9 +623,12 @@ identically. If they behave the same, one is dead config. Proposed split in open
 
 ## 8. Open questions for the project owner
 
-1. **Naming.** `transport_mode` on the destination (recommended, matching the existing
-   arriving-destination convention) or the issue's `transport_mode_from_previous`? And do
-   you want `legs:` at all, given §3.2?
+1. ~~**Naming**, and do you want `legs:` at all?~~ **RESOLVED 2026-08-21: `transport_mode`,
+   with `legs:`.** Destination-level `transport_mode` (matching the existing
+   arriving-destination convention used by `en_route_seeds` and `transportation`), not the
+   issue's `transport_mode_from_previous`. `legs:` is accepted alongside it, subject to the
+   validation contract in §3.2 — `id` references, adjacency checks, and a raise on any
+   disagreement between the two mechanisms about one leg.
 2. **What does `mixed` mean?** Proposal: `transit` = transit replaces the car everywhere
    including the arrival-day schedule; `mixed` = transit options render *alongside* the
    drive, with `drive_time`/`distance_miles` untouched. As written in the issue the two
