@@ -17092,3 +17092,76 @@ class TestBackfillAttractionsFromTrailBatch:
         assert entry["type"] == "trail"
         assert entry["is_seed"] is False
         assert entry["description"] == "Queens Garden desc"
+
+
+class TestAttractionBatchPrewarmWithItineraryItems:
+    """Ask the batch for the items the itinerary actually contains.
+
+    Stage 3 invents the attraction list and the Stage 5b batch independently
+    invents its own; every non-overlapping name costs a per-item fallback
+    search. Measured 2026-08-21: 81 of 82 direct_batch_no_match events were
+    attractions, and fallbacks are 42% of all token spend.
+    """
+
+    @staticmethod
+    def _discoverer():
+        mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            return URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+
+    def test_itinerary_item_names_are_passed_to_the_batch(self):
+        disc = self._discoverer()
+        ai = {"top_attractions": [{"name": "Sunrise Point"}, {"name": "Bryce Point"}]}
+        with patch.object(disc, "_get_attraction_direct_batch_rows_for_destination") as fetch:
+            disc._prewarm_attraction_batch_with_itinerary_items(
+                ai=ai, dest_name="Bryce Canyon National Park", dest_dates="October 19-21, 2026", seed_names=None
+            )
+        assert fetch.call_args.kwargs["seed_names"] == ["Sunrise Point", "Bryce Point"]
+
+    def test_seeds_come_first_so_the_cap_cannot_crowd_them_out(self):
+        """Seeds are the traveller's explicit asks; generated names must not
+        displace them when the hint list is truncated."""
+        disc = self._discoverer()
+        ai = {"top_attractions": [{"name": f"Generated {i}"} for i in range(40)]}
+        with patch.object(disc, "_get_attraction_direct_batch_rows_for_destination") as fetch:
+            disc._prewarm_attraction_batch_with_itinerary_items(
+                ai=ai, dest_name="Bryce Canyon National Park", dest_dates="", seed_names=["Mossy Cave"]
+            )
+        hints = fetch.call_args.kwargs["seed_names"]
+        assert hints[0] == "Mossy Cave"
+        assert len(hints) == disc._MAX_BATCH_ITEM_HINTS
+
+    def test_duplicates_between_seeds_and_generated_names_collapse(self):
+        disc = self._discoverer()
+        ai = {"top_attractions": [{"name": "Sunrise  Point"}, {"name": "Bryce Point"}]}
+        with patch.object(disc, "_get_attraction_direct_batch_rows_for_destination") as fetch:
+            disc._prewarm_attraction_batch_with_itinerary_items(
+                ai=ai, dest_name="Bryce Canyon National Park", dest_dates="", seed_names=["Sunrise Point"]
+            )
+        assert fetch.call_args.kwargs["seed_names"] == ["Sunrise Point", "Bryce Point"]
+
+    def test_markdown_artifacts_are_stripped_from_hints(self):
+        disc = self._discoverer()
+        ai = {"top_attractions": [{"name": "**Balanced Rock Loop**"}]}
+        with patch.object(disc, "_get_attraction_direct_batch_rows_for_destination") as fetch:
+            disc._prewarm_attraction_batch_with_itinerary_items(
+                ai=ai, dest_name="Arches National Park", dest_dates="", seed_names=None
+            )
+        assert fetch.call_args.kwargs["seed_names"] == ["Balanced Rock Loop"]
+
+    def test_no_items_means_no_prewarm_call(self):
+        disc = self._discoverer()
+        with patch.object(disc, "_get_attraction_direct_batch_rows_for_destination") as fetch:
+            disc._prewarm_attraction_batch_with_itinerary_items(
+                ai={"top_attractions": []}, dest_name="Moab", dest_dates="", seed_names=None
+            )
+        fetch.assert_not_called()
+
+    def test_prewarm_failure_does_not_break_discovery(self):
+        """A prewarm is an optimisation; the ordinary lazy fetch still runs."""
+        disc = self._discoverer()
+        ai = {"top_attractions": [{"name": "Delicate Arch"}]}
+        with patch.object(disc, "_get_attraction_direct_batch_rows_for_destination", side_effect=RuntimeError("boom")):
+            disc._prewarm_attraction_batch_with_itinerary_items(
+                ai=ai, dest_name="Arches National Park", dest_dates="", seed_names=None
+            )  # must not raise

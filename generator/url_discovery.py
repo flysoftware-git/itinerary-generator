@@ -4386,6 +4386,28 @@ class URLDiscoverer:
         )
         top_attractions = ai.get("top_attractions", [])
         if attraction_source_mode == "direct_link_batch":
+            # Ask the batch for the items the itinerary ACTUALLY contains.
+            #
+            # Stage 3 invents the attraction list; the Stage 5b batch then
+            # independently invents its own. Where they disagree, every
+            # orphaned item costs a per-item fallback search. Measured on the
+            # 2026-08-21 cold-start run: 81 of 82 `direct_batch_no_match`
+            # events were attractions, and those fallbacks are 42% of all
+            # token spend.
+            #
+            # The mechanism already existed -- `_direct_batch_seed_hint_clauses`
+            # was built because manifest seeds went missing from the harvest
+            # for exactly this reason ("the harvest prompt itself having no
+            # mechanism at all to surface seeds as candidates"). It was only
+            # ever fed seeds. Stage 3's own names have the identical problem
+            # and no seed to speak for them.
+            #
+            # Prewarmed here because the batch is cached per destination and
+            # the first fetch wins -- every later lookup hits that cache, so
+            # the hints must be present on the first call or not at all.
+            self._prewarm_attraction_batch_with_itinerary_items(
+                ai=ai, dest_name=dest_name, dest_dates=str(dest_dates or ""), seed_names=seed_names,
+            )
             top_attractions = self._prioritize_direct_batch_attractions(
                 top_attractions,
                 dest_name,
@@ -5536,6 +5558,46 @@ class URLDiscoverer:
             query=self._alltrails_direct_batch_query(dest_name, dates),
             cache_context=dates,
         )
+
+    # The attraction batch prompt asks for `direct_link_batch_count` items
+    # (20 by default). Naming more than that many wanted items invites the
+    # model to drop some silently, so the hint list is capped to fit.
+    _MAX_BATCH_ITEM_HINTS = 20
+
+    def _prewarm_attraction_batch_with_itinerary_items(
+        self,
+        *,
+        ai: dict[str, Any],
+        dest_name: str,
+        dest_dates: str,
+        seed_names: list[str] | None,
+    ) -> None:
+        """Fetch the attraction batch once, naming the itinerary's own items.
+
+        Seeds come first: they are the traveller's explicit asks and must not
+        be crowded out of the cap by generated names.
+        """
+        hints: list[str] = []
+        seen: set[str] = set()
+        for name in list(seed_names or []) + [
+            str(a.get("name", "") or "") for a in (ai.get("top_attractions", []) or []) if isinstance(a, dict)
+        ]:
+            cleaned = str(name or "").replace("*", "").strip()
+            key = re.sub(r"[^a-z0-9]+", " ", cleaned.lower()).strip()
+            if not cleaned or key in seen:
+                continue
+            seen.add(key)
+            hints.append(cleaned)
+            if len(hints) >= self._MAX_BATCH_ITEM_HINTS:
+                break
+        if not hints:
+            return
+        try:
+            self._get_attraction_direct_batch_rows_for_destination(dest_name, dest_dates, seed_names=hints)
+        except Exception as exc:  # pragma: no cover - defensive only
+            # A prewarm is an optimisation. If it fails, the ordinary lazy
+            # fetch still runs and discovery proceeds exactly as before.
+            logger.info("Attraction batch prewarm failed for %s: %s", dest_name, exc)
 
     def _get_attraction_direct_batch_rows_for_destination(
         self, dest_name: str, dates: str = "", seed_names: list[str] | None = None
