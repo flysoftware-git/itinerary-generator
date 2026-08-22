@@ -131,6 +131,8 @@ Recorded because each was acted on, and each is easy to repeat.
 | "NPS API covers 86% of park items" | **74%**, and Capitol Reef only 30% | Token *intersection* matching produced false positives — it matched *Zion Lodge* to *Stargazing in Zion*. Subset matching is the correct test |
 | "`allowed_domains` attacks the 87% input term at its source" | Only one of four batch kinds declares a single-domain source | Found while implementing |
 | "Stage cost components don't sum to the total" | For Aug 19–20 they do | Generalised from one older sampled record |
+| "The cost changes will reduce spend" | Run 2 came out **+19%** | Measured; three defects in the changes, plus item-count growth shipped alongside |
+| "The alignment fix will cut `no_match`" | It rose 82 → 108 | Hike names were sent to the batch whose prompt excludes hikes |
 
 The recurring shape: **a plausible ratio computed from an unverified input**. In three
 of these the arithmetic was fine and the input was wrong.
@@ -289,6 +291,72 @@ audited without re-running it.
 | Search fees | $1.875 |
 | **True total** | **$5.63** |
 | Ledger reported at the time | $2.32 |
+
+---
+
+## 7.5 The second run (2026-08-22), and what it caught
+
+The changes in §6 were measured by a second cold-start run against the same
+manifest. **It came out 19% more expensive**, and the reason is worth recording in
+full: the run did not measure the cost work, it measured three defects in it.
+
+| | run 1 | run 2 | |
+|---|---|---|---|
+| Grok tokens | 1,760,607 | 2,098,883 | **+19.2%** |
+| Token cost (list $2/$6) | $4.45 | $5.34 | |
+| Search fees | $1.88 (375 calls) | $2.17 (434 calls) | |
+| **Total** | **$6.32** | **$7.51** | **+19%** |
+
+### What worked
+
+**En-route → Maps did what it was meant to.** `direct_batch_candidate_rejected` fell
+**301 → 50 (−83%)**, en-route item threads 64 → 18, and batch tokens dropped
+914,634 → 599,170 (**−34%**). The failure mode is gone.
+
+### Three defects, all in the changes themselves
+
+1. **The model split never applied.** It was gated on
+   `self._llm.provider == "grok"` — the *content* provider. This project generates
+   content with openai and searches with grok, so the gate was always false and
+   `url_discovery.search_model` was silently ignored. The whole run billed the
+   expensive tier while config said `grok-4.3`. **A test had enshrined the bug**,
+   asserting `GrokSearch` received `None` — exactly the broken behaviour.
+
+2. **Coordinate Maps links were silently rewritten.** `_retain_discovered_url`
+   rebuilds `google_maps_search` queries to sanitize AI-authored query text. It was
+   also rebuilding the coordinate links `en_route_source: "maps"` constructs from a
+   route-verified geocode, turning an exact pin into a name search. The mode still
+   emitted *a* Maps link, so it looked correct while discarding the precision it
+   exists for.
+
+3. **Hike names were fed to the batch that excludes hikes.** The alignment fix's
+   plumbing worked — the Zion capture shows Stage 3 names reaching the prompt. The
+   *content* was wrong: the attraction prompt says "excluding hikes" in its own
+   text, and four of the five names sent were hikes. The model correctly refused
+   them and returned one, while the hint list displaced slots that would have held
+   real attractions. `direct_batch_no_match` went **up**, 82 → 108.
+
+### Why cost rose: two opposing changes shipped together
+
+Cost *per item* fell. **Item count rose more.** Attraction threads went 81 → 100,
+driven by `promoted_from_trail_batch: 10` and the 4→5/day ceiling raise. Fallback
+calls went 120 → 184.
+
+**Lesson for the next round: do not ship cost reductions and content expansions in
+the same measurement.** Neither effect can be attributed afterwards, and here they
+had opposite signs.
+
+### What the fixes are worth, without another run
+
+A rate change on known token counts is deterministic:
+
+```
+run 2 as billed             $7.51
+run 2 with the split applied $5.15   (−18% vs run 1)
+```
+
+Caveat: this assumes `grok-4.3` produces the same token volume. A more or less
+verbose model shifts the count, so $5.15 is a projection, not a measurement.
 
 ---
 
