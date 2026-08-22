@@ -348,7 +348,7 @@ wrong answer.
    "there might be a bus around 9" in one list, indistinguishable downstream.
 2. **`depart`/`arrive` mean different things.** The existing schema documents them as
    *"display strings, not scheduling inputs. Nothing in the pipeline parses them."* A
-   routing option's times must be parseable to feed `drive_time` (§4.1). Overloading one
+   routing option's times must be parseable to feed `travel_time` (§4.1). Overloading one
    field with both contracts guarantees someone eventually parses a booked leg's free text
    and gets a `ValueError` on `"SFO 8:15 AM, October 7"`.
 3. **`additionalProperties: False`, shared verbatim by three call sites.** Adding
@@ -391,13 +391,55 @@ confidence as a property of the path a fact travelled).
 
 ## 4. Interaction with existing behaviour
 
-### 4.1 Scheduling: reuse `drive_time`, and guard the overwrite
+### 4.1 Scheduling: rename to `travel_time` first, then guard the overwrite
+
+**Decided 2026-08-21 (open question 4): rename now, as its own change, before the routing
+work.** This section previously recommended reusing `drive_time` and renaming later. That
+recommendation was explicitly conditional on transit being an occasional variation. The
+owner's answer is that transit is where the product is heading, which inverts it.
 
 | Option | Effect | Verdict |
 |---|---|---|
 | Leave `drive_time` as the car estimate; add `transit_options` beside it | Page shows a 3h15 bus and schedules a 2h drive | Reject — the incoherence dipstick69 was fixed to prevent |
-| **Populate `drive_time` from the selected option's duration when mode is `transit`** | Every downstream consumer keeps working unchanged. The field name becomes a misnomer; the semantics (door-to-door inbound travel time) are exactly what the normalizer wants | **Recommended** |
-| New parallel field + teach the normalizer to prefer it | More honest naming, more surface to get wrong; `drive_time` is read across four modules and the test suite | Defer. Introduce `getting_here.travel_time` as an alias later, separately |
+| Populate `drive_time` from the transit duration | Downstream keeps working unchanged; the field name becomes a permanent lie | Reject on the "heading there" forecast — see below |
+| **`getting_here.travel_time` as the canonical field** | Honest name before transit code grows around the wrong one | **Chosen** |
+
+**Why the forecast decides it.** "Rename later, separately" has a failure mode: *later*
+does not arrive. `drive_time` is read across four modules and the test suite today. If
+transit becomes the common case, every new transit code path is also written against a
+field named for the mode it is not using, and the rename gets more expensive every week.
+Renaming while there are four readers is the cheapest this will ever be.
+
+**It is cheaper than this note first assumed.** `drive_time` does not appear in
+`manifest_parser.py` — it is model-generated content in the trip dict, never a manifest
+input. **No user-authored manifest breaks, and there is no migration for anyone's data.**
+That is the fact that makes doing it now genuinely cheap rather than merely correct.
+
+#### The alias belongs at one boundary only
+
+Not a transitional alias threaded through the codebase. The prompt
+(`prompts/destination_content.txt`) will ask for `travel_time`, but a model asked for one
+key will sometimes emit the other, and prompts drift (four recorded incidents of exactly
+this class). So:
+
+```
+model output  --(accepts travel_time OR drive_time)-->  _normalize_getting_here
+                                                                |
+                                                     emits canonical travel_time
+                                                                |
+                       every internal reader sees travel_time only
+```
+
+The tolerance is **permanent defensive handling of model output**, not a deprecation
+window. Internally there is exactly one name from the normalizer onward.
+
+#### Sequencing
+
+The rename lands **first, on today's all-car behaviour**, as a separate change: full suite
+green, and generated output byte-identical to the previous build. Only then does routing
+work begin, against the correct name. Bundling them would mean that when a schedule comes
+out wrong, nothing distinguishes "the rename missed a reader" from "the routing logic is
+wrong".
 
 **The hazard this creates, and it is real.** Stage 3 runs before Stage 5b, and
 `url_discovery._update_route_distance_and_time` overwrites `getting_here`:
@@ -529,8 +571,9 @@ bus stop is worse off still.
 |---|---|
 | `tests/test_manifest_parser.py` | `transport_mode` accepted at both levels for each enum value; unknown value fails naming the destination; omitting it leaves the parsed manifest byte-identical to today's. **`legs:` (confirmed 2026-08-21, §3.2):** each raise case separately — unknown `from`/`to` id, `from == to`, non-adjacent pair, duplicate leg — each asserting the message names the offending leg; a `legs:` entry agreeing with the arriving destination's `transport_mode` parses clean, and one disagreeing raises naming **both** sources; `from`/`to` given as display names rather than ids fails loudly rather than matching nothing |
 | **`tests/test_transit_routing.py`** (new) | Normalizer against fixture payloads: missing keys; `options` not a list; **an ISO datetime is stripped**; **a URL is stripped**; `has_transit: false` produces Format B; provider factory selects from config; `ZERO_RESULTS` degrades to Format B rather than an empty card |
-| `tests/test_ai_content_normalization.py` | `drive_time` populated from transit duration; arrival-clock and afternoon-budget derivations transit-consistent; `mixed` retains the car estimate while attaching options |
-| `tests/test_url_discovery.py` | `_update_route_distance_and_time` returns early on a transit leg and does **not** overwrite `drive_time` (§4.1) |
+| **The rename, tested before any routing work** | `_normalize_getting_here` accepts a model emitting `drive_time` OR `travel_time` and emits canonical `travel_time` either way; every internal reader reads only `travel_time`; an all-car build produces output **byte-identical** to the pre-rename build (§4.1) |
+| `tests/test_ai_content_normalization.py` | `travel_time` populated from transit duration; arrival-clock and afternoon-budget derivations transit-consistent; `mixed` retains the car estimate while attaching options |
+| `tests/test_url_discovery.py` | `_update_route_distance_and_time` returns early on a transit leg and does **not** overwrite `travel_time` (§4.1). The overwrite hazard survives the rename unchanged -- renaming the field does not disarm it |
 | `tests/test_pipeline_integration.py` | The Stage 3 → Stage 5b ordering case, end to end |
 | `tests/test_html_assembler.py` | Transit card from Format A; Format B renders the honest assessment; duration badge survives empty `distance_miles`; `travelmode=transit` present and `waypoints=` absent; every prose field escaped; `⚠ Unverified` when `confidence != "api_verified"` |
 | `tests/test_main_requirements.py` | Privacy redaction: generated transit options are **not** redacted (no personal data, unlike booked legs). Assert explicitly so a later reader doesn't "fix" the asymmetry |
@@ -673,14 +716,18 @@ identically. If they behave the same, one is dead config. Proposed split in open
    disagreement between the two mechanisms about one leg.
 2. ~~**What does `mixed` mean?**~~ **RESOLVED 2026-08-21.** As proposed: `transit` =
    transit replaces the car everywhere including the arrival-day schedule; `mixed` =
-   transit options render *alongside* the drive, with `drive_time`/`distance_miles`
+   transit options render *alongside* the drive, with `travel_time`/`distance_miles`
    untouched. **Plus:** where a reservation has been forwarded and ingested for a leg, use
    the booking and suppress option generation entirely for that leg — see §4.6.
 3. ~~**Should a transit leg suppress en-route stop discovery?**~~ **RESOLVED 2026-08-21:
    yes.** Suppressed on `transit`, kept on `mixed`. The lost content section is accepted —
    the section was never applicable to a train leg. See §4.4.
-4. **Reuse `drive_time` for transit duration, or introduce `travel_time`?** §4.1 recommends
-   reuse now, rename later, separately.
+4. ~~**Reuse `drive_time`, or introduce `travel_time`?**~~ **RESOLVED 2026-08-21:
+   `travel_time`, renamed first as its own change.** The prior recommendation (reuse now,
+   rename later) was conditional on transit being occasional; the owner's forecast is that
+   transit is the direction of travel, which inverts it. Confirmed cheap: `drive_time` is
+   generated content, absent from `manifest_parser.py`, so no user manifest migrates. See
+   §4.1.
 5. **The big product call: is a Phase 1 with zero clock times acceptable?** The issue's
    example card reads "Departs 09:00 • Arrives 12:15". That is not honestly deliverable
    AI-only. If you want times in Phase 1 anyway, that is a decision to publish unverified
