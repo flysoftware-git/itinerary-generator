@@ -17156,13 +17156,54 @@ class TestAttractionBatchPrewarmWithItineraryItems:
         assert fetch.call_args.kwargs["seed_names"] == ["Sunrise Point", "Bryce Point"]
 
     def test_markdown_artifacts_are_stripped_from_hints(self):
+        """"Balanced Rock Loop" is trail-like, so it routes to the trail
+        batch -- which is also the point of the routing test below."""
         disc = self._discoverer()
         ai = {"top_attractions": [{"name": "**Balanced Rock Loop**"}]}
-        with patch.object(disc, "_get_attraction_direct_batch_rows_for_destination") as fetch:
+        with patch.object(disc, "_get_alltrails_direct_batch_rows_for_destination") as trail_fetch:
             disc._prewarm_attraction_batch_with_itinerary_items(
                 ai=ai, dest_name="Arches National Park", dest_dates="", seed_names=None
             )
-        assert fetch.call_args.kwargs["seed_names"] == ["Balanced Rock Loop"]
+        assert trail_fetch.call_args.kwargs["seed_names"] == ["Balanced Rock Loop"]
+
+    def test_hikes_go_to_the_trail_batch_not_the_attraction_batch(self):
+        """The attraction prompt says "excluding hikes" in its own text.
+
+        Regression for the 2026-08-22 baseline run: the first version of this
+        prewarm fed every itinerary item to the attraction batch, hikes
+        included. At Zion that meant five names asked for, four of them
+        hikes; the model correctly honoured its own exclusion and returned
+        one, while the hint list displaced slots that would have held real
+        attractions. direct_batch_no_match went UP, 82 -> 108.
+        """
+        disc = self._discoverer()
+        ai = {"top_attractions": [
+            {"name": "Emerald Pools Trail", "type": "trail"},
+            {"name": "Angels Landing", "description": "a strenuous hike to a summit"},
+            {"name": "Zion Human History Museum", "type": "attraction"},
+        ]}
+        with patch.object(disc, "_get_attraction_direct_batch_rows_for_destination") as attr_fetch,              patch.object(disc, "_get_alltrails_direct_batch_rows_for_destination") as trail_fetch:
+            disc._prewarm_attraction_batch_with_itinerary_items(
+                ai=ai, dest_name="Zion National Park", dest_dates="October 18, 2026", seed_names=None
+            )
+        attraction_hints = attr_fetch.call_args.kwargs["seed_names"]
+        trail_hints = trail_fetch.call_args.kwargs["seed_names"]
+        assert "Zion Human History Museum" in attraction_hints
+        assert "Emerald Pools Trail" in trail_hints
+        assert "Angels Landing" in trail_hints
+        # the whole point: no hike is asked of the batch that excludes hikes
+        assert "Emerald Pools Trail" not in attraction_hints
+        assert "Angels Landing" not in attraction_hints
+
+    def test_a_destination_with_only_attractions_never_calls_the_trail_batch(self):
+        disc = self._discoverer()
+        ai = {"top_attractions": [{"name": "Santa Fe Plaza", "type": "attraction"}]}
+        with patch.object(disc, "_get_attraction_direct_batch_rows_for_destination") as attr_fetch,              patch.object(disc, "_get_alltrails_direct_batch_rows_for_destination") as trail_fetch:
+            disc._prewarm_attraction_batch_with_itinerary_items(
+                ai=ai, dest_name="Santa Fe", dest_dates="", seed_names=None
+            )
+        assert attr_fetch.called
+        trail_fetch.assert_not_called()
 
     def test_no_items_means_no_prewarm_call(self):
         disc = self._discoverer()

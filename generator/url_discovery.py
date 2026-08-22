@@ -5668,27 +5668,52 @@ class URLDiscoverer:
         Seeds come first: they are the traveller's explicit asks and must not
         be crowded out of the cap by generated names.
         """
-        hints: list[str] = []
+        # Route each name to the batch that can actually supply it.
+        #
+        # The attraction prompt says "excluding hikes" in its own text. The
+        # first version of this prewarm fed it every itinerary item, hikes
+        # included, and the 2026-08-22 baseline run shows exactly what that
+        # produced at Zion: five names asked for, four of them hikes, and the
+        # model correctly honoured its exclusion and returned ONE of them --
+        # while the hint list displaced slots that would have held real
+        # attractions. `direct_batch_no_match` went UP, 82 -> 108.
+        #
+        # Trail-like names go to the trail batch, which exists for them and
+        # whose prompt asks for hikes.
+        attraction_hints: list[str] = []
+        trail_hints: list[str] = []
         seen: set[str] = set()
-        for name in list(seed_names or []) + [
-            str(a.get("name", "") or "") for a in (ai.get("top_attractions", []) or []) if isinstance(a, dict)
-        ]:
+        by_name: dict[str, dict[str, Any]] = {}
+        for item in (ai.get("top_attractions", []) or []):
+            if isinstance(item, dict):
+                by_name[str(item.get("name", "") or "")] = item
+        for name in list(seed_names or []) + list(by_name):
             cleaned = str(name or "").replace("*", "").strip()
             key = re.sub(r"[^a-z0-9]+", " ", cleaned.lower()).strip()
             if not cleaned or key in seen:
                 continue
             seen.add(key)
-            hints.append(cleaned)
-            if len(hints) >= self._MAX_BATCH_ITEM_HINTS:
-                break
-        if not hints:
-            return
-        try:
-            self._get_attraction_direct_batch_rows_for_destination(dest_name, dest_dates, seed_names=hints)
-        except Exception as exc:  # pragma: no cover - defensive only
-            # A prewarm is an optimisation. If it fails, the ordinary lazy
-            # fetch still runs and discovery proceeds exactly as before.
-            logger.info("Attraction batch prewarm failed for %s: %s", dest_name, exc)
+            item = by_name.get(name) or {}
+            is_trail = self._is_trail_like_attraction(
+                cleaned,
+                str(item.get("type", "") or ""),
+                self._attraction_trail_context(item),
+            )
+            target = trail_hints if is_trail else attraction_hints
+            if len(target) < self._MAX_BATCH_ITEM_HINTS:
+                target.append(cleaned)
+        for hints, fetch, label in (
+            (attraction_hints, self._get_attraction_direct_batch_rows_for_destination, "attraction"),
+            (trail_hints, self._get_alltrails_direct_batch_rows_for_destination, "trail"),
+        ):
+            if not hints:
+                continue
+            try:
+                fetch(dest_name, dest_dates, seed_names=hints)
+            except Exception as exc:  # pragma: no cover - defensive only
+                # A prewarm is an optimisation. If it fails, the ordinary lazy
+                # fetch still runs and discovery proceeds exactly as before.
+                logger.info("%s batch prewarm failed for %s: %s", label, dest_name, exc)
 
     def _get_attraction_direct_batch_rows_for_destination(
         self, dest_name: str, dates: str = "", seed_names: list[str] | None = None
