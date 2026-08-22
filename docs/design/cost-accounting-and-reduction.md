@@ -387,6 +387,50 @@ them rather than re-derive the reasoning.
 
 ---
 
+## 8.1 Tracking iteration convergence
+
+Three of the changes in §6 did not do what they claimed on the first pass, which
+raises a planning question the individual post-mortems cannot answer: **how many
+passes should a change on these paths be budgeted?**
+
+`docs/reports/change-outcomes.jsonl` records one line per behaviour-changing
+operation — intent, outcome, whether it injected a separate defect, and critically
+**how it was detected and what that detection cost**. Docs-only and test-only
+commits are excluded; they are not the denominator.
+
+```bash
+python scripts/change_outcome_stats.py
+```
+
+Seeded from this work (13 settled operations):
+
+| | |
+|---|---|
+| Clean first pass | **62%** |
+| `failed_to_fix` | 23% |
+| Injected a separate defect | 23% |
+| **Problems caught only by a paid run or the user** | **80%** |
+
+**The headline is the last row, not the first.** A 62% first-pass rate implies
+~1.6 passes per change, which is useful for estimating. But the failure *rate* only
+sets how many iterations are needed; the detection *channel* sets what each one
+costs. Four of five problems here were invisible until a paid run or the owner
+surfaced them — and each of those three defects had the same property: **it produced
+a plausible-looking result while doing the wrong thing.** A Maps link was still
+emitted; the batch prompt still contained the hints; the config still said
+`grok-4.3`.
+
+Halving a failure rate is hard. Moving detection from `paid_run` to `tests` is
+usually just writing the assertion first — and the one case where a test *was*
+written against the new behaviour, it asserted the bug (`pricing-and-model-split`),
+which is why the ledger tracks that as an injected defect in its own right.
+
+Practical use: before a change on the discovery/cost paths, ask what observable
+would distinguish "worked" from "looked like it worked", and whether a test can see
+it. If only a paid run can, that is a known 1.6x-and-metered cost going in.
+
+---
+
 ## 9. Open items
 
 - **The residual 18%.** The corrected `$2.00/$6.00` rate computes $4.45 against $3.75
