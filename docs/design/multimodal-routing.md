@@ -453,9 +453,14 @@ path byte-identical. **Verify live before shipping.**
 
 ### 4.4 En-route stops, scenic drives, grouped day trips
 
-**En-route stops** should not be discovered for a `transit` leg — structurally meaningless,
-and skipping one of the four parallel discovery jobs is a genuine cost saving (§6). It also
-removes a class of geocode mis-resolution failures for those legs. Under `mixed`, keep them.
+**En-route stops** are not discovered for a `transit` leg — **confirmed 2026-08-21 (open
+question 3)**. Structurally meaningless: there is no roadside to stop at on a train. Skipping
+one of the four parallel discovery jobs is a genuine cost saving (§6), and it removes a class
+of geocode mis-resolution failures for those legs. Under `mixed`, keep them — the drive is
+still on the table there, so its stops are still real.
+
+The accepted cost: those destinations lose a content section. That is the right trade because
+the section was never applicable, not because it was cheap to drop.
 
 **Scenic drives** should *not* be suppressed by `transport_mode` alone. A traveler who takes
 a train to Moab may still rent a jeep there; `has_high_clearance_vehicle` is the existing
@@ -465,6 +470,43 @@ call — open question #7.
 **Grouped day trips.** A `group_with` hop is a there-and-back day trip from a shared base,
 not an inbound relocation leg, so `transport_mode` on a grouped child is a category error.
 Recommend: log a warning and ignore, matching `_warn_if_group_dates_outside_base_range`.
+
+### 4.6 A booked leg outranks a generated one
+
+**Decided 2026-08-21 (open question 2).** Where `reservation_ingest` has attached a booking
+for a leg, render the booking and **do not generate options for that leg at all**.
+
+This follows directly from §3.3's epistemic split. A `TRANSPORTATION_ITEM_SCHEMA` entry is
+ground truth — the traveller forwarded a confirmation and it carries a
+`confirmation_number`. A routing option is a guess about a service nobody has bought.
+Offering "there might be a bus around 9" beside "your 09:00 flight, locator XR7Q2M" is not
+helpfulness; it is noise attached to a decided question.
+
+**Matching.** The ingestion already attaches each booking to the destination it delivers the
+traveller to (or to `TRIP_LEVEL_ID` for `trip.departure`/`trip.return`). That is the same
+"inbound leg belongs to the arriving destination" convention `transport_mode` uses in §3.1,
+so the two line up without new matching logic: a destination-level transportation item **is**
+that destination's inbound leg.
+
+**The booking wins, and does not raise.** This is deliberately unlike §3.2's collision rule,
+and the difference matters:
+
+| Collision | Resolution | Why |
+| --- | --- | --- |
+| `legs:` vs `transport_mode` (§3.2) | **Raise** | Two *authoring* statements. One is a mistake, and the author must say which |
+| Booking vs `transport_mode` | **Booking wins, logged** | An authoring statement against an *observed fact*. Not a mistake — plans change |
+
+A traveller who wrote `transport_mode: transit` in March and forwarded a car-rental
+confirmation in August has not made an error. Raising there would break a build because an
+email arrived, which is absurd. Log at INFO naming both, so the divergence is discoverable
+without being fatal.
+
+**`mixed` degenerates for a booked leg.** With a booking present there is nothing to render
+alongside — options are suppressed, so `mixed` and `transit` behave identically for that leg.
+
+**Cost.** This is the cheapest branch in the design: a booked leg costs zero routing calls.
+On a trip whose flights and rail are already forwarded, most legs never reach the routing
+provider at all.
 
 ### 4.5 Telling the reader what they are looking at
 
@@ -629,12 +671,14 @@ identically. If they behave the same, one is dead config. Proposed split in open
    issue's `transport_mode_from_previous`. `legs:` is accepted alongside it, subject to the
    validation contract in §3.2 — `id` references, adjacency checks, and a raise on any
    disagreement between the two mechanisms about one leg.
-2. **What does `mixed` mean?** Proposal: `transit` = transit replaces the car everywhere
-   including the arrival-day schedule; `mixed` = transit options render *alongside* the
-   drive, with `drive_time`/`distance_miles` untouched. As written in the issue the two
-   values are indistinguishable.
-3. **Should a transit leg suppress en-route stop discovery?** Correct in principle and a real
-   cost saving, but it removes a content section from those destinations.
+2. ~~**What does `mixed` mean?**~~ **RESOLVED 2026-08-21.** As proposed: `transit` =
+   transit replaces the car everywhere including the arrival-day schedule; `mixed` =
+   transit options render *alongside* the drive, with `drive_time`/`distance_miles`
+   untouched. **Plus:** where a reservation has been forwarded and ingested for a leg, use
+   the booking and suppress option generation entirely for that leg — see §4.6.
+3. ~~**Should a transit leg suppress en-route stop discovery?**~~ **RESOLVED 2026-08-21:
+   yes.** Suppressed on `transit`, kept on `mixed`. The lost content section is accepted —
+   the section was never applicable to a train leg. See §4.4.
 4. **Reuse `drive_time` for transit duration, or introduce `travel_time`?** §4.1 recommends
    reuse now, rename later, separately.
 5. **The big product call: is a Phase 1 with zero clock times acceptable?** The issue's
