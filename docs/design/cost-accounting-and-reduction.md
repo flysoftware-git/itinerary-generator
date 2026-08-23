@@ -473,6 +473,59 @@ did not anticipate, that is the signal to stop and re-diagnose rather than itera
 
 ---
 
+## 8.3 The failure mode behind most of §4, and the rule that prevents it
+
+Seventeen operations in, the misses in §4 and §8.1 are not independent. Almost all of
+them are one error: **reasoning from a name instead of from behaviour.**
+
+Four were an aggregation label mistaken for a mechanism:
+
+| Label trusted | What it actually was |
+|---|---|
+| `url_discovery_fallback` | an operation **prefix** shared by four call paths into `_search_cached`; only `_search_first_strict` is the per-item website hunt |
+| `url_discovery_search_calls` | a different counter from the billed `web_search_calls` — off by 2.4× |
+| "token overlap = match" | matched *Zion Lodge* to *Stargazing in Zion* |
+| `grok-4-fast` @ `$0.20/$0.50` | a guess its own comment flagged as provisional |
+
+Three were a mechanism changed from its interface without reading its body: the model
+split gated on `self._llm.provider` without checking which provider runs (openai, not
+grok); `en_route_source: maps` set without noticing the batch **supplies the stops**,
+not merely their URLs; hints fed to a prompt whose own text says *"excluding hikes"*.
+
+In a module this size, names are abundant and free while behaviour costs a read or a
+measurement. The cheap option was taken repeatedly.
+
+**The discriminator is measurement, not care.** Sorting the ledger by whether the
+specific mechanism was measured *before* the change:
+
+| Pre-measured | Outcome |
+|---|---|
+| AllTrails cross-category — 11 pairs checked for false conflations | clean |
+| Trail backfill — 84 rows harvested vs 24 used | clean |
+| Geocode links for attractions — 26/26 offline probe | worked exactly as probed |
+| Model-split gate — no | failed |
+| en-route maps mode — no | failed, 76% content loss |
+| Hint routing — no | failed twice |
+| Fallback gate scope — no | failed, −6% against −66% predicted |
+
+The last one is the sharpest: attributing those 218 calls to their call sites was
+**free**, from artifacts that already existed. That query was run *after* the paid run
+rather than before it.
+
+### The rule
+
+**No cost prediction without first attributing the number to its call sites.**
+
+Not *"this label is 66% of spend"* but *"these N call sites produce it, and this change
+removes M of them."* The precondition is cheap, checkable, and would have caught the
+2026-08-22 miss before the run instead of after.
+
+Corollary, from §8.2: a prediction stated in writing before the run is what makes a
+miss legible. Without it, a metric that moves for the wrong reason reads as success —
+which is how the en-route change was first reported here as a win.
+
+---
+
 ## 9. Open items
 
 - **The residual 18%.** The corrected `$2.00/$6.00` rate computes $4.45 against $3.75
