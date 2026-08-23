@@ -1734,3 +1734,40 @@ def test_apply_privacy_redaction_empties_transportation_legs() -> None:
     assert counts["transportation"] == 2
     assert trip["destinations"][0]["transportation"] == []
     assert trip["destinations"][1].get("transportation", []) == []
+
+
+class TestCulturalEventsOffByDefault:
+    """Cultural events are the worst value-per-token category in the pipeline.
+
+    Measured across three cold-start runs on 2026-08-22: 16 calls and
+    97K-113K tokens to deliver between 1 and 4 event listings -- 24,000 to
+    113,000 tokens per delivered item, and more tokens than generating the
+    entire itinerary for all ten destinations (10 calls, 68K). It is also the
+    content most likely to be stale by departure.
+    """
+
+    def test_config_without_the_key_means_off(self, tmp_path):
+        from generator.main import _cultural_events_enabled
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("cultural_events:\n  max_results: 8\n", encoding="utf-8")
+        assert _cultural_events_enabled(str(cfg)) is False
+
+    def test_explicit_true_turns_it_on(self, tmp_path):
+        from generator.main import _cultural_events_enabled
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("cultural_events:\n  enabled: true\n", encoding="utf-8")
+        assert _cultural_events_enabled(str(cfg)) is True
+
+    def test_unreadable_config_fails_closed(self, tmp_path):
+        """An unreadable config must not silently buy the most expensive
+        category in the pipeline."""
+        from generator.main import _cultural_events_enabled
+        assert _cultural_events_enabled(str(tmp_path / "does-not-exist.yaml")) is False
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("cultural_events: [this is not a mapping\n", encoding="utf-8")
+        assert _cultural_events_enabled(str(bad)) is False
+
+    def test_shipped_config_has_it_off(self):
+        """The default this project ships with."""
+        from generator.main import _cultural_events_enabled
+        assert _cultural_events_enabled("config.yaml") is False

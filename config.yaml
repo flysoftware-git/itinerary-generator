@@ -176,6 +176,15 @@ geocoding:
 
 # ── Cultural events discovery ─────────────────────────────────────────────────
 cultural_events:
+  # OFF by default as of 2026-08-22. Measured across three cold-start runs:
+  # 16 calls and 97K-113K tokens to deliver between 1 and 4 event listings --
+  # 24,000 to 113,000 tokens per delivered item, and more tokens than
+  # generating the whole itinerary for all ten destinations (10 calls, 68K).
+  # It is also the content most likely to be stale by departure, since trips
+  # are usually built months ahead.
+  #
+  # Candidate premium/specialisation feature rather than a default.
+  enabled: false
   primary_query_template: "{destination} events {month} {year}"
   secondary_query_template: "{destination} festivals concerts cultural {month} {year}"
   max_results: 8

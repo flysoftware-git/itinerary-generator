@@ -1500,6 +1500,23 @@ def _write_url_diff_markdown_report(
     return path
 
 
+def _cultural_events_enabled(config_path: str) -> bool:
+    """True only when config explicitly enables cultural events.
+
+    Defaults to False -- absent, malformed or unreadable config all mean off.
+    That direction is deliberate: this is the worst value-per-token category
+    in the pipeline, so an unreadable config should not silently buy it.
+    """
+    try:
+        import yaml
+
+        with open(config_path, "r", encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh) or {}
+        return bool((cfg.get("cultural_events") or {}).get("enabled", False))
+    except Exception:
+        return False
+
+
 def _append_run_ledger(ledger_path: Path, record: dict) -> None:
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     with ledger_path.open("a", encoding="utf-8") as f:
@@ -1959,6 +1976,19 @@ def main(
     effective_log_level = _setup_logging(verbose, log_level)
     output_dir = Path(output)
     retry_policy = _load_destination_retry_policy(config_path)
+
+    # Cultural events are OFF unless config turns them on. Measured 2026-08-22
+    # across three cold-start runs: 16 calls and 97K-113K tokens to deliver
+    # between 1 and 4 event listings -- 24,000 to 113,000 tokens per delivered
+    # item, and more tokens than generating the entire itinerary for all ten
+    # destinations (10 calls, 68K). It is also the content most likely to be
+    # stale by departure, since a trip is typically built months ahead.
+    #
+    # --skip-events still forces off; this only changes what happens when the
+    # flag is absent. Set cultural_events.enabled: true to restore.
+    if not skip_events and not _cultural_events_enabled(config_path):
+        skip_events = True
+        logger.info("Cultural events disabled by config (cultural_events.enabled is not true)")
 
     click.echo(f"🗺  Itinerary Generator")
     click.echo(f"   Manifest : {manifest}")
