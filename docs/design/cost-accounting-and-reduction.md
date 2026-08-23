@@ -431,6 +431,48 @@ it. If only a paid run can, that is a known 1.6x-and-metered cost going in.
 
 ---
 
+## 8.2 Probe the real code path before paying for a run
+
+The cheapest verification tier in this project was being skipped. There are three,
+not two:
+
+| Tier | Cost | Catches |
+|---|---|---|
+| Unit tests | free | what you predicted |
+| **Offline probe against real data** | **free** | **whether the real code works on real inputs** |
+| Paid run | $2–6 | interactions, end-to-end effects, actual spend |
+
+The middle tier is possible because every run leaves its own inputs behind:
+`destination_status_report.json` holds the per-item disposition threads, and the
+`*.meta.json` batch captures hold the exact prompts and parsed rows. A later change
+can be exercised against exactly the items that failed last time, without a
+generator run and without spending anything.
+
+**Worked example, 2026-08-22.** Before running the geocode-fallback change, the
+26 attraction names that run 3 had deleted were pulled from its status report and
+put through a geocoder:
+
+- First probe: **12% resolved.** Alarming — it implied the change would cut cost by
+  deleting content, the exact failure this project had already made twice.
+- That probe was wrong. It used the query form `"{name}, {destination}"`, which the
+  implementation does not use. Isolating the query form scored it **0/6** while
+  name-only scored **6/6**.
+- Re-probed through the actual method, with real destination coordinates:
+  **26/26 resolved, all within 60 miles of their destination.**
+
+Both directions matter. The probe raised a false alarm and then cleared it, for
+nothing, in minutes — and either outcome was worth more than another passing test,
+because it exercised the real code against real inputs rather than the author's
+model of them.
+
+**The practice:** before any paid run, take the failing items from the previous
+run's artifacts and put them through the changed code path directly. Predict the
+run's numbers in writing first. If a metric then moves for a reason the prediction
+did not anticipate, that is the signal to stop and re-diagnose rather than iterate
+— every defect in §8.1's ledger announced itself that way.
+
+---
+
 ## 9. Open items
 
 - **The residual 18%.** The corrected `$2.00/$6.00` rate computes $4.45 against $3.75
