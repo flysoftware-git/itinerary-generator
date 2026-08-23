@@ -146,7 +146,7 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                 },
                 "en_route_stops_per_day": {
                     "type": "number",
-                    "description": "Optional default target number of en-route stops to keep per destination-day (scaled by the ARRIVING destination's day count, not the drive itself) when trimming candidates. Mirrors attractions_per_day.",
+                    "description": "Optional default target number of en-route stops for the arrival leg. NOT scaled by day count, unlike attractions/restaurants/scenic drives: an en-route stop belongs to the single drive INTO a destination, which happens once however long the stay. This description previously said the opposite; the code has been a flat cap since _resolve_enroute_target was written, and day-scaling here let a 3-day stay carry 12 candidates for one drive -- past Google's 8-waypoint URL cap, so stops beyond the 8th rendered as cards with no map pin.",
                 },
                 "scenic_drives_per_day": {
                     "type": "number",
