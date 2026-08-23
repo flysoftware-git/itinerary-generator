@@ -281,6 +281,19 @@ url_discovery:
   # extraction from retrieved pages, not the reasoning the top tier is
   # worth paying for. grok-4.3 is $1.25/$2.50 against grok-4.5/4.6's
   # $2.00/$6.00. Unset leaves discovery on the content model.
+  # The paid per-item fallback search was 66% of a cold run on 2026-08-22
+  # ($3.86 of $5.85; 218 calls, 1.6M tokens, 306 billed web_search
+  # invocations). It fires only for items the direct batch already failed to
+  # resolve -- the most expensive discovery we do and the least likely to
+  # succeed -- after which verified-link-or-seed deleted 29 attractions
+  # anyway for not finding a website.
+  #
+  # "geocode_maps" declines that call and answers "where is it" with a free
+  # Nominatim geocode instead, emitting a coordinate Maps link. Owner
+  # decision 2026-08-22: a coordinate link counts as verified (a lat,lng is
+  # not a text guess), extending the bar en-route stops already use. Set to
+  # "search" to restore paid fallbacks.
+  fallback_mode: geocode_maps
   search_model: "grok-4.3"
   direct_batch_group_size: 1
   alltrails_source: direct_link_batch

@@ -17350,3 +17350,61 @@ class TestMapsModeStillRunsTheEnRouteHarvest:
             "a bare direct_link_batch gate would skip the harvest in maps mode "
             "and delete most en-route stops"
         )
+
+
+class TestGeocodeMapsFallback:
+    """Replace the paid per-item fallback with a free geocode.
+
+    That path was 66% of a cold run on 2026-08-22 -- $3.86 of $5.85, 218
+    calls, 306 billed web_search invocations -- and fires only for items the
+    direct batch already failed to resolve. After spending it, the
+    verified-link-or-seed policy deleted 29 attractions anyway.
+    """
+
+    @staticmethod
+    def _discoverer(mode="geocode_maps"):
+        mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            d = URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+        d._fallback_mode = mode
+        return d
+
+    def test_a_coordinate_maps_link_counts_as_verified(self):
+        """Owner decision 2026-08-22. The 2026-08-17 rule bars best-guess TEXT
+        queries; a lat,lng names one point and is resolved by a geocoder."""
+        item = {"url": "https://www.google.com/maps/search/?api=1&query=37.2982%2C-113.0263"}
+        assert URLDiscoverer._item_has_verified_url(item)
+
+    def test_a_name_query_maps_link_still_does_not(self):
+        """The original rule is intact -- this is an extension, not a repeal."""
+        item = {"url": "https://www.google.com/maps/search/?api=1&query=Angels%20Landing%20Zion"}
+        assert not URLDiscoverer._item_has_verified_url(item)
+
+    def test_geocode_maps_mode_does_not_buy_a_search(self):
+        disc = self._discoverer("geocode_maps")
+        with patch.object(disc, "_search_first_strict") as paid:
+            result = disc._search_first(["angels landing"], item_name="Angels Landing", dest_name="Zion")
+        assert result is None
+        paid.assert_not_called()
+
+    def test_search_mode_still_buys_one(self):
+        """The lever must be reversible -- config back to "search" restores it."""
+        disc = self._discoverer("search")
+        with patch.object(disc, "_search_first_strict", return_value="https://nps.gov/zion") as paid:
+            result = disc._search_first(["angels landing"], item_name="Angels Landing 2", dest_name="Zion")
+        assert result == "https://nps.gov/zion"
+        paid.assert_called_once()
+
+    def test_geocode_builds_a_coordinate_link(self):
+        disc = self._discoverer()
+        with patch.object(disc, "_geocode_en_route_stop_for_route", return_value=(37.2982, -113.0263)):
+            url = disc._geocode_maps_url_for_item("Angels Landing", "Zion National Park", (37.3, -113.0))
+        assert URLDiscoverer._is_coordinate_maps_query_url(url)
+        assert "37.2982" in url
+
+    def test_a_failed_geocode_leaves_the_item_untouched(self):
+        """No coordinate is better than a wrong one -- the item then falls to
+        the normal retention policy exactly as before."""
+        disc = self._discoverer()
+        with patch.object(disc, "_geocode_en_route_stop_for_route", return_value=None):
+            assert disc._geocode_maps_url_for_item("Nowhere", "Zion National Park") == ""

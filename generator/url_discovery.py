@@ -409,6 +409,9 @@ DEFAULT_ALLTRAILS_SOURCE = "direct_link_batch"
 DEFAULT_ATTRACTION_SOURCE = "direct_link_batch"
 DEFAULT_RESTAURANT_SOURCE = "direct_link_batch"
 DEFAULT_EN_ROUTE_SOURCE = "search"
+# "search" = today's paid per-item fallback. "geocode_maps" replaces it
+# with a free geocode-backed coordinate Maps link. See _search_first.
+DEFAULT_FALLBACK_MODE = "search"
 DEFAULT_DIRECT_LINK_BATCH_COUNT = 20
 DEFAULT_DIRECT_BATCH_AUTHORITATIVE = True
 DEFAULT_RESTAURANT_DIRECT_BATCH_ITEM_COUNT = 4
@@ -817,6 +820,7 @@ class URLDiscoverer:
         self._attraction_source: str = DEFAULT_ATTRACTION_SOURCE
         self._restaurant_source: str = DEFAULT_RESTAURANT_SOURCE
         self._en_route_source: str = DEFAULT_EN_ROUTE_SOURCE
+        self._fallback_mode: str = DEFAULT_FALLBACK_MODE
         # GH #68 multi-site grouping (config.yaml multi_site_grouping.base_owned_categories) --
         # see generator/multi_site_grouping.py for the resolution rule this feeds.
         self._multi_site_base_owned_categories: frozenset[str] = frozenset(DEFAULT_BASE_OWNED_CATEGORIES)
@@ -1340,6 +1344,9 @@ class URLDiscoverer:
             ).strip().lower().replace("-", "_")
             if en_route_source in {"search", "direct_link_batch", "maps"}:
                 self._en_route_source = en_route_source
+            fallback_mode = str(url_cfg.get("fallback_mode", DEFAULT_FALLBACK_MODE) or "").strip().lower()
+            if fallback_mode in {"search", "geocode_maps"}:
+                self._fallback_mode = fallback_mode
 
             direct_link_batch_count = url_cfg.get("direct_link_batch_count", DEFAULT_DIRECT_LINK_BATCH_COUNT)
             try:
@@ -2738,6 +2745,32 @@ class URLDiscoverer:
                             reason="alltrails_geo_maps_url_unavailable",
                             message="no coordinate-based Google Maps link attached: direct fetch and Wayback Machine fallback both failed to yield a usable JSON-LD geo field",
                             url="",
+                        )
+                # Last resort before deletion: answer "where is it" with a free
+                # geocode rather than buying a search that already failed.
+                # Without this the item is removed by verified-link-or-seed --
+                # 29 attractions went that way on the 2026-08-22 run.
+                if (
+                    str(getattr(self, "_fallback_mode", DEFAULT_FALLBACK_MODE) or "") == "geocode_maps"
+                    and not is_seed
+                    and not self._item_has_verified_url(attr)
+                ):
+                    dest_lat, dest_lng = (dest or {}).get("lat"), (dest or {}).get("lng")
+                    viewbox = (
+                        (float(dest_lat), float(dest_lng))
+                        if isinstance(dest_lat, (int, float)) and isinstance(dest_lng, (int, float))
+                        else None
+                    )
+                    geo_url = self._geocode_maps_url_for_item(attr_name, dest_name, viewbox)
+                    if geo_url:
+                        attr["url"] = geo_url
+                        self._log_decision(
+                            kind="attraction",
+                            dest_name=dest_name,
+                            item_name=attr_name,
+                            reason="geocode_maps_url_attached",
+                            message="no website found; resolved to a coordinate Maps link via free geocode",
+                            url=geo_url,
                         )
                 if self._keep_item_if_verified_or_seed(
                     dest, attr, attr_name,
@@ -4285,10 +4318,28 @@ class URLDiscoverer:
         (project owner decision, 2026-08-17). Only the `url` field counts;
         a `maps_url` fallback (kept separately for the optional map-icon
         link) never counts as verification on its own.
+
+        EXCEPTION, owner decision 2026-08-22: a **coordinate** Maps link does
+        count. The 2026-08-17 rule is about text queries -- "best-guess",
+        "never confirmed to be about the right specific place". A `lat,lng`
+        link is not a guess: it names one point on the earth, resolved by a
+        geocoder rather than by a search phrase. That is the same bar
+        en-route stops have used since they were given
+        `_item_has_verified_route_geocode`, so this extends an existing rule
+        rather than introducing a new one.
+
+        This is what makes the paid per-item fallback removable. That path
+        was 66% of a cold run ($3.86 of $5.85, 218 searches) and existed to
+        find a website for items the batch had already failed to resolve --
+        after which the verified-link-or-seed policy deleted 29 attractions
+        anyway for not finding one. A free geocode answers "where is it"
+        without buying a search.
         """
         url = str((item or {}).get("url", "") or "").strip()
         if not url:
             return False
+        if URLDiscoverer._is_coordinate_maps_query_url(url):
+            return True
         return URLDiscoverer._classify_url_policy_class(url) not in {
             "google_maps_search",
             "google_maps_dir",
@@ -4311,6 +4362,42 @@ class URLDiscoverer:
             return False
         query = unquote(match.group(1)).strip()
         return bool(re.fullmatch(r"-?\d{1,3}(?:\.\d+)?\s*,\s*-?\d{1,3}(?:\.\d+)?", query))
+
+    def _geocode_maps_url_for_item(
+        self, item_name: str, dest_name: str, dest_latlng: tuple[float, float] | None = None
+    ) -> str:
+        """A coordinate Maps link for an item, resolved by a FREE geocode.
+
+        Replaces the paid per-item fallback search. Reuses the same Nominatim
+        path and persistent cache the en-route stops use, so a destination
+        geocoded once is free for every later run and every later customer.
+
+        The destination's own coordinate is passed as both viewbox corners
+        when available, which biases the lookup tightly to the destination --
+        the disambiguation that stops "Red Canyon" resolving to a same-named
+        place hundreds of miles away.
+
+        Returns "" when the geocode fails, which leaves the item exactly
+        where it was: no URL, and subject to the normal retention policy.
+        """
+        name = str(item_name or "").strip()
+        if not name:
+            return ""
+        try:
+            coords = self._geocode_en_route_stop_for_route(
+                name,
+                origin_name="",
+                dest_name=str(dest_name or ""),
+                origin=dest_latlng,
+                dest=dest_latlng,
+            )
+        except Exception as exc:  # pragma: no cover - defensive only
+            logger.info("Geocode fallback failed for %r in %r: %s", name, dest_name, exc)
+            return ""
+        if not coords:
+            return ""
+        lat, lng = coords
+        return f"https://www.google.com/maps/search/?api=1&query={quote(f'{lat},{lng}')}"
 
     def _en_route_maps_url(self, stop: dict[str, Any], stop_name: str, dest_name: str) -> str:
         """A Google Maps link for an en-route stop, built locally at zero cost.
@@ -11787,7 +11874,30 @@ class URLDiscoverer:
                 url=(_url_cache[cache_key] or ""),
             )
             return _url_cache[cache_key]
-        
+
+        # The paid per-item fallback. On the 2026-08-22 cold-start run this
+        # path was 218 calls, 1.6M tokens and 306 billed web_search
+        # invocations -- $3.86 of a $5.85 run, 66% of it. It fires only for
+        # items the direct batch already failed to resolve, so it is the most
+        # expensive discovery we do and the least likely to succeed.
+        #
+        # "geocode_maps" mode declines to make that call. The caller's item
+        # instead receives a coordinate Maps link from a free geocode (see
+        # _geocode_maps_url_for_item), which satisfies the verified-link
+        # policy under the 2026-08-22 owner decision recorded in
+        # _item_has_verified_url. Cache hits above are still served -- they
+        # cost nothing and are strictly better than a coordinate.
+        if str(getattr(self, "_fallback_mode", DEFAULT_FALLBACK_MODE) or "") == "geocode_maps":
+            self._log_decision(
+                kind="search",
+                dest_name=dest_name,
+                item_name=item_name,
+                reason="paid_fallback_skipped",
+                message="fallback_mode=geocode_maps: not buying a per-item search",
+            )
+            _url_cache[cache_key] = None
+            return None
+
         # Search and cache result
         result = self._search_first_strict(
             query_variants=query_variants,
