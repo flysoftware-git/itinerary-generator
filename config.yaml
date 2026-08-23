@@ -293,7 +293,23 @@ url_discovery:
   # decision 2026-08-22: a coordinate link counts as verified (a lat,lng is
   # not a text guess), extending the bar en-route stops already use. Set to
   # "search" to restore paid fallbacks.
-  fallback_mode: geocode_maps
+  # REVERTED to "search" 2026-08-22 after run 4 measured it.
+  #
+  # The gate works (144 paid searches declined) but delivered only -6% on
+  # the run, not the -66% predicted, because "url_discovery_fallback" is not
+  # one thing: only _search_first_strict is the per-item website hunt.
+  # _search_alltrails_for_trail_filtered, _get_attraction_maps_area_rows_...
+  # and _get_direct_batch_rows_for_destination bill under the same operation
+  # prefix and were never in scope. 156 of 218 calls survived the gate.
+  #
+  # Worse, the gate applies to every caller of _search_first while the
+  # geocode replacement was wired only for attractions. Restaurants lost
+  # their fallback with nothing in its place: removals went 2 -> 36.
+  # Attractions did improve (29 -> 17 removed, 28 geocode links attached),
+  # so the mechanism is sound -- the targeting is not.
+  #
+  # Set to "geocode_maps" only once the gate is kind-aware.
+  fallback_mode: search
   search_model: "grok-4.3"
   direct_batch_group_size: 1
   alltrails_source: direct_link_batch
