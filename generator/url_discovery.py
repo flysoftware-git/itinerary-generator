@@ -10584,12 +10584,19 @@ class URLDiscoverer:
             else (getting_here.get("en_route_stops", []) if isinstance(getting_here.get("en_route_stops", []), list) else [])
         )
 
-        # "maps" mode buys nothing from the harvest: the stop resolves to a
-        # Google Maps link built locally, so there is no website to find.
-        # Skipping the batch here is most of the saving -- on the 2026-08-21
-        # cold-start run the en-route batches were 10 of 38 harvest calls at
-        # ~24,000 tokens each.
-        if source_mode == "direct_link_batch" and not en_route_stop_deferred:
+        # "maps" mode changes URL RESOLUTION only. It must still run the
+        # harvest, because this batch does two jobs: it supplies candidate
+        # en-route stops (see "Preserve legacy behavior when AI yields no
+        # en-route ideas" below) as well as their URLs.
+        #
+        # The first version of maps mode conflated the two and skipped the
+        # batch entirely. The 2026-08-22 run measured the result: en-route
+        # stop cards fell from 50 to 12, a 76% content loss, and the
+        # geometry pass that assigns route-verified geocodes collapsed with
+        # them (35 -> 9 corrections). The apparent "-83% batch candidate
+        # rejections" that made the mode look successful was mostly stops
+        # ceasing to exist, not resolution improving.
+        if source_mode in {"direct_link_batch", "maps"} and not en_route_stop_deferred:
             en_route_seed_names = [
                 str(seed or "").strip()
                 for seed in ((dest or {}).get("en_route_seeds", []) or [])
@@ -10649,7 +10656,7 @@ class URLDiscoverer:
                 getting_here["en_route_stops"] = stops
                 ai["getting_here"] = getting_here
 
-        if stops and source_mode == "direct_link_batch":
+        if stops and source_mode in {"direct_link_batch", "maps"}:
             filtered_stops: list[dict[str, Any]] = []
             for stop in stops:
                 keep, reason = self._en_route_stop_within_threshold(stop if isinstance(stop, dict) else {})
@@ -10825,7 +10832,7 @@ class URLDiscoverer:
             else:
                 stop.pop("maps_url", None)
             url = None
-            if source_mode == "direct_link_batch":
+            if source_mode in {"direct_link_batch", "maps"}:
                 existing_url = str(stop.get("url", "") or "").strip()
                 if existing_url:
                     cleaned_existing = self._retain_discovered_url(

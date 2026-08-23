@@ -17324,3 +17324,29 @@ class TestCoordinateMapsUrlSurvivesTheQueryRebuild:
             allow_google_maps_search=True,
         )
         assert kept == coord, "coordinate was rewritten into a name query"
+
+
+class TestMapsModeStillRunsTheEnRouteHarvest:
+    """"maps" changes URL resolution, not whether the harvest runs.
+
+    The en-route direct batch does two jobs: it supplies candidate en-route
+    STOPS as well as their URLs. The first version of maps mode conflated
+    them and skipped the batch entirely. The 2026-08-22 run measured the
+    cost: en-route stop cards fell 50 -> 12 (a 76% content loss) and the
+    geometry pass that assigns route-verified geocodes collapsed with them
+    (35 -> 9). The apparent "-83% batch candidate rejections" that made the
+    mode look successful was mostly stops ceasing to exist.
+    """
+
+    def test_maps_mode_is_batch_backed(self):
+        """Both modes must take the harvest branch; only resolution differs."""
+        import inspect
+        from generator import url_discovery as ud
+
+        src = inspect.getsource(ud.URLDiscoverer._discover_en_route_stops)
+        # the harvest gate must admit "maps", not only "direct_link_batch"
+        assert 'source_mode in {"direct_link_batch", "maps"}' in src
+        assert 'source_mode == "direct_link_batch"' not in src, (
+            "a bare direct_link_batch gate would skip the harvest in maps mode "
+            "and delete most en-route stops"
+        )
