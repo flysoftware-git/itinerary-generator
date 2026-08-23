@@ -2340,6 +2340,20 @@ class URLDiscoverer:
                 dest.pop("_en_route_origin", None)
                 dest.pop("_en_route_origin_lat", None)
                 dest.pop("_en_route_origin_lng", None)
+
+        # Emitted at WARNING so it survives the --log-level warning that real
+        # runs use. Without this, every paid fallback call lands in the
+        # artifacts as `url_discovery_fallback:search` with no way to tell the
+        # four call paths apart -- which is precisely how 66% of a run got
+        # attributed to "the per-item website hunt" when only one path is
+        # that. See cost-accounting-and-reduction.md section 8.3.
+        sites = getattr(self, "_fallback_call_sites", None)
+        if sites:
+            breakdown = ", ".join(f"{k}={v}" for k, v in sorted(sites.items(), key=lambda i: -i[1]))
+            logger.warning(
+                "Paid fallback calls by call site (total %d): %s", sum(sites.values()), breakdown
+            )
+
         self._save_persistent_caches()
 
     def _attach_secondary_maps_link(
@@ -5708,6 +5722,7 @@ class URLDiscoverer:
             if cached is not None:
                 return cached
 
+        self._note_fallback_call_site("direct_batch_rows")
         rows = self._search_cached(query, count=self._direct_link_batch_limit())
         normalized = [dict(row) for row in rows if isinstance(row, dict)]
 
@@ -7694,6 +7709,7 @@ class URLDiscoverer:
             if cached is not None:
                 return [dict(row) for row in cached if isinstance(row, dict)]
 
+        self._note_fallback_call_site("attraction_maps_area_rows")
         rows = self._search_cached(
             self._attraction_maps_area_query(dest_name, dates),
             count=max(10, self._direct_link_batch_limit()),
@@ -8483,6 +8499,7 @@ class URLDiscoverer:
 
         for query in query_variants[:max_attempts]:
             full_query = f"site:alltrails.com {query}"
+            self._note_fallback_call_site("alltrails_trail_filtered")
             candidates = self._search_cached(full_query, count=10)
             for candidate in candidates:
                 url = str(candidate.get("url", "") or "")
@@ -11952,6 +11969,7 @@ class URLDiscoverer:
 
         for query in normalized_variants:
             full_query = f"{site_hint} {query}" if site_hint else (f"site:{site_filter} {query}" if site_filter else query)
+            self._note_fallback_call_site("per_item_website_hunt")
             candidates = self._search_cached(full_query, count=10)
 
             # Pass 1: specific pages only
@@ -12239,6 +12257,26 @@ class URLDiscoverer:
             return self._alltrails_slug_extra_term_count(best_url, item_name) == 0
 
         return True
+
+    def _note_fallback_call_site(self, site: str) -> None:
+        """Count paid fallback calls by originating call path.
+
+        "url_discovery_fallback" is an operation PREFIX shared by four
+        distinct callers of _search_cached, and the run artifacts record only
+        that prefix -- every call arrives as `url_discovery_fallback:search`
+        with no way to tell them apart. That ambiguity produced the
+        2026-08-22 miss: 66% of a run was attributed to "the per-item website
+        hunt" when only one of the four paths is that, and a change targeting
+        it removed 62 of 218 calls rather than all of them.
+
+        This makes the next run self-attributing, so the rule in
+        cost-accounting-and-reduction.md section 8.3 -- no cost prediction
+        without attributing the number to its call sites -- can be satisfied
+        from artifacts instead of by reading code.
+        """
+        if not hasattr(self, "_fallback_call_sites"):
+            self._fallback_call_sites: dict[str, int] = {}
+        self._fallback_call_sites[site] = self._fallback_call_sites.get(site, 0) + 1
 
     def _search_cached(self, full_query: str, *, count: int = 10) -> list[dict[str, Any]]:
         query_key = str(full_query or "").strip()

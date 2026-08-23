@@ -266,6 +266,45 @@ Then:
    `url_discovery_search_calls`, which undercounts by ~2.4× because one call can fire
    the tool several times.
 
+### 7.2a Measure CONTENT, not only cost
+
+This procedure originally measured spend and nothing else, and that gap hid two real
+regressions behind acceptable-looking cost numbers. Removal counters are not
+sufficient: run 4 reported 17 attractions removed (an improvement on 29) while
+**silently deleting every AllTrails link in the output, 21 to 0**.
+
+Count the artifact itself, every run, alongside the cost:
+
+```bash
+python - <<'EOF'
+import io, re
+h = io.open(r"<output>/dev/index.html", encoding="utf-8").read()
+for label, pat in [
+    ("attractions",  r'class="attr-item"'),
+    ("restaurants",  r'class="rest-item"'),
+    ("en-route",     r'class="stop-card"'),
+    ("alltrails",    r'alltrails\.com/trail/[^"' ]*'),
+    ("nps.gov",      r'nps\.gov/[^"' ]*'),
+    ("ext links",    r'href="(https?://[^"]+)"'),
+]:
+    print(f"{label:14} {len(set(re.findall(pat, h)))}")
+EOF
+```
+
+Measured history, for comparison:
+
+| | run1 | run2 | run3 | run4 |
+|---|---|---|---|---|
+| attractions | 41 | 62 | 56 | 47 |
+| restaurants | 55 | 55 | 61 | **38** |
+| en-route stops | 50 | **13** | **12** | 40 |
+| AllTrails links | 21 | 27 | 27 | **0** |
+| external links | 326 | 285 | 291 | 275 |
+
+**A cost improvement with a content column moving down is not an improvement.** Both
+regressions above were invisible in the cost figures and in the removal counters, and
+were found only when someone asked whether the output had changed.
+
 ### 7.3 Where the numbers live
 
 | Figure | Source |
