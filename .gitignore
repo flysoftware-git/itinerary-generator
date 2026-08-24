@@ -42,3 +42,4 @@ sw-trip_manifest.yaml
 # traveler-identifying booking details. Written by
 # scripts/ingest_reservations.py, merged at manifest load. Never commit.
 *.reservations.yaml
+_to_delete/
