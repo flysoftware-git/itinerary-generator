@@ -687,6 +687,7 @@ class URLDiscoverer:
         attraction_source: str | None = None,
         restaurant_source: str | None = None,
         en_route_source: str | None = None,
+        disable_en_route: bool = False,
         output_dir: str | Path | None = None,
         search_provider_override: str | None = None,
     ) -> None:
@@ -819,6 +820,7 @@ class URLDiscoverer:
         self._alltrails_source: str = DEFAULT_ALLTRAILS_SOURCE
         self._attraction_source: str = DEFAULT_ATTRACTION_SOURCE
         self._restaurant_source: str = DEFAULT_RESTAURANT_SOURCE
+        self._disable_en_route: bool = bool(disable_en_route)
         self._en_route_source: str = DEFAULT_EN_ROUTE_SOURCE
         self._fallback_mode: str = DEFAULT_FALLBACK_MODE
         # GH #68 multi-site grouping (config.yaml multi_site_grouping.base_owned_categories) --
@@ -10665,6 +10667,17 @@ class URLDiscoverer:
         # base_owned_categories). Additive skip-gate only -- distance/time
         # computation and getting_there route-option discovery below are a
         # different category and are never gated by this check.
+        # Whole-category off switch (en_route_stops.enabled). Distinct from
+        # the group-level deferral below: this suppresses en-route stops for
+        # every destination, so nothing is discovered AND nothing renders.
+        # En-route stops were 253 of 301 batch candidate rejections before
+        # they moved to Maps links, and remain a priced enrichment rather
+        # than part of the core itinerary.
+        if getattr(self, "_disable_en_route", False):
+            getting_here["en_route_stops"] = []
+            ai["getting_here"] = getting_here
+            return
+
         en_route_stop_deferred = category_deferred_to_base(
             dest,
             "en_route_stop",

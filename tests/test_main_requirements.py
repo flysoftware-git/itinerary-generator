@@ -1771,3 +1771,70 @@ class TestCulturalEventsOffByDefault:
         """The default this project ships with."""
         from generator.main import _cultural_events_enabled
         assert _cultural_events_enabled("config.yaml") is False
+
+
+class TestOptionalCategorySwitches:
+    """Three priced enrichments, each independently switchable.
+
+    Measured 2026-08-22: trails were 124 of 246 paid fallback calls;
+    en-route stops were 253 of 301 batch candidate rejections before moving
+    to Maps links; cultural events spent 16 calls and 97K-113K tokens for 1-4
+    delivered items. None of them is the core product -- the itinerary,
+    schedule, lodging and drives are unaffected by all three.
+    """
+
+    def test_all_three_are_off_in_the_shipped_config(self):
+        from generator.main import _category_enabled
+        for section in ("trails", "en_route_stops", "cultural_events"):
+            assert _category_enabled("config.yaml", section) is False, section
+
+    def test_each_switch_is_independent(self, tmp_path):
+        from generator.main import _category_enabled
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(
+            "trails:\n  enabled: true\n"
+            "en_route_stops:\n  enabled: false\n"
+            "cultural_events:\n  enabled: true\n",
+            encoding="utf-8",
+        )
+        assert _category_enabled(str(cfg), "trails") is True
+        assert _category_enabled(str(cfg), "en_route_stops") is False
+        assert _category_enabled(str(cfg), "cultural_events") is True
+
+    def test_missing_section_means_off(self, tmp_path):
+        from generator.main import _category_enabled
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("url_discovery:\n  search_model: grok-4.3\n", encoding="utf-8")
+        for section in ("trails", "en_route_stops", "cultural_events"):
+            assert _category_enabled(str(cfg), section) is False, section
+
+    def test_unreadable_config_fails_closed(self, tmp_path):
+        """A config this cannot read must not silently buy a priced category."""
+        from generator.main import _category_enabled
+        assert _category_enabled(str(tmp_path / "nope.yaml"), "trails") is False
+
+
+class TestEnRouteStopsCanBeSwitchedOffEntirely:
+    """en_route_stops.enabled=false suppresses discovery AND rendering.
+
+    Distinct from the group-level deferral, which moves stops to a base
+    destination rather than removing them.
+    """
+
+    def test_disabled_discoverer_empties_the_section(self):
+        from unittest.mock import patch
+        from generator.url_discovery import URLDiscoverer
+        mock_llm = type("M", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            disc = URLDiscoverer(config_path="config.yaml", llm_client=mock_llm, disable_en_route=True)
+        ai = {"getting_here": {"en_route_stops": [{"name": "Some Pullout"}, {"name": "Another"}]}}
+        disc._discover_en_route_stops(ai, "Moab", "October 22-24, 2026")
+        assert ai["getting_here"]["en_route_stops"] == []
+
+    def test_enabled_discoverer_leaves_the_section_alone(self):
+        from unittest.mock import patch
+        from generator.url_discovery import URLDiscoverer
+        mock_llm = type("M", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            disc = URLDiscoverer(config_path="config.yaml", llm_client=mock_llm, disable_en_route=False)
+        assert disc._disable_en_route is False

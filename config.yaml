@@ -175,6 +175,24 @@ geocoding:
   rate_limit_seconds: 1.1
 
 # ── Cultural events discovery ─────────────────────────────────────────────────
+# ── Optional content categories (priced enrichments) ─────────────────────────
+# All three default OFF as of 2026-08-22. They are enrichments, not the core
+# product: the itinerary, schedule, lodging, drives and their map links are
+# unaffected by every switch here. Measured cost on cold-start runs:
+#
+#   trails          alltrails_trail_filtered was 124 of 246 paid fallback
+#                   calls -- half that path's spend
+#   en_route_stops  253 of 301 batch candidate rejections before they moved
+#                   to Maps links; still 37 cards per run
+#   cultural_events 16 calls and 97K-113K tokens for 1-4 delivered items
+#
+# Set enabled: true per category to buy it back.
+trails:
+  enabled: false
+
+en_route_stops:
+  enabled: false
+
 cultural_events:
   # OFF by default as of 2026-08-22. Measured across three cold-start runs:
   # 16 calls and 97K-113K tokens to deliver between 1 and 4 event listings --

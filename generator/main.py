@@ -1326,6 +1326,7 @@ def _selective_retry_destinations(
                     config_path,
                     llm_client=llm_client,
                     disable_trails=bool(no_trails),
+                disable_en_route=bool(disable_en_route),
                     alltrails_source=alltrails_source,
                     attraction_source=attraction_source,
                     restaurant_source=restaurant_source,
@@ -1500,21 +1501,39 @@ def _write_url_diff_markdown_report(
     return path
 
 
-def _cultural_events_enabled(config_path: str) -> bool:
-    """True only when config explicitly enables cultural events.
+def _category_enabled(config_path: str, section: str, *, default: bool = False) -> bool:
+    """True only when config explicitly enables an optional content category.
 
-    Defaults to False -- absent, malformed or unreadable config all mean off.
-    That direction is deliberate: this is the worst value-per-token category
-    in the pipeline, so an unreadable config should not silently buy it.
+    Defaults to OFF, and an absent, malformed or unreadable config also means
+    off. That direction is deliberate: these are the priced categories, so a
+    config this cannot read must not silently buy them.
+
+    The three optional categories, with their measured 2026-08-22 cost:
+
+      cultural_events   16 calls, 97K-113K tokens, for 1-4 delivered items --
+                        24,000 to 113,000 tokens each, and more than the whole
+                        itinerary costs to generate (10 calls, 68K)
+      trails            alltrails_trail_filtered was 124 of 246 paid fallback
+                        calls, half that path's spend
+      en_route_stops    253 of 301 batch candidate rejections before they were
+                        moved to Maps links; still 37 cards per run
+
+    Everything they gate is enrichment. The itinerary, schedule, lodging,
+    drives and their maps links are unaffected by all three.
     """
     try:
         import yaml
 
         with open(config_path, "r", encoding="utf-8") as fh:
             cfg = yaml.safe_load(fh) or {}
-        return bool((cfg.get("cultural_events") or {}).get("enabled", False))
+        return bool((cfg.get(section) or {}).get("enabled", default))
     except Exception:
-        return False
+        return default
+
+
+def _cultural_events_enabled(config_path: str) -> bool:
+    """Back-compat alias; see _category_enabled."""
+    return _category_enabled(config_path, "cultural_events")
 
 
 def _append_run_ledger(ledger_path: Path, record: dict) -> None:
@@ -1986,9 +2005,15 @@ def main(
     #
     # --skip-events still forces off; this only changes what happens when the
     # flag is absent. Set cultural_events.enabled: true to restore.
-    if not skip_events and not _cultural_events_enabled(config_path):
+    if not skip_events and not _category_enabled(config_path, "cultural_events"):
         skip_events = True
         logger.info("Cultural events disabled by config (cultural_events.enabled is not true)")
+    if not no_trails and not _category_enabled(config_path, "trails"):
+        no_trails = True
+        logger.info("Trail discovery disabled by config (trails.enabled is not true)")
+    disable_en_route = not _category_enabled(config_path, "en_route_stops")
+    if disable_en_route:
+        logger.info("En-route stops disabled by config (en_route_stops.enabled is not true)")
 
     click.echo(f"🗺  Itinerary Generator")
     click.echo(f"   Manifest : {manifest}")
