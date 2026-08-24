@@ -669,6 +669,100 @@ the spend continues and the missing output is read as the switch working.
 
 ---
 
+## 8.6 Serper probe (2026-08-23): candidate-finding is better and cheaper elsewhere
+
+Pivot 2 in §8.5 was ranked second and marked *blocked on evidence*. It is no longer
+blocked. Probed offline against the **55 real items run 7's paid fallback handled**,
+taken from that run's own `destination_status_report.json` — no generator run, 110
+queries of a 2,500 free tier.
+
+### Coverage and source quality
+
+| | Serper | LLM paid fallback |
+|---|---|---|
+| Returned a result | **55/55 (100%)** | 52/55 |
+| official `.gov` | **28** | 2 |
+| official `.org` | **6** | 1 |
+| travel content farms | **2** | 11 |
+| social / video | 0 | 1 |
+| Top hit same domain as the LLM's | 5/55 (9%) | — |
+
+They find genuinely different things. Serper returns official government or
+organisation sources for **62%** of items; the paid path returned them for **5%**.
+
+### The check that actually mattered
+
+A domain histogram proves nothing on its own — the failure that killed the LLM's
+`nps.gov` results was *generic pages failing promise-to-target* (Angels Landing
+resolving to a permits page). So every Serper hit was run through
+**`_retain_discovered_url`**, the same relevance, redirect and promise-to-target
+gate the pipeline applies today:
+
+> **53 of 55 — 96% — passed.**
+
+Same items, same validator, same run's data:
+
+| Item | Serper | LLM (paid) |
+|---|---|---|
+| Inspiration Point | `nps.gov/brca/planyourvisit/inspiration.htm` | lonelyplanet.com |
+| Bryce Point Trail | `nps.gov/brca/planyourvisit/brycepoint.htm` | alltrails |
+| Navajo Loop & Queen's Garden | `nps.gov/brca/planyourvisit/qgnavajocombo.htm` | alltrails |
+| Pioneer Park | `sgcityutah.gov` | tripadvisor |
+| Cappeletti's Restaurant | the restaurant's own site | yelp |
+
+**This is the first lever in this investigation that improves content and cuts cost.**
+Every other one traded something away.
+
+### What it does NOT establish
+
+- **The batch half is untested.** These 55 were fallback items — *"find the URL for
+  this known item"*, a pure lookup. The batch does a different job: it **invents the
+  item list** ("what is worth seeing in Zion") as well as resolving URLs, and a search
+  API cannot do the first part.
+- **No cost figure is claimed.** Serper's paid rate at volume is unconfirmed, and per
+  §8.3 no cost prediction is made without attributing it to call sites in a real run.
+
+The batch distinction does suggest a shape worth testing later: if the batch call only
+*names* items and stops searching, its ~23,700 tokens collapse to a small prompt and a
+list — no retrieved pages injected — with Serper resolving URLs afterwards. That would
+attack both halves. It is speculation until measured.
+
+---
+
+## 8.7 Scope: Serper for the per-item fallback only
+
+Deliberately narrow. The fallback is the proven case, worth **$1.65 of a $3.40 Core
+run**, and small enough that a single run can attribute the result — which is the
+discipline §8.3 exists to enforce.
+
+**Module.** `generator/serper_search.py`, mirroring `grok_search.py`'s shape so
+`build_search_client` can return it: same constructor signature, same
+`usage_tracker`/`usage_operation_prefix` contract, `is_circuit_open()` for parity.
+
+**Selection.** `url_discovery.nonbatch_search_provider: serper`. That key already
+exists and already selects the fallback client independently of the batch client, so
+the batch path is untouched by construction — no flag threading, no new call site.
+
+**Cost accounting.** Serper bills per query, not per token, so it needs its own entry
+in `DEFAULT_TOOL_CALL_PRICING_USD_PER_1000` and must report a tool-call count through
+`UsageTracker.add`. Without that count the §5.1 warning fires — correctly — because a
+search provider reporting zero invocations across a run of search operations is the
+exact blind spot that guard was written for.
+
+**Unchanged by design:** `_retain_discovered_url` and every validation gate. The probe
+ran Serper's results through the current validator unmodified and got 96%; loosening
+anything would discard the evidence this scope rests on.
+
+**Verification.** Predict before running: fallback token cost near zero, fallback
+web_search invocations near zero, `per_item_website_hunt` still ~88 calls but billed
+to Serper. Then the §7.2a content table, with attention to external-link count and
+source mix — the expected change is *more* official sources, and a drop there means
+something is wrong.
+
+**Rollback.** One config value back to `grok`.
+
+---
+
 ## 9. Open items
 
 - **The residual 18%.** The corrected `$2.00/$6.00` rate computes $4.45 against $3.75
