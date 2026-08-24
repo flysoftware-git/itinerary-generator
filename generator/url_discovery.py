@@ -5827,6 +5827,20 @@ class URLDiscoverer:
             target = trail_hints if is_trail else attraction_hints
             if len(target) < self._MAX_BATCH_ITEM_HINTS:
                 target.append(cleaned)
+        # FIFTH leak in the trails switch, and this one was introduced by the
+        # hint-routing change itself: routing trail-like names to the trail
+        # batch prewarms that batch, so it ran for all ten destinations on the
+        # 2026-08-24 Core run with trails.enabled false -- 18 capture files,
+        # 9 paid calls, roughly $0.57 of a $1.77 run spent on a disabled
+        # category.
+        #
+        # Guarded here rather than at yet another call site: this is where the
+        # trail fetch is *initiated*, and _retain_discovered_url already
+        # enforces the switch on anything a trail URL reaches. Between the two
+        # -- nothing starts a trail fetch, nothing retains a trail URL -- the
+        # category is closed at both ends rather than along the path.
+        if bool(getattr(self, "_disable_trails", False)):
+            trail_hints = []
         for hints, fetch, label in (
             (attraction_hints, self._get_attraction_direct_batch_rows_for_destination, "attraction"),
             (trail_hints, self._get_alltrails_direct_batch_rows_for_destination, "trail"),

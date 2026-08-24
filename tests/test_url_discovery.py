@@ -17581,3 +17581,42 @@ class TestTrailsSwitchEnforcedAtTheChokepoint:
             allow_alltrails=True, kind="attraction", is_seed=True,
         )
         assert "alltrails.com" in kept
+
+
+class TestTrailsSwitchClosesThePrewarm:
+    """The prewarm must not start a trail batch when trails are disabled.
+
+    Fifth leak in this one switch, introduced by the hint-routing change:
+    routing trail-like names to the trail batch prewarms it. On the
+    2026-08-24 Core run that ran the trail batch for all ten destinations
+    with trails.enabled false -- 9 paid calls, ~$0.57 of a $1.77 run, for a
+    category that was switched off.
+    """
+
+    @staticmethod
+    def _disc(disable):
+        mock_llm = type("M", (), {"provider": "grok", "model": "grok-4.3", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            return URLDiscoverer(config_path="config.yaml", llm_client=mock_llm, disable_trails=disable)
+
+    def test_disabled_trails_prewarm_no_trail_batch(self):
+        disc = self._disc(True)
+        ai = {"top_attractions": [
+            {"name": "Angels Landing", "type": "trail"},
+            {"name": "Zion Human History Museum", "type": "attraction"},
+        ]}
+        with patch.object(disc, "_get_alltrails_direct_batch_rows_for_destination") as trail, \
+             patch.object(disc, "_get_attraction_direct_batch_rows_for_destination") as attr:
+            disc._prewarm_attraction_batch_with_itinerary_items(
+                ai=ai, dest_name="Zion National Park", dest_dates="October 18, 2026", seed_names=None)
+        trail.assert_not_called()
+        assert attr.called, "non-trail hints must still prewarm the attraction batch"
+
+    def test_enabled_trails_still_prewarm_it(self):
+        disc = self._disc(False)
+        ai = {"top_attractions": [{"name": "Angels Landing", "type": "trail"}]}
+        with patch.object(disc, "_get_alltrails_direct_batch_rows_for_destination") as trail, \
+             patch.object(disc, "_get_attraction_direct_batch_rows_for_destination"):
+            disc._prewarm_attraction_batch_with_itinerary_items(
+                ai=ai, dest_name="Zion National Park", dest_dates="", seed_names=None)
+        trail.assert_called_once()
