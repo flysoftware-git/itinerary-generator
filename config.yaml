@@ -190,6 +190,14 @@ geocoding:
 trails:
   enabled: false
 
+# Restaurants default ON, unlike the three below: dining is arguably core
+# itinerary content rather than an enrichment. The switch exists so a client
+# with their own dining partnerships, or a leaner tier, can drop it -- set
+# enabled: false. Roughly 51-54 items per run, its own direct batch plus
+# per-item fallbacks.
+restaurants:
+  enabled: true
+
 en_route_stops:
   enabled: false
 

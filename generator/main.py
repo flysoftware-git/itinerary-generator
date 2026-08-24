@@ -2011,6 +2011,11 @@ def main(
         no_trails = True
         logger.info("Trail discovery disabled by config (trails.enabled is not true)")
     disable_en_route = not _category_enabled(config_path, "en_route_stops")
+    # Restaurants default ON: unlike the other three this is arguably core
+    # itinerary content, so the switch exists without changing behaviour.
+    disable_restaurants = not _category_enabled(config_path, "restaurants", default=True)
+    if disable_restaurants:
+        logger.info("Restaurants disabled by config (restaurants.enabled is false)")
     if disable_en_route:
         logger.info("En-route stops disabled by config (en_route_stops.enabled is not true)")
 
@@ -2348,6 +2353,7 @@ def main(
                 llm_client=llm_client,
                 disable_trails=bool(no_trails),
                 disable_en_route=bool(disable_en_route),
+                disable_restaurants=bool(disable_restaurants),
                 alltrails_source=normalized_alltrails_source,
                 attraction_source=normalized_attraction_source,
                 restaurant_source=normalized_restaurant_source,

@@ -17443,3 +17443,40 @@ class TestCategorySwitchesActuallyStopSpending:
         assert disc._search_alltrails_for_trail_filtered(
             item_name="Angels Landing", dest_name="Zion National Park", query_variants=["x"],
         ) is None
+
+
+class TestRestaurantsSwitch:
+    """Restaurants are switchable but default ON -- dining is arguably core
+    itinerary content, unlike trails, en-route stops and cultural events.
+
+    The gate sits above every purchase path (direct batch, its prioritisation
+    pass, per-item fallbacks) so that disabling stops the SPENDING, not just
+    the rendering. That distinction is the lesson from the trails switch,
+    which hid its output while still buying 98 calls per run.
+    """
+
+    @staticmethod
+    def _discoverer(**kw):
+        mock_llm = type("M", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            return URLDiscoverer(config_path="config.yaml", llm_client=mock_llm, **kw)
+
+    def test_disabled_empties_the_section_and_buys_nothing(self):
+        disc = self._discoverer(disable_restaurants=True)
+        ai = {"dinner_recommendations": [{"name": "Some Bistro"}, {"name": "Another"}]}
+        with patch.object(disc, "_get_restaurant_direct_batch_rows_for_destination") as batch, \
+             patch.object(disc, "_search_restaurant_from_direct_batch") as per_item:
+            disc._discover_restaurants(ai, "Moab", "October 22-24, 2026")
+        assert ai["dinner_recommendations"] == []
+        batch.assert_not_called()
+        per_item.assert_not_called()
+
+    def test_shipped_config_leaves_restaurants_on(self):
+        from generator.main import _category_enabled
+        assert _category_enabled("config.yaml", "restaurants", default=True) is True
+
+    def test_explicit_false_turns_them_off(self, tmp_path):
+        from generator.main import _category_enabled
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("restaurants:\n  enabled: false\n", encoding="utf-8")
+        assert _category_enabled(str(cfg), "restaurants", default=True) is False

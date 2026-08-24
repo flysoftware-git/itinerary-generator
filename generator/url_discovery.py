@@ -688,6 +688,7 @@ class URLDiscoverer:
         restaurant_source: str | None = None,
         en_route_source: str | None = None,
         disable_en_route: bool = False,
+        disable_restaurants: bool = False,
         output_dir: str | Path | None = None,
         search_provider_override: str | None = None,
     ) -> None:
@@ -821,6 +822,7 @@ class URLDiscoverer:
         self._attraction_source: str = DEFAULT_ATTRACTION_SOURCE
         self._restaurant_source: str = DEFAULT_RESTAURANT_SOURCE
         self._disable_en_route: bool = bool(disable_en_route)
+        self._disable_restaurants: bool = bool(disable_restaurants)
         self._en_route_source: str = DEFAULT_EN_ROUTE_SOURCE
         self._fallback_mode: str = DEFAULT_FALLBACK_MODE
         # GH #68 multi-site grouping (config.yaml multi_site_grouping.base_owned_categories) --
@@ -8771,6 +8773,18 @@ class URLDiscoverer:
     # ── Restaurants — two-pass ───────────────────────────────────────────────
 
     def _discover_restaurants(self, ai: dict[str, Any], dest_name: str, dest_dates: str | None = None, dest: dict[str, Any] | None = None) -> None:
+        # Whole-category off switch (restaurants.enabled). Placed FIRST, above
+        # the group-deferral gate, because every restaurant purchase path runs
+        # below this point -- the direct batch, its prioritisation pass, and
+        # the per-item fallbacks. Gating here means nothing is bought, not
+        # merely that nothing renders.
+        #
+        # That distinction is the lesson from the trails switch, which checked
+        # two of three AllTrails entry points and left the highest-volume one
+        # buying 98 calls per run while hiding their output.
+        if getattr(self, "_disable_restaurants", False):
+            ai["dinner_recommendations"] = []
+            return
         # GH #68 multi-site grouping: restaurants are the default
         # base_owned category (config.yaml multi_site_grouping) -- a
         # grouped entry's dining is deferred to its group base entirely
