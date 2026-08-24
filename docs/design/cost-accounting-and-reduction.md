@@ -810,6 +810,86 @@ batch is touched.
 
 ---
 
+## 8.9 The result, measured like-for-like (2026-08-24)
+
+### The comparison that counts
+
+Earlier summaries in this note quoted reductions against the $6.32 baseline while the
+measured run had categories switched **off**. That compares two different products and
+overstates the engineering result — the same conflation of scope with cost this note
+warns about elsewhere. The owner caught it.
+
+Like-for-like, same feature set, both cold start on `sw_manifest`:
+
+| | cost | attractions | restaurants | en-route | trails | links |
+|---|---|---|---|---|---|---|
+| **Baseline (run 1)** | **$6.32** | 50 | 55 | 50 | 21 | 326 |
+| **Current (run 11)** | **$2.82** | 64 | 46 | 26 | 24 | 288 |
+
+**$6.32 → $2.82, a 55% reduction with no category removed** — and more attractions and
+more trails than the baseline had.
+
+### Tiers, measured
+
+| | cost |
+|---|---|
+| **Core** — trails, en-route and cultural events off (run 10) | **$1.18** |
+| **Core + all three options** (run 11) | **$2.82** |
+| **The three options together** | **$1.64** |
+
+Batch composition explains the delta: Core runs 18 batch calls (attraction 10,
+restaurant 8); all-options runs 46, adding 10 trail and 10 en-route plus events' own.
+Serper queries rise 40 → 143 as more items need URLs.
+
+**Core is a product decision, not a saving.** It is a smaller deliverable at a lower
+price, and should be presented that way.
+
+### What got it there
+
+In rough order of contribution, all measured:
+
+1. **Serper for the per-item fallback** (§8.6–8.8) — $1.65 → $0.036, and content
+   *improved*. The only change in the investigation that did both.
+2. **Correct pricing plus the grok-4.3 discovery split** — the ledger stopped
+   under-reporting 9×, and discovery moved to a cheaper tier.
+3. **En-route stops resolving to Maps links** — removed the 253-of-301 rejection storm.
+4. **`direct_link_batch_count` 20 → 12** — real but small, −3.6%, for the reason in §8.10.
+
+### Two figures still unexplained
+
+- **En-route stops 50 → 26** with the category enabled in both runs. Most likely the
+  `maps` resolution mode, but nobody decided it, and it should be explained rather than
+  accepted.
+- **Removing the trail batch raised attraction counts** (55 → 61 in run 10). A
+  favourable result from an unmodelled interaction between trail hints, the trail batch
+  and the attraction backfill. Favourable misses are still misses.
+
+---
+
+## 8.10 Why the batch is near its floor
+
+`direct_link_batch_count: 20 → 12` was predicted at −20% and delivered **−3.6%**. The
+reason is worth recording because the data to avoid the error was already in this note.
+
+A batch call's tokens are **91% input**: 627,904 in against 58,824 out on run 8. The
+item count controls the **output** — the list the model returns — and output is 8.6% of
+the call. Asking for 12 instead of 20 can only touch that 8.6%. The input is retrieved
+page content, and the model searches the web the same amount regardless.
+
+**The prediction was made against the wrong term, having already measured the right
+one.** §8.3's rule was followed to the point of attribution and then not used.
+
+What this establishes: the batch's cost is not reachable through prompting. Its
+remaining $1.18 is ~500K input tokens of retrieved pages plus 89 billed searches. The
+only levers on the dominant term are **fewer searches** (which means less content) or
+**not injecting retrieved pages** (which means no agentic batch at all — and §8.6 shows
+that costs the ratings and descriptions every row carries, 100% of them).
+
+**Treat $1.18 Core / $2.82 full as close to the floor for this architecture.** Further
+movement comes from the warm-cache path (§8.5 pivot 1), not from tuning the batch.
+
+---
+
 ## 9. Open items
 
 - **The residual 18%.** The corrected `$2.00/$6.00` rate computes $4.45 against $3.75
