@@ -3155,6 +3155,15 @@ class URLDiscoverer:
         is_safe_fallback = any(lower.startswith(prefix) for prefix in SAFE_FALLBACK_URL_PREFIXES)
         if self._is_obviously_generic_url(lower):
             return ""
+        # The trails switch, enforced at the single chokepoint every candidate
+        # URL passes through. Guarding call sites one at a time failed four
+        # times: three search entry points, then the direct batch, and the
+        # 2026-08-23 Core run still resolved 29 AllTrails URLs -- 56% of
+        # everything the paid fallback found -- because the general per-item
+        # hunt passes allow_alltrails=True and nothing downstream reconciled
+        # that with the category being off.
+        if self._is_alltrails_trail_url(url) and bool(getattr(self, "_disable_trails", False)):
+            return ""
         if not allow_alltrails and self._is_alltrails_trail_url(url):
             return ""
         if self._has_unescaped_whitespace(url):

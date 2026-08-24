@@ -17520,3 +17520,56 @@ class TestTrailsSwitchClosesEveryEntryPoint:
             d._discover_attractions(ai, "Zion National Park", None, "October 18, 2026", [])
         batch.assert_not_called()
         rows.assert_not_called()
+
+
+class TestTrailsSwitchEnforcedAtTheChokepoint:
+    """No AllTrails URL survives retention when trails are disabled.
+
+    Guarding call sites individually failed four times: three search entry
+    points, then the trail direct batch, and the 2026-08-23 Core run still
+    resolved 29 AllTrails URLs -- 56% of everything the paid fallback found
+    -- because the general per-item hunt passes allow_alltrails=True.
+
+    _retain_discovered_url is the single point every candidate passes
+    through, so the switch is enforced there regardless of which path
+    proposed the URL.
+    """
+
+    @staticmethod
+    def _disc(disable):
+        mock_llm = type("M", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            return URLDiscoverer(config_path="config.yaml", llm_client=mock_llm, disable_trails=disable)
+
+    def test_alltrails_rejected_even_when_the_caller_allows_it(self):
+        """The exact hole: allow_alltrails=True from a general search path."""
+        disc = self._disc(True)
+        kept = disc._retain_discovered_url(
+            "https://www.alltrails.com/trail/us/utah/angels-landing-trail",
+            "Angels Landing", "Zion National Park",
+            allow_alltrails=True, kind="attraction", is_seed=True,
+        )
+        assert kept == ""
+
+    def test_non_alltrails_urls_are_unaffected(self):
+        """The switch must not become a general URL filter.
+
+        Asserted as an equivalence rather than an absolute: whatever the rest
+        of the retention pipeline decides about a non-AllTrails URL, the
+        trails switch must not change it.
+        """
+        url = "https://www.nps.gov/zion/planyourvisit/index.htm"
+        args = ("Zion Visitor Center", "Zion National Park")
+        kw = dict(allow_alltrails=True, kind="attraction", is_seed=True)
+        off = self._disc(True)._retain_discovered_url(url, *args, **kw)
+        on = self._disc(False)._retain_discovered_url(url, *args, **kw)
+        assert off == on
+
+    def test_with_trails_enabled_alltrails_still_passes(self):
+        disc = self._disc(False)
+        kept = disc._retain_discovered_url(
+            "https://www.alltrails.com/trail/us/utah/angels-landing-trail",
+            "Angels Landing", "Zion National Park",
+            allow_alltrails=True, kind="attraction", is_seed=True,
+        )
+        assert "alltrails.com" in kept
