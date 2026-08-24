@@ -169,6 +169,41 @@ comment for the full derivation. **This is now the strongest candidate for a
 controlled experiment**: raise `grok_max_concurrent_destinations` to 2-3 and
 measure whether the new resilience holds under real load.
 
+#### First data point (2026-08-24): width 3 held, on a small workload
+
+The experiment above has now been run once, at width 3, and it passed. Recording
+it here because a single trial is exactly the kind of result that gets
+remembered as more than it was.
+
+**Workload.** Three concurrent `llm_client.generate_json` content-generation
+calls against `grok-latest`, each producing one structured object of roughly a
+third of the 4096-token cap. Not a destination-content run — a smaller,
+three-call shape that happens to exercise the same client, breaker and provider.
+
+| `grok_max_concurrent_destinations` | Wall clock | First result | Cost |
+|---|---|---|---|
+| 1 (sequential, current default) | 237 s | 91 s | $0.0258 |
+| 3 | **89 s** | 70 s | $0.0258 |
+
+2.7x on wall clock, identical cost, and afterwards
+`MultiLLMClient.is_circuit_open()` was `False`: no 429s, no timeouts, no
+transient failures recorded. The resilience added since the original write-up
+did hold.
+
+**What this does not establish.** Three concurrent calls is not eight to ten,
+which is what an 8-destination Stage 3 would issue at width 3 — the storming
+risk this cap exists to contain scales with the number in flight, and the
+measurement says nothing about that. Nor is one trial evidence about
+rate-limit behaviour over a day, or under a different key's quota, or when xAI
+is busy. Each call here was also smaller than a real destination bundle, so
+per-call duration and token pressure both differ.
+
+**Suggested next step**, unchanged in spirit: raise the default to 2 and run a
+handful of real generations before considering 3 or 4. The gap worth closing is
+between "held once at width 3 on three small calls" and "holds repeatedly at
+width 2-3 on a real Stage 3". The default is deliberately left at 1 by this
+change.
+
 ### 2.2 Generalize the per-domain block-cooldown (see Tier 2 above)
 
 Same idea as 2.1: today's AllTrails-specific fix should become a reusable
