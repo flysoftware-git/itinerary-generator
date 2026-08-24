@@ -263,7 +263,21 @@ url_discovery:
   #                                breaker-tracked) but no longer adds
   #                                cross-provider resilience.
   search_provider: "grok"
-  nonbatch_search_provider: "grok"
+  # SERPER for the per-item fallback, 2026-08-23. Measured against the 55
+  # items run 7's paid LLM fallback actually handled: Serper returned a
+  # result for 55/55 (LLM: 52/55), and 53 of those -- 96% -- passed
+  # _retain_discovered_url unmodified. Sources are markedly better: 28
+  # official .gov hits against the LLM's 2, and 2 travel-content-farm hits
+  # against 11.
+  #
+  # The saving is structural. An agentic LLM search bills retrieved page
+  # content back as input tokens; Serper returns links directly, at $1.00
+  # per 1,000 queries against xAI's $5.00.
+  #
+  # Scoped to the fallback deliberately. The direct batch also INVENTS the
+  # item list, which a SERP API cannot do -- search_provider stays on grok.
+  # Revert with one value: "grok".
+  nonbatch_search_provider: "serper"
   # How many destinations' worth of attraction/restaurant/trail direct-batch
   # harvest requests get combined into a single call, instead of one call
   # per destination. 1 disables grouping (original behavior, safe rollback).

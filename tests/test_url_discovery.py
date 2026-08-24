@@ -4586,22 +4586,30 @@ def test_url_discoverer_leaves_grok_search_model_alone_when_provider_is_not_grok
     assert mock_grok_search_cls.call_args.kwargs["model"] is None
 
 
-def test_url_discoverer_builds_grok_batch_client_and_grok_fallback_client_from_real_config():
+def test_url_discoverer_builds_independent_batch_and_fallback_clients_from_real_config():
     """Regression: url_discovery.search_provider (batch/direct-batch-harvest)
     and url_discovery.nonbatch_search_provider (per-item fallback, used by
-    _search_cached) are independent knobs -- config.yaml pins both to grok
-    (2026-08-15: reverted from claude for the fallback path after the Claude
-    account stopped being funded, see config.yaml's comment). self._search
-    and self._search_fallback must both end up GrokSearch, but as two
-    distinct instances, not the same object reused twice."""
+    _search_cached) are independent knobs, and must produce two distinct
+    clients rather than one object reused twice.
+
+    They now resolve to DIFFERENT providers, which is what makes this
+    independence load-bearing rather than incidental. As of 2026-08-23 the
+    batch stays on grok -- it invents the item list, which a SERP API cannot
+    do -- while the fallback is Serper, a pure lookup. That split is the
+    whole reason the Serper change could be scoped to half the pipeline
+    without threading a single flag (see
+    docs/design/cost-accounting-and-reduction.md section 8.7).
+    """
     from generator.grok_search import GrokSearch
+    from generator.serper_search import SerperSearch
 
     mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
-    with patch.dict("os.environ", {"XAI_API_KEY": "test-key", "ANTHROPIC_API_KEY": "test-key"}):
+    with patch.dict("os.environ", {"XAI_API_KEY": "test-key", "ANTHROPIC_API_KEY": "test-key",
+                                   "SERPER_API_KEY": "test-key"}):
         discoverer = URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
 
     assert isinstance(discoverer._search, GrokSearch)
-    assert isinstance(discoverer._search_fallback, GrokSearch)
+    assert isinstance(discoverer._search_fallback, SerperSearch)
     assert discoverer._search is not discoverer._search_fallback
 
 

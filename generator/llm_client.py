@@ -157,6 +157,16 @@ DEFAULT_PRICING_USD_PER_1M: dict[str, dict[str, float]] = {
 DEFAULT_TOOL_CALL_PRICING_USD_PER_1000: dict[str, float] = {
     "grok": 5.00,
     "openai": 10.00,
+    # Serper, confirmed against its published prepaid tiers 2026-08-23:
+    # $50/50k credits = $1.00 per 1,000, falling to $0.30 per 1,000 at the
+    # largest pack. $1.00 is the entry-tier rate and therefore the
+    # conservative one -- it can only over-state, which is the safe
+    # direction (see grok-4-fast above for what under-stating costs).
+    #
+    # One credit covers a search returning up to 10 results; 11-100 costs
+    # two. serper_search.py caps `num` at 10 so this rate stays correct --
+    # if that cap is ever raised, this entry is wrong by 2x.
+    "serper": 1.00,
 }
 
 
