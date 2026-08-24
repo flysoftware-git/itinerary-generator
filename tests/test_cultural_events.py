@@ -561,3 +561,45 @@ def test_verify_local_tip_url_recovers_missing_name_via_text_extraction() -> Non
     assert verified["local_tip_url"] == (
         "https://www.google.com/maps/search/?api=1&query=Alloy%20Kitchen%20Pagosa%20Springs"
     )
+
+
+class TestCulturalEventsModelIsPinned:
+    """Cultural events must not resolve its own model independently.
+
+    Issue #65/#64 normalised this away for url_discovery: GrokSearch used to
+    fall through to os.environ XAI_MODEL / "grok-latest", disconnected from
+    whatever the client actually resolved. The fix was applied to one call
+    site and missed here.
+
+    Measured on runs 3 and 4 (2026-08-22): url_discovery ran grok-4.3 while
+    cultural_events ran grok-4-fast in the same process.
+    """
+
+    def test_search_model_override_is_applied(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+        from generator.cultural_events import CulturalEventsDiscoverer
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("url_discovery:\n  search_model: grok-4.3\n"
+                       "cultural_events:\n  search_provider: grok\n", encoding="utf-8")
+        (tmp_path / "x").mkdir(exist_ok=True)
+        llm = type("M", (), {"provider": "openai", "model": "gpt-4o-mini", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch") as grok, \
+             patch("generator.search_provider.ClaudeSearch"), \
+             patch.object(CulturalEventsDiscoverer, "_load_multi_site_grouping_config", lambda *a, **k: None):
+            CulturalEventsDiscoverer(str(cfg), llm_client=llm)
+        assert grok.call_args.kwargs["model"] == "grok-4.3"
+
+    def test_a_minimal_client_does_not_crash_it(self, tmp_path):
+        """An ad-hoc llm_client without provider/model must leave the model
+        unpinned rather than raise -- an unpinned model is a reporting
+        problem, a crash is a broken run."""
+        from unittest.mock import patch
+        from generator.cultural_events import CulturalEventsDiscoverer
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("cultural_events:\n  search_provider: grok\n", encoding="utf-8")
+        llm = type("M", (), {"usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch") as grok, \
+             patch("generator.search_provider.ClaudeSearch"), \
+             patch.object(CulturalEventsDiscoverer, "_load_multi_site_grouping_config", lambda *a, **k: None):
+            CulturalEventsDiscoverer(str(cfg), llm_client=llm)
+        assert grok.call_args.kwargs["model"] is None

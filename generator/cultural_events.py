@@ -60,10 +60,35 @@ class CulturalEventsDiscoverer:
         # search_provider_override (--search-provider CLI flag) forces a
         # single provider for a clean per-provider cost/behavior comparison
         # run -- see URLDiscoverer.__init__ for the fuller rationale.
+        #
+        # MODEL PINNING (2026-08-23). This call site passed no model at all,
+        # so GrokSearch fell through to os.environ XAI_MODEL / "grok-latest"
+        # -- the exact disconnection issue #65/#64 normalised away, fixed for
+        # url_discovery.py and missed here. Measured on runs 3 and 4: URL
+        # discovery ran grok-4.3 while cultural events ran grok-4-fast in the
+        # same process, because only one of the two call sites was pinned.
+        #
+        # Resolution mirrors URLDiscoverer.__init__ exactly: the content
+        # model when the content provider matches, and url_discovery's
+        # search_model override when set, since this is discovery-shaped work
+        # billed at discovery rates rather than content generation.
+        # getattr rather than attribute access: this class accepts an
+        # externally supplied llm_client, including minimal ad-hoc ones in
+        # tests, and an unpinned model is a cost-reporting problem while a
+        # crash here is a broken run.
+        _provider = getattr(self._llm, "provider", None)
+        _model = getattr(self._llm, "model", None)
+        grok_model = _model if _provider == "grok" else None
+        claude_model = _model if _provider == "anthropic" else None
+        search_model_override = self._read_search_model_override(config_path)
+        if search_model_override:
+            grok_model = search_model_override
         self._search = build_search_client(
             config_path,
             config_section="cultural_events",
             provider_override=search_provider_override,
+            grok_model=grok_model,
+            claude_model=claude_model,
             usage_tracker=self._llm.usage_tracker,
             usage_operation_prefix="cultural_events",
         )
@@ -76,6 +101,20 @@ class CulturalEventsDiscoverer:
         # main.py) and has no other config.yaml dependency today.
         self._multi_site_base_owned_categories: frozenset[str] = frozenset(DEFAULT_BASE_OWNED_CATEGORIES)
         self._load_multi_site_grouping_config(config_path)
+
+    @staticmethod
+    def _read_search_model_override(config_path) -> str:
+        """`url_discovery.search_model`, shared so discovery-shaped work is
+        billed at one rate rather than two. Read defensively: a bad config
+        must leave the model unpinned rather than fail the run."""
+        try:
+            import yaml
+
+            with open(str(config_path), "r", encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {}
+            return str(((cfg.get("url_discovery") or {}).get("search_model") or "")).strip()
+        except Exception:
+            return ""
 
     def _load_multi_site_grouping_config(self, config_path: Path | str) -> None:
         try:
