@@ -18,7 +18,14 @@ ai:
   temperature: 0.7
   max_tokens: 4096
   max_concurrent_destinations: 4
-  grok_max_concurrent_destinations: 1
+  # Raised 1 -> 2 on 2026-08-24, the step
+  # live-fetch-and-execution-time-reduction.md 2.1 recommends. The cap existed to
+  # contain storming risk on a path that had no circuit breaker; llm_client.py
+  # now has one, and width 3 held cleanly on a small workload. 2 rather than 3
+  # because that measurement was three calls, not the eight to ten a real
+  # Stage 3 issues -- this is the conservative step that makes real generations
+  # produce the evidence for the next one.
+  grok_max_concurrent_destinations: 2
   enable_url_candidate_experiment: false
   # Optional content-generation failover: when the primary provider's circuit
   # breaker opens (repeated transient errors -- see llm_client.py), calls are

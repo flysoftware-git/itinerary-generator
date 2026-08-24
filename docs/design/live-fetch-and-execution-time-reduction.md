@@ -198,11 +198,17 @@ rate-limit behaviour over a day, or under a different key's quota, or when xAI
 is busy. Each call here was also smaller than a real destination bundle, so
 per-call duration and token pressure both differ.
 
-**Suggested next step**, unchanged in spirit: raise the default to 2 and run a
-handful of real generations before considering 3 or 4. The gap worth closing is
-between "held once at width 3 on three small calls" and "holds repeatedly at
-width 2-3 on a real Stage 3". The default is deliberately left at 1 by this
-change.
+**Taken, in part.** The default moves **1 -> 2** with this change: the step this
+section recommends, and the conservative half of it. Not 3, because the
+measurement above was three calls rather than the eight to ten a real Stage 3
+issues at that width, and storming risk scales with the number in flight.
+
+The gap still worth closing is between "held once at width 3 on three small
+calls" and "holds repeatedly at width 2 on a real Stage 3". Raising the default
+is what makes ordinary runs produce that evidence — so the thing to watch, on
+the next few real generations, is whether `MultiLLMClient.is_circuit_open()` ever
+trips and whether Stage 3 wall clock actually halves. If it holds over a handful
+of runs, 3 becomes arguable on real data instead of on one small trial.
 
 ### 2.2 Generalize the per-domain block-cooldown (see Tier 2 above)
 
