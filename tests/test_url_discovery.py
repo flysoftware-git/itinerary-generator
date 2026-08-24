@@ -17408,3 +17408,38 @@ class TestGeocodeMapsFallback:
         disc = self._discoverer()
         with patch.object(disc, "_geocode_en_route_stop_for_route", return_value=None):
             assert disc._geocode_maps_url_for_item("Nowhere", "Zion National Park") == ""
+
+
+class TestCategorySwitchesActuallyStopSpending:
+    """A switch that hides output while still buying it is worse than no switch.
+
+    Measured 2026-08-23 with trails DISABLED: alltrails_trail_filtered still
+    made 98 paid fallback calls. _search_alltrails_for_trail and
+    _search_alltrails_for_seed_relaxed had always honoured _disable_trails;
+    the filtered variant -- the highest-volume of the three -- did not.
+    """
+
+    @staticmethod
+    def _discoverer(**kw):
+        mock_llm = type("M", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            return URLDiscoverer(config_path="config.yaml", llm_client=mock_llm, **kw)
+
+    def test_filtered_trail_search_is_skipped_when_trails_disabled(self):
+        disc = self._discoverer(disable_trails=True)
+        with patch.object(disc, "_search_cached") as paid:
+            result = disc._search_alltrails_for_trail_filtered(
+                item_name="Angels Landing", dest_name="Zion National Park",
+                query_variants=["angels landing alltrails"],
+            )
+        assert result is None
+        paid.assert_not_called()
+
+    def test_all_three_alltrails_entry_points_honour_the_switch(self):
+        """The gap was one of three paths, so assert all three together."""
+        disc = self._discoverer(disable_trails=True)
+        assert disc._search_alltrails_for_trail("Angels Landing", "Zion National Park") is None
+        assert disc._search_alltrails_for_seed_relaxed("Angels Landing", "Zion National Park") is None
+        assert disc._search_alltrails_for_trail_filtered(
+            item_name="Angels Landing", dest_name="Zion National Park", query_variants=["x"],
+        ) is None

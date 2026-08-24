@@ -8482,6 +8482,15 @@ class URLDiscoverer:
         dest_name: str,
         query_variants: list[str],
     ) -> str | None:
+        # Honour the trails off-switch here too. Its two siblings --
+        # _search_alltrails_for_trail and _search_alltrails_for_seed_relaxed --
+        # have always checked _disable_trails; this one did not, and it is the
+        # highest-volume of the three. Measured 2026-08-23 with trails
+        # DISABLED: alltrails_trail_filtered still made 98 paid fallback calls,
+        # so the switch was suppressing the links while still buying them.
+        if bool(getattr(self, "_disable_trails", False)):
+            return None
+
         max_attempts = min(
             len(query_variants),
             int(getattr(self, "_max_alltrails_query_attempts", 5) or 5),
