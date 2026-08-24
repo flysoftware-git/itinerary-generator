@@ -565,6 +565,110 @@ which is how the en-route change was first reported here as a win.
 
 ---
 
+## 8.4 Where the money actually is, after pruning (2026-08-23)
+
+The Core tier — trails, en-route stops and cultural events switched off — costs
+**$3.40** cold. Decomposed by flow element:
+
+| Element | Calls | Tokens | $ | Share |
+|---|---|---|---|---|
+| URL discovery — direct batches | 28 | 664,897 | $1.73 | **51%** |
+| URL discovery — per-item fallbacks | 88 | 721,652 | $1.65 | **48%** |
+| **All itinerary content, 10 destinations** | 10 | 68,510 | **$0.005** | **~0%** |
+
+Per delivered item: **$0.034, 14,698 tokens, 2.9 searches.**
+
+**99% of Core spend is URL discovery.** Generating a destination's entire prose,
+schedule and narrative costs ~6,900 tokens; finding one URL costs ~14,700. The
+product is nearly free and the links are the entire bill.
+
+### What the expensive half buys
+
+Of the 52 URLs the paid fallback resolved on that run:
+
+| Domain class | Count |
+|---|---|
+| `alltrails.com` — **in a run with trails disabled** | 29 |
+| Third-party travel content (travelandleisure, lonelyplanet, tripadvisor, …) | 9 |
+| `facebook.com` | 1 |
+| `.gov` / `.org` official | 3 |
+
+So $1.65 delivered roughly three authoritative links, nine magazine pages, and
+twenty-nine links to a category that was switched off. The AllTrails leak is fixed
+(§8.5); the remainder is a genuine question about whether the fallback earns its
+place at all.
+
+### The mechanism, not the volume, is the cost
+
+A batch call carries a ~300-token prompt and ~23,400 tokens of **retrieved page
+content billed back as input**. The pipeline uses an LLM as a search-and-retrieve
+engine, paying ~$2.13/M to read web pages into a context window, then discards the
+pages and keeps a URL — while the same URLs are already validated for free over
+plain HTTP (696 requests per run, $0).
+
+Pruning categories cut volume. It never touched this, and this is where 99% of the
+money is.
+
+---
+
+## 8.5 Ranked pivots
+
+Ordered by measured evidence times expected effect, not by appeal.
+
+| # | Pivot | Evidence | Attacks | Confidence |
+|---|---|---|---|---|
+| 1 | **Warm / cross-customer entity cache** | **Measured**: warm runs used 8–27 searches against a cold 212 | cost per *customer* | **High** |
+| 2 | **Replace LLM candidate-finding with a search API** | Token composition measured; hit rate **untested** | 99% of spend | Medium |
+| 3 | **Drop or cap the per-item fallback** | 88 calls, $1.65, output shown above | 48% | Medium-high |
+| 4 | **Group destinations per batch call** | `direct_batch_group_size: 1` today; config-only | 51% | Medium |
+| 5 | **NPS-first for park items** | Probed: 74% coverage, 30% at Capitol Reef | ~15% | Medium |
+| 6 | **Extend `allowed_domains` beyond trails** | Only 1 of 4 batch kinds declares a single-domain source | retrieval volume | Low |
+
+**1 — Warm cache.** The strongest measured result in this whole investigation, and the
+one that reframes the question. A cold run is the cost of the *first* customer to a
+destination set; every later one runs warm. An entity cache keyed by place rather
+than by query makes destination popularity compound instead of repeat. This does not
+reduce the cold number and should not be sold as doing so.
+
+**2 — Search API.** The largest mechanism change available and the only one that
+removes no content. Eliminates token injection outright and cuts per-search fees
+roughly 5–15×. **Blocked on evidence**: the keyless probe attempted 2026-08-23 was
+rate-limited after two queries and proved nothing. A free-tier key (Serper offers
+2,500 queries; Brave has a free tier) allows the 88 real fallback items to be
+measured offline before any spend.
+
+**3 — Fallback.** Its own output argues against it. Worth re-measuring after the
+AllTrails chokepoint fix, since 29 of 52 results were that leak; the honest question
+afterwards is whether ~12 links, mostly magazine pages, justify 48% of a run.
+
+**4 — Grouping.** Cheap and config-only, so it can ride along with any other run.
+Saving is well under 50% of batch cost because grouped prompts are larger.
+
+**5 — NPS-first.** Modest as a cost lever, but the strongest *quality* case: 8 of 13
+rejections on one run were nps.gov pages the model guessed at, against an API that
+returns them authoritatively for free.
+
+**6 — Domain constraints.** Attractions, restaurants and en-route stops legitimately
+span many domains; `link_types.scenic_drive` sets its filter to `null` deliberately.
+Constraining them buys cost with coverage.
+
+### The trails switch: four leaks, one lesson
+
+Recorded because the shape recurs. The switch was guarded at
+`_search_alltrails_for_trail`, then `_search_alltrails_for_seed_relaxed`, then
+`_search_alltrails_for_trail_filtered` (which had been buying 98 calls per run while
+its output was hidden), then the trail direct batch — and the Core run *still*
+resolved 29 AllTrails URLs through the general per-item hunt.
+
+Each fix asked *"is the path I am looking at guarded"* rather than *"is there a point
+every candidate must pass through"*. There was: `_retain_discovered_url`. Enforcing
+the switch at that chokepoint closed all four at once.
+
+**A switch that hides output while still buying it is worse than no switch**, because
+the spend continues and the missing output is read as the switch working.
+
+---
+
 ## 9. Open items
 
 - **The residual 18%.** The corrected `$2.00/$6.00` rate computes $4.45 against $3.75
