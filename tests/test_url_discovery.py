@@ -17480,3 +17480,43 @@ class TestRestaurantsSwitch:
         cfg = tmp_path / "c.yaml"
         cfg.write_text("restaurants:\n  enabled: false\n", encoding="utf-8")
         assert _category_enabled(str(cfg), "restaurants", default=True) is False
+
+
+class TestTrailsSwitchClosesEveryEntryPoint:
+    """Four AllTrails entry points, guarded one leak at a time.
+
+    2026-08-23 history, because the shape matters more than the fix: the
+    switch first guarded two of three search paths (the third bought 98 calls
+    while its output was hidden); that was fixed; the next run then showed
+    the fallback correctly at 0 calls while the trail direct BATCH ran for
+    all ten destinations and put 8 AllTrails links in the output.
+
+    Each partial fix made the leak smaller and none closed it, which is why
+    this asserts every entry point together rather than the newest one.
+    """
+
+    @staticmethod
+    def _disabled():
+        mock_llm = type("M", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            return URLDiscoverer(config_path="config.yaml", llm_client=mock_llm, disable_trails=True)
+
+    def test_no_search_path_runs(self):
+        d = self._disabled()
+        assert d._search_alltrails_for_trail("Angels Landing", "Zion National Park") is None
+        assert d._search_alltrails_for_seed_relaxed("Angels Landing", "Zion National Park") is None
+        assert d._search_alltrails_for_trail_filtered(
+            item_name="Angels Landing", dest_name="Zion National Park", query_variants=["x"]
+        ) is None
+
+    def test_the_trail_direct_batch_does_not_run(self):
+        """The leak the previous two fixes left open."""
+        d = self._disabled()
+        ai = {"top_attractions": [{"name": "Angels Landing", "type": "trail"}]}
+        with patch.object(d, "_prioritize_direct_batch_trails") as batch, \
+             patch.object(d, "_get_alltrails_direct_batch_rows_for_destination") as rows, \
+             patch.object(d, "_prewarm_attraction_batch_with_itinerary_items"), \
+             patch.object(d, "_prioritize_direct_batch_attractions", side_effect=lambda a, *x, **k: a):
+            d._discover_attractions(ai, "Zion National Park", None, "October 18, 2026", [])
+        batch.assert_not_called()
+        rows.assert_not_called()

@@ -4611,9 +4611,19 @@ class URLDiscoverer:
                 seed_names=seed_names,
             )
             ai["top_attractions"] = top_attractions
+        # THIRD AllTrails entry point. The switch already guards
+        # _search_alltrails_for_trail, _search_alltrails_for_seed_relaxed and
+        # _search_alltrails_for_trail_filtered -- and still leaked here.
+        # Measured 2026-08-23 with trails disabled: the fallback path was
+        # correctly at 0 calls while the trail direct BATCH ran for all ten
+        # destinations, 20 capture files, and 8 AllTrails links reached the
+        # output. Each guarded path made the leak look smaller without
+        # closing it.
         alltrails_source_mode = str(
             getattr(self, "_alltrails_source", DEFAULT_ALLTRAILS_SOURCE) or DEFAULT_ALLTRAILS_SOURCE
         )
+        if bool(getattr(self, "_disable_trails", False)):
+            alltrails_source_mode = "disabled"
         if alltrails_source_mode == "direct_link_batch":
             top_attractions = self._prioritize_direct_batch_trails(
                 top_attractions,
