@@ -382,7 +382,19 @@ url_discovery:
   # website discovery.
   en_route_source: maps
   direct_batch_authoritative: true
-  direct_link_batch_count: 20
+  # 20 -> 12 on 2026-08-24. Measured on run 8: the batch invented 182 item
+  # names and 32 reached the output -- 150 discarded, 82% of the harvest.
+  #
+  # NOT cut further. _day_scaled_direct_batch_count already right-sizes the
+  # ask to min(limit, max(5, items_per_day * days * 2)), so this ceiling only
+  # binds on multi-day stays. Modelled against sw_manifest's day counts:
+  #   limit 20 -> asks 160 total, 0 destinations under-supplied
+  #   limit 12 -> asks 112 total, 4 destinations ask slightly under their cap
+  #   limit  8 -> asks  80 total, 6 under-supplied
+  #   limit  6 -> asks  60 total, 6 under-supplied
+  # A 3-day destination may legitimately keep 15 attractions (5/day), so a
+  # ceiling below ~12 starves the per-day cap rather than trimming waste.
+  direct_link_batch_count: 12
   restaurant_direct_batch_item_count: 8
   en_route_direct_batch_item_count: 8
   restaurant_direct_batch_min_results: 4
