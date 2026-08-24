@@ -763,6 +763,53 @@ something is wrong.
 
 ---
 
+## 8.8 Run 8 (2026-08-24): the Serper fallback, measured
+
+Predicted before running, per §8.3: fallback tokens ~0, fallback invocations ~0,
+`per_item_website_hunt` ~88 calls billed to Serper, run total ~$1.75, external links
+**at or above** 218 -- the last one because this was the first lever expected to
+*improve* content, so a drop would mean failure rather than success.
+
+| | run 7 (grok fallback) | run 8 (Serper) |
+|---|---|---|
+| **Run total** | $3.40 | **$1.8325** |
+| Fallback cost | $1.65 | **$0.036** |
+| Fallback tokens | 721,652 | **0** |
+| Fallback calls | 88 | 36 |
+| external links | 218 | **225** |
+| official `.gov`/`.org` | 37 | **39** |
+| restaurants | 46 | **53** |
+| attractions removed for no URL | 62 | **22** |
+
+**$1.83 against $1.75 predicted -- within 5%, the first accurate cost prediction in
+this investigation.** Calls fell as well as unit cost: Serper resolves on the first
+query where the LLM path burned several variants per item.
+
+Cumulative: **$6.32 baseline → $3.40 Core → $1.83**, a 71% reduction, and only the
+middle step cost content.
+
+### What remains
+
+97% of the remaining $1.83 is the direct batch: 27 calls, 686,728 tokens, $1.78.
+
+The batch does **two** jobs — it invents the item list *and* resolves each URL — and
+the URLs are already in `rows[].url`. So the question is not whether a SERP API can
+add something, but whether the batch's expensive half is buying anything the cheap
+path cannot.
+
+Underneath it sits a redundancy already measured elsewhere in this note: **Stage 3
+already produces the item names**, for ~6,800 tokens per destination with zero
+searches. The batch then independently invents its own list, and the disagreement
+between the two is exactly the `direct_batch_no_match` series (82 → 108 → 125). Two
+lists of the same thing, disagreeing, one of them costing ~25,000 tokens a call.
+
+**The risk in removing it is content, not cost.** The batch searches the live web, so
+it can surface items a model's training data would not. Stage 3 cannot. That is the
+question a URL-resolution probe cannot answer, and it should be settled before the
+batch is touched.
+
+---
+
 ## 9. Open items
 
 - **The residual 18%.** The corrected `$2.00/$6.00` rate computes $4.45 against $3.75
