@@ -16,25 +16,53 @@ This note records a free-source probe showing per-**item** imagery is achievable
 
 ## 1. Why not Google Places Photos
 
-Raised as the obvious candidate. It fails three ways, and the third is fatal to this
-project specifically.
+**This was never attempted — no key was obtained and no code written.** The rejection is
+a reading of the documented terms and mechanics, not a report of something that failed in
+practice. Recorded that way deliberately, because a discard justified by documentation
+should be re-checkable when the documentation changes.
 
-| | |
-|---|---|
-| **The photo URL embeds the API key** | `https://places.googleapis.com/v1/NAME/media?key=API_KEY`. This project publishes a static page to public GitHub Pages, so linking at source publishes the key |
-| **Caching is prohibited** | *"You must not pre-fetch, cache, or store Places API content"* — and photo names expire, so they must be re-fetched from a live Details/Search response every time |
-| **The service worker would violate it** | `sw.js` precaches images so an installed itinerary works offline (see `main.py`). Under these terms that precaching is itself prohibited |
+There are two ways to use Places Photos, and they fail for different reasons.
 
-Both available shapes are therefore closed: link at source leaks the key, cache locally
-is disallowed. This is the **second** time Maps Platform has failed the same
-architectural test — §6.4 found the same for Directions.
+**Hotlinking at source is not caching**, so the caching rule does not reach it. It fails
+on expiry instead:
 
-**The pattern is worth naming.** Maps Platform assumes a live application making
-authenticated calls per view. This product is a static artifact that must work months
-later with no signal. Those are incompatible, and no per-feature workaround changes it.
+> *"You cannot cache a photo name. Also, the name can expire."*
+> — Place Photos (New), verified 2026-08-24
+
+A static page publishes photo names that later go dead, and there is no running code to
+refresh them. For an artifact meant to work months after generation, that is decisive —
+and it is a mechanical property of the API, not a legal restriction.
+
+**Fetching and storing the bytes is prohibited.** Verified against the Places policies and
+the platform terms: photos carry **no** caching exception. Only `place_id` is exempt
+indefinitely, and only Geocoding/Geolocation lat/lng get the 30-day window. This also
+means the `sw.js` image precaching would itself violate the terms.
+
+### One argument that does not hold
+
+An earlier draft of this note listed "the photo URL embeds the API key" as an independent
+blocker. **It is not one.** Maps browser keys are designed to be public and are protected
+by HTTP-referrer restrictions; that is ordinary client-side practice. What survives is a
+*cost* objection rather than a terms objection: a published page would bill per reader
+view, uncapped, for as long as the page exists — an ongoing liability attached to an
+artifact we no longer control.
+
+### It could be made to work — just not here
+
+A live backend that refreshes photo names on demand satisfies both constraints. That is a
+real architecture; it is not this product's. The generator emits a static artifact and
+then has no runtime, so the discard is scoped to **our shape**, not a claim that the API
+is unusable.
+
+This is the **second** time Maps Platform has failed on the same axis — §6.4 of the cost
+note found it for Directions. **The pattern is worth naming.** Maps Platform assumes a
+live application making authenticated calls per view. This product is a static artifact
+that must work later with no signal and no server. Per-feature workarounds do not change
+that; a backend would, and that is a much larger decision than an image source.
 
 The current providers were well chosen against that constraint: **NPS (public domain),
-Wikimedia Commons and Unsplash all permit hotlinking *and* caching.**
+Wikimedia Commons and Unsplash all permit hotlinking *and* caching**, and none of their
+URLs expire.
 
 ---
 
