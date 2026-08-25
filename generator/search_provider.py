@@ -22,7 +22,7 @@ from generator.grok_search import GrokSearch
 from generator.openai_search import OpenAiSearch
 
 logger = logging.getLogger(__name__)
-_VALID_SEARCH_PROVIDERS = {"grok", "claude", "openai"}
+_VALID_SEARCH_PROVIDERS = {"grok", "claude", "openai", "serper"}
 
 
 def _read_search_provider(config_path: str | Any, config_section: str, provider_key: str) -> str:
@@ -91,6 +91,17 @@ def build_search_client(
     if provider == "claude":
         return ClaudeSearch(
             model=claude_model,
+            usage_tracker=usage_tracker,
+            usage_operation_prefix=usage_operation_prefix,
+        )
+    if provider == "serper":
+        # Serper is a SERP API with no model to select, so grok_model /
+        # claude_model / openai_model are all irrelevant here. Intended for
+        # nonbatch_search_provider (the per-item fallback); as a batch
+        # provider its chat_completion degrades to an empty harvest.
+        from generator.serper_search import SerperSearch
+
+        return SerperSearch(
             usage_tracker=usage_tracker,
             usage_operation_prefix=usage_operation_prefix,
         )

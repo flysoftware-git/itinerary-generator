@@ -599,7 +599,7 @@ trails) `apify-single-call`, and `--search-provider` forces one provider across 
 url_discovery and cultural_events *and disables cross-provider fallback* — specifically so
 a per-provider cost/behaviour comparison is uncontaminated.
 
-Environments (`dev`/`test`/`prod`) resolve CLI > manifest > `ENVIRONMENT` > `dev`, and
+Environments (`dev`/`eval`/`prod`) resolve CLI > manifest > `ENVIRONMENT` > `dev`, and
 nest the output directory **only** when the CLI form was used.
 
 `--privacy-mode` (`auto`/`on`/`off`, §4.7-adjacent) piggybacks on the same environment
@@ -706,9 +706,12 @@ Stated plainly, because a new contributor will otherwise find these the hard way
     `url_discovery` search clients. The cultural-events search client and the
     content-generation breaker never reach the ledger, so a content-generation outage is
     invisible there.
-14. **The probe script the design notes reference is not in the repository.**
-    `search-provider-capability-probe.md` and `provider-model-matrix.md` both cite
-    `scripts/probe_multi_provider_search_2026.py` as re-runnable; it is absent.
+14. ~~**The probe script the design notes reference is not in the repository.**~~
+    **Resolved 2026-08-24.** `scripts/probe_multi_provider_search_2026.py` is present and
+    the citations in `search-provider-capability-probe.md` and `provider-model-matrix.md`
+    are accurate. The item is kept rather than deleted because it is a reminder that a debt
+    map decays in both directions — an entry can become wrong by being *fixed*, and an
+    unreviewed one is as misleading as an unfixed one.
 15. **Dead-but-plausible code** worth knowing about: `replay_html_capture_directory`
     (tests only), the grouped multi-destination harvest path (disabled via
     `direct_batch_group_size: 1` and never root-caused), `GrokSearch.chat_completion(live_search=False)`,
@@ -1070,8 +1073,12 @@ tests/             1,044 tests      docs/requirements.md   v2.1
 
 ### 7.3 Testing posture
 
-**1,219 tests across 25 test files**, all flat — no `pytest.ini`/`conftest.py`, no markers,
-one `pytest tests/` collection. The distribution tells you where the risk was felt:
+**Over 1,250 tests across 27 test files**, all flat — no `pytest.ini`, no markers, one
+`pytest tests/` collection. There is now one `tests/conftest.py` (added 2026-08-19), and it
+exists for a cost reason rather than a convenience one: a test run rewrote the *production*
+persistent URL cache, because `_save_persistent_caches` snapshots rather than merges and the
+cache path is relative. The next real run re-paid xAI's per-search fee for everything the
+suite had evicted. The autouse fixture points that module constant at a temp path. The distribution tells you where the risk was felt:
 `test_url_discovery.py` 623, `test_html_assembler.py` 173, `test_ai_content_normalization.py`
 116, `test_main_requirements.py` 49, `test_grok_search.py` 30. `docs/requirements.md`
 [§19](requirements.md#19-requirements-testing-linkage) establishes the requirements-to-tests
@@ -1081,7 +1088,7 @@ Thin spots: `test_entity_registry.py` (11) and `test_pipeline_integration.py` (2
 relative to how much now depends on them, and `nps_resolver`, `report_writer`,
 `providers/grok` and `verify_links_until_clean` have one test each.
 
-CI (`.github/workflows/tests.yml`) runs the full suite on push/PR to `main`/`issue-6-v2` —
+CI (`.github/workflows/tests.yml`) runs the full suite on push/PR to `main`/`v2`/`issue-6-v2` —
 one job, Python 3.11, no coverage reporting (`pytest-cov` is in `requirements.txt` but never
 invoked with `--cov`). Separately, `requirements-traceability-v0.30-to-v0.20.md`'s "Focused
 Gate Sequence" documents four `pytest -k` gates (renderer fail-closed, URL-discovery
@@ -1186,9 +1193,6 @@ on `issue-6-v2`.
   §4.1 links §8 for completeness, not because it is satisfied.
 - `provider-model-matrix.md` and `search-provider-capability-probe.md` assign Claude to two
   search roles; `config.yaml` currently runs all three on Grok (§2.4).
-- §4.3 above says environments are `dev`/`test`/`prod`; the CLI's actual `--environment`
-  choices are `dev`/`eval`/`prod` — `test` was renamed to `eval` in code without the prose
-  catching up.
 
 ---
 

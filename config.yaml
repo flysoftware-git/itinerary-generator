@@ -18,7 +18,14 @@ ai:
   temperature: 0.7
   max_tokens: 4096
   max_concurrent_destinations: 4
-  grok_max_concurrent_destinations: 1
+  # Raised 1 -> 2 on 2026-08-24, the step
+  # live-fetch-and-execution-time-reduction.md 2.1 recommends. The cap existed to
+  # contain storming risk on a path that had no circuit breaker; llm_client.py
+  # now has one, and width 3 held cleanly on a small workload. 2 rather than 3
+  # because that measurement was three calls, not the eight to ten a real
+  # Stage 3 issues -- this is the conservative step that makes real generations
+  # produce the evidence for the next one.
+  grok_max_concurrent_destinations: 2
   enable_url_candidate_experiment: false
   # Optional content-generation failover: when the primary provider's circuit
   # breaker opens (repeated transient errors -- see llm_client.py), calls are
@@ -256,7 +263,21 @@ url_discovery:
   #                                breaker-tracked) but no longer adds
   #                                cross-provider resilience.
   search_provider: "grok"
-  nonbatch_search_provider: "grok"
+  # SERPER for the per-item fallback, 2026-08-23. Measured against the 55
+  # items run 7's paid LLM fallback actually handled: Serper returned a
+  # result for 55/55 (LLM: 52/55), and 53 of those -- 96% -- passed
+  # _retain_discovered_url unmodified. Sources are markedly better: 28
+  # official .gov hits against the LLM's 2, and 2 travel-content-farm hits
+  # against 11.
+  #
+  # The saving is structural. An agentic LLM search bills retrieved page
+  # content back as input tokens; Serper returns links directly, at $1.00
+  # per 1,000 queries against xAI's $5.00.
+  #
+  # Scoped to the fallback deliberately. The direct batch also INVENTS the
+  # item list, which a SERP API cannot do -- search_provider stays on grok.
+  # Revert with one value: "grok".
+  nonbatch_search_provider: "serper"
   # How many destinations' worth of attraction/restaurant/trail direct-batch
   # harvest requests get combined into a single call, instead of one call
   # per destination. 1 disables grouping (original behavior, safe rollback).
@@ -361,7 +382,19 @@ url_discovery:
   # website discovery.
   en_route_source: maps
   direct_batch_authoritative: true
-  direct_link_batch_count: 20
+  # 20 -> 12 on 2026-08-24. Measured on run 8: the batch invented 182 item
+  # names and 32 reached the output -- 150 discarded, 82% of the harvest.
+  #
+  # NOT cut further. _day_scaled_direct_batch_count already right-sizes the
+  # ask to min(limit, max(5, items_per_day * days * 2)), so this ceiling only
+  # binds on multi-day stays. Modelled against sw_manifest's day counts:
+  #   limit 20 -> asks 160 total, 0 destinations under-supplied
+  #   limit 12 -> asks 112 total, 4 destinations ask slightly under their cap
+  #   limit  8 -> asks  80 total, 6 under-supplied
+  #   limit  6 -> asks  60 total, 6 under-supplied
+  # A 3-day destination may legitimately keep 15 attractions (5/day), so a
+  # ceiling below ~12 starves the per-day cap rather than trimming waste.
+  direct_link_batch_count: 12
   restaurant_direct_batch_item_count: 8
   en_route_direct_batch_item_count: 8
   restaurant_direct_batch_min_results: 4

@@ -669,6 +669,227 @@ the spend continues and the missing output is read as the switch working.
 
 ---
 
+## 8.6 Serper probe (2026-08-23): candidate-finding is better and cheaper elsewhere
+
+Pivot 2 in §8.5 was ranked second and marked *blocked on evidence*. It is no longer
+blocked. Probed offline against the **55 real items run 7's paid fallback handled**,
+taken from that run's own `destination_status_report.json` — no generator run, 110
+queries of a 2,500 free tier.
+
+### Coverage and source quality
+
+| | Serper | LLM paid fallback |
+|---|---|---|
+| Returned a result | **55/55 (100%)** | 52/55 |
+| official `.gov` | **28** | 2 |
+| official `.org` | **6** | 1 |
+| travel content farms | **2** | 11 |
+| social / video | 0 | 1 |
+| Top hit same domain as the LLM's | 5/55 (9%) | — |
+
+They find genuinely different things. Serper returns official government or
+organisation sources for **62%** of items; the paid path returned them for **5%**.
+
+### The check that actually mattered
+
+A domain histogram proves nothing on its own — the failure that killed the LLM's
+`nps.gov` results was *generic pages failing promise-to-target* (Angels Landing
+resolving to a permits page). So every Serper hit was run through
+**`_retain_discovered_url`**, the same relevance, redirect and promise-to-target
+gate the pipeline applies today:
+
+> **53 of 55 — 96% — passed.**
+
+Same items, same validator, same run's data:
+
+| Item | Serper | LLM (paid) |
+|---|---|---|
+| Inspiration Point | `nps.gov/brca/planyourvisit/inspiration.htm` | lonelyplanet.com |
+| Bryce Point Trail | `nps.gov/brca/planyourvisit/brycepoint.htm` | alltrails |
+| Navajo Loop & Queen's Garden | `nps.gov/brca/planyourvisit/qgnavajocombo.htm` | alltrails |
+| Pioneer Park | `sgcityutah.gov` | tripadvisor |
+| Cappeletti's Restaurant | the restaurant's own site | yelp |
+
+**This is the first lever in this investigation that improves content and cuts cost.**
+Every other one traded something away.
+
+### What it does NOT establish
+
+- **The batch half is untested.** These 55 were fallback items — *"find the URL for
+  this known item"*, a pure lookup. The batch does a different job: it **invents the
+  item list** ("what is worth seeing in Zion") as well as resolving URLs, and a search
+  API cannot do the first part.
+- **No cost figure is claimed.** Serper's paid rate at volume is unconfirmed, and per
+  §8.3 no cost prediction is made without attributing it to call sites in a real run.
+
+The batch distinction does suggest a shape worth testing later: if the batch call only
+*names* items and stops searching, its ~23,700 tokens collapse to a small prompt and a
+list — no retrieved pages injected — with Serper resolving URLs afterwards. That would
+attack both halves. It is speculation until measured.
+
+---
+
+## 8.7 Scope: Serper for the per-item fallback only
+
+Deliberately narrow. The fallback is the proven case, worth **$1.65 of a $3.40 Core
+run**, and small enough that a single run can attribute the result — which is the
+discipline §8.3 exists to enforce.
+
+**Module.** `generator/serper_search.py`, mirroring `grok_search.py`'s shape so
+`build_search_client` can return it: same constructor signature, same
+`usage_tracker`/`usage_operation_prefix` contract, `is_circuit_open()` for parity.
+
+**Selection.** `url_discovery.nonbatch_search_provider: serper`. That key already
+exists and already selects the fallback client independently of the batch client, so
+the batch path is untouched by construction — no flag threading, no new call site.
+
+**Cost accounting.** Serper bills per query, not per token, so it needs its own entry
+in `DEFAULT_TOOL_CALL_PRICING_USD_PER_1000` and must report a tool-call count through
+`UsageTracker.add`. Without that count the §5.1 warning fires — correctly — because a
+search provider reporting zero invocations across a run of search operations is the
+exact blind spot that guard was written for.
+
+**Unchanged by design:** `_retain_discovered_url` and every validation gate. The probe
+ran Serper's results through the current validator unmodified and got 96%; loosening
+anything would discard the evidence this scope rests on.
+
+**Verification.** Predict before running: fallback token cost near zero, fallback
+web_search invocations near zero, `per_item_website_hunt` still ~88 calls but billed
+to Serper. Then the §7.2a content table, with attention to external-link count and
+source mix — the expected change is *more* official sources, and a drop there means
+something is wrong.
+
+**Rollback.** One config value back to `grok`.
+
+---
+
+## 8.8 Run 8 (2026-08-24): the Serper fallback, measured
+
+Predicted before running, per §8.3: fallback tokens ~0, fallback invocations ~0,
+`per_item_website_hunt` ~88 calls billed to Serper, run total ~$1.75, external links
+**at or above** 218 -- the last one because this was the first lever expected to
+*improve* content, so a drop would mean failure rather than success.
+
+| | run 7 (grok fallback) | run 8 (Serper) |
+|---|---|---|
+| **Run total** | $3.40 | **$1.8325** |
+| Fallback cost | $1.65 | **$0.036** |
+| Fallback tokens | 721,652 | **0** |
+| Fallback calls | 88 | 36 |
+| external links | 218 | **225** |
+| official `.gov`/`.org` | 37 | **39** |
+| restaurants | 46 | **53** |
+| attractions removed for no URL | 62 | **22** |
+
+**$1.83 against $1.75 predicted -- within 5%, the first accurate cost prediction in
+this investigation.** Calls fell as well as unit cost: Serper resolves on the first
+query where the LLM path burned several variants per item.
+
+Cumulative: **$6.32 baseline → $3.40 Core → $1.83**, a 71% reduction, and only the
+middle step cost content.
+
+### What remains
+
+97% of the remaining $1.83 is the direct batch: 27 calls, 686,728 tokens, $1.78.
+
+The batch does **two** jobs — it invents the item list *and* resolves each URL — and
+the URLs are already in `rows[].url`. So the question is not whether a SERP API can
+add something, but whether the batch's expensive half is buying anything the cheap
+path cannot.
+
+Underneath it sits a redundancy already measured elsewhere in this note: **Stage 3
+already produces the item names**, for ~6,800 tokens per destination with zero
+searches. The batch then independently invents its own list, and the disagreement
+between the two is exactly the `direct_batch_no_match` series (82 → 108 → 125). Two
+lists of the same thing, disagreeing, one of them costing ~25,000 tokens a call.
+
+**The risk in removing it is content, not cost.** The batch searches the live web, so
+it can surface items a model's training data would not. Stage 3 cannot. That is the
+question a URL-resolution probe cannot answer, and it should be settled before the
+batch is touched.
+
+---
+
+## 8.9 The result, measured like-for-like (2026-08-24)
+
+### The comparison that counts
+
+Earlier summaries in this note quoted reductions against the $6.32 baseline while the
+measured run had categories switched **off**. That compares two different products and
+overstates the engineering result — the same conflation of scope with cost this note
+warns about elsewhere. The owner caught it.
+
+Like-for-like, same feature set, both cold start on `sw_manifest`:
+
+| | cost | attractions | restaurants | en-route | trails | links |
+|---|---|---|---|---|---|---|
+| **Baseline (run 1)** | **$6.32** | 50 | 55 | 50 | 21 | 326 |
+| **Current (run 11)** | **$2.82** | 64 | 46 | 26 | 24 | 288 |
+
+**$6.32 → $2.82, a 55% reduction with no category removed** — and more attractions and
+more trails than the baseline had.
+
+### Tiers, measured
+
+| | cost |
+|---|---|
+| **Core** — trails, en-route and cultural events off (run 10) | **$1.18** |
+| **Core + all three options** (run 11) | **$2.82** |
+| **The three options together** | **$1.64** |
+
+Batch composition explains the delta: Core runs 18 batch calls (attraction 10,
+restaurant 8); all-options runs 46, adding 10 trail and 10 en-route plus events' own.
+Serper queries rise 40 → 143 as more items need URLs.
+
+**Core is a product decision, not a saving.** It is a smaller deliverable at a lower
+price, and should be presented that way.
+
+### What got it there
+
+In rough order of contribution, all measured:
+
+1. **Serper for the per-item fallback** (§8.6–8.8) — $1.65 → $0.036, and content
+   *improved*. The only change in the investigation that did both.
+2. **Correct pricing plus the grok-4.3 discovery split** — the ledger stopped
+   under-reporting 9×, and discovery moved to a cheaper tier.
+3. **En-route stops resolving to Maps links** — removed the 253-of-301 rejection storm.
+4. **`direct_link_batch_count` 20 → 12** — real but small, −3.6%, for the reason in §8.10.
+
+### Two figures still unexplained
+
+- **En-route stops 50 → 26** with the category enabled in both runs. Most likely the
+  `maps` resolution mode, but nobody decided it, and it should be explained rather than
+  accepted.
+- **Removing the trail batch raised attraction counts** (55 → 61 in run 10). A
+  favourable result from an unmodelled interaction between trail hints, the trail batch
+  and the attraction backfill. Favourable misses are still misses.
+
+---
+
+## 8.10 Why the batch is near its floor
+
+`direct_link_batch_count: 20 → 12` was predicted at −20% and delivered **−3.6%**. The
+reason is worth recording because the data to avoid the error was already in this note.
+
+A batch call's tokens are **91% input**: 627,904 in against 58,824 out on run 8. The
+item count controls the **output** — the list the model returns — and output is 8.6% of
+the call. Asking for 12 instead of 20 can only touch that 8.6%. The input is retrieved
+page content, and the model searches the web the same amount regardless.
+
+**The prediction was made against the wrong term, having already measured the right
+one.** §8.3's rule was followed to the point of attribution and then not used.
+
+What this establishes: the batch's cost is not reachable through prompting. Its
+remaining $1.18 is ~500K input tokens of retrieved pages plus 89 billed searches. The
+only levers on the dominant term are **fewer searches** (which means less content) or
+**not injecting retrieved pages** (which means no agentic batch at all — and §8.6 shows
+that costs the ratings and descriptions every row carries, 100% of them).
+
+**Treat $1.18 Core / $2.82 full as close to the floor for this architecture.** Further
+movement comes from the warm-cache path (§8.5 pivot 1), not from tuning the batch.
+
+---
+
 ## 9. Open items
 
 - **The residual 18%.** The corrected `$2.00/$6.00` rate computes $4.45 against $3.75
