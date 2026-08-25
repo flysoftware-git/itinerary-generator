@@ -1,0 +1,63 @@
+# ============================================================
+# Old Hickory, Tennessee — single-destination test manifest
+# ============================================================
+#
+# Purpose: a SMALL, NON-PARK destination for verifying changes
+# cheaply. sw_manifest.yaml is ten destinations and park-centric,
+# which makes it both expensive to run and unrepresentative --
+# most itineraries will contain no national park at all.
+#
+# What this exercises that sw_manifest cannot:
+#   - no nps_park_code, so imagery must come from Wikimedia alone
+#     (NPS covered only 32% of items in the 2026-08-24 probe, and
+#     only where a parkCode existed)
+#   - trails outside a national park, which is the case for the
+#     claim that trails are worth paying for nearly everywhere
+#   - small local businesses -- the exact cluster free image
+#     sources missed in that probe, so a thin gallery here is
+#     expected rather than a regression
+#
+# One destination, one day: enough to exercise every stage at
+# roughly a tenth the cost of a full run.
+# ============================================================
+
+trip:
+  title: "Old Hickory Weekend"
+  subtitle: "A day on the lake outside Nashville"
+  theme_color: "#2E6F5E"          # lake green, to distinguish output from the SW run
+  departure: "Nashville International Airport"
+  departure_datetime: 2026-10-10 11:00
+  default_day_start_time: "10:00 AM"
+  default_daily_activity_hours: 5
+  return: "Nashville International Airport"
+  return_datetime: 2026-10-11 16:00
+  llm_provider: openai
+  llm_model: gpt-4o-mini
+
+destinations:
+  - id: oldhickory
+    name: "Old Hickory, Tennessee"
+    dates: "October 10, 2026"
+
+    # Required by the schema. Real public planning resources rather than
+    # placeholder Notion URLs, so the rendered links are actually clickable
+    # when reviewing output.
+    planning_links:
+      - label: "The Hermitage — visit info"
+        url: "https://thehermitage.com/visit/"
+      - label: "Old Hickory Lake — USACE"
+        url: "https://www.lrn.usace.army.mil/Locations/Lakes/Old-Hickory-Lake/"
+
+    lodging:
+      name: "Gaylord Opryland Resort"
+      location: "2800 Opryland Dr, Nashville, TN 37214"
+      checkin_time: "4:00 PM"
+
+    # Seeds are name hints only -- things a traveler specifically
+    # intends. Deliberately mixed: a well-known site that free image
+    # sources should find easily, a lake recreation area, and a trail,
+    # so per-item image coverage can be judged across all three.
+    seeds:
+      - "Andrew Jackson's Hermitage"
+      - "Old Hickory Lake"
+      - "Bledsoe Creek State Park"

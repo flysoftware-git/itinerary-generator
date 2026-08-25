@@ -1530,6 +1530,29 @@ def _category_enabled(config_path: str, section: str, *, default: bool = False) 
         return default
 
 
+def _resolve_category(
+    cli_choice: bool | None,
+    config_path: str,
+    section: str,
+    *,
+    default: bool = False,
+) -> bool:
+    """Decide whether an optional category runs: CLI wins, else config.
+
+    The CLI could previously only turn these OFF (--notrails, --skip-events),
+    so enabling one for a single run meant editing config.yaml and remembering
+    to put it back. That asymmetry made the priced categories awkward to test
+    precisely because they are the ones worth testing deliberately.
+
+    cli_choice is tri-state: None means "no flag given, ask the config", which
+    is why the paired --trails/--no-trails options default to None rather than
+    to False.
+    """
+    if cli_choice is not None:
+        return bool(cli_choice)
+    return _category_enabled(config_path, section, default=default)
+
+
 def _cultural_events_enabled(config_path: str) -> bool:
     """Back-compat alias; see _category_enabled."""
     return _category_enabled(config_path, "cultural_events")
@@ -1867,6 +1890,30 @@ def _write_development_build_info(output_dir: Path, build_info: dict[str, Any]) 
 @click.option("--skip-url-discovery", is_flag=True, help="Skip URL discovery")
 @click.option("--notrails", "no_trails", is_flag=True, help="Disable trail link discovery and omit trail links")
 @click.option(
+    "--trails/--no-trails",
+    "trails",
+    default=None,
+    help="Force trail discovery on/off this run, overriding trails.enabled",
+)
+@click.option(
+    "--events/--no-events",
+    "events",
+    default=None,
+    help="Force cultural events on/off this run, overriding cultural_events.enabled",
+)
+@click.option(
+    "--en-route/--no-en-route",
+    "en_route",
+    default=None,
+    help="Force en-route stops on/off this run, overriding en_route_stops.enabled",
+)
+@click.option(
+    "--restaurants/--no-restaurants",
+    "restaurants",
+    default=None,
+    help="Force restaurants on/off this run, overriding restaurants.enabled",
+)
+@click.option(
     "--alltrails-source",
     type=click.Choice(["direct-link-batch", "search"], case_sensitive=False),
     default=None,
@@ -1924,6 +1971,10 @@ def main(
     skip_events: bool,
     skip_url_discovery: bool,
     no_trails: bool,
+    trails: bool | None,
+    events: bool | None,
+    en_route: bool | None,
+    restaurants: bool | None,
     alltrails_source: str | None,
     attraction_source: str | None,
     restaurant_source: str | None,
@@ -2023,6 +2074,10 @@ def main(
             "skip_events": bool(skip_events),
             "skip_url_discovery": bool(skip_url_discovery),
             "no_trails": bool(no_trails),
+            "trails": trails,
+            "events": events,
+            "en_route": en_route,
+            "restaurants": restaurants,
             "alltrails_source": str(alltrails_source or ""),
             "attraction_source": str(attraction_source or ""),
             "restaurant_source": str(restaurant_source or ""),
@@ -2059,20 +2114,38 @@ def main(
     #
     # --skip-events still forces off; this only changes what happens when the
     # flag is absent. Set cultural_events.enabled: true to restore.
-    if not skip_events and not _category_enabled(config_path, "cultural_events"):
+    # --skip-events and --notrails are the original one-way switches and still
+    # force OFF. The paired --events/--no-events style flags added alongside
+    # them can force either direction; absent both, config decides.
+    if not skip_events and not _resolve_category(events, config_path, "cultural_events"):
         skip_events = True
-        logger.info("Cultural events disabled by config (cultural_events.enabled is not true)")
-    if not no_trails and not _category_enabled(config_path, "trails"):
+        logger.info("Cultural events disabled (flag or cultural_events.enabled)")
+    elif events is True:
+        logger.info("Cultural events enabled by --events, overriding config")
+
+    if not no_trails and not _resolve_category(trails, config_path, "trails"):
         no_trails = True
-        logger.info("Trail discovery disabled by config (trails.enabled is not true)")
-    disable_en_route = not _category_enabled(config_path, "en_route_stops")
+        logger.info("Trail discovery disabled (flag or trails.enabled)")
+    elif trails is True:
+        logger.info("Trail discovery enabled by --trails, overriding config")
+
+    disable_en_route = not _resolve_category(en_route, config_path, "en_route_stops")
     # Restaurants default ON: unlike the other three this is arguably core
     # itinerary content, so the switch exists without changing behaviour.
-    disable_restaurants = not _category_enabled(config_path, "restaurants", default=True)
-    if disable_restaurants:
-        logger.info("Restaurants disabled by config (restaurants.enabled is false)")
-    if disable_en_route:
-        logger.info("En-route stops disabled by config (en_route_stops.enabled is not true)")
+    disable_restaurants = not _resolve_category(
+        restaurants, config_path, "restaurants", default=True
+    )
+    # Say WHICH input decided, not just the outcome -- a message reading
+    # "disabled by config" after the user passed --no-restaurants sends them
+    # to edit a file that had nothing to do with it.
+    for _label, _off, _choice in (
+        ("Restaurants", disable_restaurants, restaurants),
+        ("En-route stops", disable_en_route, en_route),
+    ):
+        if _off:
+            logger.info("%s disabled by %s", _label, "flag" if _choice is False else "config")
+        elif _choice is True:
+            logger.info("%s enabled by flag, overriding config", _label)
 
     click.echo(f"🗺  Itinerary Generator")
     click.echo(f"   Manifest : {manifest}")
