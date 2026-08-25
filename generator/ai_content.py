@@ -97,6 +97,73 @@ def _estimate_haversine_route(
     return round(driving), time_str
 
 
+_EMPHASIS_MARKERS = ("***", "**", "__", "*", "_", "`")
+_WORDCHAR_RE = re.compile(r"\w")
+
+
+def _strip_paired_marker(text: str, marker: str) -> str:
+    """Remove one emphasis marker from `text`, but only where it PAIRS.
+
+    Splitting on the marker makes the pairing explicit: an odd number of
+    segments means every occurrence has a partner, so the markers are
+    formatting and can go. An even number means one is unmatched -- a name like
+    "M*A*S*H" keeps its asterisks rather than being silently rewritten.
+    """
+    if marker not in text:
+        return text
+    parts = text.split(marker)
+    if len(parts) % 2 == 0:                     # unmatched marker: leave alone
+        return text
+    # Refuse to join across word characters, so Rock_n_Roll survives _ stripping.
+    for i in range(1, len(parts) - 1, 2):
+        before = parts[i - 1][-1:] if parts[i - 1] else ""
+        after = parts[i + 1][:1] if parts[i + 1] else ""
+        if (before and _WORDCHAR_RE.match(before)) or (after and _WORDCHAR_RE.match(after)):
+            return text
+        if not parts[i].strip():                # "**" with nothing inside
+            return text
+    return "".join(parts)
+
+
+def strip_markdown_emphasis(value: Any) -> Any:
+    """Remove markdown emphasis markers from model-authored display text.
+
+    The content model returns names already formatted -- "**Flat Tire Diner**" --
+    and nothing stripped it, so published pages carried anchors whose visible
+    text was the asterisks. dipstick75 shipped 24 such pairs on 2026-08-18 and
+    passed its review; it is not subtle, and neither the review nor the
+    validator caught it.
+
+    Deliberately NOT fixed by rendering the markdown as <strong>. These are
+    names, not prose. The model should not be emphasising them at all, and
+    converting the markers would turn a formatting defect into a permanent
+    styling decision.
+
+    Conservative by design, because a name may legitimately contain these
+    characters ("Rock_n_Roll", "M*A*S*H"): only markers that PAIR are removed --
+    either wrapping the whole string, or as a bounded inline run at word
+    boundaries. An unmatched marker is left exactly as it is.
+
+    Applied recursively so one call at the payload boundary covers every
+    category, rather than one sanitiser per call site -- the mistake that took
+    five attempts to close the trails switch.
+    """
+    if isinstance(value, str):
+        out = value
+        for _ in range(4):                      # **_name_** needs more than one pass
+            before = out
+            for marker in _EMPHASIS_MARKERS:
+                out = _strip_paired_marker(out, marker)
+            if out == before:
+                break
+        return out
+    if isinstance(value, list):
+        return [strip_markdown_emphasis(v) for v in value]
+    if isinstance(value, dict):
+        return {k: strip_markdown_emphasis(v) for k, v in value.items()}
+    return value
+
+
 class AIContentGenerator:
     _CHAIN_NAME_TOKENS = {
         "mcdonald",
@@ -1392,6 +1459,11 @@ class AIContentGenerator:
         next_destination: str,
         group_day_trip_names: list[str] | None = None,
     ) -> dict[str, Any]:
+        # Strip model-authored markdown BEFORE anything downstream sees these
+        # names -- this runs ahead of URL discovery, so discovery matches on the
+        # real name rather than one wrapped in asterisks.
+        payload = strip_markdown_emphasis(payload)
+
         seed_names = [str(s or "").strip() for s in (dest.get("seeds", []) or []) if str(s or "").strip()]
         payload["expected_environment"] = self._normalize_environment(
             payload.get("expected_environment", {}),
