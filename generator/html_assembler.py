@@ -30,15 +30,29 @@ logger = logging.getLogger(__name__)
 TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "v2.5_template.html"
 CHECKSUM_PATH = Path(__file__).parent.parent / "templates" / "checksums.txt"
 
-def _portable_image_href(path_str: str) -> str:
-    """Return a portable image href relative to the generated index.html.
+def _image_href(img: dict[str, Any]) -> str:
+    """The URL a published page should load an image from.
 
-    Using absolute file:// URLs makes output brittle when the folder is moved.
-    Images are written under the sibling images/ directory, so we emit
-    ./images/<filename> for both local and hosted usage.
+    The SOURCE url, not the local cache path. `images/<hash>.jpg` beside the
+    HTML is the generator's download-avoidance cache; it was never meant to be
+    the delivery mechanism. Emitting it meant every published build shipped
+    its own copy of NPS/Unsplash/Wikimedia assets -- 37 files under
+    sw/prod/images/, one of them 33 MB -- and rehosted third-party images
+    rather than linking them, which is a licensing question as much as a
+    bandwidth one.
+
+    Falls back to the cache path when a record somehow lacks its source url,
+    so a missing field degrades to the old behaviour rather than to no image.
+    Offline still works: sw.js precaches these URLs at install and
+    runtime-caches any image response (see main.py's service worker).
     """
-    name = Path(path_str).name
-    return f"./images/{quote(name)}"
+    url = str((img or {}).get("url", "") or "").strip()
+    if url.startswith(("http://", "https://")):
+        return url
+    local = str((img or {}).get("local_path", "") or "").strip()
+    if not local:
+        return ""
+    return f"./images/{quote(Path(local).name)}"
 
 def _verify_checksum(template_text: str) -> None:
     """Hard fail if template SHA-256 doesn't match stored value."""
@@ -624,10 +638,7 @@ class HTMLAssembler:
         nps_code: str | None,
         attractions: list[dict[str, Any]],
     ) -> str:
-        hero_img = images[0]["local_path"] if images else ""
-        # Use portable relative paths so moved/exported folders still work.
-        if hero_img:
-            hero_img = _portable_image_href(hero_img)
+        hero_img = _image_href(images[0]) if images else ""
         credit = self._build_image_caption(images[0]) if images else ""
         header_links = self._build_header_links(planning_links, nps_code, dest, attractions)
         return (
@@ -980,10 +991,9 @@ class HTMLAssembler:
         gallery_class = "photo-gallery photo-gallery-single" if len(gallery_images) == 1 else "photo-gallery"
         html = f'<div class="{gallery_class}">\n'
         for img in gallery_images:
-            local_path = img.get("local_path", "")
             caption = self._build_image_caption(img)
 
-            file_url = _portable_image_href(local_path)
+            file_url = _image_href(img)
             dest_escaped = html_escape.escape(dest_name)
             
             html += '  <div class="image-tile photo-item">\n'

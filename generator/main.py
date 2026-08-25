@@ -1600,6 +1600,28 @@ def _write_pwa_assets(output_dir: Path, trip: dict) -> None:
         subtitle = str(trip_meta.get("subtitle", "Interactive road trip itinerary") or "Interactive road trip itinerary").strip()
         theme_color = str(trip_meta.get("theme_color", "#C0623E") or "#C0623E").strip()
 
+        # Image URLs the page will actually load. The HTML now points at the
+        # SOURCE url rather than the local ./images cache (see
+        # html_assembler._image_href for why), so these are cross-origin and
+        # the service worker has to be told about them explicitly -- both to
+        # precache them at install and, below, to stop ignoring cross-origin
+        # image requests at runtime. Without this the published page would
+        # look fine online and show nothing offline, which is worse than the
+        # local-path behaviour it replaces.
+        image_urls: list[str] = []
+        seen_images: set[str] = set()
+        for dest in (trip.get("destinations", []) or []):
+            if not isinstance(dest, dict):
+                continue
+            for img in (dest.get("images", []) or []):
+                if not isinstance(img, dict):
+                    continue
+                u = str(img.get("url", "") or "").strip()
+                if u.startswith(("http://", "https://")) and u not in seen_images:
+                    seen_images.add(u)
+                    image_urls.append(u)
+        images_json = json.dumps(image_urls)
+
         icon_192 = (
                 "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E"
                 "%3Crect width='192' height='192' rx='36' fill='%23C0623E'/%3E"
@@ -1643,11 +1665,22 @@ def _write_pwa_assets(output_dir: Path, trip: dict) -> None:
                 encoding="utf-8",
         )
 
-        sw_js = """const CACHE = 'roadtrip-shell-v1';
+        sw_js = """const CACHE = 'roadtrip-shell-v2';
 const SHELL = ['./', './index.html', './manifest.webmanifest'];
+const IMAGES = __IMAGE_URLS__;
 
 self.addEventListener('install', (event) => {
-    event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
+    event.waitUntil(
+        caches.open(CACHE).then((cache) =>
+            // addAll is atomic -- one 404 or CORS-opaque response would abort
+            // the whole install and leave the app uncached. Images come from
+            // third-party hosts we do not control, so each is added
+            // individually and allowed to fail.
+            cache.addAll(SHELL).then(() =>
+                Promise.all(IMAGES.map((u) => cache.add(u).catch(() => null)))
+            )
+        )
+    );
     self.skipWaiting();
 });
 
@@ -1672,7 +1705,14 @@ self.addEventListener('fetch', (event) => {
         reqUrl.href.startsWith('https://unpkg.com/lucide@latest') ||
         reqUrl.href.startsWith('https://cdn.jsdelivr.net/npm/leaflet@1.9.4/');
 
-    if (!sameOrigin && !cacheableCdn) {
+    // Images are now loaded from their source hosts rather than a local
+    // ./images copy, so a cross-origin image request is expected traffic, not
+    // something to pass through uncached. Keyed on request.destination rather
+    // than a host allowlist, since the providers (NPS, Wikimedia, Unsplash)
+    // serve from several domains and CDNs.
+    const isImage = event.request.destination === 'image';
+
+    if (!sameOrigin && !cacheableCdn && !isImage) {
         return;
     }
 
@@ -1694,6 +1734,7 @@ self.addEventListener('fetch', (event) => {
     );
 });
 """
+        sw_js = sw_js.replace("__IMAGE_URLS__", images_json)
         (output_dir / "sw.js").write_text(sw_js, encoding="utf-8")
 
 
