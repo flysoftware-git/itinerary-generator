@@ -18,6 +18,11 @@ import requests
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient, LLMCircuitOpenError
 from generator.multi_site_grouping import group_base_id, is_grouped
+from generator.road_estimate import (
+    ROAD_DISTANCE_FACTOR,
+    drive_minutes,
+    format_drive_time,
+)
 
 logger = logging.getLogger(__name__)
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -44,8 +49,8 @@ def _estimate_haversine_route(
     dest_lat: Any,
     dest_lng: Any,
     *,
-    road_factor: float = 1.30,
-    avg_speed_mph: float = 60.0,
+    road_factor: float = ROAD_DISTANCE_FACTOR,
+    avg_speed_mph: float | None = None,
 ) -> tuple[float | None, str | None]:
     """Estimate driving distance/time from straight-line (Haversine) coordinates.
 
@@ -57,12 +62,11 @@ def _estimate_haversine_route(
     geocoded coordinates instead, for callers with high confidence in both
     endpoints (see _override_grouped_child_distance_from_geocode below).
 
-    Deliberately duplicates URLDiscoverer._estimate_route_from_haversine's
-    exact formula/convention (generator/url_discovery.py, same 1.30
-    road-distance factor and 60mph average speed already used elsewhere in
-    this codebase for real distance estimates) rather than importing it --
-    a small pure function here is simpler than instantiating a whole
-    URLDiscoverer just for this one calculation.
+    Shares its distance factor and speed model with
+    URLDiscoverer._estimate_route_from_haversine via generator/road_estimate.py.
+    The two used to duplicate the formula deliberately, to avoid instantiating a
+    whole URLDiscoverer for one calculation; a module of pure functions gives
+    both the same numbers without that cost, so they can no longer drift.
     """
     try:
         lat1, lng1 = float(origin_lat), float(origin_lng)
@@ -89,13 +93,7 @@ def _estimate_haversine_route(
         return None, None
 
     driving = straight * road_factor
-    total_hours = driving / avg_speed_mph
-    hrs = int(total_hours)
-    mins = int(round((total_hours - hrs) * 60))
-    if mins == 60:
-        hrs += 1
-        mins = 0
-    time_str = f"{hrs} hr {mins} min" if (hrs and mins) else (f"{hrs} hr" if hrs else f"{mins} min")
+    time_str = format_drive_time(drive_minutes(driving, avg_speed_mph=avg_speed_mph))
     return round(driving), time_str
 
 
