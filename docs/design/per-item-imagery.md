@@ -35,10 +35,32 @@ and it is a mechanical property of the API, not a legal restriction.
 
 **Fetching and storing the bytes is prohibited.** Verified against the Places policies and
 the platform terms: photos carry **no** caching exception. Only `place_id` is exempt
-indefinitely, and only Geocoding/Geolocation lat/lng get the 30-day window. This also
-means the `sw.js` image precaching would itself violate the terms.
+indefinitely, and only Geocoding/Geolocation lat/lng get the 30-day window.
 
-### One argument that does not hold
+But be careful how far that rule reaches, because an earlier draft overreached. **Ordinary
+browser HTTP caching is not our storage.** Google serves photo responses with cache
+headers and expects browsers to cache them; the terms bind the API customer, not the
+reader's browser. So on the hotlink path, "caching is prohibited" is simply the wrong
+objection.
+
+What does still apply is `sw.js`: `cache.addAll` is code we wrote that deliberately stores
+bytes for offline use, which is far closer to "pre-fetch, cache, or store" than incidental
+HTTP caching. Grey, and not a line worth standing on — but it is the only
+caching-flavoured point that survives.
+
+### What this leaves
+
+**One load-bearing reason, not three.** The key argument was wrong; the caching argument
+applies only to our service worker and not to hotlinking at all. Only expiry is decisive,
+and it is decisive on its own: a browser cache helps until eviction, after which the
+refetch fails and a static page cannot obtain a fresh name.
+
+Recorded plainly because a single-point rejection is more fragile than the earlier draft
+suggested. If Google ever documents a photo-name TTL long enough to outlive a published
+itinerary — none is documented today, which is itself the problem — this decision should
+be reopened rather than treated as settled.
+
+### An argument that does not hold
 
 An earlier draft of this note listed "the photo URL embeds the API key" as an independent
 blocker. **It is not one.** Maps browser keys are designed to be public and are protected
