@@ -134,6 +134,8 @@ Recorded because each was acted on, and each is easy to repeat.
 | "The cost changes will reduce spend" | Run 2 came out **+19%** | Measured; three defects in the changes, plus item-count growth shipped alongside |
 | "The alignment fix will cut `no_match`" | It rose 82 → 108 | Hike names were sent to the batch whose prompt excludes hikes |
 
+| "The image counters are broken" | They are **correct** | `nps_api_calls: 0` alongside 34 downloads looked impossible, but provider lookups were served from a SECOND cache, `.cache/images/`, that the benchmark never cleared. Asserted as a defect before checking |
+
 The recurring shape: **a plausible ratio computed from an unverified input**. In three
 of these the arithmetic was fine and the input was wrong.
 
@@ -238,8 +240,13 @@ The measurement is only meaningful if it is reproducible. It requires no special
 ### 7.1 Produce a comparable run
 
 ```bash
-# 1. Park the persistent cache (do not delete -- a bad run should be recoverable)
+# 1. Park BOTH persistent caches (do not delete -- a bad run should be recoverable).
+#    Naming only the first is why no run in this project has been fully cold:
+#    .cache/images holds provider lookups, which is why nps_api_calls and
+#    wikimedia_api_calls read 0 on a supposedly cold run. No cost impact --
+#    image lookups are free -- but the runs were not what they claimed.
 mv .cache/url_discovery/persistent_cache.json /some/scratch/persistent_cache.backup.json
+mv .cache/images/cache_index.json            /some/scratch/image_cache.backup.json
 ```
 
 ```bash
