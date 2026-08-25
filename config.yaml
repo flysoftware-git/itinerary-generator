@@ -65,6 +65,22 @@ nps:
   endpoint: "https://developer.nps.gov/api/v1"
   image_count: 3
 
+# ── Google Maps Platform (optional) ───────────────────────────────────────────
+# Entirely optional. With no key the engine behaves exactly as before; with one,
+# the secondary map link on an item becomes a precise place_id link instead of a
+# text search that a common name can resolve elsewhere.
+#
+# Key read from env: GOOGLE_MAPS_PLATFORM_KEY (or GOOGLE_MAPS_API_KEY).
+# Requires "Places API (New)" — note that the Cloud console lists "Places API"
+# and "Places API (New)" as separate entries, and a key restricted to the former
+# returns 403 API_KEY_SERVICE_BLOCKED for every call made here.
+#
+# Only the place identifier is ever requested (field mask "places.id"), which is
+# the field Google permits storing indefinitely.
+places:
+  endpoint: "https://places.googleapis.com/v1/places:searchText"
+  max_calls_per_run: 400
+
 # ── Wikimedia Commons ─────────────────────────────────────────────────────────
 wikimedia:
   thumb_width: 960

@@ -42,6 +42,7 @@ from generator.road_estimate import (
     drive_minutes,
     format_drive_time,
 )
+from generator.place_resolver import PlaceResolutionRefused, PlaceResolver
 from generator.multi_site_grouping import DEFAULT_BASE_OWNED_CATEGORIES, category_deferred_to_base
 from generator.search_provider import build_search_client
 from generator.url_validator import URLValidator
@@ -184,6 +185,11 @@ GENERIC_LISTING_TITLE_PATTERNS = tuple(
 SAFE_FALLBACK_URL_PREFIXES = (
     "https://www.google.com/maps/search/",
     "https://www.google.com/maps/dir/",
+    # A place_id link (generator/place_resolver.py) belongs here for the same
+    # reason as the two above and more strongly: it names one specific place
+    # rather than describing it in words, so it always resolves and spending an
+    # HTTP validation request on it is pure waste.
+    "https://www.google.com/maps/place/",
     "https://www.google.com/search",
 )
 POSITIVE_DOMAIN_HINTS = (
@@ -868,6 +874,10 @@ class URLDiscoverer:
         self._domain_blocked_until_ts: dict[str, float] = {}
         self._domain_block_cooldown_seconds: float = float(DEFAULT_DOMAIN_BLOCK_COOLDOWN_SECONDS)
         self._route_distance_live_fetch_enabled: bool = DEFAULT_ROUTE_DISTANCE_LIVE_FETCH_ENABLED
+        # Optional. Inert unless a Google Maps Platform key is configured, in
+        # which case secondary map links become place_id links instead of
+        # text searches. See generator/place_resolver.py.
+        self._place_resolver = PlaceResolver()
         self._search_failure_ts: dict[str, float] = {}
         self._search_failure_cooldown_seconds: float = float(DEFAULT_SEARCH_FAILURE_COOLDOWN_SECONDS)
         self._search_results_cache: dict[str, list[dict[str, Any]]] = {}
@@ -2437,12 +2447,35 @@ class URLDiscoverer:
         if not query_text:
             return
         fallback_url = f"https://www.google.com/maps/search/?api=1&query={quote(query_text)}"
+
+        # A place_id link names one specific place; the search URL above only
+        # describes it in words, and a common name can resolve elsewhere. Use
+        # the precise form when a key is configured, and keep the search URL
+        # when it is not -- which is the unconfigured default, so output is
+        # unchanged for anyone without a key.
+        #
+        # A refusal disables the resolver loudly for the rest of the run rather
+        # than aborting it: this is a *secondary* link on an item that already
+        # has a good primary one, so a broken key must be impossible to miss
+        # but must not cost the customer their guide.
+        resolver = getattr(self, "_place_resolver", None)
+        link_kind = "maps_search"
+        if resolver is not None and resolver.enabled:
+            try:
+                precise_url = resolver.maps_url_for(query_text)
+            except PlaceResolutionRefused as exc:
+                resolver.disable(str(exc))
+            else:
+                if precise_url:
+                    fallback_url = precise_url
+                    link_kind = "maps_place_id"
+
         item["maps_url"] = fallback_url
         self._log_decision(
             kind=kind,
             dest_name=dest_name,
             item_name=item_name,
-            reason="secondary_maps_link_attached",
+            reason=f"secondary_maps_link_attached:{link_kind}",
             message=(
                 "attached name+destination Google Maps search link alongside "
                 "distinct primary source URL, for the map-icon badge"
