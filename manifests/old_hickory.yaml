@@ -48,6 +48,10 @@ destinations:
       - label: "Old Hickory Lake — USACE"
         url: "https://www.lrn.usace.army.mil/Locations/Lakes/Old-Hickory-Lake/"
 
+    # A stand-in, deliberately. The real trip is a private residence in Old
+    # Hickory, which lives in the gitignored manifests/old_hickory.local.yaml
+    # -- this repository is public and a home address does not belong in its
+    # history. Use the .local variant for real runs.
     lodging:
       name: "Gaylord Opryland Resort"
       location: "2800 Opryland Dr, Nashville, TN 37214"

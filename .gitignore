@@ -43,3 +43,7 @@ sw-trip_manifest.yaml
 # scripts/ingest_reservations.py, merged at manifest load. Never commit.
 *.reservations.yaml
 _to_delete/
+
+# Manifests holding real personal details (home addresses, confirmation
+# numbers). This repository is PUBLIC -- these must never be committed.
+manifests/*.local.yaml
