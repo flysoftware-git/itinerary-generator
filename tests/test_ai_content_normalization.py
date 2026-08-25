@@ -2734,17 +2734,28 @@ def test_override_grouped_child_distance_from_geocode_fixes_impossible_ai_guess(
     assert moab_gh["drive_time"] == "10 min"
 
 
-def test_estimate_haversine_route_moab_to_arches_is_a_few_miles_under_15_minutes() -> None:
+def test_estimate_haversine_route_moab_to_arches_is_not_timed_at_highway_speed() -> None:
     """Direct check of the pure Haversine helper against the exact real
     coordinates from the dipstick68 run, independent of the trip-level
-    override wiring above."""
+    override wiring above.
+
+    This leg was measured against a routing engine on 2026-08-24: **18.2 road
+    miles, 34 minutes**. The previous assertion here was ``"14 min"``, which is
+    -60% against that -- the flat 60 mph model applied to a winding park
+    approach. The suite was holding the systematic lean in place, so the number
+    is corrected rather than the model bent to fit it.
+
+    24 min is still -31%, and honestly so: the remaining error is *distance*,
+    not speed (13.8 estimated road miles against 18.2 actual, because park roads
+    wind more than a 1.30 factor allows). Closing that needs real routing, which
+    generator/road_estimate.py explicitly does not attempt."""
     from generator.ai_content import _estimate_haversine_route
 
     miles, time_str = _estimate_haversine_route(38.5738, -109.5462, 38.7265, -109.5630)
 
     assert miles is not None and time_str is not None
     assert 1 <= miles <= 20
-    assert time_str == "14 min"
+    assert time_str == "24 min"
 
 
 def test_normalize_restaurants_filters_chain_and_fast_food() -> None:

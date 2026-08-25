@@ -37,6 +37,11 @@ import threading
 from threading import Lock
 from typing import Any
 from generator.llm_client import MultiLLMClient
+from generator.road_estimate import (
+    ROAD_DISTANCE_FACTOR,
+    drive_minutes,
+    format_drive_time,
+)
 from generator.multi_site_grouping import DEFAULT_BASE_OWNED_CATEGORIES, category_deferred_to_base
 from generator.search_provider import build_search_client
 from generator.url_validator import URLValidator
@@ -10552,10 +10557,8 @@ class URLDiscoverer:
         average speed _estimate_route_from_haversine already uses elsewhere
         in this file for the main leg distance/time, applied to the
         round-trip (2x perpendicular) distance rather than a one-way leg."""
-        road_factor = 1.30
-        avg_speed_mph = 60.0
-        estimate_miles = max(0.0, perpendicular_miles) * 2.0 * road_factor
-        estimate_minutes = (estimate_miles / avg_speed_mph) * 60.0 if estimate_miles else 0.0
+        estimate_miles = max(0.0, perpendicular_miles) * 2.0 * ROAD_DISTANCE_FACTOR
+        estimate_minutes = drive_minutes(estimate_miles) if estimate_miles else 0.0
         return round(estimate_miles, 1), int(round(estimate_minutes))
 
     def _resolve_en_route_stop_detour_metrics_against_geometry(
@@ -14068,10 +14071,14 @@ class URLDiscoverer:
         dest_lat: Any,
         dest_lng: Any,
         *,
-        road_factor: float = 1.30,
-        avg_speed_mph: float = 60.0,
+        road_factor: float = ROAD_DISTANCE_FACTOR,
+        avg_speed_mph: float | None = None,
     ) -> tuple[float | None, str | None]:
-        """Estimate driving distance and time from straight-line (Haversine) distance."""
+        """Estimate driving distance and time from straight-line (Haversine) distance.
+
+        Distance factor and speed model live in generator/road_estimate.py, shared
+        with ai_content so the two cannot drift apart.
+        """
         origin = self._parse_lat_lng(origin_lat, origin_lng)
         dest = self._parse_lat_lng(dest_lat, dest_lng)
         if not origin or not dest:
@@ -14080,13 +14087,7 @@ class URLDiscoverer:
         if straight <= 0.5:
             return None, None
         driving = straight * road_factor
-        total_hours = driving / avg_speed_mph
-        h = int(total_hours)
-        mn = int(round((total_hours - h) * 60))
-        if mn == 60:
-            h += 1
-            mn = 0
-        time_str = f"{h} hr {mn} min" if (h and mn) else (f"{h} hr" if h else f"{mn} min")
+        time_str = format_drive_time(drive_minutes(driving, avg_speed_mph=avg_speed_mph))
         return round(driving), time_str
 
     @classmethod
