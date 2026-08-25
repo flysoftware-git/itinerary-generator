@@ -16,75 +16,48 @@ This note records a free-source probe showing per-**item** imagery is achievable
 
 ## 1. Why not Google Places Photos
 
-**This was never attempted — no key was obtained and no code written.** The rejection is
-a reading of the documented terms and mechanics, not a report of something that failed in
-practice. Recorded that way deliberately, because a discard justified by documentation
-should be re-checkable when the documentation changes.
+**Never attempted — no key obtained, no code written.** The reasoning below is a reading
+of documented terms and mechanics, not a report of something that failed in practice.
 
-There are two ways to use Places Photos, and they fail for different reasons.
+**The short answer is cost, not terms.** Three earlier drafts of this section argued the
+terms forbade it. All three arguments failed under questioning, and the record of how is
+kept below, because the failure mode is more instructive than the conclusion.
 
-**Hotlinking at source is not caching**, so the caching rule does not reach it. It fails
-on expiry instead:
+### The actual case
 
-> *"You cannot cache a photo name. Also, the name can expire."*
-> — Place Photos (New), verified 2026-08-24
+Photo names cannot be stored and must be re-fetched from a billed Place Details / Search
+call — roughly 180 of them for one itinerary. Every reader view then bills again, with no
+cap, for as long as the page exists. That is an open-ended liability attached to an
+artifact we no longer control, in a product whose whole cost problem is per-run spend.
 
-A static page publishes photo names that later go dead, and there is no running code to
-refresh them. For an artifact meant to work months after generation, that is decisive —
-and it is a mechanical property of the API, not a legal restriction.
+Against that: **Wikimedia covers 89% of items for nothing** — no key, no expiry, no
+per-view billing, and it is already integrated. Places Photos would have to be
+dramatically better to justify the difference, and on this corpus it is not better at all.
 
-**Fetching and storing the bytes is prohibited.** Verified against the Places policies and
-the platform terms: photos carry **no** caching exception. Only `place_id` is exempt
-indefinitely, and only Geocoding/Geolocation lat/lng get the 30-day window.
+### Three arguments that did not survive
 
-But be careful how far that rule reaches, because an earlier draft overreached. **Ordinary
-browser HTTP caching is not our storage.** Google serves photo responses with cache
-headers and expects browsers to cache them; the terms bind the API customer, not the
-reader's browser. So on the hotlink path, "caching is prohibited" is simply the wrong
-objection.
+| Argument | Why it fails |
+|---|---|
+| "The photo URL embeds the API key" | Maps browser keys are *designed* to be public and protected by HTTP-referrer restrictions. Ordinary practice, not a blocker |
+| "Caching is prohibited" | True of *our* storage, but browsers cache images routinely and Google serves photos with cache headers expecting exactly that. The terms bind the API customer, not the reader's browser. Applied to hotlinking, this was simply the wrong rule |
+| "Photo names expire, so a static page decays" | Real, but not fatal. `html_assembler` already emits `onerror="this.style.display='none'"`, so a dead image hides itself. The page degrades gracefully rather than breaking |
 
-What does still apply is `sw.js`: `cache.addAll` is code we wrote that deliberately stores
-bytes for offline use, which is far closer to "pre-fetch, cache, or store" than incidental
-HTTP caching. Grey, and not a line worth standing on — but it is the only
-caching-flavoured point that survives.
+The common thread: **each argument reasoned from a rule's name rather than checking what
+it governs, and none was tested against code we had already written.** The `onerror`
+handler had been in the tree the whole time. This is the §8.3 failure mode of the cost
+note — name-versus-behaviour — showing up in design reasoning instead of in code.
 
-### What this leaves
+Only the caching point retains a narrow edge: `sw.js` calls `cache.addAll`, which is code
+we wrote deliberately storing bytes, and that is much closer to "pre-fetch, cache, or
+store" than incidental browser caching. Grey, and not load-bearing.
 
-**One load-bearing reason, not three.** The key argument was wrong; the caching argument
-applies only to our service worker and not to hotlinking at all. Only expiry is decisive,
-and it is decisive on its own: a browser cache helps until eviction, after which the
-refetch fails and a static page cannot obtain a fresh name.
+### It could be made to work
 
-Recorded plainly because a single-point rejection is more fragile than the earlier draft
-suggested. If Google ever documents a photo-name TTL long enough to outlive a published
-itinerary — none is documented today, which is itself the problem — this decision should
-be reopened rather than treated as settled.
-
-### An argument that does not hold
-
-An earlier draft of this note listed "the photo URL embeds the API key" as an independent
-blocker. **It is not one.** Maps browser keys are designed to be public and are protected
-by HTTP-referrer restrictions; that is ordinary client-side practice. What survives is a
-*cost* objection rather than a terms objection: a published page would bill per reader
-view, uncapped, for as long as the page exists — an ongoing liability attached to an
-artifact we no longer control.
-
-### It could be made to work — just not here
-
-A live backend that refreshes photo names on demand satisfies both constraints. That is a
-real architecture; it is not this product's. The generator emits a static artifact and
-then has no runtime, so the discard is scoped to **our shape**, not a claim that the API
-is unusable.
-
-This is the **second** time Maps Platform has failed on the same axis — §6.4 of the cost
-note found it for Directions. **The pattern is worth naming.** Maps Platform assumes a
-live application making authenticated calls per view. This product is a static artifact
-that must work later with no signal and no server. Per-feature workarounds do not change
-that; a backend would, and that is a much larger decision than an image source.
-
-The current providers were well chosen against that constraint: **NPS (public domain),
-Wikimedia Commons and Unsplash all permit hotlinking *and* caching**, and none of their
-URLs expire.
+A live backend refreshing photo names on demand satisfies every constraint above except
+cost. That is a real architecture and not this product's, which emits a static artifact
+and then has no runtime. §6.4 of the cost note reached the same place for Directions. If a
+backend ever enters scope, **both decisions should be reopened together** — the same
+constraint closed both, and it would lift for both at once.
 
 ---
 
