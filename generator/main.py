@@ -1723,13 +1723,27 @@ self.addEventListener('fetch', (event) => {
             }
             return fetch(event.request)
                 .then((response) => {
-                    if (response && response.ok) {
+                    // Cross-origin images fetched without CORS come back opaque:
+                    // status 0 and ok === false. Testing response.ok alone would
+                    // cache nothing at runtime while still looking fine online,
+                    // so the failure would surface only offline.
+                    const storable =
+                        response && (response.ok || response.type === 'opaque');
+                    if (storable) {
                         const clone = response.clone();
                         caches.open(CACHE).then((cache) => cache.put(event.request, clone));
                     }
                     return response;
                 })
-                .catch(() => caches.match('./index.html'));
+                .catch(() => {
+                    // Only a page navigation should fall back to the shell.
+                    // Handing index.html to an <img> produces a broken image
+                    // instead of letting its onerror handler hide the tile.
+                    if (event.request.mode === 'navigate') {
+                        return caches.match('./index.html');
+                    }
+                    return Response.error();
+                });
         })
     );
 });
