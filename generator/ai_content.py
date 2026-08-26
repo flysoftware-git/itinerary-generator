@@ -755,6 +755,18 @@ class AIContentGenerator:
         Runs after all parallel stages (events, images, URL discovery) complete
         so that both what_to_know and cultural_events data are available.
         """
+        # Names arrive from TWO sources, not one. ai_content's payload is
+        # stripped in _normalize_destination_content, but url_discovery's
+        # direct-link batch harvests its own names afterwards and they carried
+        # markdown straight to the page -- 4 pairs still shipped in the
+        # 2026-08-25 rerun that was meant to prove the first fix.
+        #
+        # This is the only point downstream of EVERY name source, so it is the
+        # one that can actually guarantee the invariant. The earlier call is
+        # kept because it runs before discovery and improves name matching;
+        # this one is what makes the guarantee.
+        trip.update(strip_markdown_emphasis(trip))
+
         self._enforce_banned_marketing_language(trip)
         self._override_grouped_child_distance_from_geocode(trip)
         self._deduplicate_cross_section_tips(trip)

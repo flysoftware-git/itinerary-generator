@@ -66,3 +66,36 @@ def test_applies_through_nested_payloads():
 )
 def test_removal_ratio_gives_the_denominator(removed, kept, expected):
     assert _format_removal_ratio(removed, kept) == expected
+
+
+def test_names_from_url_discovery_are_stripped_too():
+    """Regression: names arrive from TWO sources, not one.
+
+    The first fix stripped only ai_content's payload. url_discovery's
+    direct-link batch harvests its own names AFTERWARDS, and those shipped
+    "**Flat Tire Diner**" to the page in the 2026-08-25 rerun that was supposed
+    to prove the fix. normalize_trip_content is the only point downstream of
+    every source.
+    """
+    from generator.ai_content import AIContentGenerator
+
+    trip = {
+        "destinations": [
+            {
+                "name": "Old Hickory, Tennessee",
+                "ai_content": {
+                    "dinner_recommendations": [{"name": "**Flat Tire Diner**", "url": "https://x"}],
+                    "top_attractions": [{"name": "**Crooked Creek Greenway**", "url": "https://y"}],
+                    "getting_here": {"en_route_stops": [{"name": "__Old Hickory Dam__"}]},
+                },
+            }
+        ]
+    }
+    gen = AIContentGenerator.__new__(AIContentGenerator)
+    gen._config = {}          # normalize_trip_content reads config for later steps
+    gen.normalize_trip_content(trip)
+
+    ai = trip["destinations"][0]["ai_content"]
+    assert ai["dinner_recommendations"][0]["name"] == "Flat Tire Diner"
+    assert ai["top_attractions"][0]["name"] == "Crooked Creek Greenway"
+    assert ai["getting_here"]["en_route_stops"][0]["name"] == "Old Hickory Dam"
