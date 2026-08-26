@@ -20,9 +20,12 @@ dropped for lacking a verified URL before the gate warns. On this run:
 
 | | Candidates | Removed | Rendered | Threshold |
 |---|---|---|---|---|
-| Restaurants | 13 | **10** | 3 | 0 |
-| En-route stops | ~6 | **4** | — | 2 |
+| Restaurants | 13 | **10 (77%)** | 3 | 0 |
+| En-route stops | 7 | **4 (57%)** | — | 2 |
 | Attractions | — | — | 2 | 3 |
+
+**Reproduced 2026-08-25 on a third run** (`output/oldhickory-v3`, $0.0645) at exactly
+10 of 13. This is a stable property of the destination, not a one-run fluctuation.
 
 The removed names are not hallucinations. Granddaddy's Original Hot Chicken Shack,
 BODHI Asian Street Eats, Simply Thai, Gondola House, Sam's Sports Grill — these are
@@ -61,6 +64,20 @@ measured against.
 
 **Recommendation: (2) first, unconditionally.** It is a reporting change with no
 behavioural risk, and it is the one that makes the other two decidable with data.
+
+**Done 2026-08-25**, and it immediately earned itself. Three runs of the same
+manifest reported 10, then 5, then 10 removals. The middle run looked like the
+name-sanitisation fix had halved the loss. It had not: the denominator had moved.
+
+| Run | Reported | What it meant |
+|---|---|---|
+| `oldhickory` | `10` | no denominator — uninterpretable |
+| `oldhickory-v2` | `5 of 8 (62%)` | fewer *candidates* (cache state), not better coverage |
+| `oldhickory-v3` | `10 of 13 (77%)` | like-for-like with the first run |
+
+Under the old format the middle run reads as a 50% improvement worth shipping.
+**The ratio is what showed the denominator had changed** — which is the entire
+argument for the change, demonstrated within a day of making it.
 
 ### What this does not justify
 
@@ -107,6 +124,21 @@ category.
 should not be emphasising them at all, and turning `**` into `<strong>` would make a
 formatting defect into a permanent styling decision.
 
+### Fixed 2026-08-25 — on the second attempt
+
+The first fix stripped `ai_content`'s payload and was reported as done. The paid run
+meant to confirm it **still shipped four asterisk pairs**, because names arrive from
+**two** sources: `url_discovery`'s direct-link batch harvests its own names *after*
+`ai_content` has run, and every asterisk-bearing log line in that run came from
+`url_discovery`.
+
+The same error the trails switch took five attempts to close: asking *"is this path
+covered?"* rather than *"is this the only source?"*. The word "chokepoint" was in the
+commit message while the code was doing the opposite.
+
+`normalize_trip_content` runs downstream of every stage and is the only point that can
+guarantee the invariant. Confirmed at **zero pairs** on `oldhickory-v3`.
+
 ---
 
 ## 3. What the run confirmed
@@ -117,7 +149,8 @@ Recorded because the predictions were made before the run, per §8.3:
   `./images/` references; `sw.js` precached 4. The v2.2.0 change works end to end.
 - **Image sizes were fine here** — 72–161 KB. The 33 MB case in `per-item-imagery.md`
   is latent, not triggered, so that defect remains unproven outside the one cache.
-- **Cost scaled as expected.** $0.3582 for one destination against $2.82 for ten.
+- **Cost scaled as expected.** $0.3582 for one destination against $2.82 for ten;
+  $0.0375 and $0.0645 for the two cached reruns.
 
 And one prediction that was **wrong in severity**: `per-item-imagery.md` §4 expected a
 non-park destination to yield "a thin gallery". It yielded a thin gallery *and* a

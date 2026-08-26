@@ -136,6 +136,8 @@ Recorded because each was acted on, and each is easy to repeat.
 
 | "The image counters are broken" | They are **correct** | `nps_api_calls: 0` alongside 34 downloads looked impossible, but provider lookups were served from a SECOND cache, `.cache/images/`, that the benchmark never cleared. Asserted as a defect before checking |
 
+| "validation_report.json has no pass/fail field" | It has `summary.valid` | Checked `d.get("valid")` at the top level, got `None`, and reported a missing field without looking one level down. Third instance this day of asserting a defect before checking |
+
 The recurring shape: **a plausible ratio computed from an unverified input**. In three
 of these the arithmetic was fine and the input was wrong.
 
