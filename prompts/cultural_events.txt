@@ -3,7 +3,9 @@ Synthesize the following web search results into cultural event entries for a ro
 Destination:      {destination_name}
 Travel dates:     {dates}
 Destination type: {destination_type}
-  (values: national_park | small_town | resort_town | city)
+  (values: national_park | small_town | resort_town | city | unknown)
+  `unknown` means the classifier could not place this destination. It is NOT
+  evidence of a quiet destination -- judge it on the search results alone.
 
 Search results (raw):
 {search_results}
@@ -32,7 +34,9 @@ Step 2 — Count qualifying events from Step 1.
 Step 3 — If count >= 2: return FORMAT A (events found)
           If count < 2:  return FORMAT B (honest fallback)
                          This includes ALL national_park destinations
-                         and most small_town destinations.
+                         and most small_town destinations. It does NOT
+                         include `unknown` -- absence of a classification
+                         says nothing about whether events exist.
 
 Do not treat:
   - "annual summer festival" results as evidence of an October event

@@ -342,7 +342,7 @@ class CulturalEventsDiscoverer:
         return result
 
     def _grok_search(self, destination: str, dates: str) -> list[dict[str, Any]]:
-        month = dates.split()[0] if dates else "October"
+        month = self._months_in_range(dates)
         # Collapsed from 3 separate live-search queries (festivals / cultural
         # events+concerts / general "events near") to 1 combined query.
         # Each query is now a full real search call (post the /v1/responses
@@ -352,6 +352,27 @@ class CulturalEventsDiscoverer:
         query = f"{destination} festivals events concerts {month} 2026"
         return self._search.search(query, count=20)[:20]
 
+    _MONTH_NAMES = (
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    )
+
+    @classmethod
+    def _months_in_range(cls, dates: str) -> str:
+        """Every month the stay touches, not just the first word of the string.
+
+        `dates.split()[0]` took the first token, so "August 31 - September 1"
+        searched AUGUST for a visit that is almost entirely September. Those
+        results were then dropped by _drop_events_before_arrival for falling
+        before the arrival date, and the destination reported no events at all.
+        A stay spanning a month boundary is normal, not an edge case.
+        """
+        text = str(dates or "")
+        found = [m for m in cls._MONTH_NAMES if m.lower() in text.lower()]
+        if not found:
+            return "October"
+        return " ".join(found)
+
     def _classify_destination(self, name: str) -> str:
         lower = name.lower()
         if any(k in lower for k in ("national park", "national monument", "canyon", "reef")):
@@ -360,7 +381,15 @@ class CulturalEventsDiscoverer:
             return "resort_town"
         if any(k in lower for k in ("santa fe", "albuquerque", "denver", "phoenix")):
             return "city"
-        return "small_town"
+        # Everything unmatched used to fall through to "small_town", which the
+        # prompt treats as near-evidence of no events ("ALL national_park and
+        # most small_town destinations"). That made every destination outside a
+        # four-city US allowlist self-fulfilling: Brussels, Amsterdam, Berlin
+        # and Prague all classified as small towns and all reported no events.
+        #
+        # "unknown" is the honest answer. Guessing "city" instead would just
+        # invert the bias, and there is no population data here to do better.
+        return "unknown"
 
     def _sanitize_local_tip_by_itinerary_days(self, result: dict[str, Any], dates: str) -> dict[str, Any]:
         if not isinstance(result, dict) or result.get("has_events"):

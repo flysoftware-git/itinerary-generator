@@ -2576,6 +2576,34 @@ class HTMLAssembler:
             desc = re.sub(r"(?i)\b(?:price|prices?)\b\s*[:\-]?\s*[\$#]{1,4}", "", desc)
             desc = re.sub(r"\b\d+(?:\.\d+)?\s*(?:/\s*5|stars?)\b", "", desc, flags=re.IGNORECASE)
             desc = re.sub(r"(?:^|[\s,;:])(?:[\$#]{1,4})+(?:[\s,;:]|$)", " ", desc)
+            # RANGED price tokens ("$$-$$$"). The rule above matches a run of
+            # $ or #, so the hyphen defeats it and the range survived into the
+            # teaser -- rendering "$$-$$$, Belgian." directly beside the $$
+            # badge and the Belgian badge that already say it. Same duplication
+            # dipstick55 Theme D removed from the title, still in the teaser.
+            desc = re.sub(
+                r"(?:^|[\s,;:])[\$#]{1,4}\s*[-‐-―]\s*[\$#]{1,4}(?=[\s,;:.]|$)",
+                " ",
+                desc,
+            )
+            # A leading cuisine echo, now that the price in front of it is gone.
+            # Matched as a whole leading CLAUSE rather than an exact prefix: the
+            # harvest writes "Belgian Seafood." where the cuisine field says
+            # only "Seafood", so anchoring on the field value alone misses it.
+            # Bounded to a short clause so a real opening sentence that happens
+            # to name the cuisine is never eaten.
+            if cuisine:
+                lead = re.match(r"^[\s,;:.]*([^.]{1,40})\.\s*", desc)
+                if lead:
+                    clause = lead.group(1).strip()
+                    words = clause.split()
+                    cuisine_words = {w.lower().strip(",") for w in cuisine.split()}
+                    clause_words = {w.lower().strip(",") for w in words}
+                    if len(words) <= 4 and cuisine_words & clause_words:
+                        desc = desc[lead.end():]
+            desc = desc.lstrip(" .,;:")
+            # ". ." left where a stripped field sat between two separators.
+            desc = re.sub(r"\.\s*(?:\.\s*)+", ". ", desc)
             desc = re.sub(r"\s+", " ", desc).strip(" -:|,;")
 
         synthetic = False

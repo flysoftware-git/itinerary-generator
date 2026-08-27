@@ -133,11 +133,17 @@ dinner_recommendations:
   - Prefer restaurants with public ratings >= 4.0 and at least 10 ratings/reviews when that signal is known
   - Span at least 3 distinct cuisine types
   - Span at least 2 price tiers: at least one at $ or $$ AND at least one at $$$ or $$$$
+    EXCEPT where the budget guidance above asks for low-cost/budget dining. Then
+    centre on $ and $$, include $ entries wherever they exist, and do NOT force a
+    $$$ or $$$$ entry in order to satisfy the span. A hard span rule sitting above
+    a soft budget preference made the budget field inert: a low-cost brief and no
+    brief at all produced identical restaurants (2026-08-27, Brussels).
   - Exclude chain restaurants and fast-food entries; prioritize local, independent, or regionally distinctive dinner spots
   - Respect the budget guidance above when selecting the center-of-gravity of options
     (e.g., mostly $$ for moderate budget, mostly $$$ for premium budget)
   - Include at least one recognisably casual / local option ($ or $$)
-  - Include at least one higher-end option ($$$ or $$$$)
+  - Include at least one higher-end option ($$$ or $$$$) — unless low-cost budget
+    guidance applies, per the exception above
   - For remote national park destinations with few in-park options, include
     restaurants in the nearest gateway town even if 10–20 miles from the park
     entrance; note the distance

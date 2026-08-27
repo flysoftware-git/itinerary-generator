@@ -43,7 +43,7 @@ trip:
   title: "Europe Exploration"
   subtitle: "Five capitals by rail — Brussels to Frankfurt"
   theme_color: "#3A5F8A"          # rail blue, to distinguish output from the other manifests
-  departure: "Brussels"
+  departure: "Brussels Airport (BRU), Zaventem"
   departure_datetime: 2026-08-31 09:00
   default_day_start_time: "9:30 AM"
   default_daily_activity_hours: 6
@@ -70,6 +70,16 @@ destinations:
     planning_links:
       - label: "visit.brussels — official tourism"
         url: "https://visit.brussels/en"
+
+    # Arrival is by air into Zaventem, then rail into the centre. Stated
+    # explicitly because the first run's "getting here" had nothing to work
+    # from and defaulted to driving, which is the wrong mode for this trip.
+    transportation:
+      - type: train
+        provider: "SNCB / NMBS Airport Express"
+        label: "Brussels Airport (BRU) → Brussels-Central"
+        depart: "Brussels Airport-Zaventem, August 31"
+        arrive: "Brussels-Central, August 31"
 
     seeds:
       - "Grand-Place"
