@@ -2334,14 +2334,29 @@ def main(
     # Optional departure/return geocoding for full-route maps and first-card routing context.
     departure_name = trip.get("trip", {}).get("departure")
     return_name = trip.get("trip", {}).get("return")
-    if departure_name:
-        dlat, dlng = geo._geocode(departure_name)
-        trip["trip"]["departure_lat"] = dlat
-        trip["trip"]["departure_lng"] = dlng
-    if return_name:
-        rlat, rlng = geo._geocode(return_name)
-        trip["trip"]["return_lat"] = rlat
-        trip["trip"]["return_lng"] = rlng
+    # These are OPTIONAL enrichment -- they refine the full-route map and the
+    # first card's routing context. An unresolvable name used to raise straight
+    # out of Stage 2 with a traceback and no output at all, which is a hard
+    # failure for a soft feature: "Brussels Airport (BRU), Zaventem" geocodes
+    # fine without the parenthetical, and a manifest typo should not cost the
+    # whole run. Lodging already degrades this way a few lines above; these two
+    # did not.
+    for _key, _name in (("departure", departure_name), ("return", return_name)):
+        if not _name:
+            continue
+        try:
+            _lat, _lng = geo._geocode(_name)
+        except Exception as exc:
+            logger.warning(
+                "%s geocode skipped for '%s': %s. The full-route map will omit "
+                "this endpoint; the itinerary is unaffected.",
+                _key.capitalize(),
+                _name,
+                exc,
+            )
+            continue
+        trip["trip"][f"{_key}_lat"] = _lat
+        trip["trip"][f"{_key}_lng"] = _lng
     # NPS resolution is independent — run in parallel
     def _resolve_nps(dest: dict) -> None:
         if not _is_us_coordinates(dest.get("lat"), dest.get("lng")):
