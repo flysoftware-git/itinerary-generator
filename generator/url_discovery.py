@@ -8944,12 +8944,12 @@ class URLDiscoverer:
         # This is the risk the authoritative-batch design was guarding against.
         # Re-opening the fallback was right, but it has to carry the guard the
         # batch was providing implicitly.
+        # Claimed AS items are processed, never pre-seeded. Seeding from the
+        # URLs already attached made each restaurant collide with its own link
+        # the moment it was examined -- the guard rejected exactly the items it
+        # was supposed to leave alone. First item to claim a URL keeps it;
+        # later items asking for the same one are refused.
         claimed_restaurant_urls: set[str] = set()
-        for _r in restaurants:
-            if isinstance(_r, dict):
-                _u = self._collision_key(str(_r.get("url", "") or ""))
-                if _u:
-                    claimed_restaurant_urls.add(_u)
 
         for rest in restaurants:
             rest_name = rest.get("name", "")
@@ -8976,9 +8976,23 @@ class URLDiscoverer:
                         preserved_existing = ""
                     if self._direct_batch_is_authoritative() and self._is_google_maps_candidate_url(preserved_existing):
                         preserved_existing = ""
+                    if preserved_existing and self._url_already_claimed(
+                        preserved_existing, claimed_restaurant_urls
+                    ):
+                        self._log_decision(
+                            kind="restaurant",
+                            dest_name=dest_name,
+                            item_name=rest_name,
+                            reason="url_collision_rejected",
+                            message="pre-attached URL already published under another restaurant at this destination",
+                            url=preserved_existing,
+                        )
+                        preserved_existing = ""
+                        rest["url"] = ""
                     if preserved_existing:
                         rest["url"] = preserved_existing
                         rest.pop("maps_url", None)
+                        claimed_restaurant_urls.add(self._collision_key(preserved_existing))
                         # This shortcut (URL already attached before this loop
                         # ran) otherwise skips the row-metadata merge the
                         # fresh-lookup branch below does, silently leaving
@@ -9005,8 +9019,28 @@ class URLDiscoverer:
                         continue
                 batch_url = self._search_restaurant_from_direct_batch(rest_name, dest_name, str(dest_dates or ""), lodging_location=lodging_location)
                 if batch_url:
+                    if self._url_already_claimed(batch_url, claimed_restaurant_urls):
+                        # The batch matched this item to a row already used for a
+                        # different restaurant. Brussels published
+                        # restaurantguru.com/9-Et-Voisins-Brussels under both
+                        # "9 et Voisins" and "Brasserie Signature" in every run
+                        # since the first -- a reader clicking the second gets
+                        # the first. The batch is authoritative about which URL
+                        # is right, not about giving the same one to two items.
+                        self._log_decision(
+                            kind="restaurant",
+                            dest_name=dest_name,
+                            item_name=rest_name,
+                            reason="url_collision_rejected",
+                            message="direct-batch URL already published under another restaurant at this destination",
+                            url=batch_url,
+                        )
+                        rest["url"] = ""
+                        rest.pop("maps_url", None)
+                        continue
                     rest["url"] = batch_url
                     rest.pop("maps_url", None)
+                    claimed_restaurant_urls.add(self._collision_key(batch_url))
                     rest.update(
                         self._direct_batch_row_quality_metadata_for_url(
                             self._get_restaurant_direct_batch_rows_for_destination(
@@ -9161,6 +9195,32 @@ class URLDiscoverer:
             self._enrich_restaurant_metadata_from_url(rest)
             self._backfill_restaurant_metadata_from_available_text(rest)
 
+    # Third-party pages that stand in for a restaurant's own site. TripAdvisor
+    # was the only one checked until 2026-08-27, when re-opening the per-item
+    # fallback started returning food blogs and AI travel sites instead:
+    # champagne-tastes.com for Rotisse (rotisse.be exists), mindtrip.ai for
+    # Thaiburi (thaiburi.eu exists), restaurantguru, wanderlog, inyourpocket.
+    # All verified and resolvable, all worse than the restaurant's own page.
+    _THIRD_PARTY_RESTAURANT_HOSTS = (
+        "tripadvisor.", "yelp.", "restaurantguru.", "wanderlog.", "mindtrip.",
+        "inyourpocket.", "thefork.", "opentable.", "zomato.", "foursquare.",
+        "trip.com", "timeout.", "eater.",
+    )
+
+    @classmethod
+    def _is_third_party_restaurant_page(cls, url: str) -> bool:
+        """True for a page ABOUT the restaurant rather than the restaurant's own.
+
+        Deliberately a host list rather than a heuristic. "Looks like a blog" is
+        not decidable from a URL, and guessing wrong would discard a legitimate
+        official site -- the expensive direction of the error, since the whole
+        point is to end up with better links, not fewer.
+        """
+        lower = str(url or "").strip().lower()
+        if not lower:
+            return False
+        return any(marker in lower for marker in cls._THIRD_PARTY_RESTAURANT_HOSTS)
+
     def _maybe_upgrade_tripadvisor_restaurant_link(self, rest: dict[str, Any], dest_name: str) -> None:
         """TripAdvisor should be the exception, not the default, for a named
         restaurant's primary link -- but TripAdvisor blocks automated fetches
@@ -9179,7 +9239,7 @@ class URLDiscoverer:
         ):
             return
         url = str(rest.get("url", "") or "").strip()
-        if "tripadvisor." not in url.lower():
+        if not self._is_third_party_restaurant_page(url):
             return
         rest_name = str(rest.get("name", "") or "").strip()
         if not rest_name:
@@ -9198,12 +9258,9 @@ class URLDiscoverer:
         if not candidate:
             return
         lower_candidate = candidate.lower()
-        aggregator_markers = (
-            "tripadvisor.",
-            "yelp.",
+        aggregator_markers = self._THIRD_PARTY_RESTAURANT_HOSTS + (
             "facebook.",
             "instagram.",
-            "opentable.",
             "google.com/maps",
             "google.com/search",
         )

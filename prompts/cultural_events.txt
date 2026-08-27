@@ -24,15 +24,27 @@ DECISION TREE — follow in order
 ════════════════════════════════════════════════════════
 
 Step 1 — Scan search results for events meeting ALL of these criteria:
-  a) Occurs during or within 7 days of the travel dates above
+  a) Occurs during or within 7 days of the travel dates above.
+     A result stating a period that CONTAINS the travel dates qualifies --
+     "the first weekend of September", "throughout the summer", "every Friday"
+     are all usable when the travel dates fall inside them. You do not need an
+     exact calendar date to confirm the event is happening while the traveler
+     is there; you need the stated period to include those dates.
   b) Is a specific named event — not a "things to do" listicle or general guide
   c) Is a performance, exhibition, festival, market, or cultural program
      NOT a restaurant listing, hotel deal, or standard park attraction
 
 Step 2 — Count qualifying events from Step 1.
 
-Step 3 — If count >= 2: return FORMAT A (events found)
-          If count < 2:  return FORMAT B (honest fallback)
+Step 3 — If count >= 1: return FORMAT A (events found)
+          If count == 0: return FORMAT B (honest fallback)
+
+          ONE confirmed event on the traveler's dates is worth reporting. The
+          previous threshold was 2, and Brussels returned Format B while the
+          search results contained the Belgian Beer Weekend taking over the
+          Grand-Place on exactly those dates. Reporting nothing was the worse
+          answer, and the honesty rule below is what guards against invention --
+          not the count.
                          This includes ALL national_park destinations
                          and most small_town destinations. It does NOT
                          include `unknown` -- absence of a classification
@@ -44,7 +56,7 @@ Do not treat:
   - General visitor guides as event listings
 
 ════════════════════════════════════════════════════════
-FORMAT A — Events found (count >= 2)
+FORMAT A — Events found (count >= 1)
 ════════════════════════════════════════════════════════
 
 {{

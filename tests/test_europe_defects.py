@@ -187,3 +187,33 @@ class TestRestaurantUrlCollision:
         assert URLDiscoverer._url_already_claimed("", {""}) is False
         assert URLDiscoverer._url_already_claimed("https://a.example/x", set()) is False
         assert URLDiscoverer._url_already_claimed("https://a.example/x", {"a.example/x"}) is True
+
+
+class TestCollisionGuardDoesNotEatOwnUrl:
+    """The guard must not reject an item for matching its own link.
+
+    The first version pre-seeded the claimed set from URLs already attached,
+    so every restaurant collided with itself the moment it was examined --
+    rejecting exactly the items it was meant to leave alone. Claims are now
+    recorded as items are processed.
+    """
+
+    def test_single_restaurant_keeps_its_pre_attached_url(self):
+        from generator.url_discovery import URLDiscoverer
+
+        d = URLDiscoverer.__new__(URLDiscoverer)
+        claimed: set[str] = set()
+        url = "https://restaurantguru.com/9-Et-Voisins-Brussels"
+        assert URLDiscoverer._url_already_claimed(url, claimed) is False
+        claimed.add(URLDiscoverer._collision_key(url))
+        # A DIFFERENT item asking for the same page is refused.
+        assert URLDiscoverer._url_already_claimed(url, claimed) is True
+
+    def test_first_claimant_wins(self):
+        from generator.url_discovery import URLDiscoverer
+
+        claimed: set[str] = set()
+        a = "https://example.test/shared"
+        b = "https://www.example.test/shared/"
+        claimed.add(URLDiscoverer._collision_key(a))
+        assert URLDiscoverer._url_already_claimed(b, claimed) is True
