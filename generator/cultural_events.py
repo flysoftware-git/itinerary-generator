@@ -176,7 +176,35 @@ class CulturalEventsDiscoverer:
         try:
             raw_results = self._grok_search(dest["name"], dest["dates"])
             dest_type = self._classify_destination(dest["name"])
+
+            # A destination reporting no events is indistinguishable, from the
+            # outside, between "the search found nothing", "the search found
+            # listing pages and synthesis correctly refused them", and "real
+            # events were found and dropped later". Brussels reported zero and
+            # two plausible causes were fixed before either was checked against
+            # what the search actually returned -- neither moved the result.
+            # Log the inputs so the next diagnosis starts from data.
+            logger.info(
+                "Event search for '%s' (type=%s) returned %d raw result(s)",
+                dest["name"], dest_type, len(raw_results or []),
+            )
+            for _r in (raw_results or [])[:8]:
+                logger.info(
+                    "    raw: %s | %s",
+                    str(_r.get("name", ""))[:90],
+                    str(_r.get("url", ""))[:80],
+                )
+
             result = self._synthesize(dest["name"], dest["dates"], dest_type, raw_results)
+
+            if isinstance(result, dict):
+                _events = result.get("events") or []
+                logger.info(
+                    "    synthesis: has_events=%s, %d event(s) before verification/date filtering",
+                    result.get("has_events"), len(_events),
+                )
+                for _e in _events[:6]:
+                    logger.info("      event: %s", str(_e.get("name", _e))[:90])
             
             # Ensure result is a dict with expected structure
             if not isinstance(result, dict):
@@ -186,7 +214,14 @@ class CulturalEventsDiscoverer:
             # Verify any event URLs that came back
             result = self._verify_event_urls(result, dest["name"])
 
+            _before = len((result.get("events") or [])) if isinstance(result, dict) else 0
             result = self._drop_events_before_arrival(result, dest.get("dates", ""))
+            _after = len((result.get("events") or [])) if isinstance(result, dict) else 0
+            if _before != _after:
+                logger.info(
+                    "    date filter dropped %d of %d event(s) as falling before arrival (%s)",
+                    _before - _after, _before, dest.get("dates", ""),
+                )
             result = self._sanitize_local_tip_by_itinerary_days(result, dest.get("dates", ""))
             result = self._verify_local_tip_url(result, dest["name"])
             return result

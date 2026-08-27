@@ -91,3 +91,61 @@ class TestRestaurantTeaser:
             False,
         )
         assert out.startswith("Belgian classics")
+
+
+class TestBudgetKeywordMatching:
+    """"low-cost" matched none of the original budget keywords.
+
+    The manifest said dining: "low-cost", _normalize_restaurants tested for
+    "budget"/"cheap"/"economy"/"value"/"frugal", so the budget-aware filter
+    never ran and the brief looked ignored end to end (2026-08-27, Brussels).
+
+    The contract is a CAP, not a re-sort: output is always cheapest-first, and
+    the budget flags limit how many off-tier options survive. Tests assert the
+    cap, since asserting order would pass whether or not the flag fired.
+    """
+
+    @staticmethod
+    def _names(budget, items):
+        from generator.ai_content import AIContentGenerator
+
+        gen = AIContentGenerator.__new__(AIContentGenerator)
+        return [r["name"] for r in gen._normalize_restaurants(items, budget)]
+
+    TWO_SPLURGES = [
+        {"name": "Cheap", "price_range": "$"},
+        {"name": "Mid", "price_range": "$$"},
+        {"name": "Splurge A", "price_range": "$$$"},
+        {"name": "Splurge B", "price_range": "$$$$"},
+    ]
+    TWO_CASUALS = [
+        {"name": "Casual A", "price_range": "$"},
+        {"name": "Casual B", "price_range": "$$"},
+        {"name": "Fancy", "price_range": "$$$$"},
+    ]
+
+    @pytest.mark.parametrize(
+        "budget",
+        ["low-cost", "low cost", "inexpensive", "affordable", "budget", "cheap", "shoestring"],
+    )
+    def test_low_budget_phrasings_cap_splurges_at_one(self, budget):
+        names = self._names(budget, self.TWO_SPLURGES)
+        assert sum(n.startswith("Splurge") for n in names) == 1
+        assert "Cheap" in names and "Mid" in names
+
+    @pytest.mark.parametrize("budget", ["luxury", "upscale", "splurge", "fine dining"])
+    def test_high_budget_phrasings_cap_casuals_at_one(self, budget):
+        names = self._names(budget, self.TWO_CASUALS)
+        assert sum(n.startswith("Casual") for n in names) == 1
+        assert "Fancy" in names
+
+    def test_no_fine_dining_reads_as_low_not_high(self):
+        """The substring "fine dining" made a low-budget instruction read high."""
+        names = self._names("Cafes and markets. No fine dining.", self.TWO_SPLURGES)
+        assert sum(n.startswith("Splurge") for n in names) == 1
+
+    def test_absent_budget_keeps_everything(self):
+        assert len(self._names("", self.TWO_SPLURGES)) == 4
+
+    def test_the_original_keywords_still_work(self):
+        assert sum(n.startswith("Splurge") for n in self._names("budget", self.TWO_SPLURGES)) == 1

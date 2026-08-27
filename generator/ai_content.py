@@ -3511,9 +3511,34 @@ class AIContentGenerator:
     def _normalize_restaurants(self, restaurants: list[dict[str, Any]], budget: Any = None) -> list[dict[str, Any]]:
         normalized = []
         price_rank = {"$": 0, "$$": 1, "$$$": 2, "$$$$": 3}
-        budget_text = str(budget or "").lower()
-        low_budget = any(k in budget_text for k in ["budget", "cheap", "economy", "value", "frugal"])
-        high_budget = any(k in budget_text for k in ["luxury", "premium", "high", "splurge", "upscale"])
+        # Hyphens and spaces normalised out before matching. The manifest that
+        # exposed this said dining: "low-cost", which matched NONE of the
+        # original keywords, so the budget-aware sort never ran and the brief
+        # looked ignored end to end. Matching on a fixed word list is fragile
+        # by nature -- these are the phrasings a person actually writes.
+        budget_text = re.sub(r"[-_]+", " ", str(budget or "").lower())
+        low_budget = any(
+            k in budget_text
+            for k in [
+                "budget", "cheap", "economy", "economical", "value", "frugal",
+                "low cost", "lowcost", "inexpensive", "affordable", "modest",
+                "shoestring", "backpack",
+            ]
+        )
+        high_budget = any(
+            k in budget_text
+            for k in ["luxury", "premium", "high end", "splurge", "upscale", "fine dining"]
+        )
+        # "no fine dining" is a LOW-budget instruction; the substring made it read
+        # as a high-budget one.
+        if "no fine dining" in budget_text or "not fine dining" in budget_text:
+            high_budget = False
+            low_budget = True
+        if budget_text.strip():
+            logger.info(
+                "Restaurant budget guidance %r -> low=%s high=%s",
+                budget_text[:80], low_budget, high_budget,
+            )
 
         for restaurant in restaurants:
             item = dict(restaurant)
