@@ -5461,6 +5461,32 @@ class URLDiscoverer:
     def _direct_batch_is_authoritative(self) -> bool:
         return bool(getattr(self, "_direct_batch_authoritative", DEFAULT_DIRECT_BATCH_AUTHORITATIVE))
 
+    @staticmethod
+    def _collision_key(url: str) -> str:
+        """Normalised form for "is this the same page as that one".
+
+        Scheme, www., trailing slash and query/fragment are dropped: an
+        aggregator will happily serve the same restaurant page under http and
+        https, with and without www, and with tracking parameters attached.
+        Comparing raw strings would let the same page through twice.
+        """
+        candidate = str(url or "").strip().lower()
+        if not candidate:
+            return ""
+        candidate = candidate.split("#", 1)[0].split("?", 1)[0]
+        for prefix in ("https://", "http://"):
+            if candidate.startswith(prefix):
+                candidate = candidate[len(prefix):]
+                break
+        if candidate.startswith("www."):
+            candidate = candidate[4:]
+        return candidate.rstrip("/")
+
+    @classmethod
+    def _url_already_claimed(cls, url: str, claimed: set[str]) -> bool:
+        key = cls._collision_key(url)
+        return bool(key) and key in claimed
+
     def _item_fallback_when_batch_silent_enabled(self) -> bool:
         """Whether an item the authoritative batch could not place may still be
         searched for individually.
@@ -8909,6 +8935,22 @@ class URLDiscoverer:
             restaurants = self._prioritize_direct_batch_restaurants(restaurants, dest_name, dest_dates, lodging_location=lodging_location)
             ai["dinner_recommendations"] = restaurants
 
+        # One URL, one restaurant. The per-item fallback introduced 2026-08-27
+        # published restaurantguru.com/9-Et-Voisins-Brussels under BOTH
+        # "9 et Voisins" and "Brasserie Signature" -- a search for a name the
+        # batch could not place will happily return a nearby restaurant's page,
+        # and nothing downstream compared one item's URL against another's.
+        #
+        # This is the risk the authoritative-batch design was guarding against.
+        # Re-opening the fallback was right, but it has to carry the guard the
+        # batch was providing implicitly.
+        claimed_restaurant_urls: set[str] = set()
+        for _r in restaurants:
+            if isinstance(_r, dict):
+                _u = self._collision_key(str(_r.get("url", "") or ""))
+                if _u:
+                    claimed_restaurant_urls.add(_u)
+
         for rest in restaurants:
             rest_name = rest.get("name", "")
             restaurant_variants = _build_restaurant_query_variants(rest_name, dest_name)
@@ -9027,9 +9069,22 @@ class URLDiscoverer:
                 kind="restaurant",
                 normalize_restaurant=True,
             )
+            if ai_candidate_url and self._url_already_claimed(
+                ai_candidate_url, claimed_restaurant_urls
+            ):
+                self._log_decision(
+                    kind="restaurant",
+                    dest_name=dest_name,
+                    item_name=rest_name,
+                    reason="url_collision_rejected",
+                    message="candidate already published under another restaurant at this destination",
+                    url=ai_candidate_url,
+                )
+                ai_candidate_url = ""
             if ai_candidate_url:
                 rest["url"] = ai_candidate_url
                 rest.pop("maps_url", None)
+                claimed_restaurant_urls.add(self._collision_key(ai_candidate_url))
                 self._log_decision(
                     kind="restaurant",
                     dest_name=dest_name,
@@ -9058,8 +9113,20 @@ class URLDiscoverer:
                     max_attempts=int(getattr(self, "_max_restaurant_query_attempts", 3) or 3),
                 )
             url = self._normalize_restaurant_url(url)
+            if url and self._url_already_claimed(url, claimed_restaurant_urls):
+                self._log_decision(
+                    kind="restaurant",
+                    dest_name=dest_name,
+                    item_name=rest_name,
+                    reason="url_collision_rejected",
+                    message="search result already published under another restaurant at this destination",
+                    url=url,
+                )
+                url = ""
             rest["url"] = url or ""
             rest.pop("maps_url", None)
+            if url:
+                claimed_restaurant_urls.add(self._collision_key(url))
             if url:
                 # Populate missing metadata from the search snippet before trying page fetch.
                 winner = getattr(self, "_search_winner_snippets", {}).get(url, {})

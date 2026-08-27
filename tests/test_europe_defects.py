@@ -149,3 +149,41 @@ class TestBudgetKeywordMatching:
 
     def test_the_original_keywords_still_work(self):
         assert sum(n.startswith("Splurge") for n in self._names("budget", self.TWO_SPLURGES)) == 1
+
+
+class TestRestaurantUrlCollision:
+    """One URL, one restaurant.
+
+    Re-opening the per-item fallback (2026-08-27) published
+    restaurantguru.com/9-Et-Voisins-Brussels under BOTH "9 et Voisins" and
+    "Brasserie Signature". A search for a name the batch could not place will
+    return a nearby restaurant's page, and nothing compared one item's URL
+    against another's -- the risk the authoritative-batch design had been
+    guarding against implicitly.
+    """
+
+    def test_variants_of_the_same_page_collide(self):
+        from generator.url_discovery import URLDiscoverer
+
+        k = URLDiscoverer._collision_key
+        base = "https://restaurantguru.com/9-Et-Voisins-Brussels"
+        for variant in [
+            "http://restaurantguru.com/9-Et-Voisins-Brussels",
+            "https://www.restaurantguru.com/9-Et-Voisins-Brussels/",
+            "https://restaurantguru.com/9-Et-Voisins-Brussels?utm_source=x",
+            "https://restaurantguru.com/9-Et-Voisins-Brussels#menu",
+        ]:
+            assert k(base) == k(variant), variant
+
+    def test_distinct_pages_do_not_collide(self):
+        from generator.url_discovery import URLDiscoverer
+
+        k = URLDiscoverer._collision_key
+        assert k("https://a.example/one") != k("https://a.example/two")
+
+    def test_claim_check_is_empty_safe(self):
+        from generator.url_discovery import URLDiscoverer
+
+        assert URLDiscoverer._url_already_claimed("", {""}) is False
+        assert URLDiscoverer._url_already_claimed("https://a.example/x", set()) is False
+        assert URLDiscoverer._url_already_claimed("https://a.example/x", {"a.example/x"}) is True
