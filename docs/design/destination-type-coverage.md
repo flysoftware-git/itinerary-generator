@@ -184,15 +184,77 @@ the project has produced, not merely better than a suburb.
 
 ### Predictions, recorded before the run
 
-| | Prediction | Falsifies the hypothesis if |
+| | Prediction | Outcome |
 |---|---|---|
-| Restaurant removals | well under 77%, plausibly **under 20%** | cities come out thin too |
-| Cost per destination | **above** `sw_manifest` — dense cities, no free NPS API to answer | — |
-| En-route stops | weak or absent: the harvest assumes road travel, these legs are rail | — |
-| Budget hint | low-cost brief reaches restaurant selection | fine dining appears anyway |
+| Restaurant removals | well under 77%, plausibly **under 20%** | ❌ **77%** — identical to the town |
+| Cost per destination | **above** `sw_manifest` | ✅ $0.2043 for one dense city |
+| En-route stops | weak or absent: the harvest assumes road travel, these legs are rail | — first destination has no inbound leg; untested |
+| Budget hint | low-cost brief reaches restaurant selection | ❌ **inert** — control produced identical output |
 
 The middle two are not tests of the hypothesis, but they are worth stating in advance
 so the run cannot be read selectively afterwards.
+
+### Result: the hypothesis is falsified
+
+**Ran 2026-08-27**, Brussels only, $0.2043.
+
+| | Restaurants removed |
+|---|---|
+| Old Hickory (town, ~12,000) | **10 of 13 (77%)** |
+| Brussels (capital, ~1.2M) | **10 of 13 (77%)** |
+
+Identical, to the item. A major European capital loses exactly as much dining as a
+Nashville suburb, so **indexing density is not the differentiator**. The prediction was
+"plausibly under 20%"; the result is 77%.
+
+Parks remain the outlier in the right direction — the ten-destination `sw_manifest`
+runs show 0.5–2.4 removals *per destination* against 10 here — but whatever makes them
+different, it is not that they are more densely indexed than Brussels.
+
+### A second hypothesis, also falsified
+
+The removed names (Rotisse, Thaiburi, Yummy Bowl, Pasta Divina) read as cheap
+eateries while the survivors (The Lobster House, 9 et Voisins, Brasserie Signature)
+read as upmarket, suggesting the gate was inverting the low-cost brief — asking for
+cheap food and getting expensive food, because cheap places do not maintain websites.
+
+**Two checks killed it.** A control run with the budget block removed and nothing else
+changed produced the *identical* restaurant set, and the survivors' published price
+badges are **$$**, not the $$$ the story required. The reading came from how the names
+sound, which is not evidence.
+
+### What the experiment did find
+
+**The `budget` field is inert.** Treatment and control proposed the same restaurants,
+name for name. The manifest schema documents budget as "consumed by content
+generation" and `_build_budget_guidance` does reach the prompt, so this is not missing
+wiring — the guidance simply does not change the output.
+
+`prompts/destination_content.txt` suggests why, though this is not yet proven:
+
+```
+- Span at least 2 price tiers: at least one at $ or $$ AND at least one at $$$ or $$$$
+- Respect the budget guidance above when selecting the center-of-gravity of options
+- Include at least one recognisably casual / local option ($ or $$)
+- Include at least one higher-end option ($$$ or $$$$)
+```
+
+A hard *span* requirement sits directly above a soft *centre-of-gravity* preference.
+If the span dominates, no budget value can move the result, which is what was
+measured. **Testable**: relax the span for an explicit low-cost budget and re-run.
+
+**A cathedral in the dinner list.** "Mechelen St. Rumbold's Cathedral" was proposed as
+a Brussels restaurant — wrong category, and Mechelen is a different city 25 km away.
+Same defect class as the Snoqualmie trail. The gate removed it, so it never reached
+the page, but it is a reminder that the gate is carrying real weight, not just
+trimming.
+
+### Where that leaves the threshold question
+
+**Nowhere yet, and that is the useful outcome.** Both proposed explanations for the
+77% are dead, so a destination-type-aware threshold would be tuning against a variable
+nobody has identified. The next question is not "what budget should a city get" but
+**"why do parks differ at all"** — the only surviving signal.
 
 ### What else this exercises for the first time
 
