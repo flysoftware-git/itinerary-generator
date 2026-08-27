@@ -13,7 +13,7 @@ Tennessee has none, and the difference is larger than expected.
 
 ---
 
-## 1. The quality gate is calibrated on parks
+## 1. The quality gate is calibrated on one fixture
 
 `config.yaml` sets `quality_gate.max_no_url_restaurants: 0` — *no* restaurant may be
 dropped for lacking a verified URL before the gate warns. On this run:
@@ -51,11 +51,33 @@ This is the same failure as §8.3's name-versus-behaviour cases: a number that l
 like a universal quality bar is really an artifact of the single fixture it was
 measured against.
 
+### The axis is not park-vs-everything-else
+
+An earlier draft framed this as parks against the rest, because Old Hickory was the
+only counter-example available. **That framing is wrong**, and the correction came
+from the product owner: a threshold loosened for "non-park" would also loosen it for
+Paris, where nothing about the coverage is thin. Old Hickory is not thin because it
+lacks a `parkCode`; it is thin because a Nashville suburb of 12,000 people has almost
+no indexed commercial web presence.
+
+The differentiator under test is **how densely the destination is indexed**, with
+cities as the proposed third class:
+
+| Class | Fixture | Expected coverage |
+|---|---|---|
+| Park | `sw_manifest.yaml` | good — NPS, AllTrails, established review sites |
+| **City** | `europe_cities.yaml` | **good, possibly best** — dense commercial presence |
+| Town / suburb | `old_hickory.yaml` | thin — Facebook pages, aggregator stubs |
+
+If cities come out rich, "park vs town" was a proxy and the real variable is
+population or indexing density. If cities come out thin too, the hypothesis is wrong
+and something else explains Old Hickory.
+
 ### Options, not yet chosen
 
-1. **Destination-type-aware thresholds** — a `parkCode`-bearing destination keeps 0;
-   others get a realistic budget. Honest, but adds a config axis and needs a rule for
-   classifying destinations that is not itself park-centric.
+1. **Destination-type-aware thresholds** — each class gets a realistic budget. Adds a
+   config axis and, harder, needs a classification rule. `parkCode` presence is not
+   it, per the correction above.
 2. **Report coverage as a ratio, not a count.** "10 removed" means nothing without
    "of 13". A ratio is comparable across destination types and would have surfaced
    this on the first non-park run rather than the tenth park one.
@@ -114,6 +136,14 @@ It predates v2.2.0 by at least a week:
 interesting fact: this is not subtle, it is asterisks around the name of every other
 card, and it survived both the review pass and the validator.
 
+**Confirmed with the reviewer**, rather than inferred: they were not looking for that
+class of defect. The dipstick passes were hunting geography errors, relevance and
+tone — the failures that had burned the project before — and a formatting defect in
+plain sight was simply not what the eye was tuned for. Worth stating because the
+lesson is not "the review was careless"; it is that a review shaped by past failures
+is blind to defect classes that have not bitten yet, which is an argument for the
+validator to carry the mechanical checks rather than the reader.
+
 `html_assembler._sanitize_restaurant_display_name` already exists and already strips
 decoration — rating, price, cuisine — added for dipstick55 Theme D. It does not strip
 emphasis, and it only covers restaurants. The fix belongs one level up, at the
@@ -141,7 +171,45 @@ guarantee the invariant. Confirmed at **zero pairs** on `oldhickory-v3`.
 
 ---
 
-## 3. What the run confirmed
+## 3. The city arm: `europe_cities.yaml`
+
+**Written 2026-08-27, not yet run.** Brussels (2 nights) → Amsterdam (3) → Berlin (3)
+→ Prague (3) → Frankfurt (2), 31 August–12 September 2026, rail between every stop,
+low-cost dining, no hikes. Arrival and departure to Europe are deliberately out of
+scope.
+
+Five major capitals is the strongest available test of the density hypothesis: if
+dense commercial indexing is what drives coverage, this should be the *best* result
+the project has produced, not merely better than a suburb.
+
+### Predictions, recorded before the run
+
+| | Prediction | Falsifies the hypothesis if |
+|---|---|---|
+| Restaurant removals | well under 77%, plausibly **under 20%** | cities come out thin too |
+| Cost per destination | **above** `sw_manifest` — dense cities, no free NPS API to answer | — |
+| En-route stops | weak or absent: the harvest assumes road travel, these legs are rail | — |
+| Budget hint | low-cost brief reaches restaurant selection | fine dining appears anyway |
+
+The middle two are not tests of the hypothesis, but they are worth stating in advance
+so the run cannot be read selectively afterwards.
+
+### What else this exercises for the first time
+
+- **Non-US destinations end to end** — geocoding, address formats, and whether
+  generated content handles currency and language sensibly.
+- **Rail as the connecting mode** rather than driving, across four international
+  borders.
+- **Five destinations**, so grouping and cross-destination deduplication get a real
+  workout; `old_hickory.yaml` has one and exercises neither.
+
+Any of those three could produce a defect that has nothing to do with coverage. That
+is a feature of the experiment, not a confound — the project has never generated a
+non-US itinerary.
+
+---
+
+## 4. What the Old Hickory run confirmed
 
 Recorded because the predictions were made before the run, per §8.3:
 

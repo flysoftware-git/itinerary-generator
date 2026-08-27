@@ -1,0 +1,157 @@
+# ============================================================
+# Europe Exploration — five capitals by rail
+# ============================================================
+#
+# PURPOSE: the CITY arm of the destination-type experiment in
+# docs/design/destination-type-coverage.md.
+#
+# That note found a national-park-calibrated quality threshold
+# (max_no_url_restaurants: 0) losing 77% of dining at Old Hickory,
+# a Nashville suburb. The obvious reading was "parks vs everything
+# else". The hypothesis under test here is narrower and more
+# useful: it is not park-vs-not, it is how densely the destination
+# is INDEXED, and major cities should sit at the rich end --
+# possibly richer than parks.
+#
+# Three-way, not two-way:
+#   park    sw_manifest.yaml     NPS/AllTrails, well indexed
+#   city    THIS FILE            dense commercial web presence
+#   town    old_hickory.yaml     thin: Facebook pages, aggregators
+#
+# PREDICTION, recorded before the first run per section 8.3 of
+# cost-accounting-and-reduction.md:
+#   - restaurant removals well under the 77% seen at Old Hickory,
+#     plausibly under 20%; if cities come out thin too, the
+#     hypothesis is wrong and the differentiator is something else
+#   - cost ABOVE sw_manifest per destination: five dense cities,
+#     13 days, and no NPS API to answer for free
+#   - en-route stops weak or absent between countries -- the
+#     harvest assumes road travel, and these legs are rail
+#
+# ALSO EXERCISES, for the first time:
+#   - non-US destinations end to end (geocoding, addresses,
+#     currency and language in generated content)
+#   - train legs between every stop rather than driving
+#   - five destinations, so grouping and cross-destination dedup
+#     get a real workout
+#
+# Run with --no-trails: no hikes wanted. Trails remain available
+# via --trails for anyone testing that path.
+# ============================================================
+
+trip:
+  title: "Europe Exploration"
+  subtitle: "Five capitals by rail — Brussels to Frankfurt"
+  theme_color: "#3A5F8A"          # rail blue, to distinguish output from the other manifests
+  departure: "Brussels"
+  departure_datetime: 2026-08-31 09:00
+  default_day_start_time: "9:30 AM"
+  default_daily_activity_hours: 6
+  return: "Frankfurt"
+  return_datetime: 2026-09-12 18:00
+  llm_provider: openai
+  llm_model: gpt-4o-mini
+
+  # Consumed by content generation. The brief is explicitly cheap
+  # eating -- this is also the first test of whether the budget
+  # hint survives into restaurant selection rather than being
+  # quietly ignored.
+  budget:
+    dining: "low-cost"
+    notes: "Cafes, markets, street food and neighbourhood spots. No fine dining."
+
+destinations:
+
+# ── 1. BRUSSELS ──────────────────────────────────────────────
+  - id: brussels
+    name: "Brussels, Belgium"
+    dates: "August 31 - September 1, 2026"
+
+    planning_links:
+      - label: "visit.brussels — official tourism"
+        url: "https://visit.brussels/en"
+
+    seeds:
+      - "Grand-Place"
+      - "Royal Museums of Fine Arts of Belgium"
+
+# ── 2. AMSTERDAM ─────────────────────────────────────────────
+  - id: amsterdam
+    name: "Amsterdam, Netherlands"
+    dates: "September 2-4, 2026"
+
+    planning_links:
+      - label: "I amsterdam — official visitor site"
+        url: "https://www.iamsterdam.com/en"
+
+    transportation:
+      - type: train
+        provider: "Eurostar"
+        label: "Brussels-Midi → Amsterdam Centraal"
+        depart: "Brussels-Midi, September 2"
+        arrive: "Amsterdam Centraal, September 2"
+
+    seeds:
+      - "Rijksmuseum"
+      - "Anne Frank House"
+
+# ── 3. BERLIN ────────────────────────────────────────────────
+  - id: berlin
+    name: "Berlin, Germany"
+    dates: "September 5-7, 2026"
+
+    planning_links:
+      - label: "visitBerlin — official tourism"
+        url: "https://www.visitberlin.de/en"
+
+    transportation:
+      - type: train
+        provider: "Deutsche Bahn ICE"
+        label: "Amsterdam Centraal → Berlin Hbf"
+        depart: "Amsterdam Centraal, September 5"
+        arrive: "Berlin Hauptbahnhof, September 5"
+
+    seeds:
+      - "Brandenburg Gate"
+      - "Museum Island"
+      - "East Side Gallery"
+
+# ── 4. PRAGUE ────────────────────────────────────────────────
+  - id: prague
+    name: "Prague, Czech Republic"
+    dates: "September 8-10, 2026"
+
+    planning_links:
+      - label: "Prague.eu — official tourist portal"
+        url: "https://www.prague.eu/en"
+
+    transportation:
+      - type: train
+        provider: "EC (EuroCity)"
+        label: "Berlin Hbf → Praha hlavní nádraží"
+        depart: "Berlin Hauptbahnhof, September 8"
+        arrive: "Praha hlavní nádraží, September 8"
+
+    seeds:
+      - "Prague Castle"
+      - "Charles Bridge"
+
+# ── 5. FRANKFURT ─────────────────────────────────────────────
+  - id: frankfurt
+    name: "Frankfurt, Germany"
+    dates: "September 11-12, 2026"
+
+    planning_links:
+      - label: "Frankfurt Tourism — official"
+        url: "https://www.frankfurt-tourismus.de/en"
+
+    transportation:
+      - type: train
+        provider: "Deutsche Bahn"
+        label: "Praha hlavní nádraží → Frankfurt (Main) Hbf"
+        depart: "Praha hlavní nádraží, September 11"
+        arrive: "Frankfurt (Main) Hauptbahnhof, September 11"
+
+    seeds:
+      - "Römerberg"
+      - "Städel Museum"
