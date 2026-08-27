@@ -425,6 +425,9 @@ DEFAULT_EN_ROUTE_SOURCE = "search"
 DEFAULT_FALLBACK_MODE = "search"
 DEFAULT_DIRECT_LINK_BATCH_COUNT = 20
 DEFAULT_DIRECT_BATCH_AUTHORITATIVE = True
+# An item the authoritative batch cannot place still gets one per-item search.
+# See _item_fallback_when_batch_silent_enabled.
+DEFAULT_ITEM_FALLBACK_WHEN_BATCH_SILENT = True
 DEFAULT_RESTAURANT_DIRECT_BATCH_ITEM_COUNT = 4
 DEFAULT_EN_ROUTE_DIRECT_BATCH_ITEM_COUNT = 4
 DEFAULT_ATTRACTION_DIRECT_BATCH_ITEMS_PER_DAY = 3
@@ -5458,6 +5461,19 @@ class URLDiscoverer:
     def _direct_batch_is_authoritative(self) -> bool:
         return bool(getattr(self, "_direct_batch_authoritative", DEFAULT_DIRECT_BATCH_AUTHORITATIVE))
 
+    def _item_fallback_when_batch_silent_enabled(self) -> bool:
+        """Whether an item the authoritative batch could not place may still be
+        searched for individually.
+
+        Separate from _direct_batch_is_authoritative on purpose: authority is
+        about whose answer wins, this is about what to do when there is no
+        answer at all. Conflating the two turned "the batch is the source of
+        truth" into "items the batch misses do not exist".
+        """
+        return bool(
+            getattr(self, "_item_fallback_when_batch_silent", DEFAULT_ITEM_FALLBACK_WHEN_BATCH_SILENT)
+        )
+
     @staticmethod
     def _normalize_direct_batch_authoritative_url(url: str | None) -> str:
         candidate = str(url or "").strip()
@@ -8967,16 +8983,40 @@ class URLDiscoverer:
                     )
                     continue
                 if self._direct_batch_is_authoritative():
+                    # The batch being authoritative means it WINS where it has an
+                    # answer -- not that its silence is an answer. Dropping the
+                    # item here skipped the per-item search below entirely, and
+                    # the 2026-08-27 Brussels run showed what that costs: Chicon
+                    # Farsi, Thaiburi, Yummy Bowl, Pasta Divina and Rotisse were
+                    # all removed for "no verified URL", and all five have
+                    # official sites that a single Serper query finds
+                    # (chiconfarsi.com, thaiburi.eu, eatyummybowl.com,
+                    # pastadivina.be, rotisse.be). The batch had offered a
+                    # generic TripAdvisor city landing page for each, which was
+                    # correctly rejected -- and then nothing else was tried.
+                    #
+                    # 77% of that destination's dining was lost to a fallback
+                    # that was never attempted, at ~$0.001 a query.
+                    if not self._item_fallback_when_batch_silent_enabled():
+                        rest["url"] = ""
+                        rest.pop("maps_url", None)
+                        self._log_decision(
+                            kind="restaurant",
+                            dest_name=dest_name,
+                            item_name=rest_name,
+                            reason="direct_batch_source_locked_no_match",
+                            message="restaurant link omitted; authoritative direct-link batch had no usable result",
+                        )
+                        continue
                     rest["url"] = ""
                     rest.pop("maps_url", None)
                     self._log_decision(
                         kind="restaurant",
                         dest_name=dest_name,
                         item_name=rest_name,
-                        reason="direct_batch_source_locked_no_match",
-                        message="restaurant link omitted; authoritative direct-link batch had no usable result",
+                        reason="direct_batch_silent_falling_back_to_item_search",
+                        message="authoritative direct-link batch had no usable result; trying per-item search",
                     )
-                    continue
 
             ai_candidate_url = self._resolve_ai_candidate_url(
                 item=rest,

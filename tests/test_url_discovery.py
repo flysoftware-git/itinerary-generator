@@ -1163,14 +1163,17 @@ def test_discover_restaurants_direct_batch_preserves_existing_maps_url_without_r
         "getting_here": {"en_route_stops": []},
     }
 
+    # See the contract note on
+    # test_discover_restaurants_direct_batch_authoritative_does_not_fallback_to_search:
+    # the batch still wins, but its silence is no longer treated as an answer.
     with patch.object(discoverer, "_search_restaurant_from_direct_batch", return_value=None) as batch_search:
-        with patch.object(discoverer, "_search_first") as fallback_search:
+        with patch.object(discoverer, "_search_first", return_value=None) as fallback_search:
             discoverer._discover_restaurants(ai, dest_name="St. George, Utah")
 
     assert ai["dinner_recommendations"][0].get("url", "") == ""
     assert "maps_url" not in ai["dinner_recommendations"][0]
     batch_search.assert_called_once()
-    fallback_search.assert_not_called()
+    assert fallback_search.called
 
 
 def test_discover_restaurants_preserved_existing_url_still_gets_rating_and_cuisine_metadata() -> None:
@@ -3383,18 +3386,31 @@ def test_discover_restaurants_direct_batch_authoritative_does_not_fallback_to_se
         ]
     }
 
+    # CONTRACT CHANGED 2026-08-27. This previously asserted that the search
+    # fallback must NEVER run in authoritative mode. That conflated two things:
+    # whose answer WINS (the batch, still true) and what happens when the batch
+    # has NO answer (previously: the item is dropped).
+    #
+    # The Brussels run measured the cost. Chicon Farsi, Thaiburi, Yummy Bowl,
+    # Pasta Divina and Rotisse were all dropped for "no verified URL", and all
+    # five have official sites a single Serper query finds. 77% of that
+    # destination's dining was lost to a fallback never attempted.
+    #
+    # The genuine safety property is unchanged and covered by
+    # test_search_restaurant_direct_batch_authoritative_rejects_raw_capture_without_item_match:
+    # the batch must not lend an UNMATCHED row to a different item. A fresh
+    # per-item search is a different operation and is still URL-validated.
     with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None), patch.object(
         discoverer,
         "_search_restaurant_from_direct_batch",
         return_value=None,
-    ), patch.object(
-        discoverer,
-        "_search_first",
-        side_effect=AssertionError("search fallback should not run in authoritative direct-batch mode"),
-    ):
+    ), patch.object(discoverer, "_search_first", return_value=None) as fallback_search:
         discoverer._discover_restaurants(ai, "Zion National Park", "October 18, 2026")
 
+    # Still no URL -- the fallback was tried and also came up empty.
     assert ai["dinner_recommendations"][0].get("url", "") == ""
+    # But it WAS tried, which is the change.
+    assert fallback_search.called, "an item the batch cannot place must still get one search"
 
 
 def test_search_restaurant_direct_batch_authoritative_rejects_raw_capture_without_item_match():
