@@ -16,6 +16,7 @@ import hashlib, json, logging, os, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import re
+from urllib.parse import unquote
 from typing import Any
 import requests
 
@@ -244,13 +245,55 @@ class ImageFetcher:
 
         return verified[:self._max_per_dest]
 
+    # Commons serves the SAME photograph under URLs that share no path
+    # component: a .jpg original and a .tif of the same scan land in
+    # different hash directories, and each thumbnail carries its own size and
+    # renderer prefix. A real Asheville run rendered
+    # ".../9/9e/Asheville,_N.C._from_Beaucatcher_Mountain_LCCN95501589.jpg/960px-..."
+    # and ".../e/e8/....tif/lossy-page1-960px-....tif.jpg" side by side -- two
+    # URLs, one picture, visibly duplicated on the page. Dedup by URL alone
+    # cannot see that, so it is done on the underlying file title instead.
+    _IMAGE_RENDER_PREFIX_RE = re.compile(r"^(?:lossy-|lossless-)?(?:page\d+-)?(?:\d+px-)?", re.IGNORECASE)
+    _IMAGE_EXTENSION_RE = re.compile(r"\.(?:jpe?g|png|gif|webp|tiff?|svg)$", re.IGNORECASE)
+
+    @classmethod
+    def _image_identity_key(cls, url: str) -> str:
+        """A key identifying the PICTURE, not the URL that served it.
+
+        Falls back to the whole URL when nothing recognisable can be
+        extracted -- an unparseable URL is its own identity, never a shared
+        empty key that would collapse unrelated images into one.
+        """
+        text = str(url or "").split("?")[0].strip()
+        if not text:
+            return ""
+        name = text.rsplit("/", 1)[-1]
+        name = unquote(name)
+        name = cls._IMAGE_RENDER_PREFIX_RE.sub("", name)
+        # ".tif.jpg" -> ".tif" -> "" : strip repeatedly so a re-rendered
+        # original collapses onto the original it was rendered from.
+        previous = None
+        while previous != name:
+            previous = name
+            name = cls._IMAGE_EXTENSION_RE.sub("", name)
+        name = re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+        return name or text.lower()
+
     def _verify_and_materialize(self, images: list[dict[str, Any]], dest_name: str) -> list[dict[str, Any]]:
         ranked = self._rank_images_for_destination(images, dest_name)
         verified: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
+        seen_identities: set[str] = set()
         for img in ranked:
             url = str(img.get("url", "") or "").strip()
             if not url or url in seen_urls:
+                continue
+            identity = self._image_identity_key(url)
+            if identity and identity in seen_identities:
+                logger.info(
+                    "  Skipping duplicate image for %s (same picture as one already kept): %s",
+                    dest_name, url[:120],
+                )
                 continue
             local_path = self._download_image(url)
             if not local_path:
@@ -259,6 +302,8 @@ class ImageFetcher:
             item["local_path"] = str(local_path)
             verified.append(item)
             seen_urls.add(url)
+            if identity:
+                seen_identities.add(identity)
             if len(verified) >= self._max_per_dest:
                 break
         return verified

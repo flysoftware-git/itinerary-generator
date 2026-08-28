@@ -78,7 +78,7 @@ def test_discover_still_runs_for_group_base_itself() -> None:
 
     calls: list[str] = []
 
-    def _fake(dest):
+    def _fake(dest, window_dates=""):
         calls.append(dest["name"])
         return {"has_events": False, "honest_assessment": "No ticketed events were confidently verified."}
 
@@ -104,7 +104,7 @@ def test_discover_runs_for_grouped_child_when_cultural_events_not_deferred() -> 
 
     calls: list[str] = []
 
-    def _fake(dest):
+    def _fake(dest, window_dates=""):
         calls.append(dest["name"])
         return {"has_events": False, "honest_assessment": "ok"}
 
@@ -684,3 +684,47 @@ def test_sanitize_local_tip_keeps_date_inside_stay() -> None:
     sanitized = d._sanitize_local_tip_by_itinerary_days(result, "December 13-16, 2026")
 
     assert sanitized["local_tip"] == "Winter Lights opens December 14, 2026."
+
+
+def test_grouped_day_trip_uses_the_base_stay_as_its_event_window() -> None:
+    """A day trip's single date is a modelling convenience, not a limit on
+    when the traveler can drive into town. Nashville dated December 8, from a
+    base staying December 6-13, must keep an event on the 10th."""
+    d = _discoverer()
+    d._multi_site_base_owned_categories = frozenset({"restaurant", "cultural_events"})
+    captured: dict[str, str] = {}
+
+    def _fake(dest, window_dates=""):
+        captured[dest["name"]] = window_dates
+        return {"has_events": False}
+
+    d._discover_for_dest = _fake
+    trip = {
+        "destinations": [
+            {"id": "oldhickory", "name": "Old Hickory", "dates": "December 6-13, 2026"},
+            {
+                "id": "nashville", "name": "Nashville", "dates": "December 8, 2026",
+                "group_with": "oldhickory", "base_owned_categories": [],
+            },
+        ]
+    }
+
+    d.discover(trip)
+
+    assert captured["Nashville"] == "December 6-13, 2026"
+    assert captured["Old Hickory"] == "December 6-13, 2026"
+
+
+def test_ungrouped_destination_keeps_its_own_event_window() -> None:
+    d = _discoverer()
+    d._multi_site_base_owned_categories = frozenset({"restaurant", "cultural_events"})
+    captured: dict[str, str] = {}
+
+    def _fake(dest, window_dates=""):
+        captured[dest["name"]] = window_dates
+        return {"has_events": False}
+
+    d._discover_for_dest = _fake
+    d.discover({"destinations": [{"id": "asheville", "name": "Asheville", "dates": "December 13-16, 2026"}]})
+
+    assert captured["Asheville"] == "December 13-16, 2026"

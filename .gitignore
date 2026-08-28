@@ -47,3 +47,6 @@ _to_delete/
 # Manifests holding real personal details (home addresses, confirmation
 # numbers). This repository is PUBLIC -- these must never be committed.
 manifests/*.local.yaml
+# Private overrides consumed by scripts/sync_local_manifest.py to generate
+# the .local manifests above. The only file holding a real address.
+manifests/*.private.yaml
