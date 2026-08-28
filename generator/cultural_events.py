@@ -219,7 +219,7 @@ class CulturalEventsDiscoverer:
             _after = len((result.get("events") or [])) if isinstance(result, dict) else 0
             if _before != _after:
                 logger.info(
-                    "    date filter dropped %d of %d event(s) as falling before arrival (%s)",
+                    "    date filter dropped %d of %d event(s) as falling outside the stay (%s)",
                     _before - _after, _before, dest.get("dates", ""),
                 )
             result = self._sanitize_local_tip_by_itinerary_days(result, dest.get("dates", ""))
@@ -427,11 +427,29 @@ class CulturalEventsDiscoverer:
         return "unknown"
 
     def _sanitize_local_tip_by_itinerary_days(self, result: dict[str, Any], dates: str) -> dict[str, Any]:
-        if not isinstance(result, dict) or result.get("has_events"):
+        """Drop a local tip that points at days or dates outside the stay.
+
+        This used to return early whenever `has_events` was true, on the
+        assumption that a destination with real events did not need its tip
+        checked. The tip is rendered either way, so that assumption just
+        meant the check never ran for the destinations most likely to have
+        one -- the Dec 5-6 craft show recommended for a Dec 13-16 stay
+        reached output through exactly this gap.
+        """
+        if not isinstance(result, dict):
             return result
 
         tip = str(result.get("local_tip", "") or "").strip()
         if not tip:
+            return result
+
+        # Explicit dates first. Weekday matching alone cannot see
+        # "December 5-6, 2026" -- it contains no weekday word at all, so
+        # `mentioned_days` comes back empty and the tip sails through.
+        if self._tip_mentions_date_outside_stay(tip, dates):
+            result.pop("local_tip", None)
+            result.pop("local_tip_name", None)
+            result.pop("local_tip_url", None)
             return result
 
         mentioned_days = self._extract_mentioned_weekdays(tip)
@@ -452,6 +470,44 @@ class CulturalEventsDiscoverer:
             result.pop("local_tip_name", None)
             result.pop("local_tip_url", None)
         return result
+
+    def _tip_mentions_date_outside_stay(self, tip: str, dates: str) -> bool:
+        """True when the tip names a calendar date the traveler is not there for.
+
+        Only fires on dates it can actually parse against a parseable stay
+        range; an unparseable tip or an unparseable range means no opinion,
+        and the tip is left alone rather than dropped on a guess. A tip
+        naming several dates is dropped if ANY of them falls outside -- a
+        recommendation the reader cannot act on is the whole problem,
+        whether or not it is bundled with one they can.
+        """
+        stay = self._parse_date_range(dates)
+        if not stay or not tip:
+            return False
+        stay_start, stay_end = stay
+
+        for m in re.finditer(
+            r"([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*-\s*(\d{1,2})(?:st|nd|rd|th)?)?(?:,?\s*(\d{4}))?",
+            tip,
+        ):
+            month = self._MONTH_NAME_TO_NUMBER.get(m.group(1).lower())
+            if not month:
+                continue
+            year = int(m.group(4)) if m.group(4) else stay_start.year
+            for day_group in (m.group(2), m.group(3)):
+                if not day_group:
+                    continue
+                try:
+                    when = datetime(year, month, int(day_group))
+                except ValueError:
+                    continue
+                if not (stay_start.date() <= when.date() <= stay_end.date()):
+                    logger.info(
+                        "  Dropping local tip: names %s, outside the %s - %s stay",
+                        when.date(), stay_start.date(), stay_end.date(),
+                    )
+                    return True
+        return False
 
     def _extract_mentioned_weekdays(self, text: str) -> set[str]:
         day_tokens = {
@@ -543,7 +599,13 @@ class CulturalEventsDiscoverer:
     }
 
     def _drop_events_before_arrival(self, result: dict[str, Any], dates: str) -> dict[str, Any]:
-        """Filter out events dated entirely before the destination's arrival date.
+        """Filter out events dated entirely outside the destination's stay.
+
+        Name kept for the before-arrival case it started as; it now guards
+        both ends. The after-departure half was missing, and an event starting after the
+        traveler has gone is exactly as useless as one that ended before they
+        landed. A real run for a Dec 13-16 Asheville stay surfaced a Dec 5-6
+        craft show, which this now drops.
 
         The synthesis prompt deliberately allows the LLM to surface events
         "within 7 days" of the travel dates for search-recall purposes, but a
@@ -570,6 +632,16 @@ class CulturalEventsDiscoverer:
                 logger.info(
                     "  Dropping cultural event before arrival: '%s' (%s) precedes destination start %s",
                     event.get("name", ""), event_date_text, dest_start.date(),
+                )
+                continue
+            # An event whose START is after the traveler leaves cannot be
+            # attended. Deliberately compares the start, not the end: a run
+            # that begins during the stay and continues past it (a Christmas
+            # programme running into January) is attendable and must be kept.
+            if event_start is not None and event_start.date() > _dest_end.date():
+                logger.info(
+                    "  Dropping cultural event after departure: '%s' (%s) follows destination end %s",
+                    event.get("name", ""), event_date_text, _dest_end.date(),
                 )
                 continue
             kept.append(event)

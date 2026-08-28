@@ -271,3 +271,74 @@ class TestOfficialSiteDomainMatching:
 
         for u in ["http://www.rotisse.be", "https://rotisse.be/", "https://www.rotisse.be/en/menu"]:
             assert URLDiscoverer._domain_matches_item_name(u, "Rotisse") is True
+
+
+class TestRailItinerariesHaveNoEnRouteStops:
+    """En-route stops are a road-trip concept.
+
+    On a booked train, ferry or flight the traveller cannot pull off and look
+    at something. The 2026-08-27 five-city Europe run removed 14 of 41 en-route
+    stops for lacking a verified URL -- the worst category in the run -- while
+    every leg was rail.
+    """
+
+    @pytest.mark.parametrize("mode", ["train", "plane", "ship", "ferry", "bus", "shuttle"])
+    def test_non_driving_arrivals_suppress_stops(self, mode):
+        from generator.ai_content import AIContentGenerator
+
+        assert AIContentGenerator._arrival_is_not_self_driven({"transportation": [{"type": mode}]}) is True
+
+    def test_a_car_leg_keeps_them(self):
+        from generator.ai_content import AIContentGenerator
+
+        assert AIContentGenerator._arrival_is_not_self_driven({"transportation": [{"type": "car"}]}) is False
+
+    @pytest.mark.parametrize("dest", [{}, None, {"transportation": []}])
+    def test_silence_means_unknown_and_keeps_existing_behaviour(self, dest):
+        """A manifest stating no transport is most likely a road trip, which is
+        what this generator was built for."""
+        from generator.ai_content import AIContentGenerator
+
+        assert AIContentGenerator._arrival_is_not_self_driven(dest) is False
+
+    def test_stops_are_cleared_for_a_rail_arrival(self):
+        from generator.ai_content import AIContentGenerator
+
+        gen = AIContentGenerator.__new__(AIContentGenerator)
+        out = gen._normalize_getting_here(
+            {"en_route_stops": [{"name": "Roadside Diner"}], "summary": "Take the ICE"},
+            "Berlin, Germany",
+            dest={"transportation": [{"type": "train"}]},
+        )
+        assert out["en_route_stops"] == []
+        assert out["summary"] == "Take the ICE"
+
+
+class TestReorderedAttractionNames:
+    """Same place, words rearranged, two cards.
+
+    albrechtsburg-meissen.de was published twice at one destination, as
+    "Albrechtsburg Castle (Meissen)" and "Meissen Albrechtsburg Castle".
+    """
+
+    @staticmethod
+    def _run(names):
+        from generator.ai_content import AIContentGenerator
+
+        gen = AIContentGenerator.__new__(AIContentGenerator)
+        trip = {"destinations": [{"name": "X", "ai_content": {"top_attractions": [{"name": n} for n in names]}}]}
+        gen._deduplicate_reordered_attraction_names(trip)
+        return [a["name"] for a in trip["destinations"][0]["ai_content"]["top_attractions"]]
+
+    def test_rearranged_duplicate_is_dropped(self):
+        kept = self._run(["Albrechtsburg Castle (Meissen)", "Meissen Albrechtsburg Castle"])
+        assert kept == ["Albrechtsburg Castle (Meissen)"]
+
+    def test_different_places_sharing_words_are_kept(self):
+        """Set EQUALITY, not overlap -- overlap is what matched Zion Lodge to
+        Stargazing in Zion."""
+        assert len(self._run(["Museum Island", "Island Museum Cafe"])) == 2
+
+    def test_unrelated_attractions_untouched(self):
+        names = ["Charles Bridge", "Prague Castle", "Old Town Square"]
+        assert self._run(names) == names

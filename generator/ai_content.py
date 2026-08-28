@@ -775,6 +775,7 @@ class AIContentGenerator:
         self._filter_departure_aligned_drives(trip)
         self._filter_drives_requiring_high_clearance_vehicle(trip)
         self._deduplicate_cross_destination_scenic_drives(trip)
+        self._deduplicate_reordered_attraction_names(trip)
 
     # Exact vehicle_requirement values (prompts/scenic_drives.txt's fixed
     # classification vocabulary, ~line 59-68) that mean "needs a
@@ -820,6 +821,58 @@ class AIContentGenerator:
                     removed, dest.get("name", ""),
                 )
             dest["scenic_drives"] = eligible
+
+    def _deduplicate_reordered_attraction_names(self, trip: dict[str, Any]) -> None:
+        """Drop an attraction that is an earlier one with the words rearranged.
+
+        The 2026-08-27 Europe run published albrechtsburg-meissen.de twice at
+        the same destination, once as "Albrechtsburg Castle (Meissen)" and once
+        as "Meissen Albrechtsburg Castle". Same castle, same link, two cards.
+
+        Exact-name dedup cannot see it and URL dedup only catches the case where
+        discovery happens to find the same page for both -- which is luck, not a
+        guarantee. Comparing the SET of significant words catches the
+        rearrangement itself, before either has a URL.
+
+        Deliberately conservative: sets must be equal, not overlapping. "Museum
+        Island" and "Island Museum Cafe" are different places, and an
+        overlap-based rule is what once matched Zion Lodge to Stargazing in
+        Zion.
+        """
+        import re as _re
+
+        stop_words = {"the", "a", "an", "of", "at", "in", "on", "and", "de", "la", "le", "el"}
+        for dest in trip.get("destinations", []) or []:
+            if not isinstance(dest, dict):
+                continue
+            ai = dest.get("ai_content")
+            if not isinstance(ai, dict):
+                continue
+            attractions = ai.get("top_attractions")
+            if not isinstance(attractions, list):
+                continue
+            seen: dict[frozenset[str], str] = {}
+            kept: list[Any] = []
+            for item in attractions:
+                if not isinstance(item, dict):
+                    kept.append(item)
+                    continue
+                name = str(item.get("name", "") or "")
+                words = {
+                    w for w in _re.split(r"[^a-z0-9]+", name.lower())
+                    if len(w) > 2 and w not in stop_words
+                }
+                key = frozenset(words)
+                if key and key in seen:
+                    logger.info(
+                        "Dropped '%s' at %s: same words as '%s' in a different order",
+                        name, dest.get("name", ""), seen[key],
+                    )
+                    continue
+                if key:
+                    seen[key] = name
+                kept.append(item)
+            ai["top_attractions"] = kept
 
     def _deduplicate_cross_destination_scenic_drives(self, trip: dict[str, Any]) -> None:
         """Keep duplicate scenic drives only under the most relevant destination.
@@ -1649,6 +1702,32 @@ class AIContentGenerator:
 
         return self._normalize_attractions(out)
 
+    #: Booked modes on which a traveller cannot make a roadside stop. "car" is
+    #: absent deliberately -- a rental car is exactly when en-route stops work.
+    _NON_DRIVING_ARRIVAL_MODES = frozenset({"train", "plane", "ship", "ferry", "bus", "shuttle"})
+
+    @classmethod
+    def _arrival_mode(cls, dest: dict[str, Any] | None) -> str:
+        """The booked mode of the leg ARRIVING at this destination, if stated."""
+        if not isinstance(dest, dict):
+            return ""
+        for leg in (dest.get("transportation") or []):
+            if isinstance(leg, dict):
+                mode = str(leg.get("type", "") or "").strip().lower()
+                if mode:
+                    return mode
+        return ""
+
+    @classmethod
+    def _arrival_is_not_self_driven(cls, dest: dict[str, Any] | None) -> bool:
+        """True only when a booked leg SAYS the arrival is not by road.
+
+        Silence means unknown, and unknown keeps the existing behaviour: a
+        manifest that states no transportation is most likely a road trip,
+        which is what this generator was built for.
+        """
+        return cls._arrival_mode(dest) in cls._NON_DRIVING_ARRIVAL_MODES
+
     def _normalize_getting_here(
         self,
         getting_here: Any,
@@ -1661,6 +1740,26 @@ class AIContentGenerator:
         if not isinstance(getting_here, dict):
             return {}
         out = dict(getting_here)
+
+        # En-route stops are a ROAD-TRIP concept: pull off, look at something,
+        # drive on. On a booked train, ferry or flight the traveller cannot
+        # stop anywhere, so every such stop is noise at best and an invitation
+        # to miss a connection at worst.
+        #
+        # The 2026-08-27 five-city Europe run made this concrete: 14 of 41
+        # en-route stops were removed for lacking a verified URL, the worst
+        # category in the run, while every leg was rail. The generator was
+        # inventing roadside waypoints for journeys with no roadside.
+        if self._arrival_is_not_self_driven(dest):
+            if out.get("en_route_stops"):
+                logger.info(
+                    "En-route stops dropped for '%s': arrival is by %s, not by road",
+                    dest_name,
+                    self._arrival_mode(dest) or "public transport",
+                )
+            out["en_route_stops"] = []
+            return out
+
         normalized_stops: list[dict[str, Any]] = []
         for stop in out.get("en_route_stops", []) or []:
             if not isinstance(stop, dict):
