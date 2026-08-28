@@ -715,3 +715,50 @@ class TestPlaceNameCuisineIsCleared:
 
     def test_an_empty_cuisine_is_left_alone(self):
         assert self._clean("", "Berlin, Germany") == ""
+
+
+class TestCuisineIsValidatedNotBlocklisted:
+    """Asking what a cuisine LOOKS like, instead of listing what it is not.
+
+    The first guard blocklisted place names. It cleared cuisine="Frankfurt"
+    and then passed "Pflugstrasse 11", "Mehringdamm 32" and "Photos & ..."
+    straight to the badge -- the same defect wearing different text. Screening
+    against a list of things a cuisine is not requires knowing them all in
+    advance, which is why that fix had to be made three times.
+    """
+
+    @staticmethod
+    def _ok(value, dest="Berlin, Germany"):
+        from generator.url_discovery import URLDiscoverer
+
+        return URLDiscoverer._is_plausible_cuisine(value, dest)
+
+    @pytest.mark.parametrize(
+        "cuisine",
+        ["Thai", "Vietnamese", "Modern European", "Bakery", "Seafood", "Steakhouse",
+         "Bistro", "Farm-to-table", "Fish & Chips"],
+    )
+    def test_real_cuisines_pass(self, cuisine):
+        assert self._ok(cuisine) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        ["Pflugstrasse 11", "Mehringdamm 32", "Rue de la Loi", "Wenceslas Square"],
+    )
+    def test_addresses_and_streets_fail(self, value):
+        assert self._ok(value) is False
+
+    @pytest.mark.parametrize(
+        "value",
+        ["Photos & ...", "Menu, Prices & Reviews", "4.5/5", "See photos and menu here"],
+    )
+    def test_scraped_fragments_fail(self, value):
+        assert self._ok(value) is False
+
+    def test_the_destination_name_still_fails(self):
+        """The case the first version did catch, kept covered."""
+        assert self._ok("Frankfurt", "Frankfurt, Germany") is False
+
+    def test_a_nationality_matching_the_country_still_passes(self):
+        """"Belgian" in Belgium is a food style, not a place name."""
+        assert self._ok("Belgian", "Brussels, Belgium") is True

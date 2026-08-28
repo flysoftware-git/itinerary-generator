@@ -9538,11 +9538,68 @@ class URLDiscoverer:
     #: Cuisine values that are really a place, not a food style. The harvest
     #: returned cuisine="Frankfurt" for THE ROOF and African Queen, which reads
     #: as a cuisine badge saying the name of the city the reader is already in.
-    _CUISINE_PLACE_STOPWORDS = ("district", "quarter", "centre", "center", "old town")
+    #: Place-type nouns. "Wenceslas Square" cleared every other check -- two
+    #: alphabetic words, no digits, no street suffix -- so a landmark name still
+    #: reached the badge. "market" is deliberately absent: a market hall is a
+    #: real dining category on a low-cost brief.
+    _CUISINE_PLACE_STOPWORDS = (
+        "district", "quarter", "centre", "center", "old town", "square",
+        "bridge", "castle", "cathedral", "station", "tower", "palace",
+    )
+
+    #: Street-type words in the languages this generator has produced output for.
+    #: "Pflugstrasse 11" and "Mehringdamm 32" both reached a cuisine badge.
+    _CUISINE_STREET_WORDS = (
+        "strasse", "straße", "str.", "damm", "platz", "gasse", "allee", "weg",
+        "street", "road", "avenue", "lane", "boulevard", "plein", "straat",
+        "rue ", "namesti", "náměstí",
+    )
+
+    #: Fragments that mean a scrape leaked into the field rather than a cuisine.
+    _CUISINE_SCRAPE_MARKERS = ("photo", "review", "menu", "price", "…", "...", "|", "http")
+
+    @classmethod
+    def _is_plausible_cuisine(cls, value: str, dest_name: str = "") -> bool:
+        """Does this read as a FOOD STYLE, rather than whatever text was nearby?
+
+        Inverted from the earlier version, which blocklisted place names and so
+        cleared cuisine="Frankfurt" while passing "Pflugstrasse 11",
+        "Mehringdamm 32" and "Photos & ..." straight to the badge. Screening
+        against a list of things a cuisine is not requires knowing them all in
+        advance; this asks what a cuisine looks like instead.
+
+        A cuisine is a short alphabetic phrase: "Thai", "Modern European",
+        "Vietnamese". It carries no digits, no street-type word, no punctuation
+        from a scraped page, and is not the name of the place the reader is in.
+        """
+        text = str(value or "").strip()
+        if not text or len(text) > 28:
+            return False
+        lowered = text.lower()
+
+        if any(ch.isdigit() for ch in text):
+            return False                      # addresses, "4.5/5", "Top 10"
+        if any(marker in lowered for marker in cls._CUISINE_SCRAPE_MARKERS):
+            return False
+        if any(word in lowered for word in cls._CUISINE_STREET_WORDS):
+            return False
+        if len(text.split()) > 3:
+            return False                      # a phrase this long is prose
+        if not re.fullmatch(r"[A-Za-zÀ-ÿ\s&'/-]+", text):
+            return False
+
+        dest_tokens = {
+            tok for tok in re.split(r"[^a-z]+", str(dest_name or "").lower()) if len(tok) > 3
+        }
+        if lowered in dest_tokens:
+            return False                      # cuisine="Frankfurt" in Frankfurt
+        if any(word in lowered for word in cls._CUISINE_PLACE_STOPWORDS):
+            return False
+        return True
 
     @classmethod
     def _strip_place_name_cuisine(cls, rest: dict[str, Any], dest_name: str) -> None:
-        """Blank a cuisine field that just repeats the destination.
+        """Blank a cuisine field that is not plausibly a cuisine.
 
         Cleared rather than corrected: an empty badge is honest, whereas
         guessing a cuisine from the name would invent a fact about the
@@ -9552,13 +9609,8 @@ class URLDiscoverer:
         if not isinstance(rest, dict):
             return
         cuisine = str(rest.get("cuisine", "") or "").strip()
-        if not cuisine:
-            return
-        lowered = cuisine.lower()
-        dest_tokens = {
-            tok for tok in re.split(r"[^a-z]+", str(dest_name or "").lower()) if len(tok) > 3
-        }
-        if lowered in dest_tokens or any(w in lowered for w in cls._CUISINE_PLACE_STOPWORDS):
+        if cuisine and not cls._is_plausible_cuisine(cuisine, dest_name):
+            logger.info("Cleared implausible cuisine %r for %r", cuisine[:40], rest.get("name", ""))
             rest["cuisine"] = ""
 
     @staticmethod
