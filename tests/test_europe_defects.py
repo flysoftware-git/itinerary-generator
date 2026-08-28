@@ -423,3 +423,59 @@ class TestGettingHereMatchesTheBookedMode:
         gen = AIContentGenerator.__new__(AIContentGenerator)
         for dest in ({"transportation": [{"type": "car"}]}, {}, None):
             assert "as a drive" in gen._build_arrival_mode_guidance(dest)
+
+
+class TestPerDestinationLinksUseTheBookedMode:
+    """11 of 12 Maps links opened driving directions on an all-rail trip.
+
+    _build_route_gmaps_url was handed a name-only dict, so it saw no
+    transportation and fell back to driving. The trip-level link was correct,
+    which is exactly why testing the helper in isolation missed it.
+    """
+
+    def test_a_rail_destination_yields_a_transit_link(self):
+        from generator.html_assembler import HTMLAssembler
+
+        a = HTMLAssembler.__new__(HTMLAssembler)
+        url = a._build_route_gmaps_url(
+            "Brussels, Belgium",
+            {"name": "Amsterdam, Netherlands", "transportation": [{"type": "train"}]},
+            [],
+        )
+        assert "travelmode=transit" in url
+
+    def test_a_car_destination_still_yields_driving(self):
+        from generator.html_assembler import HTMLAssembler
+
+        a = HTMLAssembler.__new__(HTMLAssembler)
+        url = a._build_route_gmaps_url(
+            "St. George, Utah",
+            {"name": "Zion National Park", "transportation": [{"type": "car"}]},
+            [],
+        )
+        assert "travelmode=driving" in url
+
+    def test_no_stated_leg_stays_driving(self):
+        from generator.html_assembler import HTMLAssembler
+
+        a = HTMLAssembler.__new__(HTMLAssembler)
+        url = a._build_route_gmaps_url("A", {"name": "B"}, [])
+        assert "travelmode=driving" in url
+
+    def test_return_leg_infers_the_trip_wide_mode(self):
+        from generator.html_assembler import HTMLAssembler
+
+        by_id = {
+            "a": {"transportation": [{"type": "train"}]},
+            "b": {"transportation": [{"type": "train"}]},
+        }
+        assert HTMLAssembler._return_leg_transportation({}, by_id) == [{"type": "train"}]
+
+    def test_return_leg_declines_to_guess_on_a_mixed_trip(self):
+        from generator.html_assembler import HTMLAssembler
+
+        by_id = {
+            "a": {"transportation": [{"type": "train"}]},
+            "b": {"transportation": [{"type": "car"}]},
+        }
+        assert HTMLAssembler._return_leg_transportation({}, by_id) == []

@@ -2755,7 +2755,11 @@ class AIContentGenerator:
             return (
                 f"Consider one or more of the following, within about {_format_duration_compact(total_minutes)}: "
                 + ", ".join(parts)
-                + ". Keep transfer/parking buffers between stops."
+                # "parking" assumed a car. On a rail itinerary the reader has
+                # none, and the advice is the same either way: leave slack
+                # between stops. Mode-neutral wording avoids threading the
+                # arrival mode into a day-plan sentence that does not need it.
+                + ". Leave buffer time between stops."
             )
 
         attraction_names: list[str] = []

@@ -342,6 +342,39 @@ class HTMLAssembler:
         return ""
 
     @classmethod
+    def _return_leg_transportation(
+        cls, dest: dict[str, Any] | None, dest_by_id: dict[str, dict[str, Any]] | None
+    ) -> list[dict[str, Any]]:
+        """A synthetic transportation list for the RETURN leg.
+
+        The return has no destination record of its own, so its travel mode has
+        to be inferred. Uses the mode shared by every stated leg of the trip;
+        falls back to this destination's own leg; otherwise empty, which the
+        link builder reads as driving.
+        """
+        mode = cls._trip_wide_arrival_mode(list((dest_by_id or {}).values()))
+        if not mode:
+            mode = cls._booked_arrival_mode(dest)
+        return [{"type": mode}] if mode else []
+
+    @classmethod
+    def _trip_wide_arrival_mode(cls, destinations: Any) -> str:
+        """The single booked mode shared by every stated leg, else "".
+
+        Used for the return leg, which has no destination record of its own.
+        """
+        modes = set()
+        for dest in (destinations or []):
+            if not isinstance(dest, dict):
+                continue
+            for leg in (dest.get("transportation") or []):
+                if isinstance(leg, dict):
+                    mode = str(leg.get("type", "") or "").strip().lower()
+                    if mode:
+                        modes.add(mode)
+        return next(iter(modes)) if len(modes) == 1 else ""
+
+    @classmethod
     def _maps_travelmode_for_trip(cls, trip: dict[str, Any] | None) -> str:
         """travelmode for the route links, from what the manifest actually books.
 
@@ -907,7 +940,14 @@ class HTMLAssembler:
         # diverge from the rendered "DEPARTURE ROUTE OPTIONS" cards.
         gmaps_url = ""
         if return_name:
-            pseudo_dest = {"name": return_name}
+            # Same reasoning as the per-destination links: the return leg of an
+            # all-rail trip should not open driving directions.
+            pseudo_dest = {
+                "name": return_name,
+                # dest_by_id is the only view of the whole trip available here;
+                # fall back to THIS destination's leg when it is absent.
+                "transportation": self._return_leg_transportation(dest, dest_by_id),
+            }
             gmaps_url = self._build_route_gmaps_url("", pseudo_dest, route_options)
 
         html = '<div class="card getting-here-card getting-here-subcard departure-route-card">\n'
@@ -1741,7 +1781,15 @@ class HTMLAssembler:
                 elif self._should_render_without_url(stop, section="en_route_stop"):
                     visible_stops.append((stop, "", is_map_fallback))
 
-        route_destination = {"name": current_route_target or dest.get("name", "")}
+        # Carry the booked legs through. This used to be a name-only dict, so
+        # _build_route_gmaps_url saw no transportation and every per-destination
+        # link fell back to travelmode=driving -- 11 of 12 links on an all-rail
+        # itinerary opened car directions. The trip-level link was correct,
+        # which is why testing the helper in isolation missed it.
+        route_destination = {
+            "name": current_route_target or dest.get("name", ""),
+            "transportation": dest.get("transportation") or [],
+        }
         # _build_route_gmaps_url applies its own [:8] cap (Google's own
         # interactive directions UI is documented to support only a limited
         # number of waypoints reliably) -- now that it's capping the already
