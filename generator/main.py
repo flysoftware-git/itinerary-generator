@@ -2769,6 +2769,26 @@ def main(
     output_file.write_text(html, encoding="utf-8")
     click.echo(f"  ✓ index.html written ({output_file.stat().st_size:,} bytes)")
 
+    # A second, script-free copy for emailing. Gmail rejected index.html as a
+    # virus: nothing malicious is in it, but three remote <script src> loads in
+    # an HTML attachment is the shape generic heuristics score as
+    # Trojan:HTML/Phish. index.html stays as it is -- this is the copy for the
+    # one job it cannot do.
+    try:
+        from generator.email_safe import make_email_safe
+
+        email_html, email_stats = make_email_safe(output_file.read_text(encoding="utf-8"))
+        email_file = output_file.parent / "index-email.html"
+        email_file.write_text(email_html, encoding="utf-8")
+        click.echo(
+            f"  ✓ index-email.html written ({email_file.stat().st_size:,} bytes) — "
+            f"{email_stats['scripts_removed']} script tag(s) removed, "
+            f"map {'replaced with a link' if email_stats['map_replaced'] else 'not present'}"
+        )
+    except Exception as exc:
+        # Never fail a run over the secondary artifact.
+        logger.warning("Mail-safe copy not written: %s", exc)
+
     current_output_urls = _read_output_urls(output_file)
     parity_summary = _latest_direct_batch_parity_summary(output_dir=output_dir)
     click.echo(
