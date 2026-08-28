@@ -1,6 +1,6 @@
 # Places API for Restaurant Discovery
 
-**Probed 2026-08-28 against generator `v2.2.0`. Decision note; nothing built.**
+**Probed 2026-08-28 against generator `v2.2.0`. Option 1 (filter-only) built the same day; see §5.**
 
 Asked whether Google Maps Platform could help with the restaurant problems that
 have taken most of a working session to chase. It can, and the fit is closer
@@ -112,3 +112,59 @@ The badges would keep coming from where they come from today.
 Option 1 is the one I would build. It is most of the value, and it does not
 require deciding the hard question first — though it should be recorded that
 choosing it is a *narrowing*, not an avoidance.
+
+---
+
+## 5. Built: filter-only
+
+Chosen and implemented 2026-08-28 as `generator/places_filter.py`. Places
+decides which of our own candidates survive; no field it returns is published.
+
+The boundary is enforced by the **field mask**, not by intent:
+`places.id,places.displayName,places.priceLevel`. `websiteUri`, `rating`,
+`photos` and `editorialSummary` are not requested at all, which is a stronger
+guarantee than deciding not to render them. A test asserts the mask.
+
+### Three things the probe corrected
+
+**Server-side price filtering hides the expensive.** Filtering the query to
+inexpensive levels made costly restaurants *absent*, which is
+indistinguishable from a place Google has never heard of — Ciel Bleu and a
+corner café both returned `unknown`, so neither could be rejected. The
+destination sweep runs unfiltered as well, and that pass supplies the levels
+that make "too expensive" sayable.
+
+**A city-wide sweep does not reach our candidates.** Forty places is nothing
+against a city: Horváth, Comme Chez Soi and Madami were all `unknown` against
+one. A *targeted per-name* lookup answered 11 of 12 correctly. Those calls are
+spent only on items whose own price is missing or already looks wrong — an
+item marked `$` or `$$` needs no second opinion.
+
+**Decoration in the query changes the answer.** Names arrive as
+`**Comme Chez Soi**`, sometimes with the rating attached. Querying that returns
+*two* places and ranks a different `MODERATE` one first; the clean name returns
+the single `VERY_EXPENSIVE` match. The asterisks flipped the verdict and put a
+two-star restaurant back on a "No fine dining" itinerary.
+
+That one nearly escaped. A first test showed decorated and clean names giving
+identical verdicts — because `lookup_one` memoises, so the second call never
+queried and returned the first one's answer. **A memo that makes two different
+inputs look equivalent is precisely the shape that hides this class of bug.**
+
+### Result, and the problem it revealed
+
+Every Michelin entry is now rejected: Ciel Bleu, Rutz, Tim Raue, Facil,
+La Dégustation, V Zátiší, Lafleur, Seven Swans, Comme Chez Soi, Field. Zero
+`$$$` or `$$$$` reach the page.
+
+**And the page then had 13 restaurants across five cities**, one each for
+Amsterdam and Frankfurt — Frankfurt had 7 of 8 candidates rejected.
+
+The filter did not cause that; it revealed it. Every gate downstream had grown
+stricter — verified-link-or-seed, the budget cap, now the price check — while
+`restaurant_direct_batch_item_count` stayed at 8. **The ask has to exceed the
+survivors, not match them.** Raised to 20.
+
+Worth keeping as the general lesson: each gate was individually justified, and
+nothing was watching their product. A correctness fix that empties the page is
+not finished.

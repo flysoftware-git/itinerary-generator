@@ -223,6 +223,12 @@ restaurants:
 
 en_route_stops:
   enabled: false
+  # Minutes of driving on an arriving leg above which the itinerary suggests
+  # a lunch stop, named from this module's already-verified candidates (a
+  # seeded stop wins over a discovered one; otherwise closest to halfway).
+  # It never invents a place, so it stays silent when `enabled` is false --
+  # with no verified candidates there is nothing honest to recommend.
+  lunch_stop_min_drive_minutes: 180
 
 cultural_events:
   # OFF by default as of 2026-08-22. Measured across three cold-start runs:
@@ -411,7 +417,16 @@ url_discovery:
   # A 3-day destination may legitimately keep 15 attractions (5/day), so a
   # ceiling below ~12 starves the per-day cap rather than trimming waste.
   direct_link_batch_count: 12
-  restaurant_direct_batch_item_count: 8
+  # 8 -> 20 on 2026-08-28. Every gate downstream is now stricter than when 8
+  # was chosen: verified-link-or-seed, the budget cap, and the Places price
+  # check. Frankfurt asked for 8, had 7 rejected as too expensive and published
+  # ONE restaurant; Amsterdam also published one.
+  #
+  # The ask has to exceed the survivors, not match them. Output tokens are 8.6%
+  # of a run (see cost-accounting-and-reduction.md), so a bigger LIST is cheap;
+  # what was expensive was the per-item URL hunt, and that is already bounded
+  # by the per-day cap regardless of how many candidates arrive.
+  restaurant_direct_batch_item_count: 20
   en_route_direct_batch_item_count: 8
   restaurant_direct_batch_min_results: 4
   en_route_direct_batch_min_results: 3
