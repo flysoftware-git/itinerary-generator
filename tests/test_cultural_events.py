@@ -603,3 +603,84 @@ class TestCulturalEventsModelIsPinned:
              patch.object(CulturalEventsDiscoverer, "_load_multi_site_grouping_config", lambda *a, **k: None):
             CulturalEventsDiscoverer(str(cfg), llm_client=llm)
         assert grok.call_args.kwargs["model"] is None
+
+
+def test_drop_events_before_arrival_removes_event_after_departure() -> None:
+    """Real Old Hickory/Asheville run (Dec 13-16, 2026 stay): the filter only
+    ever looked backwards, so an event starting after the traveler flies home
+    passed straight through. Unattendable in exactly the same way as one that
+    ended before they landed."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {"name": "Winter Lights", "dates_in_range": "December 14, 2026"},
+            {"name": "New Year Gala", "dates_in_range": "December 31, 2026"},
+        ],
+    }
+
+    filtered = d._drop_events_before_arrival(result, "December 13-16, 2026")
+
+    assert [e["name"] for e in filtered["events"]] == ["Winter Lights"]
+
+
+def test_drop_events_before_arrival_keeps_run_spanning_the_stay() -> None:
+    """A programme that opened before arrival but is still running during the
+    stay is attendable, and is often the best listing a December trip has.
+    Comparing start dates alone dropped Christmas at Biltmore (Nov 7 - Jan 10)
+    from a Dec 13-16 Asheville stay."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {"name": "Christmas at Biltmore", "dates_in_range": "November 7, 2026 - January 10, 2027"},
+        ],
+    }
+
+    filtered = d._drop_events_before_arrival(result, "December 13-16, 2026")
+
+    assert [e["name"] for e in filtered["events"]] == ["Christmas at Biltmore"]
+
+
+def test_sanitize_local_tip_drops_explicit_date_outside_stay() -> None:
+    """The tip sanitizer only matched weekday NAMES, so "December 5-6, 2026"
+    -- which contains no weekday word -- sailed through and was recommended
+    to a traveler arriving on the 13th."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "local_tip": "Check out The Big Crafty, taking place on December 5-6, 2026.",
+        "local_tip_name": "The Big Crafty",
+        "local_tip_url": "https://example.com/",
+    }
+
+    sanitized = d._sanitize_local_tip_by_itinerary_days(result, "December 13-16, 2026")
+
+    assert "local_tip" not in sanitized
+    assert "local_tip_name" not in sanitized
+    assert "local_tip_url" not in sanitized
+
+
+def test_sanitize_local_tip_runs_even_when_events_were_found() -> None:
+    """The sanitizer used to return early whenever has_events was true, which
+    skipped the check for precisely the destinations most likely to carry a
+    tip. The tip renders either way."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [{"name": "Something Real", "dates_in_range": "December 14, 2026"}],
+        "local_tip": "Do not miss the market on December 3, 2026.",
+    }
+
+    sanitized = d._sanitize_local_tip_by_itinerary_days(result, "December 13-16, 2026")
+
+    assert "local_tip" not in sanitized
+
+
+def test_sanitize_local_tip_keeps_date_inside_stay() -> None:
+    d = _discoverer()
+    result = {"has_events": True, "local_tip": "Winter Lights opens December 14, 2026."}
+
+    sanitized = d._sanitize_local_tip_by_itinerary_days(result, "December 13-16, 2026")
+
+    assert sanitized["local_tip"] == "Winter Lights opens December 14, 2026."

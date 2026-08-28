@@ -628,6 +628,16 @@ class CulturalEventsDiscoverer:
         for event in result["events"]:
             event_date_text = str(event.get("dates_in_range", "") or event.get("date", "") or "")
             event_start = self._parse_event_start_date(event_date_text, fallback_year=dest_start.year)
+            event_end = self._parse_event_end_date(event_date_text, fallback_year=dest_start.year)
+            # A run that started before arrival but is still going is
+            # attendable, and is often the single best listing a December
+            # stay has (a Christmas programme opening in November and
+            # running to January). Comparing starts alone dropped exactly
+            # those. Only reject when the run has demonstrably FINISHED
+            # before arrival; with no parseable end, fall back to the start.
+            if event_end is not None and event_end.date() >= dest_start.date():
+                kept.append(event)
+                continue
             if event_start is not None and event_start.date() < dest_start.date():
                 logger.info(
                     "  Dropping cultural event before arrival: '%s' (%s) precedes destination start %s",
@@ -650,6 +660,35 @@ class CulturalEventsDiscoverer:
         if not kept:
             result["has_events"] = False
         return result
+
+    def _parse_event_end_date(self, date_text: str, fallback_year: int) -> datetime | None:
+        """The LAST date named in an event's date text, when there is one.
+
+        Deliberately separate from _parse_event_start_date rather than a
+        change to it: that function is relied on elsewhere and by tests, and
+        the two questions ("when does this open" / "is it over yet") have
+        different right answers for a multi-month run. Returns None when the
+        text names only one date, or names none it can parse -- callers treat
+        that as "no opinion" rather than as an expired event.
+        """
+        text = (date_text or "").replace("–", "-").strip()
+        if not text:
+            return None
+        found: list[datetime] = []
+        for m in re.finditer(
+            r"([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4}))?", text
+        ):
+            month = self._MONTH_NAME_TO_NUMBER.get(m.group(1).lower())
+            if not month:
+                continue
+            year = int(m.group(3)) if m.group(3) else fallback_year
+            try:
+                found.append(datetime(year, month, int(m.group(2))))
+            except ValueError:
+                continue
+        if len(found) < 2:
+            return None
+        return max(found)
 
     def _parse_event_start_date(self, date_text: str, fallback_year: int) -> datetime | None:
         text = (date_text or "").replace("–", "-").strip()

@@ -164,6 +164,9 @@ def strip_markdown_emphasis(value: Any) -> Any:
     return value
 
 
+_FOCUS_LOOKBACK_PERIODS = 6
+
+
 class AIContentGenerator:
     _CHAIN_NAME_TOKENS = {
         "mcdonald",
@@ -3297,6 +3300,30 @@ class AIContentGenerator:
         if days:
             for day_index, day in enumerate(days, start=1):
                 periods = day.get("periods", []) or []
+                # Lookback for _pick_non_repeating_focus, bounded by the pool.
+                # A window at least as long as the attraction list makes every
+                # candidate ineligible, and _pick_non_repeating_focus then
+                # falls back to base_focus -- which is the very repeat we are
+                # trying to avoid. Capping at len(attractions) - 1 guarantees
+                # at least one eligible candidate always remains, so a small
+                # pool keeps its existing adjacent-day rotation while a large
+                # one gets real cross-day memory.
+                #
+                # Was 2 periods, which
+                # is under one day: an attraction named in Day 3's Afternoon
+                # had already fallen out of the window by Day 4's Morning, so
+                # a stay repeated the Hermitage and Bledsoe Creek on
+                # consecutive days (real Old Hickory run, Dec 2026). 6 is the
+                # full window `recent_focuses` is already trimmed to below --
+                # two days of periods -- so this widens the memory rather
+                # than adding a new disqualifier. The two reverted attempts
+                # noted in _pick_non_repeating_focus both failed by making
+                # names INELIGIBLE; this keeps the existing preference-with-
+                # fallback, so a small attraction pool still degrades to
+                # repeating rather than to nothing.
+                _focus_lookback = min(
+                    _FOCUS_LOOKBACK_PERIODS, max(1, len(attraction_names) - 1)
+                )
                 dinner_name = restaurant_names[(day_index - 1) % len(restaurant_names)] if restaurant_names else ""
                 for period in periods:
                     label = str(period.get("period", "")).title()
@@ -3308,7 +3335,7 @@ class AIContentGenerator:
                         continue
 
                     if label == "Morning":
-                        focus = _pick_non_repeating_focus(day_index, offset=0, recent_focuses=recent_focuses[-2:])
+                        focus = _pick_non_repeating_focus(day_index, offset=0, recent_focuses=recent_focuses[-_focus_lookback:])
                         if focus:
                             updated = _replace_first_attraction_mention(summary, focus)
                             period["summary"] = updated
@@ -3320,7 +3347,7 @@ class AIContentGenerator:
                         if "consider one or more of the following" in low_summary:
                             _record_focus_mentions(summary, recent_focuses)
                             continue
-                        focus = _pick_non_repeating_focus(day_index, offset=1, recent_focuses=recent_focuses[-2:])
+                        focus = _pick_non_repeating_focus(day_index, offset=1, recent_focuses=recent_focuses[-_focus_lookback:])
                         if focus:
                             updated = _replace_first_attraction_mention(summary, focus)
                             period["summary"] = updated
@@ -3339,7 +3366,7 @@ class AIContentGenerator:
                         # non-repeating rotation here, offset past the
                         # Morning/Afternoon picks for the same day so all
                         # three periods prefer distinct attractions.
-                        focus = _pick_non_repeating_focus(day_index, offset=2, recent_focuses=recent_focuses[-2:])
+                        focus = _pick_non_repeating_focus(day_index, offset=2, recent_focuses=recent_focuses[-_focus_lookback:])
                         if focus:
                             updated = _replace_first_attraction_mention(summary, focus)
                             period["summary"] = updated

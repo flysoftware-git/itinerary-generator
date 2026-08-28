@@ -3156,3 +3156,52 @@ def test_inject_travel_realism_strips_multi_hour_hike_mention_from_evening_sched
     # Morning is untouched -- a multi-hour hike is a perfectly realistic
     # Morning pick; only Evening candidacy is affected.
     assert "Angels Landing" in updated[0]["periods"][0]["summary"]
+
+
+def test_inject_travel_realism_does_not_repeat_focus_two_days_later() -> None:
+    """Real Old Hickory run (Dec 2026): the focus lookback was 2 periods --
+    under a single day -- so an attraction named on Day 3 was already
+    forgotten by Day 4 and got named again. With a pool this size the window
+    now spans two days, while staying capped below the pool size so at least
+    one candidate is always eligible (see _focus_lookback)."""
+    g = _gen()
+    days = [
+        {
+            "day_label": f"Day {n}",
+            "periods": [
+                {"period": "Morning", "summary": "Start with Andrew Jackson's Hermitage and keep parking buffers."},
+                {"period": "Afternoon", "summary": "Spend the afternoon at Bledsoe Creek State Park."},
+                {"period": "Evening", "summary": "Dinner near your base."},
+            ],
+        }
+        for n in range(1, 5)
+    ]
+
+    out = g._inject_travel_realism(
+        days,
+        {"drive_time": "40 min"},
+        "Nashville",
+        "Asheville",
+        attractions=[
+            {"name": "Andrew Jackson's Hermitage"},
+            {"name": "Bledsoe Creek State Park"},
+            {"name": "Old Hickory Lake"},
+            {"name": "Long Hunter State Park"},
+            {"name": "Lock 3 Recreation Area"},
+            {"name": "Cheekwood Estate"},
+        ],
+        restaurants=[{"name": "Flat Tire Diner"}, {"name": "Old Hickory Grill"}],
+    )
+
+    # With 6 attractions across 4 three-period days some reuse is
+    # arithmetically forced, so this asserts what the widened window
+    # actually buys: an attraction named on one day is not named again the
+    # very next day. Under the old 2-period lookback it was.
+    for earlier, later in zip(out, out[1:]):
+        earlier_names = " ".join(x["summary"].lower() for x in earlier["periods"])
+        later_morning = later["periods"][0]["summary"].lower()
+        for name in ("andrew jackson's hermitage", "bledsoe creek state park"):
+            if name in later_morning:
+                assert name not in earlier_names, (
+                    f"{name!r} headlines a morning the day after it already appeared"
+                )

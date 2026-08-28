@@ -342,3 +342,32 @@ class TestReorderedAttractionNames:
     def test_unrelated_attractions_untouched(self):
         names = ["Charles Bridge", "Prague Castle", "Old Town Square"]
         assert self._run(names) == names
+
+
+class TestEnRouteSuppressionCoversBothSources:
+    """Two independent sources produce en-route stops, not one.
+
+    ai_content clears them for a rail arrival; url_discovery HARVESTS its own
+    afterwards. Clearing only the first left Brussels with a 25km detour to
+    Mechelen on an all-rail itinerary (2026-08-27 five-city run).
+    """
+
+    def test_both_modules_agree_on_the_modes(self):
+        """Duplicated because importing across the two would be circular. A
+        test is the cheapest thing that stops them drifting."""
+        from generator.ai_content import AIContentGenerator
+        from generator.url_discovery import URLDiscoverer
+
+        assert URLDiscoverer._NON_DRIVING_ARRIVAL_MODES == AIContentGenerator._NON_DRIVING_ARRIVAL_MODES
+
+    @pytest.mark.parametrize("mode", ["train", "plane", "ship", "ferry", "bus", "shuttle"])
+    def test_discovery_side_suppresses_non_driving_arrivals(self, mode):
+        from generator.url_discovery import URLDiscoverer
+
+        assert URLDiscoverer._arrival_is_not_self_driven({"transportation": [{"type": mode}]}) is True
+
+    @pytest.mark.parametrize("dest", [{"transportation": [{"type": "car"}]}, {}, None])
+    def test_discovery_side_leaves_road_trips_alone(self, dest):
+        from generator.url_discovery import URLDiscoverer
+
+        assert URLDiscoverer._arrival_is_not_self_driven(dest) is False

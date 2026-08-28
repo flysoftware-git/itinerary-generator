@@ -10967,6 +10967,23 @@ class URLDiscoverer:
             )
         return result
 
+    #: Kept in step with AIContentGenerator._NON_DRIVING_ARRIVAL_MODES.
+    #: Duplicated rather than imported: url_discovery importing ai_content
+    #: would be circular, and a shared constants module for one frozenset is
+    #: not worth the indirection.
+    _NON_DRIVING_ARRIVAL_MODES = frozenset({"train", "plane", "ship", "ferry", "bus", "shuttle"})
+
+    @classmethod
+    def _arrival_is_not_self_driven(cls, dest: dict[str, Any] | None) -> bool:
+        if not isinstance(dest, dict):
+            return False
+        for leg in (dest.get("transportation") or []):
+            if isinstance(leg, dict):
+                mode = str(leg.get("type", "") or "").strip().lower()
+                if mode:
+                    return mode in cls._NON_DRIVING_ARRIVAL_MODES
+        return False
+
     def _discover_en_route_stops(
         self,
         ai: dict[str, Any],
@@ -10993,6 +11010,20 @@ class URLDiscoverer:
         # they moved to Maps links, and remain a priced enrichment rather
         # than part of the core itinerary.
         if getattr(self, "_disable_en_route", False):
+            getting_here["en_route_stops"] = []
+            ai["getting_here"] = getting_here
+            return
+
+        # A booked train, ferry or flight has no roadside to stop at.
+        # ai_content clears stops for the same reason, but THIS path harvests
+        # its own independently, so clearing there alone left Brussels with a
+        # 25km detour to Mechelen on a rail itinerary. Two sources, one rule --
+        # the same mistake the trails switch took five attempts to close.
+        if self._arrival_is_not_self_driven(dest):
+            if getting_here.get("en_route_stops"):
+                logger.info(
+                    "En-route discovery skipped for '%s': arrival is not by road", dest_name
+                )
             getting_here["en_route_stops"] = []
             ai["getting_here"] = getting_here
             return
