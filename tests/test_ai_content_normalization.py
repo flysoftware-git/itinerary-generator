@@ -3246,3 +3246,76 @@ def test_pick_lunch_stop_skips_stops_with_no_resolved_position() -> None:
         ],
     }
     assert AIContentGenerator._pick_lunch_stop(gh)["name"] == "Placed"
+
+
+def test_departure_leg_gets_distance_and_time_badges() -> None:
+    """html_assembler gates the Departure Route Options mileage/duration
+    badges on getting_there.distance_miles + drive_time, and nothing ever set
+    them, so the card rendered a bare label."""
+    g = _gen()
+    trip = {
+        "trip": {
+            "return": "Charlotte Douglas International Airport",
+            "return_lat": 35.2144, "return_lng": -80.9473,
+        },
+        "destinations": [
+            {"id": "asheville", "name": "Asheville, North Carolina",
+             "lat": 35.5951, "lng": -82.5515, "ai_content": {"getting_there": {}}},
+        ],
+    }
+
+    g._populate_departure_leg_distance(trip)
+
+    gt = trip["destinations"][0]["ai_content"]["getting_there"]
+    assert gt["distance_miles"]
+    assert gt["drive_time"]
+
+
+def test_departure_leg_measures_from_the_base_when_the_last_stop_is_a_day_trip() -> None:
+    """The traveler departs from where they slept, not from the day trip that
+    happens to be last in the list."""
+    g = _gen()
+    trip = {
+        "trip": {"return": "Nashville International Airport",
+                 "return_lat": 36.1263, "return_lng": -86.6774},
+        "destinations": [
+            {"id": "oldhickory", "name": "Old Hickory", "lat": 36.2506, "lng": -86.6144},
+            {"id": "franklin", "name": "Franklin", "lat": 35.9251, "lng": -86.8689,
+             "group_with": "oldhickory", "ai_content": {"getting_there": {}}},
+        ],
+    }
+
+    g._populate_departure_leg_distance(trip)
+
+    from_base = trip["destinations"][1]["ai_content"]["getting_there"]["distance_miles"]
+
+    trip2 = {
+        "trip": {"return": "Nashville International Airport",
+                 "return_lat": 36.1263, "return_lng": -86.6774},
+        "destinations": [
+            {"id": "oldhickory", "name": "Old Hickory", "lat": 36.2506, "lng": -86.6144},
+            {"id": "franklin", "name": "Franklin", "lat": 35.9251, "lng": -86.8689,
+             "ai_content": {"getting_there": {}}},
+        ],
+    }
+    g._populate_departure_leg_distance(trip2)
+    from_day_trip = trip2["destinations"][1]["ai_content"]["getting_there"]["distance_miles"]
+
+    assert from_base != from_day_trip
+
+
+def test_departure_leg_leaves_an_existing_value_alone() -> None:
+    g = _gen()
+    trip = {
+        "trip": {"return": "Charlotte", "return_lat": 35.2144, "return_lng": -80.9473},
+        "destinations": [
+            {"id": "asheville", "name": "Asheville", "lat": 35.5951, "lng": -82.5515,
+             "ai_content": {"getting_there": {"distance_miles": 130, "drive_time": "2 hr 5 min"}}},
+        ],
+    }
+
+    g._populate_departure_leg_distance(trip)
+
+    gt = trip["destinations"][0]["ai_content"]["getting_there"]
+    assert gt["distance_miles"] == 130
+    assert gt["drive_time"] == "2 hr 5 min"
