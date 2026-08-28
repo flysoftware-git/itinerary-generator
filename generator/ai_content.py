@@ -164,6 +164,13 @@ def strip_markdown_emphasis(value: Any) -> Any:
     return value
 
 
+# A leg longer than this earns an explicit lunch-stop suggestion. Three
+# hours is the point at which "you will need to eat on the way" stops being
+# obvious-in-advance and starts being something an itinerary should say --
+# below it, a late start or an early arrival absorbs the meal. Overridable
+# via en_route_stops.lunch_stop_min_drive_minutes.
+DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES = 180
+
 _FOCUS_LOOKBACK_PERIODS = 6
 
 
@@ -277,6 +284,52 @@ class AIContentGenerator:
         return any(
             keyword in name for keyword in AIContentGenerator._EVENING_UNSUITABLE_VENUE_KEYWORDS
         )
+
+    @staticmethod
+    def _pick_lunch_stop(
+        getting_here: Any, threshold_minutes: int = DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
+    ) -> dict[str, Any] | None:
+        """The en-route stop to suggest a lunch break at, or None.
+
+        Fires only when the arriving leg is at least `threshold_minutes`, and
+        only ever returns a stop that ALREADY survived en-route discovery --
+        detour thresholds, route proximity and URL verification included. It
+        never names a place of its own, so it cannot introduce a stop the
+        rest of the pipeline has not verified. That also means it goes quiet
+        when en-route discovery is disabled, which is the honest outcome:
+        with no verified candidates there is nothing to recommend.
+
+        Preference order:
+          1. a SEEDED stop (manifest `en_route_seeds`) -- an explicit human
+             intent outranks anything discovery proposed on its own,
+          2. otherwise the stop closest to the middle of the route.
+
+        Within either group, closest-to-halfway wins. A stop with no
+        resolved `route_progress_ratio` is skipped rather than treated as
+        position zero -- the same reasoning as _route_waypoint_sort_key.
+        """
+        if not isinstance(getting_here, dict):
+            return None
+        drive_minutes = AIContentGenerator._parse_duration_minutes(
+            str(getting_here.get("drive_time", "") or "")
+        )
+        if drive_minutes < max(0, int(threshold_minutes or 0)):
+            return None
+
+        best: tuple[int, float, dict[str, Any]] | None = None
+        for stop in (getting_here.get("en_route_stops", []) or []):
+            if not isinstance(stop, dict) or not str(stop.get("name", "") or "").strip():
+                continue
+            try:
+                ratio = float(stop.get("route_progress_ratio"))
+            except (TypeError, ValueError):
+                continue
+            if not (0.0 <= ratio <= 1.0):
+                continue
+            rank = (0 if stop.get("is_seed") else 1, abs(ratio - 0.5))
+            if best is None or rank < (best[0], best[1]):
+                best = (rank[0], rank[1], stop)
+        return best[2] if best else None
 
     @staticmethod
     def _parse_duration_minutes(raw: str) -> int:
@@ -393,6 +446,21 @@ class AIContentGenerator:
         self._enable_url_candidate_experiment = bool(
             self._config.get("ai", {}).get("enable_url_candidate_experiment", False)
         )
+        # Minutes of driving above which the arrival note suggests a lunch
+        # stop. Lives under en_route_stops because the suggestion is drawn
+        # from that module's verified candidates and is silent without them.
+        try:
+            self._lunch_stop_min_drive_minutes = max(
+                0,
+                int(
+                    (self._config.get("en_route_stops", {}) or {}).get(
+                        "lunch_stop_min_drive_minutes", DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            self._lunch_stop_min_drive_minutes = DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
+
         ai_cfg = self._config.get("ai", {}) or {}
         try:
             self._max_concurrent_destinations = max(1, int(ai_cfg.get("max_concurrent_destinations", 4)))
@@ -2084,35 +2152,94 @@ class AIContentGenerator:
         a real, geocoded day-trip site, per the manifest's `group_with`),
         so recompute rather than trust the guess there.
 
-        Deliberately scoped to grouped children only, not every
-        destination's getting_here leg: the AI's distance estimate has
-        only been observed to be unreliable for this specific short
-        day-trip case so far. Whether the same unreliability holds for
-        ordinary multi-day-destination legs is an open question and a
-        candidate follow-up, not something to change on a single data
-        point.
+        That scoping used to be grouped-children-only, on the grounds that
+        the failure had only been observed for short day-trip legs and one
+        data point was not enough to widen it. A second observation has
+        since arrived from an ordinary leg: Old Hickory -> Asheville came
+        back as "304 mi" / "1 hr 30 min", an implied 203 mph. So ordinary
+        legs are now checked too -- but differently.
+
+        Grouped children are RECOMPUTED unconditionally: both endpoints are
+        known exactly (a geocoded base and a geocoded day-trip site), so a
+        straight-line estimate beats a guess every time.
+
+        Ordinary legs are only corrected when the stated pair is
+        INTERNALLY IMPOSSIBLE -- an implied average speed outside
+        _PLAUSIBLE_LEG_SPEED_MPH. Over a long leg on mountain roads a
+        haversine estimate is not obviously better than a good model
+        answer, so a plausible value is left alone; this catches the
+        arithmetic nonsense without overwriting sound data.
+
+        The origin of an ordinary leg is the previous NON-grouped
+        destination, not simply the previous list entry. A run of day trips
+        sits between two lodging stops, and treating the last day trip as
+        the origin measures a leg nobody drives.
         """
         destinations = trip.get("destinations", []) or []
         dest_by_id = {
             d.get("id"): d for d in destinations if isinstance(d, dict) and d.get("id")
         }
+        previous_lodging_stop: dict[str, Any] | None = None
         for dest in destinations:
-            if not isinstance(dest, dict) or not is_grouped(dest):
+            if not isinstance(dest, dict):
                 continue
-            base = dest_by_id.get(group_base_id(dest))
-            if not isinstance(base, dict):
+            grouped = is_grouped(dest)
+            origin = dest_by_id.get(group_base_id(dest)) if grouped else previous_lodging_stop
+            if not grouped:
+                # Recorded for the NEXT ordinary leg before any continue
+                # below, so a skipped destination still anchors the chain.
+                previous_lodging_stop = dest
+            if not isinstance(origin, dict):
                 continue
             ai_content = dest.get("ai_content")
             getting_here = ai_content.get("getting_here") if isinstance(ai_content, dict) else None
             if not isinstance(getting_here, dict):
                 continue
+            if not grouped and self._leg_speed_is_plausible(getting_here):
+                continue
             miles, time_str = _estimate_haversine_route(
-                base.get("lat"), base.get("lng"), dest.get("lat"), dest.get("lng"),
+                origin.get("lat"), origin.get("lng"), dest.get("lat"), dest.get("lng"),
             )
             if miles is None or time_str is None:
                 continue
+            if not grouped:
+                logger.info(
+                    "  Correcting implausible leg for '%s': %s / %s -> %s mi / %s",
+                    dest.get("name", ""), getting_here.get("distance_miles", ""),
+                    getting_here.get("drive_time", ""), miles, time_str,
+                )
             getting_here["distance_miles"] = miles
             getting_here["drive_time"] = time_str
+
+    # Implied average speed a stated distance/time pair must fall within to
+    # be believed. The floor catches a time so long it implies walking; the
+    # ceiling catches the real defect -- 203 mph on Old Hickory -> Asheville,
+    # 424 mph on the grouped case this check grew out of. Generous on both
+    # sides on purpose: this rejects the impossible, not the merely odd.
+    _PLAUSIBLE_LEG_SPEED_MPH: tuple[float, float] = (10.0, 85.0)
+
+    @classmethod
+    def _leg_speed_is_plausible(cls, getting_here: Any) -> bool:
+        """True when a leg's stated distance and time imply a sane speed.
+
+        Returns True when either value is missing or unparseable: no opinion
+        is not the same as a failed check, and a leg with no stated distance
+        must not be silently overwritten on that basis alone.
+        """
+        if not isinstance(getting_here, dict):
+            return True
+        try:
+            miles = float(str(getting_here.get("distance_miles", "")).strip().split()[0])
+        except (TypeError, ValueError, IndexError):
+            return True
+        minutes = AIContentGenerator._parse_duration_minutes(
+            str(getting_here.get("drive_time", "") or "")
+        )
+        if miles <= 0 or minutes <= 0:
+            return True
+        mph = miles / (minutes / 60.0)
+        low, high = cls._PLAUSIBLE_LEG_SPEED_MPH
+        return low <= mph <= high
 
     def _normalize_environment(self, environment: Any, dates: str, dest: dict[str, Any]) -> Any:
         if not isinstance(environment, dict):
@@ -2542,9 +2669,15 @@ class AIContentGenerator:
         destination_daily_activity_hours: Any = None,
         restaurants: list[dict[str, Any]] | None = None,
         group_day_trip_names: list[str] | None = None,
+        lunch_stop_threshold_minutes: int | None = None,
     ) -> list[dict[str, Any]]:
         if not days:
             return days
+
+        if lunch_stop_threshold_minutes is None:
+            lunch_stop_threshold_minutes = getattr(
+                self, "_lunch_stop_min_drive_minutes", DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
+            )
 
         attractions = attractions or []
 
@@ -3113,6 +3246,17 @@ class AIContentGenerator:
                 arrival_note = f"Travel from {previous_destination}"
             if arrival_note:
                 first_periods[0]["summary"] = f"{arrival_note}. {existing}".strip()
+
+        # A long arriving leg gets an explicit lunch-stop suggestion, named
+        # from the verified en-route candidates rather than invented here.
+        lunch_stop = AIContentGenerator._pick_lunch_stop(getting_here, lunch_stop_threshold_minutes)
+        if lunch_stop and first_periods:
+            lunch_name = str(lunch_stop.get("name", "") or "").strip()
+            summary = str(first_periods[0].get("summary", "") or "")
+            if lunch_name and lunch_name.lower() not in summary.lower():
+                first_periods[0]["summary"] = (
+                    f"{summary} Break for lunch around {lunch_name}, roughly the midpoint."
+                ).strip()
 
         # Extend capacity-aware Afternoon packing beyond the single arrival-day
         # case above: any additional in-stay day (Day 2+) has the full activity

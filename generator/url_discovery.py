@@ -5810,6 +5810,9 @@ class URLDiscoverer:
             "Generate a list of local restaurants "
             f"for {dest_name}{date_clause} with clickable links to source material and corresponding Google Maps content. "
             f"{price_clause}"
+            "For EVERY item state the price level as exactly one of $, $$, $$$ or $$$$, "
+            "and state the cuisine as a food style (Thai, Vietnamese, bakery, brewpub) -- "
+            "never a city or district name. "
             "Keep only well-reviewed items, include cuisine variety, and keep only places likely open on the indicated dates. "
             "Include only suggestions with reliable clickable links."
         )
@@ -9264,6 +9267,7 @@ class URLDiscoverer:
         # Enrich any restaurant that has a valid URL but missing metadata.
         for rest in restaurants:
             self._maybe_upgrade_tripadvisor_restaurant_link(rest, dest_name)
+            self._strip_place_name_cuisine(rest, dest_name)
             self._enrich_restaurant_metadata_from_url(rest)
             self._backfill_restaurant_metadata_from_available_text(rest)
 
@@ -9530,6 +9534,32 @@ class URLDiscoverer:
             rest["cuisine"] = str(inferred.get("cuisine") or "").strip()
         if needs_price and inferred.get("price_range"):
             rest["price_range"] = str(inferred.get("price_range") or "").strip()
+
+    #: Cuisine values that are really a place, not a food style. The harvest
+    #: returned cuisine="Frankfurt" for THE ROOF and African Queen, which reads
+    #: as a cuisine badge saying the name of the city the reader is already in.
+    _CUISINE_PLACE_STOPWORDS = ("district", "quarter", "centre", "center", "old town")
+
+    @classmethod
+    def _strip_place_name_cuisine(cls, rest: dict[str, Any], dest_name: str) -> None:
+        """Blank a cuisine field that just repeats the destination.
+
+        Cleared rather than corrected: an empty badge is honest, whereas
+        guessing a cuisine from the name would invent a fact about the
+        restaurant. _backfill_restaurant_metadata_from_available_text may still
+        infer one legitimately from the page text afterwards.
+        """
+        if not isinstance(rest, dict):
+            return
+        cuisine = str(rest.get("cuisine", "") or "").strip()
+        if not cuisine:
+            return
+        lowered = cuisine.lower()
+        dest_tokens = {
+            tok for tok in re.split(r"[^a-z]+", str(dest_name or "").lower()) if len(tok) > 3
+        }
+        if lowered in dest_tokens or any(w in lowered for w in cls._CUISINE_PLACE_STOPWORDS):
+            rest["cuisine"] = ""
 
     @staticmethod
     def _extract_restaurant_meta_from_html(html: str) -> dict[str, str]:

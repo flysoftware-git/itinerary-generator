@@ -646,3 +646,72 @@ class TestBatchCacheKeyReflectsTheAsk:
     @pytest.mark.parametrize("kind", ["attraction", "en_route", "trail"])
     def test_kinds_that_take_no_budget_keep_the_original_key(self, kind):
         assert self._fp({"dining": "low-cost"}, kind) == ""
+
+
+class TestPriceAndCuisineAreRequested:
+    """Frankfurt published five restaurants with no price badge at all.
+
+    The batch query used price as a FILTER but never asked for it to be
+    returned, so rows came back without one -- and an item with no price
+    bypasses the budget cap entirely, since the cap cannot judge what it
+    cannot see.
+    """
+
+    @staticmethod
+    def _query():
+        from generator.url_discovery import URLDiscoverer
+
+        d = URLDiscoverer.__new__(URLDiscoverer)
+        d._trip_budget = {"dining": "low-cost"}
+        return d._restaurant_direct_batch_query("Frankfurt, Germany", "September 11-12, 2026")
+
+    def test_the_query_asks_for_a_price_level_per_item(self):
+        q = self._query()
+        assert "For EVERY item state the price level" in q
+        assert "$$$$" in q
+
+    def test_the_query_asks_for_a_food_style_not_a_place(self):
+        """cuisine came back as "Frankfurt" for two entries."""
+        q = self._query()
+        assert "never a city or district name" in q
+
+
+class TestPlaceNameCuisineIsCleared:
+    """A cuisine badge reading "Frankfurt" tells the reader nothing."""
+
+    @staticmethod
+    def _clean(cuisine, dest):
+        from generator.url_discovery import URLDiscoverer
+
+        rest = {"cuisine": cuisine}
+        URLDiscoverer._strip_place_name_cuisine(rest, dest)
+        return rest["cuisine"]
+
+    @pytest.mark.parametrize(
+        "cuisine, dest",
+        [
+            ("Frankfurt", "Frankfurt, Germany"),
+            ("Brussels", "Brussels, Belgium"),
+            ("Old Town", "Prague, Czech Republic"),
+            ("Centre", "Brussels, Belgium"),
+        ],
+    )
+    def test_place_names_are_cleared(self, cuisine, dest):
+        assert self._clean(cuisine, dest) == ""
+
+    @pytest.mark.parametrize(
+        "cuisine, dest",
+        [
+            ("Thai", "Frankfurt, Germany"),
+            ("Belgian", "Brussels, Belgium"),
+            ("Vietnamese", "Berlin, Germany"),
+            ("Bakery", "Prague, Czech Republic"),
+        ],
+    )
+    def test_real_cuisines_survive(self, cuisine, dest):
+        """Including nationality cuisines that echo the country -- "Belgian" in
+        Belgium is a food style, not a place name."""
+        assert self._clean(cuisine, dest) == cuisine
+
+    def test_an_empty_cuisine_is_left_alone(self):
+        assert self._clean("", "Berlin, Germany") == ""
