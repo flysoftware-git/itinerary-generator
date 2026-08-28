@@ -879,6 +879,7 @@ class AIContentGenerator:
 
         self._enforce_banned_marketing_language(trip)
         self._override_grouped_child_distance_from_geocode(trip)
+        self._populate_departure_leg_distance(trip)
         self._inject_lunch_stop_suggestions(trip)
         self._deduplicate_cross_section_tips(trip)
         self._deduplicate_cross_destination_what_to_know(trip)
@@ -2176,6 +2177,73 @@ class AIContentGenerator:
         selected = list(protected_items)
         selected.extend(remaining[: max(0, target - len(selected))])
         return selected
+
+    def _populate_departure_leg_distance(self, trip: dict[str, Any]) -> None:
+        """Give the departure leg the distance/time the arriving legs have.
+
+        The Departure Route Options card has always been able to render
+        mileage and duration badges -- html_assembler gates them on
+        `getting_there.distance_miles` and `drive_time` -- but nothing ever
+        set those two keys. The only writer of that dict populates it when a
+        one-way scenic drive aligns with the return route, which is about
+        route OPTIONS and says nothing about the leg itself, so the badges
+        were unreachable and the card showed a bare label.
+
+        Computed from geometry rather than asked of the model: both endpoints
+        are known exactly (a geocoded destination and a geocoded return
+        gateway), which is the same condition under which
+        _override_grouped_child_distance_from_geocode recomputes rather than
+        trusts a guess.
+
+        A value already present is left alone -- if some future path does
+        supply a real routed distance, it beats a straight-line estimate.
+        """
+        destinations = trip.get("destinations", []) or []
+        if not destinations:
+            return
+        trip_meta = trip.get("trip", {}) if isinstance(trip.get("trip"), dict) else {}
+        if trip_meta.get("return_lat") is None or trip_meta.get("return_lng") is None:
+            return
+
+        last_dest = destinations[-1]
+        if not isinstance(last_dest, dict):
+            return
+
+        # The traveler departs from where they slept. When the final entry is
+        # a grouped day trip, that is its base -- the same correction
+        # html_assembler applies to this card's label.
+        origin = last_dest
+        if is_grouped(last_dest):
+            dest_by_id = {
+                d.get("id"): d for d in destinations
+                if isinstance(d, dict) and d.get("id")
+            }
+            base = dest_by_id.get(group_base_id(last_dest))
+            if isinstance(base, dict):
+                origin = base
+
+        ai_content = last_dest.get("ai_content")
+        if not isinstance(ai_content, dict):
+            return
+        getting_there = ai_content.get("getting_there")
+        if not isinstance(getting_there, dict):
+            getting_there = {}
+            ai_content["getting_there"] = getting_there
+        if str(getting_there.get("distance_miles", "") or "").strip() and                 str(getting_there.get("drive_time", "") or "").strip():
+            return
+
+        miles, time_str = _estimate_haversine_route(
+            origin.get("lat"), origin.get("lng"),
+            trip_meta.get("return_lat"), trip_meta.get("return_lng"),
+        )
+        if miles is None or time_str is None:
+            return
+        getting_there["distance_miles"] = miles
+        getting_there["drive_time"] = time_str
+        logger.info(
+            "  Departure leg from '%s' to '%s': %s mi / %s",
+            origin.get("name", ""), trip_meta.get("return", ""), miles, time_str,
+        )
 
     def _inject_lunch_stop_suggestions(self, trip: dict[str, Any]) -> None:
         """Add a lunch-stop line to the arrival note on long driving legs.
