@@ -371,3 +371,55 @@ class TestEnRouteSuppressionCoversBothSources:
         from generator.url_discovery import URLDiscoverer
 
         assert URLDiscoverer._arrival_is_not_self_driven(dest) is False
+
+
+class TestGettingHereMatchesTheBookedMode:
+    """The Getting Here section described a drive on an all-rail itinerary.
+
+    The 2026-08-27 Europe output read "Take the E19 from Antwerp", 95 mi,
+    2 hrs 15 min -- for a booked 8-mile airport train. The prompt asked for
+    highways and parking unconditionally, and the Maps link was hardcoded to
+    travelmode=driving, so the link contradicted the section around it.
+    """
+
+    def test_all_rail_trip_links_use_transit(self):
+        from generator.html_assembler import HTMLAssembler
+
+        trip = {"destinations": [{"transportation": [{"type": "train"}]},
+                                 {"transportation": [{"type": "train"}]}]}
+        assert HTMLAssembler._maps_travelmode_for_trip(trip) == "transit"
+
+    @pytest.mark.parametrize(
+        "trip",
+        [
+            {"destinations": [{"transportation": [{"type": "car"}]}]},
+            {"destinations": [{"transportation": [{"type": "train"}]},
+                              {"transportation": [{"type": "car"}]}]},
+            {"destinations": [{"name": "no legs stated"}]},
+            {},
+        ],
+    )
+    def test_road_mixed_and_unstated_stay_driving(self, trip):
+        """Driving is this generator's original and still most common case, so
+        anything not unambiguously transit keeps it."""
+        from generator.html_assembler import HTMLAssembler
+
+        assert HTMLAssembler._maps_travelmode_for_trip(trip) == "driving"
+
+    def test_prompt_guidance_names_the_booked_leg(self):
+        from generator.ai_content import AIContentGenerator
+
+        gen = AIContentGenerator.__new__(AIContentGenerator)
+        text = gen._build_arrival_mode_guidance(
+            {"transportation": [{"type": "train", "provider": "Eurostar",
+                                 "label": "Brussels-Midi to Amsterdam Centraal"}]}
+        )
+        assert "train" in text and "Eurostar" in text
+        assert "no highways" in text and "parking" in text
+
+    def test_prompt_guidance_keeps_drives_as_drives(self):
+        from generator.ai_content import AIContentGenerator
+
+        gen = AIContentGenerator.__new__(AIContentGenerator)
+        for dest in ({"transportation": [{"type": "car"}]}, {}, None):
+            assert "as a drive" in gen._build_arrival_mode_guidance(dest)

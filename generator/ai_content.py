@@ -1370,6 +1370,7 @@ class AIContentGenerator:
             previous_destination=prev,
             next_destination=next_dest or "none",
             budget_guidance=self._build_budget_guidance(trip_meta),
+            arrival_mode_guidance=self._build_arrival_mode_guidance(dest),
             seeds="\n  ".join(f"- {s}" for s in seeds) if seeds else "  (none — generate full recommendations)",
         )
         what_to_know_prompt = self._render_prompt_template(
@@ -1382,6 +1383,7 @@ class AIContentGenerator:
             previous_destination=prev,
             next_destination=next_dest or "none",
             budget_guidance=self._build_budget_guidance(trip_meta),
+            arrival_mode_guidance=self._build_arrival_mode_guidance(dest),
         )
         # Folded in from what used to be a separate scenic-drives call/stage
         # (generate_scenic_drive_descriptions) -- combining all three into one
@@ -1495,6 +1497,41 @@ class AIContentGenerator:
             )
 
         return "\n".join(lines)
+
+    def _build_arrival_mode_guidance(self, dest: dict[str, Any] | None) -> str:
+        """Tell the model how the traveller actually ARRIVES.
+
+        Without this the prompt asked for highways and parking unconditionally,
+        so an all-rail Europe itinerary got "Take the E19 from Antwerp", a
+        95-mile drive time, and a parking note -- for a booked 8-mile airport
+        train. The model was following instructions; the instructions assumed a
+        road trip.
+        """
+        mode = self._arrival_mode(dest)
+        if not mode:
+            return (
+                "Not stated. Assume the traveler drives, and write the route "
+                "summary as a drive."
+            )
+        if mode not in self._NON_DRIVING_ARRIVAL_MODES:
+            return f"By {mode}. Write the route summary as a drive."
+
+        leg = ""
+        for candidate in ((dest or {}).get("transportation") or []):
+            if isinstance(candidate, dict) and str(candidate.get("type", "")).lower() == mode:
+                bits = [
+                    str(candidate.get("provider", "") or "").strip(),
+                    str(candidate.get("label", "") or "").strip(),
+                ]
+                leg = " — ".join(b for b in bits if b)
+                break
+        detail = f" Booked leg: {leg}." if leg else ""
+        return (
+            f"By {mode}, already booked.{detail} Describe THAT journey: operator, "
+            f"stations or terminals, and what the leg is like. Name no highways, "
+            f"give no driving directions, and do not mention parking. If you do "
+            f"not know the duration, omit drive_time rather than estimating a drive."
+        )
 
     def _build_budget_guidance(self, trip_meta: dict[str, Any]) -> str:
         budget = trip_meta.get("budget")

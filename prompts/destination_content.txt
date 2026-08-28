@@ -6,6 +6,7 @@ Trip title:     {trip_title}
 Previous stop:  {previous_destination}
 Next stop:      {next_destination}
 Budget:         {budget_guidance}
+Arrival mode:   {arrival_mode_guidance}
 Seeds (attractions the traveler specifically intends to visit — include ALL of
        these, do not omit any, and add further recommendations around them):
   {seeds}
@@ -31,12 +32,18 @@ All string values follow the voice and style rules in the system prompt.
   }},
 
   "getting_here": {{
-    "drive_time": "e.g. 2 hrs 15 min",
+    "drive_time": "e.g. 2 hrs 15 min — the time for the ARRIVAL MODE stated
+      below, not necessarily a drive. Omit the field entirely if the mode is
+      booked and you do not know its duration; do not substitute a driving
+      estimate.",
     "distance_miles": 95,
-    "route_summary": "Name the specific highways in order. Note any scenic or
-      notable character of the drive itself — a canyon corridor, a summit
-      crossing, a dramatic final approach. Include a parking or arrival note
-      if relevant. 2–3 sentences.",
+    "route_summary": "2–3 sentences describing the journey BY THE ARRIVAL MODE
+      stated above. If that mode is a train, ferry, bus or flight, describe THAT
+      journey -- operator, stations or terminals, what the traveler sees or does
+      en route -- and name no highways, no driving directions and no parking.
+      Only when the arrival is by road should this name specific highways in
+      order and note parking. Writing a drive for a booked rail leg is a factual
+      error, not a stylistic one.",
     "en_route_stops": [
       {{
         "name": "Real, named stop — town, state park, overlook, or roadside attraction",

@@ -109,7 +109,11 @@ class HTMLAssembler:
         # ── Trip-level substitutions ─────────────────────────────────────────
         meta = trip["trip"]
         html = html.replace("<!--TRIP_TITLE-->", meta["title"])
-        html = html.replace("<!--THEME_COLOR-->", meta.get("theme_color", "#C0623E"))
+        theme_color = str(meta.get("theme_color", "#C0623E") or "#C0623E").strip()
+        html = html.replace("<!--THEME_COLOR-->", theme_color)
+        # The favicon and PWA icons are SVG data: URIs, where the leading
+        # "#" must stay percent-encoded as %23 -- so they take the bare hex.
+        html = html.replace("<!--THEME_COLOR_HEX-->", theme_color.lstrip("#"))
 
         # ── Google Maps overview link ────────────────────────────────────────
         gmaps_url = self._build_google_maps_url(trip["destinations"], meta)
@@ -309,11 +313,57 @@ class HTMLAssembler:
             "api=1",
             f"origin={quote(origin)}",
             f"destination={quote(destination)}",
-            "travelmode=driving",
+            f"travelmode={self._maps_travelmode_for_trip({'destinations': destinations})}",
         ]
         if waypoints:
             params.append("waypoints=" + quote("|".join(waypoints), safe="|"))
         return "https://www.google.com/maps/dir/?" + "&".join(params)
+
+    #: Google Maps travelmode values, keyed by the manifest's booked leg type.
+    _MAPS_TRAVELMODE_BY_ARRIVAL = {
+        "train": "transit",
+        "bus": "transit",
+        "shuttle": "transit",
+        "ferry": "transit",
+        "ship": "transit",
+        "plane": "transit",
+        "car": "driving",
+    }
+
+    @staticmethod
+    def _booked_arrival_mode(dest: dict[str, Any] | None) -> str:
+        if not isinstance(dest, dict):
+            return ""
+        for leg in (dest.get("transportation") or []):
+            if isinstance(leg, dict):
+                mode = str(leg.get("type", "") or "").strip().lower()
+                if mode:
+                    return mode
+        return ""
+
+    @classmethod
+    def _maps_travelmode_for_trip(cls, trip: dict[str, Any] | None) -> str:
+        """travelmode for the route links, from what the manifest actually books.
+
+        Hardcoded "driving" opened car directions for an itinerary whose every
+        leg was a booked train -- the link contradicted the page it sat on.
+        A trip is treated as transit when EVERY stated leg is non-driving;
+        anything mixed or unstated stays driving, which is this generator's
+        original and still most common case.
+        """
+        modes = []
+        for dest in ((trip or {}).get("destinations") or []):
+            if not isinstance(dest, dict):
+                continue
+            for leg in (dest.get("transportation") or []):
+                if isinstance(leg, dict):
+                    mode = str(leg.get("type", "") or "").strip().lower()
+                    if mode:
+                        modes.append(mode)
+        if not modes:
+            return "driving"
+        resolved = {cls._MAPS_TRAVELMODE_BY_ARRIVAL.get(m, "driving") for m in modes}
+        return "transit" if resolved == {"transit"} else "driving"
 
     def _build_map_markers(self, destinations: list[dict[str, Any]], trip_meta: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """Build Leaflet stops array in {c:[lat,lng], mo, dy, name} format."""
@@ -1087,7 +1137,12 @@ class HTMLAssembler:
         if not destination:
             return ""
 
-        params = [f"destination={quote(destination)}", "travelmode=driving", "api=1"]
+        # This link sits inside "Getting Here". Opening driving directions for a
+        # booked rail leg made the link contradict the section around it.
+        travelmode = self._MAPS_TRAVELMODE_BY_ARRIVAL.get(
+            self._booked_arrival_mode(dest), "driving"
+        )
+        params = [f"destination={quote(destination)}", f"travelmode={travelmode}", "api=1"]
         if previous_name:
             params.append(f"origin={quote(previous_name)}")
 
