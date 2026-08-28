@@ -13,6 +13,72 @@ published artifact; **patch** for fixes that leave behaviour unchanged.
 `__template_version__` tracks the frozen HTML template separately and does
 not move with this number.
 
+## 2.3.0 — 2026-08-28
+
+38 commits since 2.2.0. Driven by the first non-US itinerary — Brussels,
+Amsterdam, Berlin, Prague and Frankfurt by rail — which exposed a pipeline
+built throughout on the assumption of a US road trip.
+
+### Added
+
+- **Google Places as a restaurant filter** (`places_filter.py`). Decides which
+  of our own candidates survive; publishes no Places field. The field mask
+  requests `id`, `displayName` and `priceLevel` only — `websiteUri`, `rating`
+  and `photos` are not requested at all, which is a stronger guarantee than
+  choosing not to render them. Rejects every Michelin entry the prompt could
+  not: Ciel Bleu, Rutz, Tim Raue, Comme Chez Soi, La Dégustation.
+- **Transit travel-time estimates** (`transit_estimate.py`) via Google Routes,
+  for booked rail, ferry and bus legs. Brussels Airport to Brussels reads 29
+  min / 10 mi, where the invented driving figure claimed 2 hrs 15 min / 95 mi.
+  Labelled as estimates: transit times move with the timetable.
+- **`index-email.html`**, a script-free copy written on every run. Gmail
+  rejects the normal file as a virus — nothing malicious in it, but three
+  remote `<script src>` loads in an HTML attachment is the shape generic
+  heuristics score as `Trojan:HTML/Phish`.
+- **CLI switches in both directions** for trails, events, en-route stops and
+  restaurants. They could previously only be turned off.
+- **`manifests/europe_cities.yaml`** and **`manifests/old_hickory.yaml`**, a
+  five-city rail itinerary and a single non-park destination, both cheap to run.
+
+### Changed
+
+- **En-route stops are suppressed for non-driving arrivals.** They are a
+  road-trip concept: on a booked train there is no roadside to stop at, and 14
+  of 41 stops were being removed for lacking a verified URL on an all-rail
+  trip.
+- **Getting Here follows the booked mode.** The prompt asked for highways and
+  parking unconditionally, producing "Take the E19 from Antwerp" for an
+  8-mile airport train. Maps links use `travelmode=transit` per leg.
+- **Restaurant candidates 8 → 20.** Every gate downstream had grown stricter
+  while the ask stayed put; Frankfurt asked for 8, had 7 rejected, published 1.
+- **Rating floor is budget-aware** — 4.3 by default, 4.0 on a low-cost brief,
+  since 4.3 skews toward destination restaurants.
+
+### Fixed
+
+- **The budget was ignored.** `"low-cost"` matched none of the budget keywords,
+  the cap ran before the batch replaced the list, and the fine-dining
+  instruction lived in four prompts of which one had been edited. `$$$$`
+  entries went from 15 to 0.
+- **Markdown reached the page** as `**Flat Tire Diner**` — and reached Places
+  queries, where it flipped a two-star restaurant to "affordable".
+- **Cuisine badges rendered addresses** (`Pflugstrasse 11`, `Photos & …`).
+  Validated as a food style now, rather than blocklisted as a place name.
+- **The Full Route Map showed one leg.** Transit mode cannot carry waypoints,
+  so the overview link is driving; per-leg links stay transit.
+- **Duplicate restaurant URLs** — one page published under two names.
+- **An unresolvable departure killed the whole run** with a traceback, for a
+  feature that only refines a map.
+- **The Route Overview heading** was the only one with inline styles, and so
+  the only one a palette change would not reach.
+
+### Known
+
+- Cached batch rows are keyed on the rendered query, but only for restaurants.
+  An edit to the attraction prompt is still invisible until the cache clears.
+- Dining sections remain thin in cities where the batch returns little that
+  survives filtering.
+
 ## 2.2.0 — 2026-08-25
 
 59 commits since 2.1.0. The theme is per-run cost: a like-for-like run fell
