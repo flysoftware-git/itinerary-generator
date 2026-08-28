@@ -503,7 +503,14 @@ class TestBudgetReachesTheRequest:
     )
     def test_low_budget_asks_for_cheap_places(self, budget):
         q = self._query(budget)
-        assert "inexpensive" in q and "Exclude fine dining" in q
+        assert "inexpensive" in q
+        # Wording sharpened 2026-08-28: naming the price band alone was not
+        # enough. Berlin and Prague complied; Brussels still returned Comme Chez
+        # Soi and Amsterdam De Silveren Spiegel. Naming the CATEGORY -- friteries,
+        # imbiss, market halls -- and excluding Michelin explicitly is concrete
+        # in a way "$ and $$ price levels" is not.
+        assert "EXCLUDE fine dining" in q
+        assert "Michelin" in q
 
     def test_high_budget_asks_for_upscale(self):
         assert "upscale" in self._query({"dining": "luxury"})
@@ -537,13 +544,43 @@ class TestBudgetCapKeepsASection:
         {"name": "Assaggi", "price_range": "$$"},
     ]
 
-    def test_backfills_toward_a_usable_count(self):
-        """Keeping only the first off-tier item left Amsterdam with two."""
-        assert len(self._cap(self.AMSTERDAM)) >= 5
+    def test_backfills_only_far_enough_to_avoid_an_empty_section(self):
+        """Two competing failures, and the floor sits between them.
+
+        Keeping only the FIRST off-tier item left Amsterdam with two, one of
+        them $$$$. Filling toward five went the other way and published three
+        Michelin restaurants for Berlin. The batch prompt's "exclude fine
+        dining" is not reliably honoured, so the cap is the enforceable
+        control: off-tier options are admitted only to keep a section from
+        looking broken.
+
+        Amsterdam has two on-tier options already, so nothing off-tier is
+        admitted at all.
+        """
+        kept = self._cap(self.AMSTERDAM)
+        assert kept == ["Assaggi"] or set(kept) <= {"Assaggi", "Choux", "De Kas", "RIJKS"}
+        assert "Flore" not in kept and "Ciel Bleu" not in kept
+
+    def test_a_city_with_only_expensive_options_still_shows_something(self):
+        """Berlin returned nothing but Michelin. An empty dining section is a
+        worse outcome than two off-brief entries, so the floor admits two."""
+        berlin = [
+            {"name": "Horvath", "price_range": "$$$"},
+            {"name": "Nobelhart", "price_range": "$$$"},
+            {"name": "Cookies Cream", "price_range": "$$$"},
+        ]
+        kept = self._cap(berlin)
+        assert len(kept) == 2
 
     def test_backfill_prefers_the_cheaper_off_tier_options(self):
-        kept = self._cap(self.AMSTERDAM)
-        assert "De Kas" in kept and "Choux" in kept
+        """When a backfill IS needed, cheapest first."""
+        sparse = [
+            {"name": "Assaggi", "price_range": "$$"},
+            {"name": "Ciel Bleu", "price_range": "$$$$"},
+            {"name": "Choux", "price_range": "$$$"},
+        ]
+        kept = self._cap(sparse)
+        assert "Choux" in kept
         assert "Ciel Bleu" not in kept
 
     def test_plenty_of_cheap_options_means_no_expensive_backfill(self):
@@ -579,11 +616,149 @@ class TestBatchCacheKeyReflectsTheAsk:
     def test_the_same_budget_is_stable_across_runs(self):
         assert self._fp({"dining": "low-cost"}) == self._fp({"dining": "low-cost"})
 
-    def test_no_budget_leaves_the_key_shape_untouched(self):
-        """An unchanged ask must not invalidate existing cached rows."""
-        assert self._fp(None) == ""
-        assert self._fp("") == ""
+    def test_the_query_text_itself_is_hashed(self):
+        """Hashing only the BUDGET was not enough.
+
+        Rewording the prompt -- naming friteries and imbiss instead of "$ and $$
+        price levels" -- left the budget identical, so the fingerprint matched,
+        the cached rows were reused, and the sharper ask never ran. Brussels came
+        back unchanged and the fix looked ineffective for the second time.
+
+        A no-budget run now also gets a fingerprint, which invalidates existing
+        restaurant rows once. That one-time refetch is the price of the guarantee.
+        """
+        from generator.url_discovery import URLDiscoverer
+
+        d = URLDiscoverer.__new__(URLDiscoverer)
+        d._trip_budget = None
+        baseline = d._batch_query_fingerprint("restaurant")
+        assert baseline  # non-empty: the query text is always part of the key
+
+        original = URLDiscoverer._restaurant_direct_batch_query
+        try:
+            URLDiscoverer._restaurant_direct_batch_query = (
+                lambda self, dest, dates="": original(self, dest, dates) + " REWORDED"
+            )
+            assert d._batch_query_fingerprint("restaurant") != baseline
+        finally:
+            URLDiscoverer._restaurant_direct_batch_query = original
 
     @pytest.mark.parametrize("kind", ["attraction", "en_route", "trail"])
     def test_kinds_that_take_no_budget_keep_the_original_key(self, kind):
         assert self._fp({"dining": "low-cost"}, kind) == ""
+
+
+class TestPriceAndCuisineAreRequested:
+    """Frankfurt published five restaurants with no price badge at all.
+
+    The batch query used price as a FILTER but never asked for it to be
+    returned, so rows came back without one -- and an item with no price
+    bypasses the budget cap entirely, since the cap cannot judge what it
+    cannot see.
+    """
+
+    @staticmethod
+    def _query():
+        from generator.url_discovery import URLDiscoverer
+
+        d = URLDiscoverer.__new__(URLDiscoverer)
+        d._trip_budget = {"dining": "low-cost"}
+        return d._restaurant_direct_batch_query("Frankfurt, Germany", "September 11-12, 2026")
+
+    def test_the_query_asks_for_a_price_level_per_item(self):
+        q = self._query()
+        assert "For EVERY item state the price level" in q
+        assert "$$$$" in q
+
+    def test_the_query_asks_for_a_food_style_not_a_place(self):
+        """cuisine came back as "Frankfurt" for two entries."""
+        q = self._query()
+        assert "never a city or district name" in q
+
+
+class TestPlaceNameCuisineIsCleared:
+    """A cuisine badge reading "Frankfurt" tells the reader nothing."""
+
+    @staticmethod
+    def _clean(cuisine, dest):
+        from generator.url_discovery import URLDiscoverer
+
+        rest = {"cuisine": cuisine}
+        URLDiscoverer._strip_place_name_cuisine(rest, dest)
+        return rest["cuisine"]
+
+    @pytest.mark.parametrize(
+        "cuisine, dest",
+        [
+            ("Frankfurt", "Frankfurt, Germany"),
+            ("Brussels", "Brussels, Belgium"),
+            ("Old Town", "Prague, Czech Republic"),
+            ("Centre", "Brussels, Belgium"),
+        ],
+    )
+    def test_place_names_are_cleared(self, cuisine, dest):
+        assert self._clean(cuisine, dest) == ""
+
+    @pytest.mark.parametrize(
+        "cuisine, dest",
+        [
+            ("Thai", "Frankfurt, Germany"),
+            ("Belgian", "Brussels, Belgium"),
+            ("Vietnamese", "Berlin, Germany"),
+            ("Bakery", "Prague, Czech Republic"),
+        ],
+    )
+    def test_real_cuisines_survive(self, cuisine, dest):
+        """Including nationality cuisines that echo the country -- "Belgian" in
+        Belgium is a food style, not a place name."""
+        assert self._clean(cuisine, dest) == cuisine
+
+    def test_an_empty_cuisine_is_left_alone(self):
+        assert self._clean("", "Berlin, Germany") == ""
+
+
+class TestCuisineIsValidatedNotBlocklisted:
+    """Asking what a cuisine LOOKS like, instead of listing what it is not.
+
+    The first guard blocklisted place names. It cleared cuisine="Frankfurt"
+    and then passed "Pflugstrasse 11", "Mehringdamm 32" and "Photos & ..."
+    straight to the badge -- the same defect wearing different text. Screening
+    against a list of things a cuisine is not requires knowing them all in
+    advance, which is why that fix had to be made three times.
+    """
+
+    @staticmethod
+    def _ok(value, dest="Berlin, Germany"):
+        from generator.url_discovery import URLDiscoverer
+
+        return URLDiscoverer._is_plausible_cuisine(value, dest)
+
+    @pytest.mark.parametrize(
+        "cuisine",
+        ["Thai", "Vietnamese", "Modern European", "Bakery", "Seafood", "Steakhouse",
+         "Bistro", "Farm-to-table", "Fish & Chips"],
+    )
+    def test_real_cuisines_pass(self, cuisine):
+        assert self._ok(cuisine) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        ["Pflugstrasse 11", "Mehringdamm 32", "Rue de la Loi", "Wenceslas Square"],
+    )
+    def test_addresses_and_streets_fail(self, value):
+        assert self._ok(value) is False
+
+    @pytest.mark.parametrize(
+        "value",
+        ["Photos & ...", "Menu, Prices & Reviews", "4.5/5", "See photos and menu here"],
+    )
+    def test_scraped_fragments_fail(self, value):
+        assert self._ok(value) is False
+
+    def test_the_destination_name_still_fails(self):
+        """The case the first version did catch, kept covered."""
+        assert self._ok("Frankfurt", "Frankfurt, Germany") is False
+
+    def test_a_nationality_matching_the_country_still_passes(self):
+        """"Belgian" in Belgium is a food style, not a place name."""
+        assert self._ok("Belgian", "Brussels, Belgium") is True

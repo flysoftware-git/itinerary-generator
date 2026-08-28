@@ -48,7 +48,9 @@ trip:
   departure_datetime: 2026-08-31 09:00
   default_day_start_time: "9:30 AM"
   default_daily_activity_hours: 6
-  return: "Frankfurt"
+  # Country included: Google Maps resolves a bare "Frankfurt" ambiguously,
+  # and the route link renders the destination label verbatim.
+  return: "Frankfurt, Germany"
   return_datetime: 2026-09-12 18:00
   llm_provider: openai
   llm_model: gpt-4o-mini

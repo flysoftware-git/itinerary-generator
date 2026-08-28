@@ -3205,3 +3205,44 @@ def test_inject_travel_realism_does_not_repeat_focus_two_days_later() -> None:
                 assert name not in earlier_names, (
                     f"{name!r} headlines a morning the day after it already appeared"
                 )
+
+
+def test_pick_lunch_stop_fires_only_above_the_threshold() -> None:
+    gh = {
+        "drive_time": "4 hr 45 min",
+        "en_route_stops": [{"name": "Knoxville", "route_progress_ratio": 0.62}],
+    }
+    assert AIContentGenerator._pick_lunch_stop(gh)["name"] == "Knoxville"
+    assert AIContentGenerator._pick_lunch_stop({**gh, "drive_time": "1 hr 10 min"}) is None
+
+
+def test_pick_lunch_stop_prefers_a_seeded_stop_over_a_closer_one() -> None:
+    """A seed is an explicit human intent -- it outranks whatever discovery
+    happened to place nearest the midpoint."""
+    gh = {
+        "drive_time": "5 hr",
+        "en_route_stops": [
+            {"name": "Discovered Midpoint", "route_progress_ratio": 0.50},
+            {"name": "Oak Ridge", "route_progress_ratio": 0.58, "is_seed": True},
+        ],
+    }
+    assert AIContentGenerator._pick_lunch_stop(gh)["name"] == "Oak Ridge"
+
+
+def test_pick_lunch_stop_is_silent_without_verified_candidates() -> None:
+    """Option A by design: it never names a place of its own, so with
+    en-route discovery disabled there is nothing to recommend."""
+    assert AIContentGenerator._pick_lunch_stop({"drive_time": "6 hr", "en_route_stops": []}) is None
+
+
+def test_pick_lunch_stop_skips_stops_with_no_resolved_position() -> None:
+    """Same reasoning as _route_waypoint_sort_key: an unresolved ratio must
+    not be treated as position zero."""
+    gh = {
+        "drive_time": "5 hr",
+        "en_route_stops": [
+            {"name": "Unplaced"},
+            {"name": "Placed", "route_progress_ratio": 0.55},
+        ],
+    }
+    assert AIContentGenerator._pick_lunch_stop(gh)["name"] == "Placed"

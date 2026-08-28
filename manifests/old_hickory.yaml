@@ -110,7 +110,6 @@ destinations:
     seeds:
       - "Andrew Jackson's Hermitage"
       - "Old Hickory Lake"
-      - "Bledsoe Creek State Park"
 
   # ---- DAY TRIP -------------------------------------------------
   # A grouped entry (GH #68), not a separate lodging stop: `group_with`
@@ -138,26 +137,90 @@ destinations:
       - "Country Music Hall of Fame and Museum"
       - "Broadway Historic District"
 
-  # A long day out: ~2h30m each way from Old Hickory, so most of the day
-  # is the drive. Grouped to the same base for the same reason as
-  # Nashville -- it is a day trip, not a move -- and likewise opted out
-  # of category deferral, since Jackson's dining has nothing to do with
-  # Old Hickory's.
-  - id: jackson
-    name: "Jackson, Tennessee"
+  # The remaining day trips are all inside an hour of the base, which is
+  # what makes a single lodging stop work for the whole week. None is
+  # park-like, so each keeps its own restaurants and cultural events --
+  # Franklin and Leiper's Fork in particular are dining destinations in
+  # their own right, and deferring their food to Old Hickory would empty
+  # the two entries most worth going for.
+  - id: gallatin
+    name: "Gallatin, Tennessee"
+    dates: "December 9, 2026"
+    group_with: oldhickory
+
+    planning_links:
+      - label: "Bledsoe Creek State Park — TN State Parks"
+        url: "https://tnstateparks.com/parks/bledsoe-creek"
+      - label: "Visit Gallatin TN"
+        url: "https://www.visitgallatintn.com/"
+
+    # Bledsoe Creek moved here from Old Hickory's own seed list, where it
+    # was really a Gallatin site filed under the base. Same correction the
+    # multi-site design note makes with Delicate Arch and Moab: a seed
+    # belongs to the place it is actually in, or the base's attraction list
+    # silently absorbs its neighbours'.
+    seeds:
+      - "Bledsoe Creek State Park"
+      - "Historic Downtown Gallatin"
+      - "Trousdale Place"
+
+  - id: lebanon
+    name: "Lebanon, Tennessee"
     dates: "December 10, 2026"
     group_with: oldhickory
 
     planning_links:
-      - label: "Visit Jackson TN — official visitor site"
-        url: "https://www.visitjacksontn.com/"
-      - label: "Casey Jones Village"
-        url: "https://www.caseyjones.com/"
+      - label: "Cedars of Lebanon State Park — TN State Parks"
+        url: "https://tnstateparks.com/parks/cedars-of-lebanon"
+      - label: "Lebanon Wilson County tourism"
+        url: "https://www.lebanontnchamber.org/"
 
     seeds:
-      - "Casey Jones Home and Railroad Museum"
-      - "West Tennessee Delta Heritage Center"
-      - "Downtown Jackson Historic District"
+      - "Cedars of Lebanon State Park"
+      - "Historic Lebanon Public Square"
+      - "Fiddlers Grove Historic Village"
+
+  # Franklin and Leiper's Fork share a date on purpose: they are ten minutes
+  # apart on the same road out, so this is ONE day trip with two stops, not
+  # two days. Kept as separate entries rather than folding the village into
+  # Franklin's seeds, because each has its own dining and its own content
+  # worth discovering independently -- the shared date is what makes them
+  # read as a single outing.
+  - id: franklin
+    name: "Franklin, Tennessee"
+    dates: "December 11, 2026"
+    group_with: oldhickory
+
+    planning_links:
+      - label: "Visit Franklin — official"
+        url: "https://visitfranklin.com/"
+      - label: "Battle of Franklin Trust — Carnton & Carter House"
+        url: "https://boft.org/"
+
+    seeds:
+      - "Historic Downtown Franklin"
+      - "Carnton"
+      - "Carter House"
+      - "Franklin Theatre"
+
+  - id: leipers_fork
+    name: "Leiper's Fork, Tennessee"
+    dates: "December 11, 2026"          # same day as Franklin -- see above
+    group_with: oldhickory
+
+    planning_links:
+      - label: "Leiper's Fork Village"
+        url: "https://leipersforkvillage.com/"
+      - label: "Natchez Trace Parkway — NPS"
+        url: "https://www.nps.gov/natr/planyourvisit/index.htm"
+
+    # An unincorporated village of a few hundred people. Thin image and
+    # link coverage is expected here rather than a regression -- it is the
+    # small-local-business cluster free sources miss.
+    seeds:
+      - "Leiper's Fork Village"
+      - "Puckett's Grocery & Restaurant"
+      - "Natchez Trace Parkway"
 
   - id: asheville
     name: "Asheville, North Carolina"
@@ -201,7 +264,12 @@ destinations:
     # Winter note: the Smokies are reachable but Newfound Gap Road and
     # Clingmans Dome close on snow at short notice, so anything the
     # pipeline proposes there is weather-contingent.
+    # Oak Ridge sits near the middle of this ~4h45m leg, which is what the
+    # lunch-stop rule looks for -- and a seeded stop outranks a discovered
+    # one when it picks, so naming it here is how you choose where lunch is
+    # rather than leaving it to whatever discovery ranks highest.
     en_route_seeds:
+      - "Oak Ridge, Tennessee"
       - "Knoxville, Tennessee"
       - "Great Smoky Mountains National Park"
       - "Cumberland Plateau"
