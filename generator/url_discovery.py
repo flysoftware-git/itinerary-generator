@@ -10313,28 +10313,14 @@ class URLDiscoverer:
 
     @staticmethod
     def _infer_destination_day_count(dates: str) -> int:
-        """Best-effort day count from a manifest date-range string, e.g.
-        'October 19-21, 2026' -> 3, 'October 17, 2026' -> 1."""
-        text = str(dates or "").replace("–", "-").replace("—", "-")
-        m = re.search(r"[A-Za-z]+\s+(\d{1,2})(?:\s*-\s*(\d{1,2}))?(?:,\s*\d{4})?", text)
-        if m:
-            start = int(m.group(1))
-            end = int(m.group(2) or m.group(1))
-            if end >= start:
-                return max(1, end - start + 1)
-            return 1
-        iso = re.findall(r"(\d{4}-\d{2}-\d{2})", text)
-        if len(iso) >= 2:
-            try:
-                from datetime import datetime as _dt
-                d0 = _dt.strptime(iso[0], "%Y-%m-%d")
-                d1 = _dt.strptime(iso[1], "%Y-%m-%d")
-                if d1 >= d0:
-                    return max(1, (d1 - d0).days + 1)
-            except ValueError:
-                return 1
-        return 1
+        """Days at a destination, uncapped, for batch sizing.
 
+        Delegates to date_span.day_count. See that module for why the regex
+        this replaced returned 1 for a stay spanning a month boundary.
+        """
+        from generator.date_span import day_count
+
+        return day_count(dates)
     def _prioritize_direct_batch_attractions(
         self,
         attractions: list[dict[str, Any]],
