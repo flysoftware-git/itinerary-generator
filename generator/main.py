@@ -1775,6 +1775,73 @@ self.addEventListener('fetch', (event) => {
         (output_dir / "sw.js").write_text(sw_js, encoding="utf-8")
 
 
+def _apply_transit_estimates(trip: dict, *, departure_hint: str = "") -> int:
+    """Replace invented drive figures with real transit estimates.
+
+    Only touches destinations whose manifest states a public-transport arrival.
+    A leg with no estimate available keeps whatever it had rather than being
+    zeroed -- and a leg that was suppressed upstream simply has nothing to fill.
+
+    Returns the number of legs updated, for the run summary.
+    """
+    from generator.transit_estimate import TRANSIT_MODES, TransitEstimator, format_duration
+
+    estimator = TransitEstimator()
+    if not estimator.available:
+        logger.info(
+            "Transit estimates skipped: GOOGLE_MAPS_PLATFORM_KEY not set. "
+            "Rail legs will show no duration rather than a driving figure."
+        )
+        return 0
+
+    destinations = trip.get("destinations", []) or []
+    updated = 0
+    previous_name = str(departure_hint or "").strip()
+
+    for dest in destinations:
+        if not isinstance(dest, dict):
+            continue
+        name = str(dest.get("name", "") or "").strip()
+        mode = ""
+        for leg in (dest.get("transportation") or []):
+            if isinstance(leg, dict):
+                mode = str(leg.get("type", "") or "").strip().lower()
+                if mode:
+                    break
+
+        if mode in TRANSIT_MODES and previous_name and name:
+            estimate = estimator.estimate(previous_name, name)
+            if estimate:
+                ai = dest.get("ai_content")
+                if isinstance(ai, dict):
+                    getting_here = ai.get("getting_here")
+                    if not isinstance(getting_here, dict):
+                        getting_here = {}
+                        ai["getting_here"] = getting_here
+                    getting_here["drive_time"] = format_duration(estimate["minutes"])
+                    if estimate.get("miles"):
+                        getting_here["distance_miles"] = estimate["miles"]
+                    # Consumed by the renderer so the figure reads as an
+                    # approximation; transit times move with the timetable.
+                    getting_here["duration_is_estimate"] = True
+                    getting_here["travel_mode"] = mode
+                    updated += 1
+                    logger.info(
+                        "Transit estimate %s -> %s: %s, %s mi",
+                        previous_name, name,
+                        getting_here["drive_time"], estimate.get("miles"),
+                    )
+        if name:
+            previous_name = name
+
+    if estimator.call_count:
+        logger.info(
+            "Transit estimates: %d leg(s) updated from %d Routes API call(s)",
+            updated, estimator.call_count,
+        )
+    return updated
+
+
 def _setup_logging(verbose: bool, log_level: str) -> str:
     selected = "debug" if verbose else (log_level or "info").lower()
     level = getattr(logging, selected.upper(), logging.INFO)
@@ -2528,6 +2595,9 @@ def main(
     # Post-parallel content normalization: cross-section and cross-destination dedup.
     stage_reconcile_started = perf_counter()
     ai_gen.normalize_trip_content(trip)
+    _apply_transit_estimates(
+        trip, departure_hint=str((trip.get("trip") or {}).get("departure", "") or "")
+    )
     click.echo("  ✓ Content normalized")
     trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
     click.echo("  ✓ Entity registry reconciled")
@@ -2601,6 +2671,9 @@ def main(
             + ", ".join(retried_destination_ids)
         )
         ai_gen.normalize_trip_content(trip)
+        _apply_transit_estimates(
+            trip, departure_hint=str((trip.get("trip") or {}).get("departure", "") or "")
+        )
         trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
         destination_status_report = _build_destination_status_report(
             trip=trip,

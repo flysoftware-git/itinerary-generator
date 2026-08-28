@@ -32,6 +32,49 @@ VALID_BASE_OWNED_CATEGORIES: frozenset[str] = frozenset(
 # destination not sub-destinations."
 DEFAULT_BASE_OWNED_CATEGORIES: tuple[str, ...] = ("restaurant", "cultural_events")
 
+# ...but that reasoning is about PARKS, not about grouping as such. The
+# dipstick67 finding was a national park deferring to its gateway town, and
+# it generalizes because a park genuinely has no dining scene or events
+# calendar of its own -- both belong to the town you sleep in.
+#
+# A city day trip is the opposite case. Nashville reached from a base in Old
+# Hickory has its own restaurants and its own music calendar, and deferring
+# them to the smaller base inverts the relationship: the grouped entry is
+# the bigger place. So park-likeness, not groupedness, decides whether the
+# default deferral applies. An explicit per-entry base_owned_categories
+# still overrides either way.
+#
+# Detection is deliberately not "has an nps_park_code". That field is
+# US-only (NPS has no non-US coverage) and empty for state and provincial
+# parks, so keying off it alone would classify Bledsoe Creek State Park and
+# every park outside the US as a city and hand each one its own restaurant
+# discovery. The name check catches those; the park code catches US
+# national parks whose names do not contain an obvious keyword.
+_PARK_NAME_KEYWORDS: tuple[str, ...] = (
+    "national park", "state park", "provincial park", "national monument",
+    "national forest", "national lakeshore", "national seashore",
+    "national recreation area", "national historic", "wildlife refuge",
+    "nature reserve", "regional park", "conservation area",
+)
+
+
+def is_park_like(dest: dict[str, Any] | None) -> bool:
+    """True when a destination entry is a park rather than a populated place.
+
+    Used to decide whether a grouped entry inherits the default deferral of
+    restaurants/cultural events to its group base. False for anything it
+    cannot positively identify as a park -- an unrecognized place is much
+    more likely to be a town than a park, and the cost of being wrong that
+    way (a redundant restaurant list) is smaller than the cost of the other
+    way (a city day trip with no dining and no events at all).
+    """
+    if not isinstance(dest, dict):
+        return False
+    if str(dest.get("nps_park_code", "") or "").strip():
+        return True
+    name = str(dest.get("name", "") or "").lower()
+    return any(keyword in name for keyword in _PARK_NAME_KEYWORDS)
+
 
 def group_base_id(dest: dict[str, Any] | None) -> str:
     """Return a destination entry's `group_with` target id, or "" if unset."""
@@ -51,7 +94,9 @@ def resolve_base_owned_categories(
 ) -> frozenset[str]:
     """Resolve which categories a grouped entry defers to its group base.
 
-    Per-entry `base_owned_categories` overrides the config.yaml default
+    A grouped entry that is NOT park-like (a city day trip) defers nothing
+    by default, since its dining and events are its own rather than the
+    base's. Per-entry `base_owned_categories` overrides all of this
     entirely when present -- including an explicit empty list, which opts
     an entry OUT of any deferral even though the project-wide default is
     non-empty (the "sites are far enough apart" case from the design doc).
@@ -62,6 +107,11 @@ def resolve_base_owned_categories(
         raw = dest.get("base_owned_categories")
         if isinstance(raw, list):
             return frozenset(str(c or "").strip().lower() for c in raw if str(c or "").strip())
+        return frozenset()
+    # No explicit override: the config default applies to park-like entries
+    # only. See _PARK_NAME_KEYWORDS above for why a city day trip keeps its
+    # own restaurants and events.
+    if is_grouped(dest) and not is_park_like(dest):
         return frozenset()
     return frozenset(str(c or "").strip().lower() for c in (default_categories or ()) if str(c or "").strip())
 

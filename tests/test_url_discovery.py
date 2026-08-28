@@ -243,7 +243,7 @@ def test_discover_restaurants_skips_entirely_when_category_deferred_to_base():
     discoverer._multi_site_base_owned_categories = frozenset({"restaurant"})
 
     ai = {"dinner_recommendations": [{"name": "Arches Cafe"}]}
-    grouped_dest = {"id": "arches", "group_with": "moab"}
+    grouped_dest = {"id": "arches", "name": "Arches National Park", "group_with": "moab"}
 
     with patch.object(discoverer, "_search_first") as fake_search:
         discoverer._discover_restaurants(ai, dest_name="Arches National Park", dest=grouped_dest)
@@ -303,7 +303,7 @@ def test_discover_en_route_stops_skips_stops_but_still_updates_route_distance_wh
     discoverer._route_distance_live_fetch_enabled = False
 
     ai = {"getting_here": {"en_route_stops": [{"name": "Wilson Arch"}]}}
-    grouped_dest = {"id": "arches", "group_with": "moab"}
+    grouped_dest = {"id": "arches", "name": "Arches National Park", "group_with": "moab"}
 
     with patch.object(discoverer, "_search_first") as fake_search:
         discoverer._discover_en_route_stops(
@@ -533,6 +533,7 @@ def test_discover_scenic_drives_skips_and_clears_content_when_deferred():
 
     grouped_dest = {
         "id": "arches",
+        "name": "Arches National Park",
         "group_with": "moab",
         "scenic_drives": [{"title": "Arches Scenic Drive", "description": "AI-generated blurb."}],
     }
