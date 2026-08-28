@@ -12710,6 +12710,14 @@ class URLDiscoverer:
         text = f"{title} {snippet}".lower()
 
         score = 0
+        # A domain that IS the item outranks a page merely about it. Without
+        # this the ranking treated champagne-tastes.com/rotisse and rotisse.be
+        # as equivalent -- both mention "rotisse", one in the path and one in
+        # the domain -- and whichever the provider returned first won. Applied
+        # as a strong bonus rather than a filter so it steers the choice when
+        # an official site is present and changes nothing when none is.
+        if self._domain_matches_item_name(url, item_name):
+            score += 25
         item_tokens = self._significant_tokens(item_name)
         dest_tokens = self._significant_tokens(dest_name)
 
