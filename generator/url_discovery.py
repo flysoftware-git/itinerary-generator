@@ -2228,6 +2228,18 @@ class URLDiscoverer:
         # them. Fifth time a rule has been applied to one of two sources.
         self._trip_budget = ((trip or {}).get("trip") or {}).get("budget")
 
+        # Places as a filter over our own candidates. Never a source, and no
+        # field it returns is published -- see places_filter's module docstring.
+        try:
+            from generator.places_filter import PlacesBudgetFilter
+
+            self._places_filter = PlacesBudgetFilter()
+            if self._places_filter.available:
+                logger.info("Places budget filter active")
+        except Exception as exc:
+            logger.warning("Places budget filter unavailable: %s", exc)
+            self._places_filter = None
+
         destinations = trip.get("destinations", [])
 
         def _discover_one(dest: dict) -> None:
@@ -10170,12 +10182,58 @@ class URLDiscoverer:
         # ones CHEAPEST-first until the destination has a usable number. A
         # thin section of correctly-priced places is not better than a
         # reasonable section that leans the right way.
+        # Consult Places where our own price is missing or looks wrong for the
+        # brief. Used as a FILTER only -- the verdict decides whether an item
+        # survives, and no Places field is published. See
+        # docs/design/places-for-restaurants.md for why that boundary matters.
+        #
+        # Spent narrowly: one call per ambiguous item, not per restaurant. The
+        # destination-wide sweep is too coarse to help -- a 40-place window
+        # missed Horvath, Comme Chez Soi and Madami alike -- but a targeted
+        # lookup answered 11 of 12 correctly, rejecting every Michelin entry.
+        places = getattr(self, "_places_filter", None)
+        if low and places is not None and places.available:
+            rescued, rejected = [], []
+            for item in restaurants:
+                tier = str((item or {}).get("price_range", "") or (item or {}).get("price", "") or "").strip()
+                if tier in ("$", "$$"):
+                    continue                      # already on-brief; do not spend a call
+                name = str((item or {}).get("name", "") or "").strip()
+                if not name:
+                    continue
+                verdict = places.verdict_precise(name, dest_name)
+                if verdict == "too_expensive":
+                    item["_places_reject"] = True
+                    rejected.append(name)
+                elif verdict == "confirmed_affordable":
+                    # Keep it even though our own price said otherwise, or said
+                    # nothing. Places is the better authority on price.
+                    item["_places_affordable"] = True
+                    rescued.append(name)
+            if rejected:
+                logger.info(
+                    "Places rejected %d too-expensive restaurant(s) at %s: %s",
+                    len(rejected), dest_name, ", ".join(r[:26] for r in rejected[:6]),
+                )
+            if rescued:
+                logger.info(
+                    "Places confirmed %d affordable restaurant(s) at %s: %s",
+                    len(rescued), dest_name, ", ".join(r[:26] for r in rescued[:6]),
+                )
+            restaurants = [i for i in restaurants if not (i or {}).get("_places_reject")]
+
         rank = {"$": 0, "$$": 1, "$$$": 2, "$$$$": 3}
         def _tier(item: Any) -> str:
             return str((item or {}).get("price_range", "") or (item or {}).get("price", "") or "").strip()
 
-        on_tier = [i for i in restaurants if _tier(i) not in off_tier]
-        off = [i for i in restaurants if _tier(i) in off_tier]
+        def _on_brief(item: Any) -> bool:
+            # A Places-confirmed item is on-brief whatever our own price label
+            # says, which is the point of asking: our label was frequently
+            # absent, and absent items were bypassing this cap entirely.
+            return bool((item or {}).get("_places_affordable")) or _tier(item) not in off_tier
+
+        on_tier = [i for i in restaurants if _on_brief(i)]
+        off = [i for i in restaurants if not _on_brief(i)]
         off.sort(key=lambda i: rank.get(_tier(i), 99), reverse=not low)
         # The top tier is never a valid backfill for a low-cost brief. Filling
         # a shortfall admitted Comme Chez Soi (2 Michelin stars) to Brussels and
