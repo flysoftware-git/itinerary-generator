@@ -6690,10 +6690,19 @@ class URLDiscoverer:
         # uniform signature first.
         if str(kind or "").strip().lower() != "restaurant":
             return ""
-        budget = str(getattr(self, "_trip_budget", "") or "")
-        if not budget.strip():
+        # Hash the QUERY, not the budget. Hashing the budget meant rewording the
+        # prompt -- naming friteries and imbiss instead of "$ and $$ price
+        # levels" -- produced an identical fingerprint and hit the same cached
+        # rows, so the sharper ask never ran and Brussels came back unchanged.
+        # Exactly the failure this fingerprint was added to prevent, one level
+        # further in.
+        try:
+            rendered = self._restaurant_direct_batch_query("__fingerprint__", "")
+        except Exception:
+            rendered = str(getattr(self, "_trip_budget", "") or "")
+        if not rendered.strip():
             return ""
-        return hashlib.sha1(budget.encode("utf-8")).hexdigest()[:8]
+        return hashlib.sha1(rendered.encode("utf-8")).hexdigest()[:8]
 
     def _get_direct_batch_html_rows_for_destination(
         self,
@@ -9257,6 +9266,18 @@ class URLDiscoverer:
             self._maybe_upgrade_tripadvisor_restaurant_link(rest, dest_name)
             self._enrich_restaurant_metadata_from_url(rest)
             self._backfill_restaurant_metadata_from_available_text(rest)
+
+        # Apply the budget cap AGAIN, now that prices are known. The first pass
+        # runs before this enrichment, so it judged items whose price_range was
+        # still empty and let them through as on-tier. That is how Frankfurt
+        # kept The Legacy Bar & Grill at $$$$ on a "No fine dining" itinerary:
+        # at cap time it had no price at all.
+        #
+        # Running it twice rather than moving it: the first pass still earns its
+        # place by trimming the list before the expensive per-item URL work.
+        priced = self._apply_budget_cap_to_restaurants(restaurants, dest_name)
+        if len(priced) != len(restaurants):
+            ai["dinner_recommendations"] = priced
 
     # Third-party pages that stand in for a restaurant's own site. TripAdvisor
     # was the only one checked until 2026-08-27, when re-opening the per-item

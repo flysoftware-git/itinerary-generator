@@ -594,10 +594,32 @@ class TestBatchCacheKeyReflectsTheAsk:
     def test_the_same_budget_is_stable_across_runs(self):
         assert self._fp({"dining": "low-cost"}) == self._fp({"dining": "low-cost"})
 
-    def test_no_budget_leaves_the_key_shape_untouched(self):
-        """An unchanged ask must not invalidate existing cached rows."""
-        assert self._fp(None) == ""
-        assert self._fp("") == ""
+    def test_the_query_text_itself_is_hashed(self):
+        """Hashing only the BUDGET was not enough.
+
+        Rewording the prompt -- naming friteries and imbiss instead of "$ and $$
+        price levels" -- left the budget identical, so the fingerprint matched,
+        the cached rows were reused, and the sharper ask never ran. Brussels came
+        back unchanged and the fix looked ineffective for the second time.
+
+        A no-budget run now also gets a fingerprint, which invalidates existing
+        restaurant rows once. That one-time refetch is the price of the guarantee.
+        """
+        from generator.url_discovery import URLDiscoverer
+
+        d = URLDiscoverer.__new__(URLDiscoverer)
+        d._trip_budget = None
+        baseline = d._batch_query_fingerprint("restaurant")
+        assert baseline  # non-empty: the query text is always part of the key
+
+        original = URLDiscoverer._restaurant_direct_batch_query
+        try:
+            URLDiscoverer._restaurant_direct_batch_query = (
+                lambda self, dest, dates="": original(self, dest, dates) + " REWORDED"
+            )
+            assert d._batch_query_fingerprint("restaurant") != baseline
+        finally:
+            URLDiscoverer._restaurant_direct_batch_query = original
 
     @pytest.mark.parametrize("kind", ["attraction", "en_route", "trail"])
     def test_kinds_that_take_no_budget_keep_the_original_key(self, kind):
