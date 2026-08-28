@@ -27,6 +27,7 @@ from typing import Any
 from urllib.parse import quote
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient
+from generator.fanout_metrics import pool as instrumented_pool
 from generator.search_provider import build_search_client
 from generator.multi_site_grouping import DEFAULT_BASE_OWNED_CATEGORIES, category_deferred_to_base
 
@@ -167,7 +168,7 @@ class CulturalEventsDiscoverer:
                     "honest_assessment": f"Unable to discover events at this time."
                 }
 
-        with ThreadPoolExecutor(max_workers=min(len(destinations), 4)) as pool:
+        with instrumented_pool("cultural_events_destinations", min(len(destinations), 4)) as pool:
             futures = [pool.submit(_one, d) for d in destinations]
             for f in as_completed(futures):
                 f.result()

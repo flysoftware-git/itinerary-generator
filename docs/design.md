@@ -916,13 +916,27 @@ sized against a single destination's ~186 s tenacity retry cycle rather than aga
 concurrent burst — the search breakers' 70 s windows are sized against a round of
 concurrent slot timeouts instead.
 
+**Every pool in that map is measured.** They are constructed through
+`fanout_metrics.pool(name, workers)` rather than `ThreadPoolExecutor` directly, which
+accumulates per pool: tasks, busy worker-seconds against capacity worker-seconds
+(`utilisation`), and the p50/p90 split between time a task spent *queued* and time it
+spent *running*. That split is the load-bearing one — it separates "the pool is too
+small" from "the provider is slow", which a single fused duration will otherwise be used
+to argue both ways. The caps above are all plausible constants; utilisation is what makes
+them falsifiable, and a test fails the build if a new pool is added without a name.
+
+The three branches of the parallel block additionally record spans — start offset,
+duration and status — so the block reports its **critical path** and its **straggler
+margin**: what fixing only the slowest branch would recover. Skipped branches are recorded
+as `skipped`, never as a zero-second success.
+
 ### 5.4 Feedback channels
 
 | Channel | What it carries |
 |---|---|
 | `validation_report.json` | validity, errors, warnings, per-model cost and calls |
 | `destination_status_report.json` (+ `.md`) | per-destination status, triggers, stage scope, retry outcomes |
-| `run_ledger.jsonl` | stage timings, gate-A metrics, breaker stats, banned-phrase counts, retry efficiency, CLI flags |
+| `run_ledger.jsonl` | stage timings, per-branch spans and pool utilisation (§5.3), gate-A metrics, breaker stats, banned-phrase counts, retry efficiency, CLI flags |
 | `entity_registry_debug.json` | full registry dump (`--verbose` only) |
 | `direct_batch_parity_report.json` | harvest capture vs rendered links |
 | `url_diff_report.json` (+ `.md`) | this run's URLs vs the previous run's |

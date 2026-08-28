@@ -37,6 +37,8 @@ from typing import Any
 import click
 from generator import __version__, __template_version__
 from generator.entity_registry import build_entity_registry, reconcile_schedule_from_registry, reconcile_trip_from_registry
+from generator import fanout_metrics
+from generator.fanout_metrics import BranchSpans, pool as instrumented_pool
 
 logger = logging.getLogger(__name__)
 LOG_LEVEL_CHOICES = ["debug", "info", "warning", "error", "critical"]
@@ -1936,6 +1938,7 @@ def main(
 
     run_started_at = datetime.now(timezone.utc)
     run_started_at_perf = perf_counter()
+    fanout_metrics.reset()
     run_id = run_started_at.strftime("%Y%m%dT%H%M%S.%fZ")
     # Environment isn't resolved until manifest parsing succeeds (it can come
     # from the manifest itself, see "Hybrid environment selection" below), so
@@ -2220,7 +2223,7 @@ def main(
     click.echo("Stage 2/6 — Geocoding & enrichment…")
     from generator.geocoder import Geocoder
     from generator.nps_resolver import NPSResolver
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import as_completed
     geo = Geocoder()
     nps = NPSResolver()
     # Geocoding is sequential (Nominatim ToS: 1 req/sec)
@@ -2261,7 +2264,7 @@ def main(
             dest["nps_park_code"] = None
             return
         dest["nps_park_code"] = nps.resolve(dest["name"])
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with instrumented_pool("stage_2_nps_resolution", 4) as pool:
         futures = {pool.submit(_resolve_nps, d): d for d in trip["destinations"]}
         for f in as_completed(futures):
             f.result()
@@ -2342,7 +2345,7 @@ def main(
 
     # ── Stages 4 + 5a + 5b: run concurrently (all independent of each other) ─
     stage_4_5_started = perf_counter()
-    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+    from concurrent.futures import as_completed as _as_completed
     from generator.image_fetcher import ImageFetcher
     from generator.url_validator import URLValidator
 
@@ -2417,11 +2420,27 @@ def main(
         url_discoverer.audit_discovered_urls(subset_trip)
 
     click.echo("Stages 4–5b — Cultural events, images, and URL discovery (parallel)…")
-    with ThreadPoolExecutor(max_workers=3) as _stage_pool:
-        _stage_futures = [_stage_pool.submit(fn) for fn in (_run_events, _run_images, _run_urls)]
+    # One wall-clock number for this block cannot say which of the three
+    # branches set it -- and "all three took 700s" and "URL discovery took 700s
+    # while the other two finished in 40" call for completely different work.
+    # The branch spans below are what tells them apart.
+    stage_4_5_spans = BranchSpans()
+    _stage_branches = (
+        ("cultural_events", _run_events, bool(skip_events)),
+        ("images", _run_images, bool(skip_images)),
+        ("url_discovery", _run_urls, bool(skip_url_discovery)),
+    )
+    with instrumented_pool("stage_4_5_branches", 3) as _stage_pool:
+        _stage_futures = [
+            _stage_pool.submit(stage_4_5_spans.wrap(_name, _fn, skipped=_skipped))
+            for _name, _fn, _skipped in _stage_branches
+        ]
         for _f in _as_completed(_stage_futures):
             _f.result()
     stage_timings["stage_4_5_parallel"] = _elapsed_seconds(stage_4_5_started)
+    runtime_metrics["stage_4_5_branches"] = stage_4_5_spans.summary(
+        wall_seconds=stage_timings["stage_4_5_parallel"]
+    )
 
     # Post-parallel content normalization: cross-section and cross-destination dedup.
     stage_reconcile_started = perf_counter()
@@ -2673,6 +2692,7 @@ def main(
                 f"calls={row.get('calls', 0)} tokens={row.get('total_tokens', 0)} "
                 f"est=${row.get('estimated_cost_usd', 0.0):.4f}{tool_suffix}"
             )
+    runtime_metrics["thread_pools"] = fanout_metrics.pool_summary()
     runtime_metrics["gate_a"] = _build_gate_a_metrics(
         trip=trip,
         usage_summary=trip.get("_meta", {}).get("llm", {}).get("usage", {}),
