@@ -3848,28 +3848,16 @@ class AIContentGenerator:
         return days
 
     def _infer_day_count(self, dates: str) -> int:
-        text = (dates or "").replace("–", "-")
-        # "October 17-21, 2026" or "October 17, 2026"
-        m = re.search(r"[A-Za-z]+\s+(\d{1,2})(?:\s*-\s*(\d{1,2}))?(?:,\s*\d{4})?", text)
-        if m:
-            start = int(m.group(1))
-            end = int(m.group(2) or m.group(1))
-            if end >= start:
-                return max(1, min(5, end - start + 1))
-            return 1
-        # ISO range fallback: 2026-10-17 to 2026-10-21
-        iso = re.findall(r"(\d{4}-\d{2}-\d{2})", text)
-        if len(iso) >= 2:
-            try:
-                from datetime import datetime as _dt
-                d0 = _dt.strptime(iso[0], "%Y-%m-%d")
-                d1 = _dt.strptime(iso[1], "%Y-%m-%d")
-                if d1 >= d0:
-                    return max(1, min(5, (d1 - d0).days + 1))
-            except ValueError:
-                return 1
-        return 1
+        """Days at a destination, capped at 5 for the per-day target formulas.
 
+        Delegates to date_span.day_count. The regex previously inlined here
+        matched only "Month D-D" and returned 1 for "August 31 - September 1",
+        so Brussels rendered a single day of schedule for a two-day stay. The
+        identical regex also lived in url_discovery; see date_span's docstring.
+        """
+        from generator.date_span import day_count
+
+        return day_count(dates, maximum=5)
     def _expand_days(self, days: list[dict[str, Any]], day_count: int) -> list[dict[str, Any]]:
         if not days:
             return days
