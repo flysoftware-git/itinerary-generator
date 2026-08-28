@@ -184,8 +184,24 @@ class HTMLAssembler:
         departure_name = meta.get("departure", "")
 
         def _previous_context(index: int) -> tuple[str, str]:
-            if index > 0:
-                return destinations[index - 1]["name"], self._destination_route_target(destinations[index - 1])
+            """Where the leg arriving at destinations[index] starts from.
+
+            Walks back past grouped day trips to the previous LODGING stop.
+            The previous list entry is not the answer: a run of day trips
+            sits between two lodging stops, and the traveler drives to the
+            next stop from the base they slept at, not from wherever they
+            spent the last afternoon.
+
+            A real December itinerary labelled its final leg "Leiper's Fork,
+            Tennessee -> Asheville, North Carolina" while the prose beneath
+            it read "Drive from Old Hickory, TN" -- the day trip was simply
+            the last entry in the list. The same confusion had already been
+            fixed on the content side (ai_content's leg distance
+            correction); this is its rendering counterpart.
+            """
+            candidate = self._previous_lodging_stop(destinations, index)
+            if candidate is not None:
+                return candidate["name"], self._destination_route_target(candidate)
             return departure_name, str(departure_name or "").strip()
 
         for index, dest in enumerate(destinations):
@@ -1187,6 +1203,23 @@ class HTMLAssembler:
         if len(text) > 160:
             text = text[:157].rstrip() + "..."
         return text
+
+    @staticmethod
+    def _previous_lodging_stop(
+        destinations: list[dict[str, Any]], index: int
+    ) -> dict[str, Any] | None:
+        """The lodging stop a leg arriving at destinations[index] starts from.
+
+        Walks back past grouped day trips. Returns None when there is no
+        earlier lodging stop, which means the leg starts at the trip's
+        departure gateway instead.
+        """
+        for previous_index in range(index - 1, -1, -1):
+            candidate = destinations[previous_index]
+            if not isinstance(candidate, dict) or is_grouped(candidate):
+                continue
+            return candidate
+        return None
 
     @staticmethod
     def _route_waypoint_sort_key(stop: Any) -> tuple[int, float]:

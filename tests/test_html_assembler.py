@@ -5130,3 +5130,43 @@ def test_template_has_exactly_one_route_map_link_slot() -> None:
 
     assert template.count("<!--ROUTE_MAP_LINK-->") == 1
     assert template.count('class="route-overview-head"') == 1
+
+
+def test_previous_lodging_stop_skips_day_trips() -> None:
+    """Real December itinerary: the final leg was labelled "Leiper's Fork ->
+    Asheville" because the day trip was simply the last entry in the list,
+    while the prose beneath it correctly read "Drive from Old Hickory". The
+    traveler drives on from the base they slept at."""
+    from generator.html_assembler import HTMLAssembler
+
+    destinations = [
+        {"id": "oldhickory", "name": "Old Hickory, Tennessee"},
+        {"id": "nashville", "name": "Nashville, Tennessee", "group_with": "oldhickory"},
+        {"id": "leipers_fork", "name": "Leiper's Fork, Tennessee", "group_with": "oldhickory"},
+        {"id": "asheville", "name": "Asheville, North Carolina"},
+    ]
+
+    previous = HTMLAssembler._previous_lodging_stop(destinations, 3)
+
+    assert previous is not None
+    assert previous["name"] == "Old Hickory, Tennessee"
+
+
+def test_previous_lodging_stop_is_none_for_the_first_stop() -> None:
+    """No earlier lodging stop means the leg starts at the departure gateway."""
+    from generator.html_assembler import HTMLAssembler
+
+    destinations = [{"id": "oldhickory", "name": "Old Hickory, Tennessee"}]
+
+    assert HTMLAssembler._previous_lodging_stop(destinations, 0) is None
+
+
+def test_previous_lodging_stop_returns_the_immediate_predecessor_when_ungrouped() -> None:
+    from generator.html_assembler import HTMLAssembler
+
+    destinations = [
+        {"id": "moab", "name": "Moab, Utah"},
+        {"id": "telluride", "name": "Telluride, Colorado"},
+    ]
+
+    assert HTMLAssembler._previous_lodging_stop(destinations, 1)["name"] == "Moab, Utah"
