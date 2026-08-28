@@ -2221,6 +2221,13 @@ class URLDiscoverer:
         )
 
     def discover_all(self, trip: dict[str, Any]) -> None:
+        # The batch harvest builds its own restaurant list, so ai_content's
+        # budget filter never sees those items. A "low-cost" Europe itinerary
+        # published 15 restaurants at $$$$ -- Rutz, Tim Raue, Horvath, Ciel
+        # Bleu -- because the filter ran upstream of the source that supplied
+        # them. Fifth time a rule has been applied to one of two sources.
+        self._trip_budget = ((trip or {}).get("trip") or {}).get("budget")
+
         destinations = trip.get("destinations", [])
 
         def _discover_one(dest: dict) -> None:
@@ -9950,7 +9957,55 @@ class URLDiscoverer:
             fallback_description="Locally surfaced dinner option.",
             dest_name=dest_name,
         )
-        return self._backfill_restaurant_metadata_from_existing(merged, restaurants)
+        merged = self._backfill_restaurant_metadata_from_existing(merged, restaurants)
+        return self._apply_budget_cap_to_restaurants(merged, dest_name)
+
+    def _apply_budget_cap_to_restaurants(
+        self, restaurants: list[dict[str, Any]], dest_name: str
+    ) -> list[dict[str, Any]]:
+        """Re-apply the trip's budget preference after the batch merge.
+
+        Mirrors AIContentGenerator._normalize_restaurants: at most one splurge
+        on a low-budget trip, at most one casual on a high-budget one. Applied
+        again here because the batch supplies items that never passed through
+        the first filter.
+        """
+        budget_text = re.sub(r"[-_]+", " ", str(getattr(self, "_trip_budget", "") or "").lower())
+        if not budget_text.strip():
+            return restaurants
+        low = any(
+            k in budget_text
+            for k in ("budget", "cheap", "economy", "economical", "value", "frugal",
+                      "low cost", "lowcost", "inexpensive", "affordable", "modest",
+                      "shoestring", "backpack")
+        )
+        high = any(
+            k in budget_text
+            for k in ("luxury", "premium", "high end", "splurge", "upscale", "fine dining")
+        )
+        if "no fine dining" in budget_text or "not fine dining" in budget_text:
+            high, low = False, True
+        if not (low or high):
+            return restaurants
+
+        off_tier = {"$$$", "$$$$"} if low else {"$", "$$"}
+        kept: list[dict[str, Any]] = []
+        seen_off_tier = False
+        dropped: list[str] = []
+        for item in restaurants:
+            tier = str((item or {}).get("price_range", "") or (item or {}).get("price", "") or "").strip()
+            if tier in off_tier:
+                if seen_off_tier:
+                    dropped.append(str((item or {}).get("name", "") or ""))
+                    continue
+                seen_off_tier = True
+            kept.append(item)
+        if dropped:
+            logger.info(
+                "Budget cap dropped %d off-tier restaurant(s) at %s: %s",
+                len(dropped), dest_name, ", ".join(d[:28] for d in dropped[:6]),
+            )
+        return kept
 
     @staticmethod
     def _infer_destination_day_count(dates: str) -> int:
