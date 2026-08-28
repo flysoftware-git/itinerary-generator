@@ -1095,13 +1095,41 @@ class HTMLAssembler:
             html += '  <div class="image-tile photo-item">\n'
             html += (
                 f'    <img src="{file_url}" alt="{dest_escaped}" '
-                f'onerror="this.style.display=\'none\';" loading="lazy" />\n'
+                f'class="hide-on-error" loading="lazy" />\n'
             )
             html += f'    <div class="caption photo-caption">{caption}</div>\n'
             html += '  </div>\n'
         
         html += '</div>\n'
+        html += self._image_error_handler_script()
         return html
+
+    @staticmethod
+    def _image_error_handler_script() -> str:
+        """One capture-phase listener, replacing every inline onerror attribute.
+
+        Reported 2026-08-27: attaching index.html to an email trips a virus
+        scanner. Nothing malicious is present -- no eval, no base64 payload, no
+        iframe -- but the file carried a dozen `onerror=` attributes alongside
+        three remote <script src> loads, which together are the shape generic
+        mail heuristics score as Trojan:HTML/Phish. `onerror` on an <img> is the
+        most common XSS vector in the wild, so scanners weight it heavily.
+
+        Behaviour is identical. Error events do not bubble, which is why this
+        registers with capture:true -- and why an inline attribute was the
+        original solution.
+        """
+        return (
+            "<script>\n"
+            "document.addEventListener('error', function (e) {\n"
+            "  var el = e.target;\n"
+            "  if (el && el.tagName === 'IMG' &&\n"
+            "      String(el.className).indexOf('hide-on-error') >= 0) {\n"
+            "    el.style.display = 'none';\n"
+            "  }\n"
+            "}, true);\n"
+            "</script>\n"
+        )
 
     def _build_image_caption(self, image: dict[str, Any]) -> str:
         credit = self._sanitize_caption_text(image.get("credit", ""))

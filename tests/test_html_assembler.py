@@ -337,7 +337,13 @@ def test_image_gallery_uses_unified_tile_structure() -> None:
 
     assert '<div class="image-tile photo-item">' in html
     assert '<div class="caption photo-caption">Photo One</div>' in html
-    assert 'onerror="this.style.display=\'none\';"' in html
+    # A broken image still hides itself, but via one delegated listener rather
+    # than an inline onerror attribute per image. Mail scanners flag a dozen
+    # `onerror=` attributes beside remote <script src> loads as
+    # Trojan:HTML/Phish, which made the itinerary unattachable to an email.
+    assert 'onerror=' not in html
+    assert 'class="hide-on-error"' in html
+    assert "addEventListener('error'" in html
     assert "<p class=\"photo-caption\">" not in html
 
 
