@@ -10043,6 +10043,12 @@ class URLDiscoverer:
     #: tier high.
     _MIN_RESTAURANTS_PER_DESTINATION = 5
 
+    #: On an explicit low-cost brief, off-tier options are admitted only to keep
+    #: a destination from rendering almost nothing. Two is the point at which a
+    #: dining section stops looking broken; anything above that should be filled
+    #: with places that actually match the brief, or not at all.
+    _LOW_BUDGET_BACKFILL_FLOOR = 2
+
     def _apply_budget_cap_to_restaurants(
         self, restaurants: list[dict[str, Any]], dest_name: str
     ) -> list[dict[str, Any]]:
@@ -10101,7 +10107,17 @@ class URLDiscoverer:
         # rule exists for variety on an unstated budget, and a brief saying "No
         # fine dining" has stated one. With enough correctly-priced options,
         # nothing off-tier is admitted.
-        shortfall = max(0, self._MIN_RESTAURANTS_PER_DESTINATION - len(on_tier))
+        # Backfill to a MINIMUM, not to a comfortable count. Filling toward five
+        # published three Michelin restaurants for Berlin -- Horvath, Nobelhart &
+        # Schmutzig, Cookies Cream -- on a "No fine dining" brief, because $$$
+        # was allowed to make up the numbers.
+        #
+        # The instruction to exclude fine dining is in the batch prompt and is
+        # not reliably honoured, so the cap is the only enforceable control. It
+        # now admits off-tier options only to avoid a near-empty section, which
+        # is a genuinely worse outcome than a short one.
+        floor = self._MIN_RESTAURANTS_PER_DESTINATION if not low else self._LOW_BUDGET_BACKFILL_FLOOR
+        shortfall = max(0, floor - len(on_tier))
         keep_off = off[:shortfall] if off else []
         dropped = [str((i or {}).get("name", "") or "") for i in off[len(keep_off):]]
 

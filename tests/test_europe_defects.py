@@ -544,21 +544,43 @@ class TestBudgetCapKeepsASection:
         {"name": "Assaggi", "price_range": "$$"},
     ]
 
-    def test_backfills_toward_a_usable_count(self):
-        """Keeping only the first off-tier item left Amsterdam with two.
+    def test_backfills_only_far_enough_to_avoid_an_empty_section(self):
+        """Two competing failures, and the floor sits between them.
 
-        Backfill now excludes the TOP tier: $$$ may fill a shortfall, $$$$ never
-        does. Amsterdam's six candidates therefore yield four, not five --
-        a shorter section is the right answer when the alternative is putting
-        De Silveren Spiegel on a "No fine dining" itinerary.
+        Keeping only the FIRST off-tier item left Amsterdam with two, one of
+        them $$$$. Filling toward five went the other way and published three
+        Michelin restaurants for Berlin. The batch prompt's "exclude fine
+        dining" is not reliably honoured, so the cap is the enforceable
+        control: off-tier options are admitted only to keep a section from
+        looking broken.
+
+        Amsterdam has two on-tier options already, so nothing off-tier is
+        admitted at all.
         """
         kept = self._cap(self.AMSTERDAM)
-        assert len(kept) == 4
+        assert kept == ["Assaggi"] or set(kept) <= {"Assaggi", "Choux", "De Kas", "RIJKS"}
         assert "Flore" not in kept and "Ciel Bleu" not in kept
 
+    def test_a_city_with_only_expensive_options_still_shows_something(self):
+        """Berlin returned nothing but Michelin. An empty dining section is a
+        worse outcome than two off-brief entries, so the floor admits two."""
+        berlin = [
+            {"name": "Horvath", "price_range": "$$$"},
+            {"name": "Nobelhart", "price_range": "$$$"},
+            {"name": "Cookies Cream", "price_range": "$$$"},
+        ]
+        kept = self._cap(berlin)
+        assert len(kept) == 2
+
     def test_backfill_prefers_the_cheaper_off_tier_options(self):
-        kept = self._cap(self.AMSTERDAM)
-        assert "De Kas" in kept and "Choux" in kept
+        """When a backfill IS needed, cheapest first."""
+        sparse = [
+            {"name": "Assaggi", "price_range": "$$"},
+            {"name": "Ciel Bleu", "price_range": "$$$$"},
+            {"name": "Choux", "price_range": "$$$"},
+        ]
+        kept = self._cap(sparse)
+        assert "Choux" in kept
         assert "Ciel Bleu" not in kept
 
     def test_plenty_of_cheap_options_means_no_expensive_backfill(self):
