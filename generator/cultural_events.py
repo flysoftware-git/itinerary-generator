@@ -28,7 +28,12 @@ from urllib.parse import quote
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient
 from generator.search_provider import build_search_client
-from generator.multi_site_grouping import DEFAULT_BASE_OWNED_CATEGORIES, category_deferred_to_base
+from generator.multi_site_grouping import (
+    DEFAULT_BASE_OWNED_CATEGORIES,
+    category_deferred_to_base,
+    group_base_id,
+    is_grouped,
+)
 
 logger = logging.getLogger(__name__)
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -133,6 +138,30 @@ class CulturalEventsDiscoverer:
 
     def discover(self, trip: dict[str, Any]) -> None:
         destinations = trip.get("destinations", [])
+        dest_by_id = {
+            d.get("id"): d for d in destinations
+            if isinstance(d, dict) and d.get("id")
+        }
+
+        def _attendable_window(dest: dict[str, Any]) -> str:
+            """The dates an event must fall within to be worth listing.
+
+            For an ordinary stop that is its own date range. For a GROUPED
+            day trip it is the BASE's range, not the single day the day trip
+            is assigned -- the traveler is in the area all week, and that one
+            date is a modelling convenience, not a constraint on when they
+            can drive twenty minutes into town.
+
+            A real run made the cost of getting this wrong plain: Nashville
+            in December, dated as a one-day trip from a week-long base, had
+            two of its three discovered events filtered out for falling on
+            days either side of that single date, and rendered as "no events
+            confidently verified" for a city at Christmas.
+            """
+            base = dest_by_id.get(group_base_id(dest)) if is_grouped(dest) else None
+            if isinstance(base, dict) and str(base.get("dates", "") or ""):
+                return str(base["dates"])
+            return str(dest.get("dates", "") or "")
 
         def _one(dest: dict) -> None:
             # GH #68 multi-site grouping §5: a grouped entry can defer
@@ -155,7 +184,7 @@ class CulturalEventsDiscoverer:
                 return
             try:
                 logger.info("Discovering cultural events for '%s'…", dest["name"])
-                result = self._discover_for_dest(dest)
+                result = self._discover_for_dest(dest, window_dates=_attendable_window(dest))
                 dest["cultural_events"] = result
                 logger.info("  → Cultural events for '%s': has_events=%s, count=%d",
                            dest["name"], result.get("has_events", False), len(result.get("events", [])))
@@ -172,7 +201,7 @@ class CulturalEventsDiscoverer:
             for f in as_completed(futures):
                 f.result()
 
-    def _discover_for_dest(self, dest: dict[str, Any]) -> dict[str, Any]:
+    def _discover_for_dest(self, dest: dict[str, Any], window_dates: str = "") -> dict[str, Any]:
         try:
             raw_results = self._grok_search(dest["name"], dest["dates"])
             dest_type = self._classify_destination(dest["name"])
@@ -215,14 +244,15 @@ class CulturalEventsDiscoverer:
             result = self._verify_event_urls(result, dest["name"])
 
             _before = len((result.get("events") or [])) if isinstance(result, dict) else 0
-            result = self._drop_events_before_arrival(result, dest.get("dates", ""))
+            _window = window_dates or dest.get("dates", "")
+            result = self._drop_events_before_arrival(result, _window)
             _after = len((result.get("events") or [])) if isinstance(result, dict) else 0
             if _before != _after:
                 logger.info(
                     "    date filter dropped %d of %d event(s) as falling outside the stay (%s)",
-                    _before - _after, _before, dest.get("dates", ""),
+                    _before - _after, _before, _window,
                 )
-            result = self._sanitize_local_tip_by_itinerary_days(result, dest.get("dates", ""))
+            result = self._sanitize_local_tip_by_itinerary_days(result, _window)
             result = self._verify_local_tip_url(result, dest["name"])
             return result
         except Exception as e:

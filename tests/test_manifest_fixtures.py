@@ -20,9 +20,16 @@ from generator.multi_site_grouping import (
 )
 
 MANIFEST_DIR = Path(__file__).resolve().parent.parent / "manifests"
-# .local.yaml files are gitignored and hold private data; they are not
-# guaranteed to exist on any given machine, so they are not fixtures.
-MANIFESTS = sorted(p for p in MANIFEST_DIR.glob("*.yaml") if ".local." not in p.name)
+# Gitignored companions that are not manifests and must not be parsed as
+# one: *.local.yaml (private, machine-specific), *.private.yaml (the
+# substitution overrides scripts/sync_local_manifest.py reads) and
+# *.reservations.yaml (the ingestion sidecar). None is guaranteed to exist
+# on any given machine.
+_NOT_A_MANIFEST = (".local.", ".private.", ".reservations.")
+MANIFESTS = sorted(
+    p for p in MANIFEST_DIR.glob("*.yaml")
+    if not any(marker in p.name for marker in _NOT_A_MANIFEST)
+)
 
 
 def _parse(path: Path) -> dict:

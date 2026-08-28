@@ -17,7 +17,7 @@ from typing import Any
 import requests
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient, LLMCircuitOpenError
-from generator.multi_site_grouping import group_base_id, is_grouped
+from generator.multi_site_grouping import group_base_id, is_grouped, is_park_like
 from generator.road_estimate import (
     ROAD_DISTANCE_FACTOR,
     drive_minutes,
@@ -300,13 +300,20 @@ class AIContentGenerator:
         with no verified candidates there is nothing to recommend.
 
         Preference order:
-          1. a SEEDED stop (manifest `en_route_seeds`) -- an explicit human
+          1. a POPULATED PLACE over a park, a region or a natural feature.
+             You cannot eat lunch on a plateau. A real run picked "Cumberland
+             Plateau" -- correct on geometry and provenance, useless as a
+             lunch stop -- over Oak Ridge, the one candidate on that leg with
+             restaurants in it. This outranks seeding: a seeded landform is
+             still not somewhere to eat, and the traveler seeding a park did
+             not thereby ask to have lunch in it.
+          2. a SEEDED stop (manifest `en_route_seeds`) -- an explicit human
              intent outranks anything discovery proposed on its own,
-          2. otherwise the stop closest to the middle of the route.
+          3. otherwise the stop closest to the middle of the route.
 
-        Within either group, closest-to-halfway wins. A stop with no
-        resolved `route_progress_ratio` is skipped rather than treated as
-        position zero -- the same reasoning as _route_waypoint_sort_key.
+        Within a group, closest-to-halfway wins. A stop with no resolved
+        `route_progress_ratio` is skipped rather than treated as position
+        zero -- the same reasoning as _route_waypoint_sort_key.
         """
         if not isinstance(getting_here, dict):
             return None
@@ -326,10 +333,42 @@ class AIContentGenerator:
                 continue
             if not (0.0 <= ratio <= 1.0):
                 continue
-            rank = (0 if stop.get("is_seed") else 1, abs(ratio - 0.5))
-            if best is None or rank < (best[0], best[1]):
-                best = (rank[0], rank[1], stop)
-        return best[2] if best else None
+            rank = (
+                0 if AIContentGenerator._is_populated_place(stop) else 1,
+                0 if stop.get("is_seed") else 1,
+                abs(ratio - 0.5),
+            )
+            if best is None or rank < best[0]:
+                best = (rank, stop)
+        return best[1] if best else None
+
+    # Words that mark a stop as a landform, a park or a region rather than a
+    # town. Reuses multi_site_grouping.is_park_like for the park half so the
+    # two do not drift, and adds the natural features that are not parks.
+    _NON_LUNCH_PLACE_KEYWORDS: tuple[str, ...] = (
+        "plateau", "mountain", "mountains", "falls", "lake", "river", "creek",
+        "gorge", "canyon", "valley", "forest", "wilderness", "range", "ridge trail",
+        "overlook", "scenic", "trail", "cave", "caverns", "springs area",
+    )
+
+    @staticmethod
+    def _is_populated_place(stop: Any) -> bool:
+        """True when a stop looks like a town rather than a landform.
+
+        A negative test on purpose: the vocabulary of landforms is small and
+        stable, while the set of town names is unbounded, so anything not
+        recognisably a feature is treated as a place. Being wrong that way
+        suggests lunch in a town that turns out to be tiny; being wrong the
+        other way suggests lunch on a mountainside.
+        """
+        if not isinstance(stop, dict):
+            return False
+        if is_park_like(stop):
+            return False
+        name = str(stop.get("name", "") or "").lower()
+        if not name.strip():
+            return False
+        return not any(word in name for word in AIContentGenerator._NON_LUNCH_PLACE_KEYWORDS)
 
     @staticmethod
     def _parse_duration_minutes(raw: str) -> int:
@@ -2227,7 +2266,20 @@ class AIContentGenerator:
         dest_by_id = {
             d.get("id"): d for d in destinations if isinstance(d, dict) and d.get("id")
         }
-        previous_lodging_stop: dict[str, Any] | None = None
+        # The first stop's leg starts at the trip's departure gateway, not at
+        # another destination. Without this the first leg was skipped entirely
+        # for having no origin -- which is how "Nashville International Airport
+        # -> Old Hickory" shipped as 95 mi / 2 hrs 15 min for what is a 17-mile
+        # drive. Internally consistent at 42 mph, so no speed check could ever
+        # have caught it; only comparing against the real endpoints can.
+        trip_meta = trip.get("trip", {}) if isinstance(trip.get("trip"), dict) else {}
+        gateway = (
+            {"lat": trip_meta.get("departure_lat"), "lng": trip_meta.get("departure_lng")}
+            if trip_meta.get("departure_lat") is not None
+            else None
+        )
+
+        previous_lodging_stop: dict[str, Any] | None = gateway
         for dest in destinations:
             if not isinstance(dest, dict):
                 continue
@@ -2243,12 +2295,12 @@ class AIContentGenerator:
             getting_here = ai_content.get("getting_here") if isinstance(ai_content, dict) else None
             if not isinstance(getting_here, dict):
                 continue
-            if not grouped and self._leg_speed_is_plausible(getting_here):
-                continue
             miles, time_str = _estimate_haversine_route(
                 origin.get("lat"), origin.get("lng"), dest.get("lat"), dest.get("lng"),
             )
             if miles is None or time_str is None:
+                continue
+            if not grouped and self._leg_speed_is_plausible(getting_here)                     and self._leg_distance_is_plausible(getting_here, miles):
                 continue
             if not grouped:
                 logger.info(
@@ -2265,6 +2317,39 @@ class AIContentGenerator:
     # 424 mph on the grouped case this check grew out of. Generous on both
     # sides on purpose: this rejects the impossible, not the merely odd.
     _PLAUSIBLE_LEG_SPEED_MPH: tuple[float, float] = (10.0, 85.0)
+
+    # How far a stated distance may sit from the geometry-derived estimate
+    # before it stops being believable. Deliberately loose: a straight-line
+    # estimate under-reads a winding mountain route, and over-reads nothing,
+    # so this must only catch gross error. The airport leg that motivated it
+    # was out by 5x.
+    _PLAUSIBLE_LEG_DISTANCE_FACTOR: float = 2.0
+
+    @classmethod
+    def _leg_distance_is_plausible(cls, getting_here: Any, estimated_miles: float) -> bool:
+        """True when a stated leg distance is close enough to the geometry.
+
+        A leg can be internally consistent and still wrong: 95 miles in 2 hrs
+        15 min is a perfectly ordinary 42 mph, and also nothing like the
+        17-mile drive it describes. Speed alone cannot see that; only the
+        endpoints can.
+
+        No stated distance means no opinion, not a failure.
+        """
+        if not isinstance(getting_here, dict):
+            return True
+        try:
+            stated = float(str(getting_here.get("distance_miles", "")).strip().split()[0])
+        except (TypeError, ValueError, IndexError):
+            return True
+        try:
+            estimate = float(estimated_miles)
+        except (TypeError, ValueError):
+            return True
+        if stated <= 0 or estimate <= 0:
+            return True
+        factor = cls._PLAUSIBLE_LEG_DISTANCE_FACTOR
+        return (estimate / factor) <= stated <= (estimate * factor)
 
     @classmethod
     def _leg_speed_is_plausible(cls, getting_here: Any) -> bool:
