@@ -840,6 +840,7 @@ class AIContentGenerator:
 
         self._enforce_banned_marketing_language(trip)
         self._override_grouped_child_distance_from_geocode(trip)
+        self._inject_lunch_stop_suggestions(trip)
         self._deduplicate_cross_section_tips(trip)
         self._deduplicate_cross_destination_what_to_know(trip)
         self._filter_oversized_scenic_drives(trip)
@@ -2137,6 +2138,53 @@ class AIContentGenerator:
         selected.extend(remaining[: max(0, target - len(selected))])
         return selected
 
+    def _inject_lunch_stop_suggestions(self, trip: dict[str, Any]) -> None:
+        """Add a lunch-stop line to the arrival note on long driving legs.
+
+        Runs here, in normalize_trip_content, rather than inside
+        _inject_travel_realism where the rest of the schedule text is built.
+        It has to: the two inputs it needs are not ready any earlier.
+
+          - `drive_time` is corrected by
+            _override_grouped_child_distance_from_geocode, which runs in
+            this same pass. Built earlier, this read the AI's uncorrected
+            guess -- and on the leg that motivated the feature that guess
+            was "1 hr 30 min" for 304 miles, so the threshold never fired.
+          - `route_progress_ratio` is set during URL discovery, which is one
+            of the parallel stages this pass runs after. Earlier, every stop
+            looks position-less and _pick_lunch_stop skips them all.
+        """
+        threshold = getattr(
+            self, "_lunch_stop_min_drive_minutes", DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
+        )
+        for dest in (trip.get("destinations", []) or []):
+            if not isinstance(dest, dict):
+                continue
+            ai_content = dest.get("ai_content")
+            if not isinstance(ai_content, dict):
+                continue
+            getting_here = ai_content.get("getting_here")
+            stop = self._pick_lunch_stop(getting_here, threshold)
+            if not stop:
+                continue
+            name = str(stop.get("name", "") or "").strip()
+            days = ai_content.get("possible_daily_schedule", []) or []
+            if not name or not days or not isinstance(days[0], dict):
+                continue
+            periods = days[0].get("periods", []) or []
+            if not periods or not isinstance(periods[0], dict):
+                continue
+            summary = str(periods[0].get("summary", "") or "")
+            if name.lower() in summary.lower():
+                continue
+            periods[0]["summary"] = (
+                f"{summary} Break for lunch around {name}, roughly the midpoint."
+            ).strip()
+            logger.info(
+                "  Lunch stop suggested for '%s': %s (%s)",
+                dest.get("name", ""), name, getting_here.get("drive_time", ""),
+            )
+
     def _override_grouped_child_distance_from_geocode(self, trip: dict[str, Any]) -> None:
         """Replace a grouped child's AI-guessed getting_here distance/time
         with a value computed from real geocoded coordinates.
@@ -3247,16 +3295,6 @@ class AIContentGenerator:
             if arrival_note:
                 first_periods[0]["summary"] = f"{arrival_note}. {existing}".strip()
 
-        # A long arriving leg gets an explicit lunch-stop suggestion, named
-        # from the verified en-route candidates rather than invented here.
-        lunch_stop = AIContentGenerator._pick_lunch_stop(getting_here, lunch_stop_threshold_minutes)
-        if lunch_stop and first_periods:
-            lunch_name = str(lunch_stop.get("name", "") or "").strip()
-            summary = str(first_periods[0].get("summary", "") or "")
-            if lunch_name and lunch_name.lower() not in summary.lower():
-                first_periods[0]["summary"] = (
-                    f"{summary} Break for lunch around {lunch_name}, roughly the midpoint."
-                ).strip()
 
         # Extend capacity-aware Afternoon packing beyond the single arrival-day
         # case above: any additional in-stay day (Day 2+) has the full activity

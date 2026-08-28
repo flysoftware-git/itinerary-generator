@@ -223,6 +223,12 @@ restaurants:
 
 en_route_stops:
   enabled: false
+  # Minutes of driving on an arriving leg above which the itinerary suggests
+  # a lunch stop, named from this module's already-verified candidates (a
+  # seeded stop wins over a discovered one; otherwise closest to halfway).
+  # It never invents a place, so it stays silent when `enabled` is false --
+  # with no verified candidates there is nothing honest to recommend.
+  lunch_stop_min_drive_minutes: 180
 
 cultural_events:
   # OFF by default as of 2026-08-22. Measured across three cold-start runs:
