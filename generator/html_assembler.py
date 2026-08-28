@@ -309,13 +309,19 @@ class HTMLAssembler:
         if not ret and waypoints:
             waypoints = waypoints[:-1]
 
+        travelmode = self._maps_travelmode_for_trip({"destinations": destinations})
         params = [
             "api=1",
             f"origin={quote(origin)}",
             f"destination={quote(destination)}",
-            f"travelmode={self._maps_travelmode_for_trip({'destinations': destinations})}",
+            f"travelmode={travelmode}",
         ]
-        if waypoints:
+        # Google Maps cannot compute TRANSIT directions with waypoints: the URL
+        # returns "Sorry, we could not calculate transit directions" and offers
+        # a driving fallback. Verified in a browser 2026-08-27 -- the same route
+        # without waypoints resolves fine (ICE 11, 2h57 Brussels to Frankfurt).
+        # A multi-city rail trip is several journeys, not one routable chain.
+        if waypoints and travelmode != "transit":
             params.append("waypoints=" + quote("|".join(waypoints), safe="|"))
         return "https://www.google.com/maps/dir/?" + "&".join(params)
 
@@ -1183,6 +1189,7 @@ class HTMLAssembler:
             self._booked_arrival_mode(dest), "driving"
         )
         params = [f"destination={quote(destination)}", f"travelmode={travelmode}", "api=1"]
+        transit_mode = travelmode == "transit"
         if previous_name:
             params.append(f"origin={quote(previous_name)}")
 
@@ -1249,7 +1256,12 @@ class HTMLAssembler:
             # clinic) and producing a 33-hour, 2,196-mile route instead of
             # the correct ~10-minute local one. Reverted -- there is no
             # working reorder-via-URL option for this scheme.
-            params.append("waypoints=" + quote("|".join(waypoint_names), safe="|"))
+            # Transit mode rejects waypoints outright -- Google returns
+            # "Sorry, we could not calculate transit directions" and the link
+            # is dead. Dropping them yields a working point-to-point journey,
+            # which is what a rail leg actually is.
+            if not transit_mode:
+                params.append("waypoints=" + quote("|".join(waypoint_names), safe="|"))
         return "https://www.google.com/maps/dir/?" + "&".join(params)
 
     def _build_destination_scope_maps_url(self, destination_name: str = "", source_url: str = "") -> str:

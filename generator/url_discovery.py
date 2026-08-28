@@ -5781,13 +5781,32 @@ class URLDiscoverer:
             "Return item-specific links only and avoid generic destination landing pages."
         )
 
-    @staticmethod
-    def _restaurant_direct_batch_query(dest_name: str, dates: str = "") -> str:
+    def _restaurant_direct_batch_query(self, dest_name: str, dates: str = "") -> str:
         date_clause = f" ({dates})" if str(dates or "").strip() else ""
+        # The budget belongs in the REQUEST. Asking for "highly rated (>4.3)"
+        # with no price guidance selects for fine dining, which is how a
+        # low-cost brief produced Ciel Bleu, De Kas, Yamazato and RIJKS at
+        # Amsterdam. Filtering afterwards could only make the section smaller,
+        # never cheaper -- Amsterdam ended with two restaurants, one of them
+        # $$$$, because there were no inexpensive candidates to keep.
+        budget_text = re.sub(r"[-_]+", " ", str(getattr(self, "_trip_budget", "") or "").lower())
+        price_clause = ""
+        if any(
+            k in budget_text
+            for k in ("budget", "cheap", "economy", "value", "frugal", "low cost",
+                      "inexpensive", "affordable", "modest", "shoestring", "no fine dining")
+        ):
+            price_clause = (
+                "Favour inexpensive places -- cafes, markets, street food, neighbourhood "
+                "bistros, $ and $$ price levels. Exclude fine dining and tasting menus. "
+            )
+        elif any(k in budget_text for k in ("luxury", "premium", "splurge", "upscale", "high end")):
+            price_clause = "Favour upscale places, $$$ and $$$$ price levels. "
         return (
             "Generate a list of local restaurants "
             f"for {dest_name}{date_clause} with clickable links to source material and corresponding Google Maps content. "
-            "Keep only highly rated items (>4.3), include cuisine variety, and keep only places likely open on the indicated dates. "
+            f"{price_clause}"
+            "Keep only well-reviewed items, include cuisine variety, and keep only places likely open on the indicated dates. "
             "Include only suggestions with reliable clickable links."
         )
 
@@ -9960,6 +9979,12 @@ class URLDiscoverer:
         merged = self._backfill_restaurant_metadata_from_existing(merged, restaurants)
         return self._apply_budget_cap_to_restaurants(merged, dest_name)
 
+    #: Below this a destination's dining section stops being useful. The cap
+    #: will admit off-tier options to reach it rather than publish a near-empty
+    #: list -- correctly-priced and absent is not better than present and one
+    #: tier high.
+    _MIN_RESTAURANTS_PER_DESTINATION = 5
+
     def _apply_budget_cap_to_restaurants(
         self, restaurants: list[dict[str, Any]], dest_name: str
     ) -> list[dict[str, Any]]:
@@ -9989,17 +10014,34 @@ class URLDiscoverer:
             return restaurants
 
         off_tier = {"$$$", "$$$$"} if low else {"$", "$$"}
-        kept: list[dict[str, Any]] = []
-        seen_off_tier = False
-        dropped: list[str] = []
-        for item in restaurants:
-            tier = str((item or {}).get("price_range", "") or (item or {}).get("price", "") or "").strip()
-            if tier in off_tier:
-                if seen_off_tier:
-                    dropped.append(str((item or {}).get("name", "") or ""))
-                    continue
-                seen_off_tier = True
-            kept.append(item)
+        # Keeping the FIRST off-tier item and dropping the rest produced the
+        # worst of both outcomes on 2026-08-27: Amsterdam ended with two
+        # restaurants, one of them $$$$, and Frankfurt with a single $$$$.
+        # The list arrives expensive-first, so "first" meant "most expensive",
+        # and dropping six of eight left almost nothing on the page.
+        #
+        # Instead: keep every on-tier item, then backfill from the off-tier
+        # ones CHEAPEST-first until the destination has a usable number. A
+        # thin section of correctly-priced places is not better than a
+        # reasonable section that leans the right way.
+        rank = {"$": 0, "$$": 1, "$$$": 2, "$$$$": 3}
+        def _tier(item: Any) -> str:
+            return str((item or {}).get("price_range", "") or (item or {}).get("price", "") or "").strip()
+
+        on_tier = [i for i in restaurants if _tier(i) not in off_tier]
+        off = [i for i in restaurants if _tier(i) in off_tier]
+        off.sort(key=lambda i: rank.get(_tier(i), 99), reverse=not low)
+
+        # Backfill ONLY to cover a shortfall. An earlier version always kept one
+        # off-tier item, mirroring the "span two price tiers" rule -- but that
+        # rule exists for variety on an unstated budget, and a brief saying "No
+        # fine dining" has stated one. With enough correctly-priced options,
+        # nothing off-tier is admitted.
+        shortfall = max(0, self._MIN_RESTAURANTS_PER_DESTINATION - len(on_tier))
+        keep_off = off[:shortfall] if off else []
+        dropped = [str((i or {}).get("name", "") or "") for i in off[len(keep_off):]]
+
+        kept = [i for i in restaurants if i in on_tier or i in keep_off]
         if dropped:
             logger.info(
                 "Budget cap dropped %d off-tier restaurant(s) at %s: %s",

@@ -479,3 +479,76 @@ class TestPerDestinationLinksUseTheBookedMode:
             "b": {"transportation": [{"type": "car"}]},
         }
         assert HTMLAssembler._return_leg_transportation({}, by_id) == []
+
+
+class TestBudgetReachesTheRequest:
+    """Filtering could only shrink the list; the budget had to reach the ask.
+
+    The batch query asked for "highly rated (>4.3)" with no price guidance,
+    which selects for fine dining. Amsterdam came back as Ciel Bleu, De Kas,
+    Yamazato, RIJKS -- and after filtering, TWO restaurants, one of them $$$$.
+    """
+
+    @staticmethod
+    def _query(budget):
+        from generator.url_discovery import URLDiscoverer
+
+        d = URLDiscoverer.__new__(URLDiscoverer)
+        d._trip_budget = budget
+        return d._restaurant_direct_batch_query("Amsterdam, Netherlands", "September 2-4, 2026")
+
+    @pytest.mark.parametrize(
+        "budget",
+        [{"dining": "low-cost"}, "budget", "inexpensive", {"notes": "No fine dining."}],
+    )
+    def test_low_budget_asks_for_cheap_places(self, budget):
+        q = self._query(budget)
+        assert "inexpensive" in q and "Exclude fine dining" in q
+
+    def test_high_budget_asks_for_upscale(self):
+        assert "upscale" in self._query({"dining": "luxury"})
+
+    def test_no_budget_stays_neutral(self):
+        q = self._query(None)
+        assert "inexpensive" not in q and "upscale" not in q
+
+    def test_the_rating_floor_no_longer_selects_for_fine_dining(self):
+        """">4.3" plus no price guidance was half the cause."""
+        assert "4.3" not in self._query(None)
+
+
+class TestBudgetCapKeepsASection:
+    """A correctly-priced empty section is not better than a leaning one."""
+
+    @staticmethod
+    def _cap(items, budget={"dining": "low-cost"}):
+        from generator.url_discovery import URLDiscoverer
+
+        d = URLDiscoverer.__new__(URLDiscoverer)
+        d._trip_budget = budget
+        return [r["name"] for r in d._apply_budget_cap_to_restaurants(items, "Amsterdam")]
+
+    AMSTERDAM = [
+        {"name": "Flore", "price_range": "$$$$"},
+        {"name": "Ciel Bleu", "price_range": "$$$$"},
+        {"name": "De Kas", "price_range": "$$$"},
+        {"name": "RIJKS", "price_range": "$$$"},
+        {"name": "Choux", "price_range": "$$$"},
+        {"name": "Assaggi", "price_range": "$$"},
+    ]
+
+    def test_backfills_toward_a_usable_count(self):
+        """Keeping only the first off-tier item left Amsterdam with two."""
+        assert len(self._cap(self.AMSTERDAM)) >= 5
+
+    def test_backfill_prefers_the_cheaper_off_tier_options(self):
+        kept = self._cap(self.AMSTERDAM)
+        assert "De Kas" in kept and "Choux" in kept
+        assert "Ciel Bleu" not in kept
+
+    def test_plenty_of_cheap_options_means_no_expensive_backfill(self):
+        items = [{"name": f"Cheap{i}", "price_range": "$"} for i in range(6)]
+        items.append({"name": "Fancy", "price_range": "$$$$"})
+        kept = self._cap(items)
+        assert "Fancy" not in kept
+        assert len(kept) == 6
