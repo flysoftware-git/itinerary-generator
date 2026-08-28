@@ -6666,6 +6666,31 @@ class URLDiscoverer:
             return True, []
         return False, []
 
+    def _batch_query_fingerprint(self, kind: str) -> str:
+        """Short digest of the inputs that change what the batch is ASKED for.
+
+        Only the budget varies per run today, so that is what is hashed. If the
+        query text itself gains more variables, hash the rendered query instead
+        -- the point is that two different asks must not share a cache entry.
+        """
+        import hashlib
+
+        # Only the restaurant query varies with the budget today. Attractions
+        # and en-route stops take no run-varying input, so their keys keep the
+        # original shape and nothing needlessly re-fetches.
+        #
+        # This is narrow on purpose, and the narrowness is the weakness: a
+        # future edit to the ATTRACTION prompt would be just as invisible as
+        # the restaurant one was. The durable fix is to fingerprint the
+        # rendered query for every kind, which means the query builders need a
+        # uniform signature first.
+        if str(kind or "").strip().lower() != "restaurant":
+            return ""
+        budget = str(getattr(self, "_trip_budget", "") or "")
+        if not budget.strip():
+            return ""
+        return hashlib.sha1(budget.encode("utf-8")).hexdigest()[:8]
+
     def _get_direct_batch_html_rows_for_destination(
         self,
         *,
@@ -6683,7 +6708,15 @@ class URLDiscoverer:
             self._direct_batch_html_key_locks = {}
         if not hasattr(self, "_direct_batch_html_failure_ts"):
             self._direct_batch_html_failure_ts = {}
-        key = self._batch_cache_key(destination, f"{dates}|html|{kind}")
+        # The QUERY must be part of the key. It was not, so changing the batch
+        # prompt to ask for inexpensive restaurants changed nothing: Berlin and
+        # Frankfurt were served the previous fine-dining rows straight from
+        # .cache/url_discovery and the fix looked like it had failed. Any prompt
+        # change was invisible until someone cleared the cache by hand, which
+        # is a poor property for a component whose prompt is still being tuned.
+        fingerprint = self._batch_query_fingerprint(kind)
+        suffix = f"|{fingerprint}" if fingerprint else ""
+        key = self._batch_cache_key(destination, f"{dates}|html|{kind}{suffix}")
         if not key:
             return []
 

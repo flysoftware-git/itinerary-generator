@@ -552,3 +552,38 @@ class TestBudgetCapKeepsASection:
         kept = self._cap(items)
         assert "Fancy" not in kept
         assert len(kept) == 6
+
+
+class TestBatchCacheKeyReflectsTheAsk:
+    """Changing the batch prompt changed nothing, because the cache ignored it.
+
+    The key was destination + dates + kind. Asking for inexpensive restaurants
+    instead of highly-rated ones therefore hit the SAME entry, and Berlin and
+    Frankfurt were served the previous fine-dining rows from disk. The fix
+    looked like it had failed when it had simply never run.
+    """
+
+    @staticmethod
+    def _fp(budget, kind="restaurant"):
+        from generator.url_discovery import URLDiscoverer
+
+        d = URLDiscoverer.__new__(URLDiscoverer)
+        d._trip_budget = budget
+        return d._batch_query_fingerprint(kind)
+
+    def test_different_budgets_do_not_share_an_entry(self):
+        low = self._fp({"dining": "low-cost"})
+        high = self._fp({"dining": "luxury"})
+        assert low and high and low != high
+
+    def test_the_same_budget_is_stable_across_runs(self):
+        assert self._fp({"dining": "low-cost"}) == self._fp({"dining": "low-cost"})
+
+    def test_no_budget_leaves_the_key_shape_untouched(self):
+        """An unchanged ask must not invalidate existing cached rows."""
+        assert self._fp(None) == ""
+        assert self._fp("") == ""
+
+    @pytest.mark.parametrize("kind", ["attraction", "en_route", "trail"])
+    def test_kinds_that_take_no_budget_keep_the_original_key(self, kind):
+        assert self._fp({"dining": "low-cost"}, kind) == ""
