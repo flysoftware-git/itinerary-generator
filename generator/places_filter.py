@@ -55,6 +55,26 @@ _TOO_EXPENSIVE = frozenset(_HIGH_BUDGET_LEVELS)
 _TIMEOUT_SECONDS = 20
 
 
+def clean_query_name(value: str) -> str:
+    """Strip decoration before a name is sent to Places.
+
+    The batch writes names as "**Comme Chez Soi**" and sometimes appends the
+    rating and price: "**Senzanome** 4.5+/5, $$$$". Markdown is removed later
+    in the pipeline, so a filter running during discovery sees it raw.
+
+    This is not cosmetic. Querying "**Comme Chez Soi**, Brussels" returns TWO
+    places and ranks a different MODERATE restaurant first; the clean name
+    returns the one VERY_EXPENSIVE match. The asterisks changed the verdict
+    from too_expensive to confirmed_affordable and put a two-star restaurant
+    back on a "No fine dining" itinerary.
+    """
+    text = str(value or "").strip()
+    text = re.sub(r"[*_`]+", "", text)                       # markdown emphasis
+    text = re.sub(r"\d+(?:\.\d+)?\s*\+?\s*/\s*5.*$", "", text)  # "4.5+/5, $$$$"
+    text = re.sub(r"[,\s]*[$#]{1,4}\s*$", "", text)          # a trailing price band
+    return " ".join(text.split()).strip(" ,;:-")
+
+
 def normalize_name(value: str) -> str:
     """Loose key for matching our candidate names against Places results.
 
@@ -172,7 +192,7 @@ class PlacesBudgetFilter:
         too expensive for the brief. Blanket use would be roughly 25 calls a
         run against a 1,000/month free tier.
         """
-        name = str(name or "").strip()
+        name = clean_query_name(name)
         destination = str(destination or "").strip()
         if not (self.available and name and destination):
             return None

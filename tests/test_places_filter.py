@@ -6,7 +6,7 @@ docs/design/places-for-restaurants.md for why this is scoped to filtering.
 """
 import pytest
 
-from generator.places_filter import PlacesBudgetFilter, normalize_name
+from generator.places_filter import PlacesBudgetFilter, clean_query_name, normalize_name
 
 
 class TestNameMatching:
@@ -82,3 +82,36 @@ class TestPublishesNothing:
         assert "priceLevel" in mask and "displayName" in mask and "places.id" in mask
         for tempting in ("websiteUri", "rating", "photos", "editorialSummary", "primaryType"):
             assert tempting not in mask
+
+
+class TestQueryNamesAreCleaned:
+    """Decoration in the query changed the ANSWER, not just the tidiness.
+
+    The batch writes "**Comme Chez Soi**" and sometimes appends the rating:
+    "**Senzanome** 4.5+/5, $$$$". Markdown is stripped later in the pipeline,
+    so a filter running during discovery sees it raw.
+
+    Querying "**Comme Chez Soi**, Brussels" returns TWO places and ranks a
+    different MODERATE restaurant first; the clean name returns the single
+    VERY_EXPENSIVE match. That flipped the verdict to confirmed_affordable and
+    put a two-Michelin-star restaurant back on a "No fine dining" itinerary.
+    """
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("**Comme Chez Soi**", "Comme Chez Soi"),
+            ("**Senzanome** 4.5+/5, $$$$", "Senzanome"),
+            ("Sam's Sports Grill 4.4/5 $$$", "Sam's Sports Grill"),
+            ("__Field__", "Field"),
+            ("Chez Léon", "Chez Léon"),
+            ("Plain Name", "Plain Name"),
+        ],
+    )
+    def test_decoration_is_stripped(self, raw, expected):
+        assert clean_query_name(raw) == expected
+
+    def test_a_decorated_name_memoises_as_the_clean_one(self):
+        """Otherwise the same restaurant is looked up twice, at twice the cost."""
+        f = PlacesBudgetFilter(api_key="fake")
+        assert normalize_name(clean_query_name("**Field**")) == normalize_name("Field")
