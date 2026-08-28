@@ -503,7 +503,14 @@ class TestBudgetReachesTheRequest:
     )
     def test_low_budget_asks_for_cheap_places(self, budget):
         q = self._query(budget)
-        assert "inexpensive" in q and "Exclude fine dining" in q
+        assert "inexpensive" in q
+        # Wording sharpened 2026-08-28: naming the price band alone was not
+        # enough. Berlin and Prague complied; Brussels still returned Comme Chez
+        # Soi and Amsterdam De Silveren Spiegel. Naming the CATEGORY -- friteries,
+        # imbiss, market halls -- and excluding Michelin explicitly is concrete
+        # in a way "$ and $$ price levels" is not.
+        assert "EXCLUDE fine dining" in q
+        assert "Michelin" in q
 
     def test_high_budget_asks_for_upscale(self):
         assert "upscale" in self._query({"dining": "luxury"})
@@ -538,8 +545,16 @@ class TestBudgetCapKeepsASection:
     ]
 
     def test_backfills_toward_a_usable_count(self):
-        """Keeping only the first off-tier item left Amsterdam with two."""
-        assert len(self._cap(self.AMSTERDAM)) >= 5
+        """Keeping only the first off-tier item left Amsterdam with two.
+
+        Backfill now excludes the TOP tier: $$$ may fill a shortfall, $$$$ never
+        does. Amsterdam's six candidates therefore yield four, not five --
+        a shorter section is the right answer when the alternative is putting
+        De Silveren Spiegel on a "No fine dining" itinerary.
+        """
+        kept = self._cap(self.AMSTERDAM)
+        assert len(kept) == 4
+        assert "Flore" not in kept and "Ciel Bleu" not in kept
 
     def test_backfill_prefers_the_cheaper_off_tier_options(self):
         kept = self._cap(self.AMSTERDAM)

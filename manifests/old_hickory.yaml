@@ -1,43 +1,89 @@
 # ============================================================
-# Old Hickory, Tennessee — single-destination test manifest
+# Old Hickory, Tennessee + Asheville, North Carolina
 # ============================================================
 #
-# Purpose: a SMALL, NON-PARK destination for verifying changes
-# cheaply. sw_manifest.yaml is ten destinations and park-centric,
-# which makes it both expensive to run and unrepresentative --
-# most itineraries will contain no national park at all.
+# A real two-stop trip, flown out of Seattle: a week at a private
+# residence on Old Hickory Lake outside Nashville, then the drive
+# east over the Cumberland Plateau to Asheville.
 #
-# What this exercises that sw_manifest cannot:
-#   - no nps_park_code, so imagery must come from Wikimedia alone
-#     (NPS covered only 32% of items in the 2026-08-24 probe, and
-#     only where a parkCode existed)
-#   - trails outside a national park, which is the case for the
-#     claim that trails are worth paying for nearly everywhere
+# It is an OPEN JAW. The inbound Alaska flight lands at BNA on
+# Dec 6; the homeward American flight leaves from CHARLOTTE on
+# Dec 16, not Nashville. So trip.return is CLT, and the last leg
+# is the ~130 mi / ~2h drive Asheville -> Charlotte rather than
+# a backtrack across Tennessee. Getting this wrong is what kept
+# the return flight from matching any gateway on the first pass.
+#
+# December, not fall. Two consequences worth holding onto: the
+# high sections of the Blue Ridge Parkway close for the season,
+# and Biltmore's Christmas programme is the reason most people
+# are in Asheville that week -- it books out well ahead.
+#
+# This began as a single-destination test fixture and is no
+# longer one. It is still the cheapest NON-PARK manifest here --
+# neither destination carries an nps_park_code, so imagery must
+# come from Wikimedia alone (NPS covered only 32% of items in the
+# 2026-08-24 probe, and only where a parkCode existed) -- but at
+# two destinations it no longer runs at roughly a tenth the cost
+# of a full run. Budget for about double what it used to cost.
+#
+# What it still exercises that sw_manifest.yaml cannot:
+#   - no park codes anywhere, so free-image coverage is tested at
+#     its weakest
+#   - trails outside a national park
 #   - small local businesses -- the exact cluster free image
-#     sources missed in that probe, so a thin gallery here is
-#     expected rather than a regression
+#     sources missed in that probe, so a thin gallery is expected
+#     here rather than a regression
+#   - an en-route leg long enough for detour verification to mean
+#     something (~300 mi / ~4h45m on I-40)
 #
-# One destination, one day: enough to exercise every stage at
-# roughly a tenth the cost of a full run.
+# ---- DATES ------------------------------------------------
+# All FIRM, from the 2026-08-27 ingestion pass: the Alaska and
+# American confirmations bracket the trip, the Grand Bohemian
+# confirmation fixes Asheville, and the Old Hickory lodging PDF
+# fixes that stay. The one inference left is that Old Hickory
+# runs the whole Dec 6-13 span -- the flights and the Asheville
+# check-in leave no room for it to be anything else.
+#
+# Re-run the ingestion pass after any date change:
+#
+#   python scripts/ingest_reservations.py \
+#       --manifest manifests/old_hickory.local.yaml --dry-run
+#
+# It needs RESERVATION_IMAP_HOST/USER/PASSWORD in .env (see
+# .env.example:92-100) and an LLM key. Confirmation numbers and
+# firm times belong in the gitignored
+# old_hickory.local.reservations.yaml sidecar that pass writes --
+# never in this file, which is committed to a PUBLIC repository.
+#
+# Destination matching scores each reservation against the stops
+# named here, blended 75/25 name/date, so the placeholder dates
+# below cost a little match confidence but the name overlap
+# carries it. Correct them from the sidecar once it exists.
 # ============================================================
 
 trip:
-  title: "Old Hickory Weekend"
-  subtitle: "A day on the lake outside Nashville"
+  title: "Old Hickory & Asheville"
+  subtitle: "December 6-16, 2026 — the lake outside Nashville, then Asheville at Christmas"
   theme_color: "#2E6F5E"          # lake green, to distinguish output from the SW run
   departure: "Nashville International Airport"
-  departure_datetime: 2026-10-10 11:00
+  departure_datetime: 2026-12-06 15:54   # Alaska 522 SEA->BNA lands
   default_day_start_time: "10:00 AM"
   default_daily_activity_hours: 5
-  return: "Nashville International Airport"
-  return_datetime: 2026-10-11 16:00
+  return: "Charlotte Douglas International Airport"
+  return_datetime: 2026-12-16 16:50   # American 3252 CLT->SEA departs
   llm_provider: openai
   llm_model: gpt-4o-mini
+
+  # Flights and any rental car bracket the whole trip rather than
+  # belonging to either stop, so they render under the route
+  # overview map. Left empty deliberately: these come from the
+  # confirmations via the reservations sidecar, which the parser
+  # merges at load. Do not hand-enter confirmation numbers here.
 
 destinations:
   - id: oldhickory
     name: "Old Hickory, Tennessee"
-    dates: "October 10, 2026"
+    dates: "December 6-13, 2026"          # FIRM -- lodging PDF, bracketed by the inbound flight
 
     # Required by the schema. Real public planning resources rather than
     # placeholder Notion URLs, so the rendered links are actually clickable
@@ -48,7 +94,7 @@ destinations:
       - label: "Old Hickory Lake — USACE"
         url: "https://www.lrn.usace.army.mil/Locations/Lakes/Old-Hickory-Lake/"
 
-    # A stand-in, deliberately. The real trip is a private residence in Old
+    # A stand-in, deliberately. The real stay is a private residence in Old
     # Hickory, which lives in the gitignored manifests/old_hickory.local.yaml
     # -- this repository is public and a home address does not belong in its
     # history. Use the .local variant for real runs.
@@ -65,3 +111,97 @@ destinations:
       - "Andrew Jackson's Hermitage"
       - "Old Hickory Lake"
       - "Bledsoe Creek State Park"
+
+  # ---- DAY TRIP -------------------------------------------------
+  # A grouped entry (GH #68), not a separate lodging stop: `group_with`
+  # says the base is Old Hickory, so this renders as a day out from the
+  # residence rather than a move. Its dates sit inside the base's range.
+  #
+  # No base_owned_categories override needed: the default deferral of
+  # restaurants and cultural events applies to park-like grouped entries
+  # only, and a city owns both. Old Hickory's own events section says as
+  # much -- "nearby Nashville offers a variety of concerts and events."
+  - id: nashville
+    name: "Nashville, Tennessee"
+    dates: "December 8, 2026"
+    group_with: oldhickory
+
+    planning_links:
+      - label: "Visit Music City — official visitor site"
+        url: "https://www.visitmusiccity.com/"
+      - label: "Grand Ole Opry — schedule and tickets"
+        url: "https://www.opry.com/"
+
+    seeds:
+      - "Grand Ole Opry"
+      - "Ryman Auditorium"
+      - "Country Music Hall of Fame and Museum"
+      - "Broadway Historic District"
+
+  # A long day out: ~2h30m each way from Old Hickory, so most of the day
+  # is the drive. Grouped to the same base for the same reason as
+  # Nashville -- it is a day trip, not a move -- and likewise opted out
+  # of category deferral, since Jackson's dining has nothing to do with
+  # Old Hickory's.
+  - id: jackson
+    name: "Jackson, Tennessee"
+    dates: "December 10, 2026"
+    group_with: oldhickory
+
+    planning_links:
+      - label: "Visit Jackson TN — official visitor site"
+        url: "https://www.visitjacksontn.com/"
+      - label: "Casey Jones Village"
+        url: "https://www.caseyjones.com/"
+
+    seeds:
+      - "Casey Jones Home and Railroad Museum"
+      - "West Tennessee Delta Heritage Center"
+      - "Downtown Jackson Historic District"
+
+  - id: asheville
+    name: "Asheville, North Carolina"
+    dates: "December 13-16, 2026"         # FIRM -- Grand Bohemian confirmation
+
+    planning_links:
+      - label: "Explore Asheville — official visitor site"
+        url: "https://www.exploreasheville.com/"
+      - label: "Blue Ridge Parkway — NPS plan your visit"
+        url: "https://www.nps.gov/blri/planyourvisit/index.htm"
+
+    # A hotel's name and street address are public facts, unlike the
+    # residence at the other stop, so both sit here. The CONFIRMATION
+    # NUMBER does not -- it arrives through the reservations sidecar and
+    # must never be written into this file, which is committed to a
+    # public repository. (`location` is schema-required, so a name-only
+    # lodging block will not validate.) A human value here also wins
+    # over anything the extractor produces.
+    lodging:
+      name: "Grand Bohemian Hotel Asheville, Autograph Collection"
+      location: "11 Boston Way, Asheville, NC 28803"
+      checkin_time: "4:00 PM"
+
+    # CONFIRM THESE. Anchors chosen as the obvious mid-December draws,
+    # not from a stated intent. Replace with what is actually planned --
+    # seeds are strong hints and will pull the itinerary toward whatever
+    # is listed. Craggy Gardens and the other high Parkway stops are
+    # deliberately absent: that road closes above roughly 4,000 ft in
+    # December and seeding it would produce an itinerary you cannot drive.
+    seeds:
+      - "Biltmore Estate"
+      - "Biltmore Christmas at Antler Hill Village"
+      - "River Arts District"
+      - "Downtown Asheville"
+      - "North Carolina Arboretum"
+
+    # Hints for the drive over from Old Hickory, not things in Asheville
+    # itself. Still subject to the same route-proximity and detour-threshold
+    # checks as any discovered candidate, so a stop too far off I-40 drops
+    # out on its own.
+    # Winter note: the Smokies are reachable but Newfound Gap Road and
+    # Clingmans Dome close on snow at short notice, so anything the
+    # pipeline proposes there is weather-contingent.
+    en_route_seeds:
+      - "Knoxville, Tennessee"
+      - "Great Smoky Mountains National Park"
+      - "Cumberland Plateau"

@@ -309,7 +309,18 @@ class HTMLAssembler:
         if not ret and waypoints:
             waypoints = waypoints[:-1]
 
-        travelmode = self._maps_travelmode_for_trip({"destinations": destinations})
+        # DRIVING, always, and this one is deliberate. Google Maps cannot
+        # compute transit directions with waypoints, so making this link follow
+        # the trip's rail mode meant dropping them -- and a "Full Route Map"
+        # that shows only Brussels Airport to Frankfurt is not the full route.
+        # Trading a broken link for a working link to the wrong thing is not an
+        # improvement.
+        #
+        # This link answers "what shape is the trip", which needs every stop in
+        # order. Driving is the only mode that renders that. Per-leg links in
+        # Getting Here still use the booked mode and give real transit
+        # directions, which is where a traveller looks for times and platforms.
+        travelmode = "driving"
         params = [
             "api=1",
             f"origin={quote(origin)}",
@@ -321,7 +332,12 @@ class HTMLAssembler:
         # a driving fallback. Verified in a browser 2026-08-27 -- the same route
         # without waypoints resolves fine (ICE 11, 2h57 Brussels to Frankfurt).
         # A multi-city rail trip is several journeys, not one routable chain.
-        if waypoints and travelmode != "transit":
+        # Drop a trailing waypoint that repeats the destination. With an
+        # explicit trip `return`, the last stop was passed as both, so Google
+        # plotted Frankfurt twice and drew a zero-length final leg.
+        if waypoints and waypoints[-1].strip().lower() == destination.strip().lower():
+            waypoints = waypoints[:-1]
+        if waypoints:
             params.append("waypoints=" + quote("|".join(waypoints), safe="|"))
         return "https://www.google.com/maps/dir/?" + "&".join(params)
 

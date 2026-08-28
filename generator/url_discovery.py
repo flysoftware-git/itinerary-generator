@@ -5797,8 +5797,12 @@ class URLDiscoverer:
                       "inexpensive", "affordable", "modest", "shoestring", "no fine dining")
         ):
             price_clause = (
-                "Favour inexpensive places -- cafes, markets, street food, neighbourhood "
-                "bistros, $ and $$ price levels. Exclude fine dining and tasting menus. "
+                "PRICE IS THE PRIMARY FILTER. Return everyday, inexpensive places at the "
+                "$ and $$ price levels: friteries, imbiss and street-food counters, market "
+                "halls, bakeries and sandwich shops, neighbourhood taverns and family "
+                "trattorias, student and worker canteens. At least half the list must be $. "
+                "EXCLUDE fine dining, tasting menus, Michelin-starred and hotel restaurants "
+                "entirely -- they are wrong for this trip no matter how well reviewed. "
             )
         elif any(k in budget_text for k in ("luxury", "premium", "splurge", "upscale", "high end")):
             price_clause = "Favour upscale places, $$$ and $$$$ price levels. "
@@ -10064,6 +10068,12 @@ class URLDiscoverer:
         on_tier = [i for i in restaurants if _tier(i) not in off_tier]
         off = [i for i in restaurants if _tier(i) in off_tier]
         off.sort(key=lambda i: rank.get(_tier(i), 99), reverse=not low)
+        # The top tier is never a valid backfill for a low-cost brief. Filling
+        # a shortfall admitted Comme Chez Soi (2 Michelin stars) to Brussels and
+        # De Silveren Spiegel to Amsterdam on a manifest that says "No fine
+        # dining". A shorter section is the correct answer; $$$ can still fill.
+        if low:
+            off = [i for i in off if _tier(i) != "$$$$"]
 
         # Backfill ONLY to cover a shortfall. An earlier version always kept one
         # off-tier item, mirroring the "span two price tiers" rule -- but that
