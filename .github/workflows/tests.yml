@@ -21,3 +21,19 @@ jobs:
 
       - name: Run test suite
         run: python -m pytest tests/ -q
+
+      # Every committed manifest must still validate against the current
+      # schema. --dry-run returns after Stage 1, before geocoding, so this
+      # needs no API keys and no network and spends nothing. tests/
+      # test_manifest_fixtures.py asserts the same thing in-process; this
+      # step additionally proves the CLI path itself still works.
+      - name: Validate committed manifests
+        run: |
+          for manifest in manifests/*.yaml; do
+            # *.local.yaml holds private data and *.reservations.yaml is a
+            # merge sidecar, not a manifest. Both are gitignored, so neither
+            # exists in CI -- excluded explicitly rather than by that accident.
+            case "$manifest" in *.local.yaml|*.reservations.yaml) continue;; esac
+            echo "--- $manifest"
+            python -m generator.main --manifest "$manifest" --dry-run
+          done

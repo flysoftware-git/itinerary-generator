@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- PWA: Theme and display -->
-    <meta name="theme-color" content="#C0623E" />
+    <meta name="theme-color" content="<!--THEME_COLOR-->" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -13,8 +13,8 @@
     <meta name="description" content="Southwest Road Trip Itinerary — Zion, Bryce, Capitol Reef, Moab, Telluride, Pagosa Springs, Santa Fe" />
 
     <!-- PWA: Apple touch icon (terracotta map pin SVG as data URI) -->
-    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='36' fill='%23C0623E'/%3E%3Ctext x='50%25' y='54%25' font-size='110' text-anchor='middle' dominant-baseline='middle'%3E🗺️%3C/text%3E%3C/svg%3E" />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='36' fill='%23C0623E'/%3E%3Ctext x='50%25' y='54%25' font-size='110' text-anchor='middle' dominant-baseline='middle'%3E🗺️%3C/text%3E%3C/svg%3E" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='36' fill='%23<!--THEME_COLOR_HEX-->'/%3E%3Ctext x='50%25' y='54%25' font-size='110' text-anchor='middle' dominant-baseline='middle'%3E🗺️%3C/text%3E%3C/svg%3E" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='36' fill='%23<!--THEME_COLOR_HEX-->'/%3E%3Ctext x='50%25' y='54%25' font-size='110' text-anchor='middle' dominant-baseline='middle'%3E🗺️%3C/text%3E%3C/svg%3E" type="image/svg+xml" />
 
     <link id="pwa-manifest-link" rel="manifest" href="./manifest.webmanifest" />
     <title>Southwest Road Trip Itinerary — Full</title>
@@ -24,7 +24,7 @@
         theme: {
           extend: {
             colors: {
-              terracotta: '#C0623E',
+              terracotta: '<!--THEME_COLOR-->',
               sandstone: '#F5EFE0',
               canyon: '#8B2E0A',
               sage: '#6B8C6B',
@@ -44,7 +44,11 @@
     <script src="https://unpkg.com/lucide@latest" defer></script>
     <style>
       :root {
-        --terracotta: #C0623E;
+        /* Driven by trip.theme_color in the manifest; html_assembler
+           substitutes this placeholder. Do not inline a literal here --
+           the placeholder going missing is what silently pinned every
+           itinerary to the Southwest terracotta regardless of manifest. */
+        --terracotta: <!--THEME_COLOR-->;
         --sandstone: #F5EFE0;
         --canyon: #8B2E0A;
         --sage: #6B8C6B;
@@ -141,7 +145,7 @@
         width: 26px;
         height: 26px;
         border-radius: 50%;
-        background: #C0623E;
+        background: var(--terracotta);
         border: 2px solid #fff;
         box-shadow: 0 2px 6px rgba(0,0,0,0.24);
         display: flex;
@@ -414,6 +418,10 @@
       .rest-header { display: flex; align-items: center; }
       .rest-header-inline { justify-content: center; gap: 0.8rem; flex-wrap: wrap; }
       .rest-name { font-weight: 700; font-size: 0.98rem; color: var(--canyon); }
+      /* Anchors do not inherit .rest-name's colour -- the UA stylesheet
+         wins -- so without this the restaurant links render default blue. */
+      .rest-name a { color: var(--canyon); text-decoration: underline; text-underline-offset: 2px; }
+      .rest-name a:hover { color: var(--terracotta); }
       .rest-icon { margin-right: 0.35rem; }
       .rest-link { color: var(--canyon); text-decoration: none; }
       .rest-link:hover { text-decoration: underline; }
@@ -552,7 +560,7 @@
         var stops='<!--MAP_MARKERS_JSON-->';
         var map=L.map('overview-map',{zoomControl:true,scrollWheelZoom:false});
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors',maxZoom:13}).addTo(map);
-        L.polyline(stops.map(function(s){return s.c;}),{color:'#C0623E',weight:2.5,dashArray:'7,6',opacity:0.85}).addTo(map);
+        L.polyline(stops.map(function(s){return s.c;}),{color:'<!--THEME_COLOR-->',weight:2.5,dashArray:'7,6',opacity:0.85}).addTo(map);
         stops.forEach(function(s){
           var stopIndex = s.stop_index || s.idx;
           var idxLabel=stopIndex ? '<span class="route-marker-index">'+stopIndex+'</span>' : '';
@@ -782,17 +790,17 @@
             scope: './',
             display: 'standalone',
             background_color: '#FAFAF7',
-            theme_color: '#C0623E',
+            theme_color: '<!--THEME_COLOR-->',
             orientation: 'portrait-primary',
             icons: [
               {
-                src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='36' fill='%23C0623E'/%3E%3Ctext x='50%25' y='54%25' font-size='110' text-anchor='middle' dominant-baseline='middle'%3E%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E",
+                src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='36' fill='%23<!--THEME_COLOR_HEX-->'/%3E%3Ctext x='50%25' y='54%25' font-size='110' text-anchor='middle' dominant-baseline='middle'%3E%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E",
                 sizes: '192x192',
                 type: 'image/svg+xml',
                 purpose: 'any maskable'
               },
               {
-                src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%23C0623E'/%3E%3Ctext x='50%25' y='54%25' font-size='300' text-anchor='middle' dominant-baseline='middle'%3E%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E",
+                src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%23<!--THEME_COLOR_HEX-->'/%3E%3Ctext x='50%25' y='54%25' font-size='300' text-anchor='middle' dominant-baseline='middle'%3E%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E",
                 sizes: '512x512',
                 type: 'image/svg+xml',
                 purpose: 'any maskable'

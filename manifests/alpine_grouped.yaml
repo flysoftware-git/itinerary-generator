@@ -1,0 +1,149 @@
+# ============================================================
+# Berchtesgaden & Salzburg — grouped, non-US, round trip
+# ============================================================
+#
+# A COVERAGE FIXTURE. Every other manifest here is US-only or
+# ungrouped or open-jaw; this one is deliberately the opposite
+# of all three at once, chosen for a geography where that is
+# honest rather than contrived. Berchtesgaden town, the national
+# park above it and Salzburg are within 30 km of each other, so
+# one lodging base genuinely serves all three.
+#
+# What it exercises that no other manifest does:
+#
+#   - a NON-US NATIONAL PARK. nps_park_code is US-only, so
+#     `is_park_like` has to recognise this from the name alone
+#     (generator/multi_site_grouping.py). Nothing else here
+#     tests that path, and it is the path every park outside
+#     the US takes.
+#   - a park child and a city child UNDER THE SAME BASE,
+#     deferring differently: berchtesgaden_np hands its dining
+#     and events to the base town, salzburg keeps its own. That
+#     mixed case is the whole point of the park-vs-city rule and
+#     was previously split across two manifests, tested in
+#     neither.
+#   - GROUPING OUTSIDE THE US at all.
+#   - a ROUND TRIP -- departure == return. Every committed
+#     manifest was open-jaw.
+#   - NON-US LODGING, so booking cards and the privacy-redaction
+#     path run on a non-US trip. europe_cities.yaml has no
+#     lodging at all.
+#   - an EXPLICIT base_owned_categories override with a
+#     non-default value (below), and `en_route_exclude`, which
+#     until now appeared only in a manifest that is not in this
+#     repository.
+#
+# No real bookings: confirmation numbers and addresses are the
+# reservations sidecar's job, and this file is committed.
+# ============================================================
+
+trip:
+  title: "Berchtesgaden & Salzburg"
+  subtitle: "Alpine base camp — one valley, a park and a city"
+  theme_color: "#3B6E8F"          # alpine blue, distinct from the other fixtures
+  departure: "Munich Airport"
+  departure_datetime: 2027-06-12 10:30
+  return: "Munich Airport"        # ROUND TRIP -- deliberately equal to departure
+  return_datetime: 2027-06-19 17:00
+  default_day_start_time: "8:30 AM"
+  default_daily_activity_hours: 6
+  llm_provider: openai
+  llm_model: gpt-4o-mini
+
+destinations:
+
+  # ── BASE ────────────────────────────────────────────────────
+  - id: berchtesgaden
+    name: "Berchtesgaden, Germany"
+    dates: "June 12-16, 2027"
+
+    planning_links:
+      - label: "Berchtesgaden — official visitor site"
+        url: "https://www.berchtesgaden.de/"
+      - label: "Berchtesgadener Land tourism"
+        url: "https://www.berchtesgadener-land.com/"
+
+    lodging:
+      name: "Hotel Edelweiss Berchtesgaden"
+      location: "Maximilianstrasse 2, 83471 Berchtesgaden, Germany"
+      checkin_time: "3:00 PM"
+
+    seeds:
+      - "Salzbergwerk Berchtesgaden"
+      - "Obersalzberg Documentation Centre"
+
+  # ── GROUPED CHILD 1: the park ───────────────────────────────
+  # Park-like, so the config default applies and it defers its
+  # restaurants and cultural events to Berchtesgaden. There is no
+  # NPS park code for a German park, so this is recognised purely
+  # by the "national park" keyword.
+  #
+  # The override below is deliberately NOT the default: scenic
+  # drives are added to what defers to the base, because the roads
+  # in and out of this valley belong to the town's road network,
+  # not to the park. This is the only manifest anywhere exercising
+  # an explicit non-default base_owned_categories.
+  - id: berchtesgaden_np
+    name: "Berchtesgaden National Park, Germany"
+    dates: "June 13-14, 2027"
+    group_with: berchtesgaden
+    base_owned_categories: ["restaurant", "cultural_events", "scenic_drive"]
+
+    planning_links:
+      - label: "Nationalpark Berchtesgaden — official"
+        url: "https://www.nationalpark-berchtesgaden.bayern.de/"
+
+    seeds:
+      - "Konigssee"
+      - "Watzmann"
+      - "Wimbachklamm"
+
+  # ── GROUPED CHILD 2: the city ───────────────────────────────
+  # Not park-like, so it inherits NOTHING by default and keeps its
+  # own restaurants and events -- Salzburg is far larger than the
+  # base it is grouped under, and its festival calendar is its own.
+  # No base_owned_categories here on purpose: the absence is the
+  # test.
+  - id: salzburg
+    name: "Salzburg, Austria"
+    dates: "June 15, 2027"
+    group_with: berchtesgaden
+
+    planning_links:
+      - label: "Salzburg — official tourist board"
+        url: "https://www.salzburg.info/en"
+
+    seeds:
+      - "Hohensalzburg Fortress"
+      - "Mirabell Palace and Gardens"
+      - "Getreidegasse"
+
+  # ── SECOND BASE ─────────────────────────────────────────────
+  - id: hallstatt
+    name: "Hallstatt, Austria"
+    dates: "June 16-19, 2027"
+
+    planning_links:
+      - label: "Hallstatt — official visitor information"
+        url: "https://www.hallstatt.net/"
+
+    lodging:
+      name: "Seehotel Gruner Baum"
+      location: "Marktplatz 104, 4830 Hallstatt, Austria"
+      checkin_time: "4:00 PM"
+
+    seeds:
+      - "Hallstatt Skywalk"
+      - "Dachstein Krippenstein"
+
+    en_route_seeds:
+      - "Gosausee"
+      - "Bad Ischl"
+
+    # The drive from Berchtesgaden passes close enough to Salzburg
+    # that discovery keeps proposing it as an en-route stop. It is
+    # already a destination in this trip, so proposing it again is
+    # a duplicate rather than a find.
+    en_route_exclude:
+      - "Salzburg"
+      - "Salzburg Old Town"
