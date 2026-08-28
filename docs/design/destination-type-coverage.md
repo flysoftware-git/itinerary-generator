@@ -3,6 +3,11 @@
 **Measured 2026-08-25 against generator `v2.2.0`, run `output/oldhickory`, cost $0.3582.
 Two findings; neither is caused by the v2.2.0 changes.**
 
+> **Resolved 2026-08-28 — read §5 first.** The question this note is built around,
+> *which kind of destination needs which threshold*, turned out to be the wrong
+> question. The 77% was six pipeline defects, none of them related to the
+> destination. The measurements below are accurate and the framing is not.
+
 The first real run of a **non-park** destination. Every prior benchmark used
 `sw_manifest.yaml` — ten destinations, five with an NPS `parkCode`. Old Hickory,
 Tennessee has none, and the difference is larger than expected.
@@ -256,6 +261,9 @@ trimming.
 nobody has identified. The next question is not "what budget should a city get" but
 **"why do parks differ at all"** — the only surviving signal.
 
+> **Superseded 2026-08-28.** Parks do not differ. Nothing about the destination
+> explained the loss; see §5.
+
 ### What else this exercises for the first time
 
 - **Non-US destinations end to end** — geocoding, address formats, and whether
@@ -287,3 +295,75 @@ non-park destination to yield "a thin gallery". It yielded a thin gallery *and* 
 hero image of a **church cornerstone** on a trip about a lake, a dam and the
 Hermitage. Per-destination imagery does not merely under-illustrate a non-park stop;
 it can actively mislead about what the stop is.
+
+---
+
+## 5. Resolved: it was never the destination
+
+**2026-08-28.** The question this note kept asking — which *kind* of destination gets
+which threshold — had no answer because it was the wrong question. Not one of the
+causes eventually found had anything to do with parks, cities or towns.
+
+### What the 77% actually was
+
+Six independent defects, each of which discarded or degraded restaurants regardless of
+where the destination was:
+
+| Cause | Effect |
+|---|---|
+| `"low-cost"` matched none of the budget keywords | The budget filter never ran at all |
+| The budget cap ran *before* the batch replaced the list | It capped a list that was then thrown away |
+| The fine-dining instruction reached **one of four** prompts | A rating floor with no price guidance selected for Michelin |
+| The batch cache keyed on destination, not on the ask | Every prompt fix was invisible until the cache cleared |
+| The cap ran *before* price enrichment | Unpriced items bypassed it entirely |
+| `restaurant_direct_batch_item_count` stayed at 8 | Every gate grew stricter while the ask did not |
+
+Old Hickory and Brussels both lost 77% because **both were run through the same broken
+pipeline**. The suburb and the capital were never the variable.
+
+### How the wrong question survived so long
+
+Every measurement was real. Old Hickory's 77% was reproduced three times; Brussels
+matched it to the item. What was wrong was the *frame*: a difference was observed
+between fixtures, so a property of the fixtures was assumed to explain it.
+
+The correction did not come from more measurement of destinations. It came from asking
+whether the removed restaurants were real — they were, with official websites a single
+search away — which reframed the whole thing from a **coverage** problem to a
+**discovery** problem in one step.
+
+**The lesson is the sequence, not the answer.** "Which destination type is different"
+was measurable, and answering it precisely produced eleven pages of correct,
+irrelevant analysis. "Are these restaurants real" was one query and settled it.
+
+### What the thresholds should be
+
+Unchanged, and now for a reason rather than for want of data. `max_no_url_restaurants: 0`
+is a sound bar: the current build removes 36% of candidates and publishes 70
+restaurants across five cities, because the *ask* is now 20 per destination rather
+than 8. **A threshold expresses what is acceptable; it cannot manufacture candidates.**
+The fix was always upstream.
+
+Destination-type-aware thresholds are **not recommended**. There is no evidence any
+destination type needs a different bar, and the classification rule that would be
+required — `parkCode` presence was rejected earlier in this note — has no basis left.
+
+### What remains true from the original finding
+
+Two things survive the reframing:
+
+- **Reporting removals as a ratio** was right, and immediately proved itself by
+  exposing a moving denominator that a bare count had hidden (§1).
+- **The verified-link-or-seed policy is correct.** It was never the cause; it was the
+  gate that made the upstream defects visible. Publishing unverified items is how a
+  Snoqualmie trail once reached a Utah itinerary.
+
+### Still open
+
+- **`europe_cities.yaml` is not a coverage experiment any more.** It earned its place
+  as the fixture that exposed a pipeline built throughout for US road trips: en-route
+  stops invented for rail legs, driving directions written for booked trains, and a
+  day-count regex that read "August 31 - September 1" as one day. Keep it for that.
+- **The batch cache fingerprint covers only the restaurant query.** An edit to the
+  attraction prompt is still invisible until the cache clears — the same defect that
+  hid three restaurant fixes, still live one module over.

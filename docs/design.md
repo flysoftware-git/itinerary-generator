@@ -1145,7 +1145,7 @@ Every note in [`docs/design/`](design/README.md), and where it connects to this 
 | [`per-day-item-caps.md`](design/per-day-item-caps.md) | per-day item targets and trimming | §2.5 |
 | [`cost-accounting-and-reduction.md`](design/cost-accounting-and-reduction.md) | measuring run spend against the provider's bill; benchmarking procedure | §2.5 |
 | [`per-item-imagery.md`](design/per-item-imagery.md) | per-item images from free sources; why Places Photos cannot be used | §2.5 |
-| [`destination-type-coverage.md`](design/destination-type-coverage.md) | fixture-calibrated quality thresholds; the park/city/town density experiment | §2.5 |
+| [`destination-type-coverage.md`](design/destination-type-coverage.md) | the 77% dining loss: why destination type was the wrong question | §2.5 |
 | [`european-content-sources.md`](design/european-content-sources.md) | Rick Steves vs Wikivoyage for European discovery | §2.5 |
 | [`places-for-restaurants.md`](design/places-for-restaurants.md) | Places API for restaurants: what it fixes, and the terms question | §2.5 |
 | [`building-attractions.md`](design/building-attractions.md) | generation, normalization, ordering | §2.5, §5.1, §6.3 |
