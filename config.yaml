@@ -519,6 +519,11 @@ url_discovery:
 # Overridable per-entry via the grouped entry's own base_owned_categories
 # field (an explicit empty list there opts that entry out entirely).
 multi_site_grouping:
+  # Which categories a grouped (`group_with`) entry defers to its base.
+  # Applies to PARK-LIKE grouped entries only: a park has no dining scene or
+  # events calendar of its own, so both belong to the town you sleep in. A
+  # city day trip defers nothing by default -- it is usually the larger place
+  # and owns both. A per-entry `base_owned_categories` overrides either way.
   base_owned_categories: ["restaurant", "cultural_events"]
 
 # ── Output validation ─────────────────────────────────────────────────────────
