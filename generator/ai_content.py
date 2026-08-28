@@ -17,7 +17,7 @@ from typing import Any
 import requests
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient, LLMCircuitOpenError
-from generator.multi_site_grouping import group_base_id, is_grouped
+from generator.multi_site_grouping import group_base_id, is_grouped, is_park_like
 from generator.road_estimate import (
     ROAD_DISTANCE_FACTOR,
     drive_minutes,
@@ -300,13 +300,20 @@ class AIContentGenerator:
         with no verified candidates there is nothing to recommend.
 
         Preference order:
-          1. a SEEDED stop (manifest `en_route_seeds`) -- an explicit human
+          1. a POPULATED PLACE over a park, a region or a natural feature.
+             You cannot eat lunch on a plateau. A real run picked "Cumberland
+             Plateau" -- correct on geometry and provenance, useless as a
+             lunch stop -- over Oak Ridge, the one candidate on that leg with
+             restaurants in it. This outranks seeding: a seeded landform is
+             still not somewhere to eat, and the traveler seeding a park did
+             not thereby ask to have lunch in it.
+          2. a SEEDED stop (manifest `en_route_seeds`) -- an explicit human
              intent outranks anything discovery proposed on its own,
-          2. otherwise the stop closest to the middle of the route.
+          3. otherwise the stop closest to the middle of the route.
 
-        Within either group, closest-to-halfway wins. A stop with no
-        resolved `route_progress_ratio` is skipped rather than treated as
-        position zero -- the same reasoning as _route_waypoint_sort_key.
+        Within a group, closest-to-halfway wins. A stop with no resolved
+        `route_progress_ratio` is skipped rather than treated as position
+        zero -- the same reasoning as _route_waypoint_sort_key.
         """
         if not isinstance(getting_here, dict):
             return None
@@ -326,10 +333,42 @@ class AIContentGenerator:
                 continue
             if not (0.0 <= ratio <= 1.0):
                 continue
-            rank = (0 if stop.get("is_seed") else 1, abs(ratio - 0.5))
-            if best is None or rank < (best[0], best[1]):
-                best = (rank[0], rank[1], stop)
-        return best[2] if best else None
+            rank = (
+                0 if AIContentGenerator._is_populated_place(stop) else 1,
+                0 if stop.get("is_seed") else 1,
+                abs(ratio - 0.5),
+            )
+            if best is None or rank < best[0]:
+                best = (rank, stop)
+        return best[1] if best else None
+
+    # Words that mark a stop as a landform, a park or a region rather than a
+    # town. Reuses multi_site_grouping.is_park_like for the park half so the
+    # two do not drift, and adds the natural features that are not parks.
+    _NON_LUNCH_PLACE_KEYWORDS: tuple[str, ...] = (
+        "plateau", "mountain", "mountains", "falls", "lake", "river", "creek",
+        "gorge", "canyon", "valley", "forest", "wilderness", "range", "ridge trail",
+        "overlook", "scenic", "trail", "cave", "caverns", "springs area",
+    )
+
+    @staticmethod
+    def _is_populated_place(stop: Any) -> bool:
+        """True when a stop looks like a town rather than a landform.
+
+        A negative test on purpose: the vocabulary of landforms is small and
+        stable, while the set of town names is unbounded, so anything not
+        recognisably a feature is treated as a place. Being wrong that way
+        suggests lunch in a town that turns out to be tiny; being wrong the
+        other way suggests lunch on a mountainside.
+        """
+        if not isinstance(stop, dict):
+            return False
+        if is_park_like(stop):
+            return False
+        name = str(stop.get("name", "") or "").lower()
+        if not name.strip():
+            return False
+        return not any(word in name for word in AIContentGenerator._NON_LUNCH_PLACE_KEYWORDS)
 
     @staticmethod
     def _parse_duration_minutes(raw: str) -> int:
@@ -840,6 +879,7 @@ class AIContentGenerator:
 
         self._enforce_banned_marketing_language(trip)
         self._override_grouped_child_distance_from_geocode(trip)
+        self._populate_departure_leg_distance(trip)
         self._inject_lunch_stop_suggestions(trip)
         self._deduplicate_cross_section_tips(trip)
         self._deduplicate_cross_destination_what_to_know(trip)
@@ -2138,6 +2178,73 @@ class AIContentGenerator:
         selected.extend(remaining[: max(0, target - len(selected))])
         return selected
 
+    def _populate_departure_leg_distance(self, trip: dict[str, Any]) -> None:
+        """Give the departure leg the distance/time the arriving legs have.
+
+        The Departure Route Options card has always been able to render
+        mileage and duration badges -- html_assembler gates them on
+        `getting_there.distance_miles` and `drive_time` -- but nothing ever
+        set those two keys. The only writer of that dict populates it when a
+        one-way scenic drive aligns with the return route, which is about
+        route OPTIONS and says nothing about the leg itself, so the badges
+        were unreachable and the card showed a bare label.
+
+        Computed from geometry rather than asked of the model: both endpoints
+        are known exactly (a geocoded destination and a geocoded return
+        gateway), which is the same condition under which
+        _override_grouped_child_distance_from_geocode recomputes rather than
+        trusts a guess.
+
+        A value already present is left alone -- if some future path does
+        supply a real routed distance, it beats a straight-line estimate.
+        """
+        destinations = trip.get("destinations", []) or []
+        if not destinations:
+            return
+        trip_meta = trip.get("trip", {}) if isinstance(trip.get("trip"), dict) else {}
+        if trip_meta.get("return_lat") is None or trip_meta.get("return_lng") is None:
+            return
+
+        last_dest = destinations[-1]
+        if not isinstance(last_dest, dict):
+            return
+
+        # The traveler departs from where they slept. When the final entry is
+        # a grouped day trip, that is its base -- the same correction
+        # html_assembler applies to this card's label.
+        origin = last_dest
+        if is_grouped(last_dest):
+            dest_by_id = {
+                d.get("id"): d for d in destinations
+                if isinstance(d, dict) and d.get("id")
+            }
+            base = dest_by_id.get(group_base_id(last_dest))
+            if isinstance(base, dict):
+                origin = base
+
+        ai_content = last_dest.get("ai_content")
+        if not isinstance(ai_content, dict):
+            return
+        getting_there = ai_content.get("getting_there")
+        if not isinstance(getting_there, dict):
+            getting_there = {}
+            ai_content["getting_there"] = getting_there
+        if str(getting_there.get("distance_miles", "") or "").strip() and                 str(getting_there.get("drive_time", "") or "").strip():
+            return
+
+        miles, time_str = _estimate_haversine_route(
+            origin.get("lat"), origin.get("lng"),
+            trip_meta.get("return_lat"), trip_meta.get("return_lng"),
+        )
+        if miles is None or time_str is None:
+            return
+        getting_there["distance_miles"] = miles
+        getting_there["drive_time"] = time_str
+        logger.info(
+            "  Departure leg from '%s' to '%s': %s mi / %s",
+            origin.get("name", ""), trip_meta.get("return", ""), miles, time_str,
+        )
+
     def _inject_lunch_stop_suggestions(self, trip: dict[str, Any]) -> None:
         """Add a lunch-stop line to the arrival note on long driving legs.
 
@@ -2227,7 +2334,20 @@ class AIContentGenerator:
         dest_by_id = {
             d.get("id"): d for d in destinations if isinstance(d, dict) and d.get("id")
         }
-        previous_lodging_stop: dict[str, Any] | None = None
+        # The first stop's leg starts at the trip's departure gateway, not at
+        # another destination. Without this the first leg was skipped entirely
+        # for having no origin -- which is how "Nashville International Airport
+        # -> Old Hickory" shipped as 95 mi / 2 hrs 15 min for what is a 17-mile
+        # drive. Internally consistent at 42 mph, so no speed check could ever
+        # have caught it; only comparing against the real endpoints can.
+        trip_meta = trip.get("trip", {}) if isinstance(trip.get("trip"), dict) else {}
+        gateway = (
+            {"lat": trip_meta.get("departure_lat"), "lng": trip_meta.get("departure_lng")}
+            if trip_meta.get("departure_lat") is not None
+            else None
+        )
+
+        previous_lodging_stop: dict[str, Any] | None = gateway
         for dest in destinations:
             if not isinstance(dest, dict):
                 continue
@@ -2243,12 +2363,12 @@ class AIContentGenerator:
             getting_here = ai_content.get("getting_here") if isinstance(ai_content, dict) else None
             if not isinstance(getting_here, dict):
                 continue
-            if not grouped and self._leg_speed_is_plausible(getting_here):
-                continue
             miles, time_str = _estimate_haversine_route(
                 origin.get("lat"), origin.get("lng"), dest.get("lat"), dest.get("lng"),
             )
             if miles is None or time_str is None:
+                continue
+            if not grouped and self._leg_speed_is_plausible(getting_here)                     and self._leg_distance_is_plausible(getting_here, miles):
                 continue
             if not grouped:
                 logger.info(
@@ -2265,6 +2385,39 @@ class AIContentGenerator:
     # 424 mph on the grouped case this check grew out of. Generous on both
     # sides on purpose: this rejects the impossible, not the merely odd.
     _PLAUSIBLE_LEG_SPEED_MPH: tuple[float, float] = (10.0, 85.0)
+
+    # How far a stated distance may sit from the geometry-derived estimate
+    # before it stops being believable. Deliberately loose: a straight-line
+    # estimate under-reads a winding mountain route, and over-reads nothing,
+    # so this must only catch gross error. The airport leg that motivated it
+    # was out by 5x.
+    _PLAUSIBLE_LEG_DISTANCE_FACTOR: float = 2.0
+
+    @classmethod
+    def _leg_distance_is_plausible(cls, getting_here: Any, estimated_miles: float) -> bool:
+        """True when a stated leg distance is close enough to the geometry.
+
+        A leg can be internally consistent and still wrong: 95 miles in 2 hrs
+        15 min is a perfectly ordinary 42 mph, and also nothing like the
+        17-mile drive it describes. Speed alone cannot see that; only the
+        endpoints can.
+
+        No stated distance means no opinion, not a failure.
+        """
+        if not isinstance(getting_here, dict):
+            return True
+        try:
+            stated = float(str(getting_here.get("distance_miles", "")).strip().split()[0])
+        except (TypeError, ValueError, IndexError):
+            return True
+        try:
+            estimate = float(estimated_miles)
+        except (TypeError, ValueError):
+            return True
+        if stated <= 0 or estimate <= 0:
+            return True
+        factor = cls._PLAUSIBLE_LEG_DISTANCE_FACTOR
+        return (estimate / factor) <= stated <= (estimate * factor)
 
     @classmethod
     def _leg_speed_is_plausible(cls, getting_here: Any) -> bool:
@@ -3695,28 +3848,16 @@ class AIContentGenerator:
         return days
 
     def _infer_day_count(self, dates: str) -> int:
-        text = (dates or "").replace("–", "-")
-        # "October 17-21, 2026" or "October 17, 2026"
-        m = re.search(r"[A-Za-z]+\s+(\d{1,2})(?:\s*-\s*(\d{1,2}))?(?:,\s*\d{4})?", text)
-        if m:
-            start = int(m.group(1))
-            end = int(m.group(2) or m.group(1))
-            if end >= start:
-                return max(1, min(5, end - start + 1))
-            return 1
-        # ISO range fallback: 2026-10-17 to 2026-10-21
-        iso = re.findall(r"(\d{4}-\d{2}-\d{2})", text)
-        if len(iso) >= 2:
-            try:
-                from datetime import datetime as _dt
-                d0 = _dt.strptime(iso[0], "%Y-%m-%d")
-                d1 = _dt.strptime(iso[1], "%Y-%m-%d")
-                if d1 >= d0:
-                    return max(1, min(5, (d1 - d0).days + 1))
-            except ValueError:
-                return 1
-        return 1
+        """Days at a destination, capped at 5 for the per-day target formulas.
 
+        Delegates to date_span.day_count. The regex previously inlined here
+        matched only "Month D-D" and returned 1 for "August 31 - September 1",
+        so Brussels rendered a single day of schedule for a two-day stay. The
+        identical regex also lived in url_discovery; see date_span's docstring.
+        """
+        from generator.date_span import day_count
+
+        return day_count(dates, maximum=5)
     def _expand_days(self, days: list[dict[str, Any]], day_count: int) -> list[dict[str, Any]]:
         if not days:
             return days

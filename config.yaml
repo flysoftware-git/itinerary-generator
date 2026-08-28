@@ -417,7 +417,16 @@ url_discovery:
   # A 3-day destination may legitimately keep 15 attractions (5/day), so a
   # ceiling below ~12 starves the per-day cap rather than trimming waste.
   direct_link_batch_count: 12
-  restaurant_direct_batch_item_count: 8
+  # 8 -> 20 on 2026-08-28. Every gate downstream is now stricter than when 8
+  # was chosen: verified-link-or-seed, the budget cap, and the Places price
+  # check. Frankfurt asked for 8, had 7 rejected as too expensive and published
+  # ONE restaurant; Amsterdam also published one.
+  #
+  # The ask has to exceed the survivors, not match them. Output tokens are 8.6%
+  # of a run (see cost-accounting-and-reduction.md), so a bigger LIST is cheap;
+  # what was expensive was the per-item URL hunt, and that is already bounded
+  # by the per-day cap regardless of how many candidates arrive.
+  restaurant_direct_batch_item_count: 20
   en_route_direct_batch_item_count: 8
   restaurant_direct_batch_min_results: 4
   en_route_direct_batch_min_results: 3
@@ -510,6 +519,11 @@ url_discovery:
 # Overridable per-entry via the grouped entry's own base_owned_categories
 # field (an explicit empty list there opts that entry out entirely).
 multi_site_grouping:
+  # Which categories a grouped (`group_with`) entry defers to its base.
+  # Applies to PARK-LIKE grouped entries only: a park has no dining scene or
+  # events calendar of its own, so both belong to the town you sleep in. A
+  # city day trip defers nothing by default -- it is usually the larger place
+  # and owns both. A per-entry `base_owned_categories` overrides either way.
   base_owned_categories: ["restaurant", "cultural_events"]
 
 # ── Output validation ─────────────────────────────────────────────────────────

@@ -2228,6 +2228,18 @@ class URLDiscoverer:
         # them. Fifth time a rule has been applied to one of two sources.
         self._trip_budget = ((trip or {}).get("trip") or {}).get("budget")
 
+        # Places as a filter over our own candidates. Never a source, and no
+        # field it returns is published -- see places_filter's module docstring.
+        try:
+            from generator.places_filter import PlacesBudgetFilter
+
+            self._places_filter = PlacesBudgetFilter()
+            if self._places_filter.available:
+                logger.info("Places budget filter active")
+        except Exception as exc:
+            logger.warning("Places budget filter unavailable: %s", exc)
+            self._places_filter = None
+
         destinations = trip.get("destinations", [])
 
         def _discover_one(dest: dict) -> None:
@@ -5781,6 +5793,54 @@ class URLDiscoverer:
             "Return item-specific links only and avoid generic destination landing pages."
         )
 
+    def _batch_rating_floor(self) -> str:
+        """Minimum rating to request, relaxed on a low-cost brief.
+
+        4.3 is a high bar, and it interacts badly with a budget: a friterie or
+        imbiss that locals rate 4.1 is exactly what "low-cost, no fine dining"
+        wants, while 4.3-and-above skews toward destination restaurants.
+        Removing the floor entirely was the first attempt and went too far --
+        it is a genuine quality gate, and a test rightly held it in place.
+
+        Lowering it rather than dropping it widens the cheap pool without
+        admitting badly-reviewed places.
+        """
+        budget_text = re.sub(r"[-_]+", " ", str(getattr(self, "_trip_budget", "") or "").lower())
+        low = any(
+            k in budget_text
+            for k in ("budget", "cheap", "economy", "value", "frugal", "low cost",
+                      "inexpensive", "affordable", "modest", "shoestring", "no fine dining")
+        )
+        return "4.0" if low else "4.3"
+
+    def _batch_price_clause(self) -> str:
+        """The budget instruction, shared by BOTH restaurant prompts.
+
+        There are two: a system prompt that sets the output contract and the
+        item count, and a user prompt naming the destination. The budget
+        wording was added to the user prompt only, so the system prompt went on
+        saying "Keep only highly rated items (>4.3)" -- a rating floor with no
+        price guidance, which is exactly what selects for fine dining. Half the
+        instruction was arguing with the other half.
+        """
+        budget_text = re.sub(r"[-_]+", " ", str(getattr(self, "_trip_budget", "") or "").lower())
+        if any(
+            k in budget_text
+            for k in ("budget", "cheap", "economy", "value", "frugal", "low cost",
+                      "inexpensive", "affordable", "modest", "shoestring", "no fine dining")
+        ):
+            return (
+                "PRICE IS THE PRIMARY FILTER. Return everyday, inexpensive places at the "
+                "$ and $$ price levels: friteries, imbiss and street-food counters, market "
+                "halls, bakeries and sandwich shops, neighbourhood taverns and family "
+                "trattorias, student and worker canteens. At least half the list must be $. "
+                "EXCLUDE fine dining, tasting menus, Michelin-starred and hotel restaurants "
+                "entirely -- they are wrong for this trip no matter how well reviewed. "
+            )
+        if any(k in budget_text for k in ("luxury", "premium", "splurge", "upscale", "high end")):
+            return "Favour upscale places, $$$ and $$$$ price levels. "
+        return ""
+
     def _restaurant_direct_batch_query(self, dest_name: str, dates: str = "") -> str:
         date_clause = f" ({dates})" if str(dates or "").strip() else ""
         # The budget belongs in the REQUEST. Asking for "highly rated (>4.3)"
@@ -5789,23 +5849,7 @@ class URLDiscoverer:
         # Amsterdam. Filtering afterwards could only make the section smaller,
         # never cheaper -- Amsterdam ended with two restaurants, one of them
         # $$$$, because there were no inexpensive candidates to keep.
-        budget_text = re.sub(r"[-_]+", " ", str(getattr(self, "_trip_budget", "") or "").lower())
-        price_clause = ""
-        if any(
-            k in budget_text
-            for k in ("budget", "cheap", "economy", "value", "frugal", "low cost",
-                      "inexpensive", "affordable", "modest", "shoestring", "no fine dining")
-        ):
-            price_clause = (
-                "PRICE IS THE PRIMARY FILTER. Return everyday, inexpensive places at the "
-                "$ and $$ price levels: friteries, imbiss and street-food counters, market "
-                "halls, bakeries and sandwich shops, neighbourhood taverns and family "
-                "trattorias, student and worker canteens. At least half the list must be $. "
-                "EXCLUDE fine dining, tasting menus, Michelin-starred and hotel restaurants "
-                "entirely -- they are wrong for this trip no matter how well reviewed. "
-            )
-        elif any(k in budget_text for k in ("luxury", "premium", "splurge", "upscale", "high end")):
-            price_clause = "Favour upscale places, $$$ and $$$$ price levels. "
+        price_clause = self._batch_price_clause()
         return (
             "Generate a list of local restaurants "
             f"for {dest_name}{date_clause} with clickable links to source material and corresponding Google Maps content. "
@@ -6156,7 +6200,8 @@ class URLDiscoverer:
                 "and <a href=\"https://www.google.com/maps/search/?api=1&query=Restaurant+Name+Address+City+State\">Maps</a> as an address-qualified Google Maps search link. "
                 "Include the restaurant's rating as a clear numeric value like '4.7/5' or '4.7 stars', a price indicator like '$$', '$$$', or 'moderate', and the cuisine or restaurant type (e.g. 'Italian', 'New American', 'Poke') when available, "
                 "then a short descriptive note (8-15 words) about the food, atmosphere, or signature dishes -- real prose that adds detail beyond the cuisine or price, when available. "
-                "Keep only highly rated items (>4.3), include cuisine variety, "
+                f"{self._batch_price_clause()}"
+                f"Keep only items rated above {self._batch_rating_floor()}, include cuisine variety, "
                 "and keep only likely-open, high-confidence options. "
                 "Avoid generic destination listing pages."
             )
@@ -6166,7 +6211,8 @@ class URLDiscoverer:
                 "with clickable links to source material and corresponding Google Maps content. "
                 "Include a rating, price indicator, and the cuisine or restaurant type for each item when available, using a clear numeric or price format, "
                 "and a short descriptive note about the food, atmosphere, or signature dishes for each item when available. "
-                "Keep only highly rated items (>4.3), include cuisine variety, "
+                f"{self._batch_price_clause()}"
+                f"Keep only items rated above {self._batch_rating_floor()}, include cuisine variety, "
                 "and keep only places likely open on the indicated dates. "
                 "Include only suggestions with reliable clickable links."
             )
@@ -6355,7 +6401,8 @@ class URLDiscoverer:
                 "and <a href=\"https://www.google.com/maps/search/?api=1&query=Restaurant+Name+Address+City+State\">Maps</a> as an address-qualified Google Maps search link. "
                 "Include the restaurant's rating as a clear numeric value like '4.7/5' or '4.7 stars', a price indicator like '$$', '$$$', or 'moderate', and the cuisine or restaurant type (e.g. 'Italian', 'New American', 'Poke') when available, "
                 "then a short descriptive note (8-15 words) about the food, atmosphere, or signature dishes -- real prose that adds detail beyond the cuisine or price, when available. "
-                "Keep only highly rated items (>4.3), include cuisine variety, "
+                f"{self._batch_price_clause()}"
+                f"Keep only items rated above {self._batch_rating_floor()}, include cuisine variety, "
                 "and keep only likely-open, high-confidence options. "
                 "Avoid generic destination listing pages."
             )
@@ -6365,7 +6412,8 @@ class URLDiscoverer:
                 + "\nInclude clickable links to source material and corresponding Google Maps content. "
                 "Include a rating, price indicator, and the cuisine or restaurant type for each item when available, using a clear numeric or price format, "
                 "and a short descriptive note about the food, atmosphere, or signature dishes for each item when available. "
-                "Keep only highly rated items (>4.3), include cuisine variety, "
+                f"{self._batch_price_clause()}"
+                f"Keep only items rated above {self._batch_rating_floor()}, include cuisine variety, "
                 "and keep only places likely open on the indicated dates. "
                 "Include only suggestions with reliable clickable links."
             )
@@ -6700,7 +6748,13 @@ class URLDiscoverer:
         # Exactly the failure this fingerprint was added to prevent, one level
         # further in.
         try:
-            rendered = self._restaurant_direct_batch_query("__fingerprint__", "")
+            # The item count shapes the SYSTEM prompt, which this does not
+            # render, so it is folded in explicitly. Raising 8 -> 20 changed
+            # nothing on the next run because the key never noticed. Third time
+            # a change to the ask has been invisible here, and each time the
+            # missing input was one I had not thought of.
+            count = getattr(self, "_restaurant_direct_batch_item_count", "")
+            rendered = f"{count}|{self._restaurant_direct_batch_query('__fingerprint__', '')}"
         except Exception:
             rendered = str(getattr(self, "_trip_budget", "") or "")
         if not rendered.strip():
@@ -10170,12 +10224,58 @@ class URLDiscoverer:
         # ones CHEAPEST-first until the destination has a usable number. A
         # thin section of correctly-priced places is not better than a
         # reasonable section that leans the right way.
+        # Consult Places where our own price is missing or looks wrong for the
+        # brief. Used as a FILTER only -- the verdict decides whether an item
+        # survives, and no Places field is published. See
+        # docs/design/places-for-restaurants.md for why that boundary matters.
+        #
+        # Spent narrowly: one call per ambiguous item, not per restaurant. The
+        # destination-wide sweep is too coarse to help -- a 40-place window
+        # missed Horvath, Comme Chez Soi and Madami alike -- but a targeted
+        # lookup answered 11 of 12 correctly, rejecting every Michelin entry.
+        places = getattr(self, "_places_filter", None)
+        if low and places is not None and places.available:
+            rescued, rejected = [], []
+            for item in restaurants:
+                tier = str((item or {}).get("price_range", "") or (item or {}).get("price", "") or "").strip()
+                if tier in ("$", "$$"):
+                    continue                      # already on-brief; do not spend a call
+                name = str((item or {}).get("name", "") or "").strip()
+                if not name:
+                    continue
+                verdict = places.verdict_precise(name, dest_name)
+                if verdict == "too_expensive":
+                    item["_places_reject"] = True
+                    rejected.append(name)
+                elif verdict == "confirmed_affordable":
+                    # Keep it even though our own price said otherwise, or said
+                    # nothing. Places is the better authority on price.
+                    item["_places_affordable"] = True
+                    rescued.append(name)
+            if rejected:
+                logger.info(
+                    "Places rejected %d too-expensive restaurant(s) at %s: %s",
+                    len(rejected), dest_name, ", ".join(r[:26] for r in rejected[:6]),
+                )
+            if rescued:
+                logger.info(
+                    "Places confirmed %d affordable restaurant(s) at %s: %s",
+                    len(rescued), dest_name, ", ".join(r[:26] for r in rescued[:6]),
+                )
+            restaurants = [i for i in restaurants if not (i or {}).get("_places_reject")]
+
         rank = {"$": 0, "$$": 1, "$$$": 2, "$$$$": 3}
         def _tier(item: Any) -> str:
             return str((item or {}).get("price_range", "") or (item or {}).get("price", "") or "").strip()
 
-        on_tier = [i for i in restaurants if _tier(i) not in off_tier]
-        off = [i for i in restaurants if _tier(i) in off_tier]
+        def _on_brief(item: Any) -> bool:
+            # A Places-confirmed item is on-brief whatever our own price label
+            # says, which is the point of asking: our label was frequently
+            # absent, and absent items were bypassing this cap entirely.
+            return bool((item or {}).get("_places_affordable")) or _tier(item) not in off_tier
+
+        on_tier = [i for i in restaurants if _on_brief(i)]
+        off = [i for i in restaurants if not _on_brief(i)]
         off.sort(key=lambda i: rank.get(_tier(i), 99), reverse=not low)
         # The top tier is never a valid backfill for a low-cost brief. Filling
         # a shortfall admitted Comme Chez Soi (2 Michelin stars) to Brussels and
@@ -10213,28 +10313,14 @@ class URLDiscoverer:
 
     @staticmethod
     def _infer_destination_day_count(dates: str) -> int:
-        """Best-effort day count from a manifest date-range string, e.g.
-        'October 19-21, 2026' -> 3, 'October 17, 2026' -> 1."""
-        text = str(dates or "").replace("–", "-").replace("—", "-")
-        m = re.search(r"[A-Za-z]+\s+(\d{1,2})(?:\s*-\s*(\d{1,2}))?(?:,\s*\d{4})?", text)
-        if m:
-            start = int(m.group(1))
-            end = int(m.group(2) or m.group(1))
-            if end >= start:
-                return max(1, end - start + 1)
-            return 1
-        iso = re.findall(r"(\d{4}-\d{2}-\d{2})", text)
-        if len(iso) >= 2:
-            try:
-                from datetime import datetime as _dt
-                d0 = _dt.strptime(iso[0], "%Y-%m-%d")
-                d1 = _dt.strptime(iso[1], "%Y-%m-%d")
-                if d1 >= d0:
-                    return max(1, (d1 - d0).days + 1)
-            except ValueError:
-                return 1
-        return 1
+        """Days at a destination, uncapped, for batch sizing.
 
+        Delegates to date_span.day_count. See that module for why the regex
+        this replaced returned 1 for a stay spanning a month boundary.
+        """
+        from generator.date_span import day_count
+
+        return day_count(dates)
     def _prioritize_direct_batch_attractions(
         self,
         attractions: list[dict[str, Any]],

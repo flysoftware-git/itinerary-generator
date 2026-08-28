@@ -1147,6 +1147,7 @@ Every note in [`docs/design/`](design/README.md), and where it connects to this 
 | [`per-item-imagery.md`](design/per-item-imagery.md) | per-item images from free sources; why Places Photos cannot be used | §2.5 |
 | [`destination-type-coverage.md`](design/destination-type-coverage.md) | fixture-calibrated quality thresholds; the park/city/town density experiment | §2.5 |
 | [`european-content-sources.md`](design/european-content-sources.md) | Rick Steves vs Wikivoyage for European discovery | §2.5 |
+| [`places-for-restaurants.md`](design/places-for-restaurants.md) | Places API for restaurants: what it fixes, and the terms question | §2.5 |
 | [`building-attractions.md`](design/building-attractions.md) | generation, normalization, ordering | §2.5, §5.1, §6.3 |
 | [`url-discovery-and-audit.md`](design/url-discovery-and-audit.md) | discovery, scoring, filtering | §1.3, §1.4, §2.1, §7.2 |
 | [`fallback-curation-contract.md`](design/fallback-curation-contract.md) | harvest → qualify → curate → publish ownership | §1.4, §2.1, §3.2, §7.2, principle 2 |

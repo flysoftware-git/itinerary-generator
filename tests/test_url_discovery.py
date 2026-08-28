@@ -3070,7 +3070,12 @@ def test_direct_batch_html_prompt_for_restaurants_requires_rating_and_price_indi
     system_prompt, user_prompt = prompt
     assert "rating" in system_prompt.lower()
     assert "price" in system_prompt.lower()
-    assert "4.3" in system_prompt
+    # A numeric rating floor must be present -- removing it entirely was a first
+    # attempt that went too far, and this assertion is what caught it. The VALUE
+    # is now budget-aware: 4.3 by default, relaxed to 4.0 on a low-cost brief,
+    # because 4.3 skews toward destination restaurants and a friterie locals
+    # rate 4.1 is exactly what such a brief wants. See _batch_rating_floor.
+    assert re.search(r"rated above \d\.\d", system_prompt), system_prompt
     assert "price indicator" in user_prompt.lower() or "price" in user_prompt.lower()
 
 
@@ -7300,10 +7305,15 @@ def test_get_restaurant_direct_batch_rows_persists_html_capture_artifacts(tmp_pa
     assert meta["kind"] == "restaurant"
     assert meta["row_count"] == 1
     assert meta["html_file"] == html_files[0].name
+    # The persisted query is asserted in full because it is the audit record of
+    # what was actually asked -- a capture whose query drifts from the prompt is
+    # worthless for diagnosing a bad harvest. The rating floor is now written as
+    # "rated above N" and N is budget-aware (4.3 default, 4.0 on a low-cost
+    # brief), so the phrasing changed with it. No budget is set on this fixture.
     assert meta["query"] == (
         "Generate a list of local restaurants near Moab (October 18, 2026) with clickable links to source material and corresponding Google Maps content. "
         "Include a rating, price indicator, and the cuisine or restaurant type for each item when available, using a clear numeric or price format, and a short descriptive note about the food, atmosphere, or signature dishes for each item when available. "
-        "Keep only highly rated items (>4.3), include cuisine variety, and keep only places likely open on the indicated dates. "
+        "Keep only items rated above 4.3, include cuisine variety, and keep only places likely open on the indicated dates. "
         "Include only suggestions with reliable clickable links."
     )
 
