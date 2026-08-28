@@ -217,3 +217,57 @@ class TestCollisionGuardDoesNotEatOwnUrl:
         b = "https://www.example.test/shared/"
         claimed.add(URLDiscoverer._collision_key(a))
         assert URLDiscoverer._url_already_claimed(b, claimed) is True
+
+
+class TestOfficialSiteDomainMatching:
+    """A host list cannot tell a restaurant's own site from a blog about it.
+
+    The 2026-08-27 upgrade accepted champagne-tastes.com as Rotisse's official
+    site and tipsfromawaitress.be as Yummy Bowl's, because both cleared a
+    not-on-the-list test. rotisse.be and eatyummybowl.com both exist. The
+    discriminator is whether the DOMAIN corresponds to the name.
+    """
+
+    @pytest.mark.parametrize(
+        "url, name",
+        [
+            ("https://rotisse.be/en", "Rotisse"),
+            ("https://thaiburi.eu/", "Thaiburi"),
+            ("https://chiconfarsi.com/en", "Chicon Farsi"),
+            ("https://eatyummybowl.com/", "Yummy Bowl"),
+            ("https://www.pastadivina.be/", "Pasta Divina"),
+        ],
+    )
+    def test_official_domains_match(self, url, name):
+        from generator.url_discovery import URLDiscoverer
+
+        assert URLDiscoverer._domain_matches_item_name(url, name) is True
+
+    @pytest.mark.parametrize(
+        "url, name",
+        [
+            ("https://champagne-tastes.com/rotisse/", "Rotisse"),
+            ("https://mindtrip.ai/restaurant/brussels-belgium/thaiburi/x", "Thaiburi"),
+            ("https://halaharchi.com/en/businesses/chicon-farsi-brussels", "Chicon Farsi"),
+            ("https://www.tipsfromawaitress.be/blog/yummy-bowl", "Yummy Bowl"),
+            ("https://restaurantguru.com/9-Et-Voisins-Brussels", "Brasserie Signature"),
+        ],
+    )
+    def test_pages_about_the_restaurant_do_not_match(self, url, name):
+        """These all name the restaurant in the PATH, which is exactly why
+        matching on the path rather than the domain would accept them."""
+        from generator.url_discovery import URLDiscoverer
+
+        assert URLDiscoverer._domain_matches_item_name(url, name) is False
+
+    def test_short_names_are_refused_rather_than_guessed(self):
+        """A three-character name matches almost any domain by accident."""
+        from generator.url_discovery import URLDiscoverer
+
+        assert URLDiscoverer._domain_matches_item_name("https://barcelona-guide.com", "Bar") is False
+
+    def test_www_and_scheme_are_ignored(self):
+        from generator.url_discovery import URLDiscoverer
+
+        for u in ["http://www.rotisse.be", "https://rotisse.be/", "https://www.rotisse.be/en/menu"]:
+            assert URLDiscoverer._domain_matches_item_name(u, "Rotisse") is True

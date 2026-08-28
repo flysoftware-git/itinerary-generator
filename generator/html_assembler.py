@@ -2601,6 +2601,13 @@ class HTMLAssembler:
                     clause_words = {w.lower().strip(",") for w in words}
                     if len(words) <= 4 and cuisine_words & clause_words:
                         desc = desc[lead.end():]
+            # Same echo with the cuisine FIELD empty, which happens when the
+            # harvest fills the description but not the badge -- "9 et Voisins"
+            # shipped "Belgian. Traditional stoemp..." with no Belgian badge to
+            # match against. A single bare word followed by a full stop and then
+            # real prose is a label, not a sentence.
+            if not cuisine:
+                desc = re.sub(r"^\s*([A-Z][A-Za-z\-]{2,14})\.\s+(?=[A-Z])", "", desc, count=1)
             desc = desc.lstrip(" .,;:")
             # ". ." left where a stripped field sat between two separators.
             desc = re.sub(r"\.\s*(?:\.\s*)+", ". ", desc)

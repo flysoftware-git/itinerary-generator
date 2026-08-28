@@ -9207,6 +9207,54 @@ class URLDiscoverer:
         "trip.com", "timeout.", "eater.",
     )
 
+    @staticmethod
+    def _domain_matches_item_name(url: str, item_name: str) -> bool:
+        """Does the URL's domain look like it BELONGS to this item?
+
+        The discriminator a host list cannot express. "rotisse.be" contains
+        "rotisse"; "champagne-tastes.com" does not, and no amount of
+        enumerating blog hosts would have told them apart -- the 2026-08-27
+        upgrade accepted champagne-tastes.com as Rotisse's official site, and
+        tipsfromawaitress.be as Yummy Bowl's, because both cleared a
+        not-on-the-list test.
+
+        Punctuation and spacing are collapsed on both sides, so "Chicon Farsi"
+        matches chiconfarsi.com and "Yummy Bowl" matches eatyummybowl.com.
+        Containment, not overlap: token intersection is what once matched
+        *Zion Lodge* to *Stargazing in Zion*.
+
+        Short names are refused rather than guessed at -- a three-character
+        name would match almost any domain by accident.
+        """
+        host = str(url or "").strip().lower()
+        for prefix in ("https://", "http://"):
+            if host.startswith(prefix):
+                host = host[len(prefix):]
+                break
+        host = host.split("/", 1)[0]
+        if host.startswith("www."):
+            host = host[4:]
+        host_key = re.sub(r"[^a-z0-9]", "", host)
+        if not host_key:
+            return False
+
+        raw_name = str(item_name or "").lower()
+        name_key = re.sub(r"[^a-z0-9]", "", raw_name)
+        if len(name_key) < 5:
+            return False
+        if name_key in host_key:
+            return True
+
+        # Real domains abbreviate. "Benja Thai & Sushi" registers
+        # benjathaistgeorge.com -- it drops a word and adds the town, so whole
+        # name containment rejects a genuine official site. Fall back to the
+        # first distinctive token, which is what a restaurant actually builds
+        # its domain around.
+        tokens = [tok for tok in re.split(r"[^a-z0-9]+", raw_name) if len(tok) >= 4]
+        if not tokens:
+            return False
+        return tokens[0] in host_key
+
     @classmethod
     def _is_third_party_restaurant_page(cls, url: str) -> bool:
         """True for a page ABOUT the restaurant rather than the restaurant's own.
@@ -9265,6 +9313,21 @@ class URLDiscoverer:
             "google.com/search",
         )
         if any(marker in lower_candidate for marker in aggregator_markers):
+            return
+        # An "upgrade" must actually be the restaurant's own site. Without this
+        # the search's first non-listed result wins, which is how a food blog
+        # replaced a TripAdvisor page and was logged as an upgrade. Keeping the
+        # existing link is the better failure: it is at least ABOUT the right
+        # restaurant.
+        if not self._domain_matches_item_name(candidate, rest_name):
+            self._log_decision(
+                kind="restaurant",
+                dest_name=dest_name,
+                item_name=rest_name,
+                reason="official_site_upgrade_rejected_name_mismatch",
+                message="candidate domain does not correspond to the restaurant name; keeping existing link",
+                url=candidate,
+            )
             return
         cleaned = self._retain_discovered_url(
             candidate,
