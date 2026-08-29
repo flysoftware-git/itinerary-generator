@@ -77,3 +77,47 @@ class TestNoSouthwestLeftInTheTemplate:
         source = inspect.getsource(HTMLAssembler)
         for placeholder in ("<!--DOCUMENT_TITLE-->", "<!--APP_SHORT_NAME-->", "<!--TRIP_DESCRIPTION-->"):
             assert f'"{placeholder}"' in source, placeholder
+
+
+class TestPwaManifest:
+    """The installed app's identity, which is separate from the <head>.
+
+    short_name was title[:24], ignoring the manifest's own short_name -- so the
+    field added to fix the HTML meta was honoured in one place and not the
+    other. The icons hard-coded the Southwest terracotta, so every installed
+    itinerary got a terracotta home-screen icon whatever its manifest said.
+    """
+
+    @staticmethod
+    def _build(trip):
+        import json, pathlib, tempfile
+
+        from generator.main import _write_pwa_assets
+
+        out = pathlib.Path(tempfile.mkdtemp())
+        _write_pwa_assets(out, trip)
+        return json.loads((out / "manifest.webmanifest").read_text(encoding="utf-8"))
+
+    def test_an_explicit_short_name_is_used(self):
+        m = self._build({"trip": {"title": "Southwest Road Trip", "short_name": "SW Road Trip",
+                                  "subtitle": "Utah", "theme_color": "#C0623E"}, "destinations": []})
+        assert m["name"] == "Southwest Road Trip"
+        assert m["short_name"] == "SW Road Trip"
+
+    def test_without_one_it_falls_back_to_the_title(self):
+        m = self._build({"trip": {"title": "Europe Exploration", "subtitle": "By rail",
+                                  "theme_color": "#3A5F8A"}, "destinations": []})
+        assert m["short_name"] == "Europe Exploration"
+
+    def test_icons_take_the_trips_theme_colour(self):
+        """Every installed itinerary had a terracotta icon regardless of manifest."""
+        m = self._build({"trip": {"title": "Europe Exploration", "subtitle": "By rail",
+                                  "theme_color": "#3A5F8A"}, "destinations": []})
+        hexes = {i["src"].split("%23")[1][:6] for i in m["icons"] if "%23" in i["src"]}
+        assert hexes == {"3A5F8A"}
+        assert "C0623E" not in json.dumps(m) if (json := __import__("json")) else True
+
+    def test_a_manifest_with_no_theme_colour_still_builds(self):
+        m = self._build({"trip": {"title": "T", "subtitle": "S"}, "destinations": []})
+        assert m["short_name"]
+        assert m["icons"]

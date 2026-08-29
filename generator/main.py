@@ -1622,6 +1622,12 @@ def _write_pwa_assets(output_dir: Path, trip: dict) -> None:
         title = str(trip_meta.get("title", "Road Trip Itinerary") or "Road Trip Itinerary").strip()
         subtitle = str(trip_meta.get("subtitle", "Interactive road trip itinerary") or "Interactive road trip itinerary").strip()
         theme_color = str(trip_meta.get("theme_color", "#C0623E") or "#C0623E").strip()
+        # The icons below are SVG data: URIs where "#" must stay percent-encoded
+        # as %23, so they take the bare hex. Both were hard-coded to the
+        # Southwest terracotta, which meant every installed itinerary -- Europe,
+        # Croatia, Japan -- got a terracotta home-screen icon whatever its
+        # manifest said. Same defect as the head metadata, one file over.
+        theme_hex = theme_color.lstrip("#") or "C0623E"
 
         # Image URLs the page will actually load. The HTML now points at the
         # SOURCE url rather than the local ./images cache (see
@@ -1647,20 +1653,28 @@ def _write_pwa_assets(output_dir: Path, trip: dict) -> None:
 
         icon_192 = (
                 "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E"
-                "%3Crect width='192' height='192' rx='36' fill='%23C0623E'/%3E"
+                f"%3Crect width='192' height='192' rx='36' fill='%23{theme_hex}'/%3E"
                 "%3Ctext x='50%25' y='54%25' font-size='110' text-anchor='middle' dominant-baseline='middle'%3E"
                 "%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E"
         )
         icon_512 = (
                 "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E"
-                "%3Crect width='512' height='512' rx='96' fill='%23C0623E'/%3E"
+                f"%3Crect width='512' height='512' rx='96' fill='%23{theme_hex}'/%3E"
                 "%3Ctext x='50%25' y='54%25' font-size='300' text-anchor='middle' dominant-baseline='middle'%3E"
                 "%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E"
         )
 
+        # An installed PWA shows short_name under the icon, and platforms
+        # truncate it hard -- iOS around 12 characters. title[:24] cut
+        # "Southwest Road Trip" nowhere useful and ignored the manifest's own
+        # short_name, so the field added to fix the HTML meta was honoured in
+        # one place and not the other.
+        short_name = str(trip_meta.get("short_name", "") or "").strip()
+        if not short_name:
+            short_name = title[:24]
         manifest = {
                 "name": title,
-                "short_name": title[:24] or "Road Trip",
+                "short_name": short_name or "Road Trip",
                 "description": subtitle,
                 "start_url": "./index.html",
                 "scope": "./",
