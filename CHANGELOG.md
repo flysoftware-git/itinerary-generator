@@ -15,9 +15,11 @@ not move with this number.
 
 ## 2.4.0 — 2026-08-29
 
-24 commits since 2.3.0. A session that began with "the Europe trip has blue
-links" and ended by finding that the quality gate had been overreporting its
-own removal counts.
+25 commits since 2.3.0, from two parallel streams. One began with "the Europe
+trip has blue links" and ended by finding that the quality gate had been
+overreporting its own removal counts. The other began with refining a single
+manifest into a real ten-day December itinerary, and found ten defects by
+reading the output it produced.
 
 ### Added
 
@@ -28,6 +30,26 @@ own removal counts.
   `url_discovery` block now carries `removed_no_verified_url`, and the
   markdown summary lists them under a "Removed for No Verified URL" heading.
   This is the change that made the two fixes below findable.
+- **Lunch-stop suggestions on long legs.** A driving leg past
+  `en_route_stops.lunch_stop_min_drive_minutes` (default three hours) now says
+  where to break. It never names a place of its own — it picks from en-route
+  stops that already survived detour, proximity and URL verification,
+  preferring a populated place over a park or a landform (you cannot eat lunch
+  on a plateau), then a seeded stop, then whichever sits closest to halfway.
+  With en-route discovery off it stays silent, which is the honest outcome.
+- **The departure card carries mileage and duration badges.** `html_assembler`
+  could always draw them; nothing ever set `getting_there.distance_miles` or
+  `drive_time` for that leg, so the branch was unreachable and the card showed
+  a bare label.
+- **`scripts/sync_local_manifest.py`** generates a gitignored `.local` manifest
+  from its public counterpart plus private substitutions, textually rather
+  than through a YAML round trip — PyYAML would delete every comment, and the
+  comments are the schema documentation. `--check` reports a stale file
+  without writing.
+- **Two coverage fixtures** (`manifests/alpine_grouped.yaml`,
+  `tuning_surface.yaml`). A schema audit found twelve options no manifest set
+  and no committed manifest that was non-US, grouped or a round trip. CI now
+  dry-runs every committed manifest, which needs no keys and spends nothing.
 
 ### Fixed
 
@@ -54,8 +76,59 @@ own removal counts.
   trip's email attachment rendered blue while its web page rendered its real
   `theme_color`. The accent is now read from the page being converted.
 
+- **`trip.theme_color` had never been applied.** `html_assembler` substitutes a
+  `<!--THEME_COLOR-->` placeholder that the template had stopped carrying, and
+  a missing placeholder fails silently — every itinerary ever published
+  rendered the same hardcoded terracotta regardless of what its manifest
+  asked for. Restored, and extended to the six other places the colour was
+  hardcoded a second time: the `theme-color` meta tag, the PWA manifest, the
+  route polyline, the marker pins, the Tailwind palette entry, and the favicon
+  SVGs, which are `data:` URIs and so take the hex without its `#`.
+- **Restaurant name links had no colour rule at all.** `.rest-name` sets one
+  but anchors do not inherit it — the UA stylesheet wins. A separate cause
+  from the dead-class pair above, and present on every destination.
+- **A leg nobody could drive.** Old Hickory → Asheville rendered as 304 mi in
+  1 hr 30 min, an implied 203 mph. The correction that existed for this
+  (written after a grouped day trip came back at 424 mph) was scoped to
+  grouped children only. Ordinary legs are now checked too, but only when the
+  stated pair is internally impossible — over a winding route a straight-line
+  estimate is not obviously better than a good model answer.
+- **A 17-mile airport transfer shipped as 95 mi / 2 hrs 15 min.** Internally
+  consistent at 42 mph, and completely wrong: speed alone can never see a bad
+  distance. The stated distance is now compared against the geometry. That leg
+  was also skipped outright for having no origin, because the first stop
+  departs from the trip gateway rather than from another destination.
+- **Legs measured and labelled from the wrong town.** With grouped day trips
+  between two lodging stops, both the distance correction and the rendered
+  label took the previous list entry — so the final leg read "Leiper's Fork →
+  Asheville" while its own prose said "Drive from Old Hickory". Both now walk
+  back to the previous lodging stop.
+- **Cultural events filtered against a single day.** A grouped day trip
+  carries one date, and that date was read as the window an event must fall
+  in — but the traveler is based nearby all week. Nashville in December had
+  three events found and two dropped, rendering "no ticketed events were
+  confidently verified" for a city at Christmas. Grouped entries now filter
+  against the base's stay. Separately, an event that opened before arrival but
+  runs through the stay is no longer dropped for starting early, and one
+  starting after departure is no longer kept.
+- **The same photograph, twice.** Commons served one image as a `.jpg` and as a
+  `.tif` rendered to jpg — different files, different hash directories, no
+  shared path component. Dedup by URL cannot see that; images are now deduped
+  on the underlying file title.
+- **A schedule that repeated itself.** The attraction-focus lookback was two
+  periods — under one day — so an attraction named on Day 3 was named again on
+  Day 4. Widened, but bounded by the pool size: a window as long as the
+  attraction list makes every candidate ineligible and the fallback returns
+  the very repeat it was avoiding.
+
 ### Changed
 
+- `__template_version__` moves to **2.6**. The frozen template gained the
+  restaurant-anchor colour rule and nine restored `THEME_COLOR` placeholders,
+  so a page rendered by it is a different artifact from one rendered by 2.5 —
+  and that version is stamped into the published page. The template filename
+  is unchanged: only one template file has ever existed and it is a fixed
+  path, not a version tag.
 - The Europe manifest no longer carries attraction seeds. This clears the
   `Unverified` badge and also removes the content floor the seeds provided;
   both effects are real and were separated only after the fact.
