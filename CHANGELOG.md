@@ -13,6 +13,53 @@ published artifact; **patch** for fixes that leave behaviour unchanged.
 `__template_version__` tracks the frozen HTML template separately and does
 not move with this number.
 
+## 2.4.0 — 2026-08-29
+
+24 commits since 2.3.0. A session that began with "the Europe trip has blue
+links" and ended by finding that the quality gate had been overreporting its
+own removal counts.
+
+### Added
+
+- **Removed items are recorded by name** (`destination_status_report.json`,
+  `.md`). The gate reported "restaurants removed for no verified URL: 39" and
+  no artifact said which 39; the names were on the `_registry_decisions`
+  records all along and were counted, then discarded. Each destination's
+  `url_discovery` block now carries `removed_no_verified_url`, and the
+  markdown summary lists them under a "Removed for No Verified URL" heading.
+  This is the change that made the two fixes below findable.
+
+### Fixed
+
+- **A retried destination had its removals counted twice.** `url_discovery`
+  appends to `_registry_decisions` and never resets, so a selective retry
+  stacked a second set of records on the first. Old Hickory recorded 37
+  removals for 20 distinct items; the duplicated destinations were exactly
+  the retried ones. Every removal warning for a trip with unresolved
+  destinations has been overstated.
+- **An exhausted search balance reported as "no URL found".** Serper returns
+  HTTP 400 for an empty balance — the same status as a malformed query — and
+  the client logged the status while discarding the body that said why. Runs
+  completed, validation passed, and items that were never searched for were
+  dropped as unfindable. The body is now logged, and quota exhaustion is its
+  own condition with one error naming the consequence.
+- **Restaurant and en-route links rendered in default browser blue.** The CSS
+  defined five link classes; the assembler emitted two. `.attraction-link`
+  and `.restaurant-link` had never been emitted since the initial rebuild —
+  duplicates of `.attr-link`/`.rest-link`, which is why a search for the
+  styling always found a rule. Dead pair removed; a test now asserts in both
+  directions that no class goes unemitted and none unstyled.
+- **The email build used a frozen accent colour.** `email_safe.py` carried its
+  own palette copy with terracotta pinned to Europe's rail blue, so every
+  trip's email attachment rendered blue while its web page rendered its real
+  `theme_color`. The accent is now read from the page being converted.
+
+### Changed
+
+- The Europe manifest no longer carries attraction seeds. This clears the
+  `Unverified` badge and also removes the content floor the seeds provided;
+  both effects are real and were separated only after the fact.
+
 ## 2.3.0 — 2026-08-28
 
 38 commits since 2.2.0. Driven by the first non-US itinerary — Brussels,
