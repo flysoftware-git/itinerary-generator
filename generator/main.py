@@ -1311,6 +1311,17 @@ def _selective_retry_destinations(
     if not retry_destinations:
         return []
 
+    # A retry supersedes the first pass for these destinations, so its audit
+    # trail must replace the earlier one rather than stack on top of it.
+    # url_discovery appends to _registry_decisions and never resets it, so
+    # without this the removal records are written twice for exactly the
+    # destinations that were retried -- and the quality gate, which counts
+    # those records, reports roughly double. An Old Hickory run showed 37
+    # removals recorded for 20 distinct items; every duplicated destination
+    # was a retried one, and every non-retried destination was clean.
+    for dest in retry_destinations:
+        dest["_registry_decisions"] = []
+
     stage_scope = _retry_stage_scope_by_destination(status_report)
     default_scope = {"events": True, "images": True, "urls": True}
 

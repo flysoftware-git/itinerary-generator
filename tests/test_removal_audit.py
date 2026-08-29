@@ -96,3 +96,53 @@ def test_markdown_says_none_when_nothing_was_removed(tmp_path):
     )
     text = _write_destination_status_markdown_report(tmp_path, report).read_text(encoding="utf-8")
     assert "## Removed for No Verified URL (0)" in text
+
+
+def test_retry_replaces_the_audit_trail_rather_than_appending():
+    """A retried destination must not have its removals counted twice.
+
+    url_discovery appends to _registry_decisions and never resets it, so a
+    selective retry re-running discovery over the same dest dict stacked a
+    second set of removal records on the first. The quality gate counts those
+    records, so retried destinations reported roughly double: an Old Hickory
+    run recorded 37 removals for 20 distinct items, and the duplicated
+    destinations were exactly the two the run reported as retried.
+    """
+    from generator.main import _selective_retry_destinations
+
+    dest = {
+        "id": "oldhickory",
+        "name": "Old Hickory, Tennessee",
+        "_registry_decisions": [_decision("Salvo's Pizza", "dinner_recommendations", "restaurant")],
+    }
+    trip = {"trip": {}, "destinations": [dest]}
+    status_report = {
+        "destinations": [{
+            "destination_id": "oldhickory",
+            "status": "needs_retry",
+            "retry_recommended": True,
+            "retry_triggers": ["url_acceptance_ratio_below_threshold"],
+        }]
+    }
+
+    seen = {}
+
+    def _fake_run_urls(subset_trip):
+        # whatever the retry finds, it starts from a clean trail
+        seen["at_entry"] = list(subset_trip["destinations"][0]["_registry_decisions"])
+        subset_trip["destinations"][0]["_registry_decisions"].append(
+            _decision("Salvo's Pizza", "dinner_recommendations", "restaurant")
+        )
+
+    _selective_retry_destinations(
+        trip=trip, status_report=status_report, config_path="config.yaml",
+        llm_client=None, output_dir=None, refresh_image_cache=False,
+        skip_events=True, skip_images=True, skip_url_discovery=False,
+        no_trails=True, alltrails_source=None, attraction_source=None,
+        restaurant_source=None, en_route_source=None,
+        run_events=lambda *a, **k: None, run_images=lambda *a, **k: None,
+        run_urls=_fake_run_urls,
+    )
+
+    assert seen["at_entry"] == [], "retry started from a stale audit trail"
+    assert len(dest["_registry_decisions"]) == 1, "removal recorded twice for a retried destination"
