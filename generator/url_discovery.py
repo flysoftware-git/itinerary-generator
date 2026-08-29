@@ -4389,10 +4389,15 @@ class URLDiscoverer:
         for event in by_trace.get(trace_id, []) or []:
             if not isinstance(event, dict):
                 continue
+            # Keys are reason/source/url as written by
+            # _record_disposition_thread_event. Reading the _log_decision
+            # parameter names (reason_code/rendered_url) instead silently
+            # yields empty strings, which reports every item as "0 candidates
+            # considered" -- a plausible-looking finding rather than an error.
             trail.append({
-                "reason": str(event.get("reason_code", "") or ""),
-                "url": str(event.get("rendered_url", "") or ""),
-                "source": str(event.get("source_code", "") or ""),
+                "reason": str(event.get("reason", "") or ""),
+                "url": str(event.get("url", "") or ""),
+                "source": str(event.get("source", "") or ""),
             })
         return trail
 

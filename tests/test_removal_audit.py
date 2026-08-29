@@ -207,3 +207,52 @@ def test_an_item_no_url_was_ever_found_for_reads_as_zero_candidates(tmp_path):
     )
     text = _write_destination_status_markdown_report(tmp_path, report).read_text(encoding="utf-8")
     assert "Fritland — dinner_recommendations (0 candidate(s) considered)" in text
+
+
+def test_removal_trail_reads_the_real_event_keys():
+    """Exercise _removal_trail against a real thread, not a hand-built one.
+
+    The first version of this feature read reason_code/rendered_url -- the
+    _log_decision parameter names -- while the thread stores reason/url. Every
+    lookup returned empty, so the report said "0 candidate(s) considered" for
+    every removed item in a full Europe run. That reads as a finding (nothing
+    was ever found for these) rather than as a bug, and it was only caught
+    because 238 trail events had been captured while every count was zero.
+
+    The tests above build the trail in its output shape and so never touched
+    the extraction. This one starts where the pipeline starts.
+    """
+    from threading import Lock
+
+    from generator.url_discovery import URLDiscoverer
+
+    d = URLDiscoverer.__new__(URLDiscoverer)
+    d._decision_threads_by_destination = {}
+    d._request_cache_lock = Lock()
+    d._decision_event_sequence = 0
+
+    ctx = dict(kind="attraction", dest_name="Prague, Czech Republic", item_name="Prague Castle")
+    d._record_disposition_thread_event(
+        trace_id=d._trace_id(**ctx), reason_code="url_collision_rejected",
+        source_code="direct_batch", message="already claimed",
+        rendered_url="https://www.hrad.cz/en", **ctx,
+    )
+
+    trail = d._removal_trail(**ctx)
+    assert trail == [{
+        "reason": "url_collision_rejected",
+        "url": "https://www.hrad.cz/en",
+        "source": "direct_batch",
+    }]
+
+
+def test_removal_trail_is_empty_for_an_item_with_no_events():
+    from threading import Lock
+
+    from generator.url_discovery import URLDiscoverer
+
+    d = URLDiscoverer.__new__(URLDiscoverer)
+    d._decision_threads_by_destination = {}
+    d._request_cache_lock = Lock()
+    d._decision_event_sequence = 0
+    assert d._removal_trail(kind="attraction", dest_name="Nowhere", item_name="Nothing") == []
