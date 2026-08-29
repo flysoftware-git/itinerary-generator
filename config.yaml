@@ -211,7 +211,7 @@ geocoding:
 #
 # Set enabled: true per category to buy it back.
 trails:
-  enabled: false
+  enabled: true
 
 # Restaurants default ON, unlike the three below: dining is arguably core
 # itinerary content rather than an enrichment. The switch exists so a client

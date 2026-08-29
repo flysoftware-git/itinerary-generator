@@ -1783,9 +1783,18 @@ class TestOptionalCategorySwitches:
     schedule, lodging and drives are unaffected by all three.
     """
 
-    def test_all_three_are_off_in_the_shipped_config(self):
+    def test_shipped_config_matches_the_intended_switch_state(self):
+        """Guards against a priced category being switched on by accident.
+
+        Trails were turned back on deliberately (2026-08-29, owner request)
+        after a run showed 42 trail_links_disabled and zero alltrails.com
+        links on the published page. The other two stay off, and this test
+        stays as their guard -- the point was never "all three off", it was
+        "no category changes state without someone meaning it".
+        """
         from generator.main import _category_enabled
-        for section in ("trails", "en_route_stops", "cultural_events"):
+        assert _category_enabled("config.yaml", "trails") is True
+        for section in ("en_route_stops", "cultural_events"):
             assert _category_enabled("config.yaml", section) is False, section
 
     def test_each_switch_is_independent(self, tmp_path):
