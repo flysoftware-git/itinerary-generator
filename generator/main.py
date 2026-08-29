@@ -988,6 +988,26 @@ def _build_destination_status_report(
             "urls": needs_urls_retry,
         }
 
+        # The gate counts these (see _collect_content_warnings) but nothing
+        # used to record WHICH items went, so "39 restaurants removed" could
+        # not be investigated after the fact -- diagnosing it needed a fresh
+        # paid run. The names are already on the decision records; they were
+        # simply being counted and dropped.
+        removed_items = []
+        for decision in dest.get("_registry_decisions", []) or []:
+            if not isinstance(decision, dict):
+                continue
+            reasons = decision.get("rejection_reasons", []) or []
+            if "no_verified_url_removed" not in reasons:
+                continue
+            removed_items.append({
+                "display_name": str(decision.get("display_name", "") or ""),
+                "entity_class": str(decision.get("entity_class", "") or ""),
+                "section_target": str(decision.get("section_target", "") or ""),
+                "rejection_reasons": list(reasons),
+            })
+        removed_items.sort(key=lambda r: (r["section_target"], r["display_name"]))
+
         destination_status = "healthy"
         if quarantined_entity_ids or validation_counts["quarantined"] > 0:
             destination_status = "quarantined"
@@ -1035,6 +1055,8 @@ def _build_destination_status_report(
                         "disposition_thread_count": url_thread_count,
                         "disposition_event_count": url_event_count,
                         "en_route_reliability": en_route_reliability,
+                        "removed_no_verified_url_count": len(removed_items),
+                        "removed_no_verified_url": removed_items,
                     },
                     "reconciliation": {
                         "status": "completed",
@@ -1144,6 +1166,34 @@ def _write_destination_status_markdown_report(output_dir: Path, status_report: d
                 )
             else:
                 lines.append(f"- {destination_name} ({destination_id}) — status={status}, terminal={terminal_state}")
+
+    # Removed items, listed by name. The counts alone sent one investigation
+    # down a wrong path (an empty search-provider balance looked like the
+    # cause of a high removal rate; it was not), so the names go in the
+    # summary a person actually reads, not only the JSON.
+    removal_rows = []
+    for row in destinations:
+        if not isinstance(row, dict):
+            continue
+        url_stage = row.get("stage_status", {}).get("url_discovery", {}) if isinstance(row.get("stage_status", {}), dict) else {}
+        removed = url_stage.get("removed_no_verified_url", []) if isinstance(url_stage.get("removed_no_verified_url", []), list) else []
+        if removed:
+            removal_rows.append((str(row.get("destination_name", "") or row.get("destination_id", "")), removed))
+
+    total_removed = sum(len(items) for _, items in removal_rows)
+    lines.append("")
+    lines.append(f"## Removed for No Verified URL ({total_removed})")
+    if not removal_rows:
+        lines.append("- None")
+    else:
+        for destination_name, items in removal_rows:
+            lines.append(f"- **{destination_name}** ({len(items)})")
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("display_name", "") or "(unnamed)")
+                section = str(item.get("section_target", "") or item.get("entity_class", "") or "?")
+                lines.append(f"  - {name} — {section}")
 
     path = output_dir / "destination_status_report.md"
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
