@@ -1000,11 +1000,15 @@ def _build_destination_status_report(
             reasons = decision.get("rejection_reasons", []) or []
             if "no_verified_url_removed" not in reasons:
                 continue
+            trail = decision.get("candidate_trail", []) or []
             removed_items.append({
                 "display_name": str(decision.get("display_name", "") or ""),
                 "entity_class": str(decision.get("entity_class", "") or ""),
                 "section_target": str(decision.get("section_target", "") or ""),
                 "rejection_reasons": list(reasons),
+                # what was actually tried for this item, and what refused it
+                "candidates_considered": int(decision.get("candidates_considered", 0) or 0),
+                "candidate_trail": trail if isinstance(trail, list) else [],
             })
         removed_items.sort(key=lambda r: (r["section_target"], r["display_name"]))
 
@@ -1193,7 +1197,16 @@ def _write_destination_status_markdown_report(output_dir: Path, status_report: d
                     continue
                 name = str(item.get("display_name", "") or "(unnamed)")
                 section = str(item.get("section_target", "") or item.get("entity_class", "") or "?")
-                lines.append(f"  - {name} — {section}")
+                considered = int(item.get("candidates_considered", 0) or 0)
+                lines.append(f"  - {name} — {section} ({considered} candidate(s) considered)")
+                # The rejecting check, per URL. Without this the report says an
+                # item was dropped but not whether a URL was ever found for it,
+                # which is the difference between a discovery gap and a filter
+                # refusing a good link.
+                for event in (item.get("candidate_trail") or [])[:6]:
+                    if not isinstance(event, dict) or not event.get("url"):
+                        continue
+                    lines.append(f"    - {event.get('reason', '?')}: {event.get('url', '')}")
 
     path = output_dir / "destination_status_report.md"
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")

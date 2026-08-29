@@ -4372,8 +4372,32 @@ class URLDiscoverer:
             registry_meta["rejection_reasons"] = existing
         item["_registry"] = registry_meta
 
-    @staticmethod
+    def _removal_trail(self, *, kind: str, dest_name: str, item_name: str) -> list[dict[str, Any]]:
+        """The URLs this item was offered, and which check refused each one.
+
+        The disposition thread already holds this; it was summarised into
+        per-destination reason totals and otherwise dropped. Totals cannot
+        answer "why was Prague Castle removed" -- a destination showing
+        `url_collision_rejected: 6` does not say which six items, so the
+        question could only be guessed at. Attached to the removal record so
+        it survives into the status report.
+        """
+        threads = getattr(self, "_decision_threads_by_destination", {}) or {}
+        by_trace = threads.get(str(dest_name or "").strip() or "unknown", {})
+        trace_id = self._trace_id(kind=kind, dest_name=dest_name, item_name=item_name)
+        trail = []
+        for event in by_trace.get(trace_id, []) or []:
+            if not isinstance(event, dict):
+                continue
+            trail.append({
+                "reason": str(event.get("reason_code", "") or ""),
+                "url": str(event.get("rendered_url", "") or ""),
+                "source": str(event.get("source_code", "") or ""),
+            })
+        return trail
+
     def _record_registry_entity_removal(
+        self,
         dest: dict[str, Any],
         *,
         section_target: str,
@@ -4381,8 +4405,11 @@ class URLDiscoverer:
         display_name: str,
         rejection_reason: str,
         description: str = "",
+        kind: str = "",
+        dest_name: str = "",
     ) -> None:
         decisions = dest.get("_registry_decisions", []) if isinstance(dest.get("_registry_decisions", []), list) else []
+        trail = self._removal_trail(kind=kind, dest_name=dest_name, item_name=display_name) if kind else []
         decisions.append({
             "entity_class": entity_class,
             "display_name": display_name,
@@ -4392,6 +4419,9 @@ class URLDiscoverer:
             "rejection_reasons": [rejection_reason],
             "rendered_url": "",
             "metadata": {"removed": True},
+            # every URL considered for this item, and the check that refused it
+            "candidate_trail": trail,
+            "candidates_considered": sum(1 for e in trail if e.get("url")),
         })
         dest["_registry_decisions"] = decisions
 
@@ -4632,6 +4662,8 @@ class URLDiscoverer:
             display_name=item_name,
             description=str(item.get("description", "") or ""),
             rejection_reason="no_verified_url_removed",
+            kind=kind,
+            dest_name=dest_name,
         )
         return False
 

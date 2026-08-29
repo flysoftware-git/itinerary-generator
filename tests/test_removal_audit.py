@@ -146,3 +146,64 @@ def test_retry_replaces_the_audit_trail_rather_than_appending():
 
     assert seen["at_entry"] == [], "retry started from a stale audit trail"
     assert len(dest["_registry_decisions"]) == 1, "removal recorded twice for a retried destination"
+
+
+def _decision_with_trail(name, section, entity_class, trail):
+    d = _decision(name, section, entity_class)
+    d["candidate_trail"] = trail
+    d["candidates_considered"] = sum(1 for e in trail if e.get("url"))
+    return d
+
+
+def test_the_report_says_which_url_was_refused_and_by_what():
+    """A count of rejections cannot say which item they belonged to.
+
+    Prague's totals showed url_collision_rejected: 6 with no way to tell
+    whether Prague Castle was among them, so the cause could only be guessed.
+    """
+    trail = [
+        {"reason": "direct_batch_candidate_rejected", "url": "https://tripadvisor.com/x", "source": "direct_batch"},
+        {"reason": "url_collision_rejected", "url": "https://www.hrad.cz/en", "source": "direct_batch"},
+    ]
+    trip = {"destinations": [{
+        "id": "prague", "name": "Prague, Czech Republic",
+        "_registry_decisions": [_decision_with_trail("Prague Castle", "top_attractions", "attraction", trail)],
+    }]}
+    report = _build_destination_status_report(
+        trip=trip, registry={"entities": [], "reports": [], "destination_view": {}},
+        run_id="r", skip_events=True, skip_images=True, skip_url_discovery=False,
+    )
+    item = report["destinations"][0]["stage_status"]["url_discovery"]["removed_no_verified_url"][0]
+    assert item["candidates_considered"] == 2
+    assert [e["reason"] for e in item["candidate_trail"]] == [
+        "direct_batch_candidate_rejected", "url_collision_rejected",
+    ]
+
+
+def test_markdown_shows_the_refusing_check_per_url(tmp_path):
+    trail = [{"reason": "url_collision_rejected", "url": "https://www.hrad.cz/en", "source": "direct_batch"}]
+    trip = {"destinations": [{
+        "id": "prague", "name": "Prague, Czech Republic",
+        "_registry_decisions": [_decision_with_trail("Prague Castle", "top_attractions", "attraction", trail)],
+    }]}
+    report = _build_destination_status_report(
+        trip=trip, registry={"entities": [], "reports": [], "destination_view": {}},
+        run_id="r", skip_events=True, skip_images=True, skip_url_discovery=False,
+    )
+    text = _write_destination_status_markdown_report(tmp_path, report).read_text(encoding="utf-8")
+    assert "Prague Castle — top_attractions (1 candidate(s) considered)" in text
+    assert "url_collision_rejected: https://www.hrad.cz/en" in text
+
+
+def test_an_item_no_url_was_ever_found_for_reads_as_zero_candidates(tmp_path):
+    """Distinguishes a discovery gap from a filter refusing a good link."""
+    trip = {"destinations": [{
+        "id": "brussels", "name": "Brussels, Belgium",
+        "_registry_decisions": [_decision_with_trail("Fritland", "dinner_recommendations", "restaurant", [])],
+    }]}
+    report = _build_destination_status_report(
+        trip=trip, registry={"entities": [], "reports": [], "destination_view": {}},
+        run_id="r", skip_events=True, skip_images=True, skip_url_discovery=False,
+    )
+    text = _write_destination_status_markdown_report(tmp_path, report).read_text(encoding="utf-8")
+    assert "Fritland — dinner_recommendations (0 candidate(s) considered)" in text
