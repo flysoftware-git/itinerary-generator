@@ -84,9 +84,6 @@ destinations:
         depart: "Brussels Airport-Zaventem, August 31"
         arrive: "Brussels-Central, August 31"
 
-    seeds:
-      - "Grand-Place"
-      - "Royal Museums of Fine Arts of Belgium"
 
 # ── 2. AMSTERDAM ─────────────────────────────────────────────
   - id: amsterdam
@@ -104,9 +101,6 @@ destinations:
         depart: "Brussels-Midi, September 2"
         arrive: "Amsterdam Centraal, September 2"
 
-    seeds:
-      - "Rijksmuseum"
-      - "Anne Frank House"
 
 # ── 3. BERLIN ────────────────────────────────────────────────
   - id: berlin
@@ -124,10 +118,6 @@ destinations:
         depart: "Amsterdam Centraal, September 5"
         arrive: "Berlin Hauptbahnhof, September 5"
 
-    seeds:
-      - "Brandenburg Gate"
-      - "Museum Island"
-      - "East Side Gallery"
 
 # ── 4. PRAGUE ────────────────────────────────────────────────
   - id: prague
@@ -145,9 +135,6 @@ destinations:
         depart: "Berlin Hauptbahnhof, September 8"
         arrive: "Praha hlavní nádraží, September 8"
 
-    seeds:
-      - "Prague Castle"
-      - "Charles Bridge"
 
 # ── 5. FRANKFURT ─────────────────────────────────────────────
   - id: frankfurt
@@ -165,6 +152,3 @@ destinations:
         depart: "Praha hlavní nádraží, September 11"
         arrive: "Frankfurt (Main) Hauptbahnhof, September 11"
 
-    seeds:
-      - "Römerberg"
-      - "Städel Museum"
