@@ -45,8 +45,13 @@ logger = logging.getLogger(__name__)
 
 #: Custom palette from the template's tailwind.config, inlined so the utility
 #: classes below resolve without the CDN compiling them in the browser.
+#:
+#: "terracotta" is the per-trip accent (the template fills it from the
+#: manifest's theme_color), so the value here is only a fallback -- the real
+#: one is read out of the page being converted by _accent_from(). Hardcoding
+#: it shipped Europe's rail blue in the Southwest email for one release.
 _PALETTE = {
-    "terracotta": "#3A5F8A",
+    "terracotta": "#C0623E",
     "sandstone": "#F5EFE0",
     "canyon": "#8B2E0A",
     "sage": "#6B8C6B",
@@ -77,9 +82,18 @@ _UTILITY_CSS = """
 """
 
 
-def _colour_utilities() -> str:
+def _accent_from(html: str) -> str | None:
+    """Read the page's own --terracotta accent, filled from the trip manifest."""
+    m = re.search(r"--terracotta:\s*(#[0-9A-Fa-f]{3,8})\s*;", html)
+    return m.group(1) if m else None
+
+
+def _colour_utilities(accent: str | None = None) -> str:
+    palette = dict(_PALETTE)
+    if accent:
+        palette["terracotta"] = accent
     rules = []
-    for name, value in _PALETTE.items():
+    for name, value in palette.items():
         rules.append(f".text-{name}{{color:{value}}}")
         rules.append(f".bg-{name}{{background-color:{value}}}")
     # bg-offwhite/95 -- Tailwind's slash-opacity syntax, used once.
@@ -139,7 +153,7 @@ def make_email_safe(html: str) -> tuple[str, dict[str, int]]:
         "<style>\n/* Inlined for the mail-safe copy: no CDN, no script. */\n"
         + _UTILITY_CSS.strip()
         + "\n"
-        + _colour_utilities()
+        + _colour_utilities(_accent_from(html))
         + "\n</style>\n"
     )
     if "</head>" in out:
