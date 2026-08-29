@@ -2011,7 +2011,7 @@ class HTMLAssembler:
                 if url:
                     source_icon = self._link_source_icon(url)
                     name_html = (
-                        f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{stop_name}</a>'
+                        f'<a href="{self._safe_href(url)}" class="attr-link" target="_blank" rel="noopener">{stop_name}</a>'
                         f' <span class="attr-external-link" title="link source">{source_icon}</span>'
                     )
                 else:
@@ -2762,7 +2762,7 @@ class HTMLAssembler:
             if url:
                 source_icon = self._link_source_icon(url)
                 name_html = (
-                    f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{rest_name}</a>'
+                    f'<a href="{self._safe_href(url)}" class="rest-link" target="_blank" rel="noopener">{rest_name}</a>'
                     f' <span class="attr-external-link" title="link source">{source_icon}</span>'
                 )
             else:

@@ -98,10 +98,13 @@
       .badge-price { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
       .badge-reserve { background: #ea580c; color: #fff; }
 
-      .attraction-link { color: var(--terracotta); text-decoration: none; font-weight: 700; transition: all 0.15s; }
-      .attraction-link:hover { text-decoration: underline; }
-      .restaurant-link { color: var(--canyon); text-decoration: none; font-weight: 700; transition: all 0.15s; }
-      .restaurant-link:hover { text-decoration: underline; }
+      /* .attraction-link and .restaurant-link were removed 2026-08-29. They
+         were never emitted by html_assembler -- not once in the project's
+         history -- while .attr-link and .rest-link below do the same job and
+         ARE emitted. Two near-identical names for one purpose is how the
+         restaurant anchors went unstyled for months: the rule existed, so a
+         search for it found something, and nobody checked which name the
+         markup used. */
 
       .notion-header-btn {
         display: inline-flex;
