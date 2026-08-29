@@ -115,6 +115,31 @@ class HTMLAssembler:
         # "#" must stay percent-encoded as %23 -- so they take the bare hex.
         html = html.replace("<!--THEME_COLOR_HEX-->", theme_color.lstrip("#"))
 
+        # ── Head metadata ────────────────────────────────────────────────────
+        # The <head> carried four hard-coded Southwest strings -- the <title>,
+        # both PWA app names and the description -- so every itinerary this
+        # generator has ever produced announced itself as "Southwest Road Trip"
+        # in the browser tab, the home-screen icon label and every search or
+        # link preview, whatever the manifest said. The BODY was correct
+        # throughout, which is why it survived: nobody reads the head.
+        #
+        # Same failure as the theme colour a few lines above, and the same
+        # cause: a value that belonged to the first trip was left inline
+        # instead of parameterised, and the second trip inherited it.
+        trip_title = str(meta.get("title", "") or "").strip() or "Trip Itinerary"
+        html = html.replace(
+            "<!--DOCUMENT_TITLE-->", html_escape.escape(f"{trip_title} — Full")
+        )
+        # iOS truncates a home-screen label at roughly 12 characters, so a long
+        # title is cut mid-word there. Prefer an explicit short_name when the
+        # manifest gives one.
+        short_name = str(meta.get("short_name", "") or "").strip() or trip_title
+        html = html.replace("<!--APP_SHORT_NAME-->", html_escape.escape(short_name, quote=True))
+        html = html.replace(
+            "<!--TRIP_DESCRIPTION-->",
+            html_escape.escape(self._build_trip_description(trip), quote=True),
+        )
+
         # ── Google Maps overview link ────────────────────────────────────────
         gmaps_url = self._build_google_maps_url(trip["destinations"], meta)
         html = html.replace("<!--GOOGLE_MAPS_URL-->", gmaps_url)
@@ -1162,6 +1187,34 @@ class HTMLAssembler:
             "}, true);\n"
             "</script>\n"
         )
+
+    @staticmethod
+    def _build_trip_description(trip: dict[str, Any]) -> str:
+        """"Europe Exploration — Brussels, Amsterdam, Berlin, Prague, Frankfurt".
+
+        The city alone, not "Brussels, Belgium": a meta description is truncated
+        around 155 characters by most search engines and link previews, and
+        repeating the country for every stop spends that budget on nothing. The
+        manifest's own `subtitle` is preferred when present, since it is the
+        author's one-line summary and better than anything derived.
+        """
+        meta = trip.get("trip", {}) if isinstance(trip, dict) else {}
+        title = str(meta.get("title", "") or "").strip() or "Trip Itinerary"
+
+        subtitle = str(meta.get("subtitle", "") or "").strip()
+        if subtitle:
+            return f"{title} — {subtitle}"
+
+        names = []
+        for dest in (trip.get("destinations") or []):
+            if not isinstance(dest, dict):
+                continue
+            name = str(dest.get("name", "") or "").strip()
+            if name:
+                names.append(name.split(",")[0].strip())
+        if not names:
+            return title
+        return f"{title} — {', '.join(names)}"
 
     def _build_image_caption(self, image: dict[str, Any]) -> str:
         credit = self._sanitize_caption_text(image.get("credit", ""))
