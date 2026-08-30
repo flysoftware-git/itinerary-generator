@@ -256,3 +256,60 @@ def test_removal_trail_is_empty_for_an_item_with_no_events():
     d._request_cache_lock = Lock()
     d._decision_event_sequence = 0
     assert d._removal_trail(kind="attraction", dest_name="Nowhere", item_name="Nothing") == []
+
+
+def test_a_retried_destination_does_not_double_its_candidate_trail():
+    """The retry fix cleared _registry_decisions but not the disposition threads.
+
+    Those accumulate across passes, so a retried destination logged each
+    candidate once per pass -- correct removal counts, inflated
+    candidates_considered. Brussels showed 65 duplicated events of 131 while
+    no un-retried destination showed any.
+    """
+    from threading import Lock
+
+    from generator.url_discovery import URLDiscoverer
+
+    d = URLDiscoverer.__new__(URLDiscoverer)
+    d._decision_threads_by_destination = {}
+    d._request_cache_lock = Lock()
+    d._decision_event_sequence = 0
+
+    ctx = dict(kind="restaurant", dest_name="Brussels, Belgium", item_name="Beijingya")
+    for _ in range(3):  # three passes over the same item
+        d._record_disposition_thread_event(
+            trace_id=d._trace_id(**ctx), reason_code="url_collision_rejected",
+            source_code="direct_batch", message="claimed",
+            rendered_url="https://www.bruxellestoday.be/x.html", **ctx,
+        )
+    d._record_disposition_thread_event(
+        trace_id=d._trace_id(**ctx), reason_code="direct_batch_candidate_rejected",
+        source_code="direct_batch", message="generic",
+        rendered_url="https://maps.example/q", **ctx,
+    )
+
+    trail = d._removal_trail(**ctx)
+    assert len(trail) == 2, f"expected 2 distinct candidates, got {len(trail)}"
+    assert {e["url"] for e in trail} == {
+        "https://www.bruxellestoday.be/x.html", "https://maps.example/q",
+    }
+
+
+def test_the_same_url_refused_by_two_different_checks_is_kept_twice():
+    """Dedupe is on (reason, url) -- two different refusals are two answers."""
+    from threading import Lock
+
+    from generator.url_discovery import URLDiscoverer
+
+    d = URLDiscoverer.__new__(URLDiscoverer)
+    d._decision_threads_by_destination = {}
+    d._request_cache_lock = Lock()
+    d._decision_event_sequence = 0
+
+    ctx = dict(kind="attraction", dest_name="Prague, Czech Republic", item_name="Prague Castle")
+    for reason in ("direct_batch_candidate_rejected", "url_collision_rejected"):
+        d._record_disposition_thread_event(
+            trace_id=d._trace_id(**ctx), reason_code=reason, source_code="direct_batch",
+            message="m", rendered_url="https://www.hrad.cz/en", **ctx,
+        )
+    assert len(d._removal_trail(**ctx)) == 2

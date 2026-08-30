@@ -4386,9 +4386,25 @@ class URLDiscoverer:
         by_trace = threads.get(str(dest_name or "").strip() or "unknown", {})
         trace_id = self._trace_id(kind=kind, dest_name=dest_name, item_name=item_name)
         trail = []
+        # A retry re-runs discovery against the same disposition threads, which
+        # accumulate rather than reset, so a retried destination logs each
+        # candidate once per pass. Clearing _registry_decisions before a retry
+        # fixed the removal COUNTS; this is the same defect one structure over,
+        # and it inflated candidates_considered instead. Measured on a Europe
+        # run: Brussels, the only retried destination, carried 65 duplicated
+        # events out of 131 while every other destination carried none.
+        #
+        # Deduped on (reason, url): the question this answers is "which URLs
+        # were tried and what refused them", and an identical pair repeated is
+        # the same answer, not a second one.
+        seen_events: set[tuple[str, str]] = set()
         for event in by_trace.get(trace_id, []) or []:
             if not isinstance(event, dict):
                 continue
+            signature = (str(event.get("reason", "") or ""), str(event.get("url", "") or ""))
+            if signature in seen_events:
+                continue
+            seen_events.add(signature)
             # Keys are reason/source/url as written by
             # _record_disposition_thread_event. Reading the _log_decision
             # parameter names (reason_code/rendered_url) instead silently
