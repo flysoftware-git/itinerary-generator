@@ -1604,14 +1604,51 @@ def _category_enabled(config_path: str, section: str, *, default: bool = False) 
         return default
 
 
+def _manifest_category_override(manifest_path: str | None, section: str) -> bool | None:
+    """A trip's own answer for one priced category, or None if it has none.
+
+    Read straight from the manifest file rather than the parsed trip, because
+    categories are resolved before Stage 1 parses it. Deliberately tolerant:
+    an unreadable or malformed manifest returns None (fall through to config)
+    rather than raising -- the parser reports those properly a moment later,
+    and this must not become a second, worse error path for the same problem.
+
+    Lives in the manifest so the choice is sticky per trip. A global config
+    flag meant enabling trails for the Southwest trip also bought them for
+    Europe, which asks for no hikes.
+    """
+    if not manifest_path:
+        return None
+    try:
+        import yaml
+
+        with open(manifest_path, encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    categories = data.get("categories")
+    if not isinstance(categories, dict):
+        trip_block = data.get("trip")
+        categories = trip_block.get("categories") if isinstance(trip_block, dict) else None
+    if not isinstance(categories, dict):
+        return None
+    value = categories.get(section)
+    if isinstance(value, dict):
+        value = value.get("enabled")
+    return bool(value) if isinstance(value, bool) else None
+
+
 def _resolve_category(
     cli_choice: bool | None,
     config_path: str,
     section: str,
     *,
     default: bool = False,
+    manifest_path: str | None = None,
 ) -> bool:
-    """Decide whether an optional category runs: CLI wins, else config.
+    """Decide whether an optional category runs: CLI, then manifest, then config.
 
     The CLI could previously only turn these OFF (--notrails, --skip-events),
     so enabling one for a single run meant editing config.yaml and remembering
@@ -1624,6 +1661,9 @@ def _resolve_category(
     """
     if cli_choice is not None:
         return bool(cli_choice)
+    manifest_choice = _manifest_category_override(manifest_path, section)
+    if manifest_choice is not None:
+        return manifest_choice
     return _category_enabled(config_path, section, default=default)
 
 
@@ -2272,23 +2312,23 @@ def main(
     # --skip-events and --notrails are the original one-way switches and still
     # force OFF. The paired --events/--no-events style flags added alongside
     # them can force either direction; absent both, config decides.
-    if not skip_events and not _resolve_category(events, config_path, "cultural_events"):
+    if not skip_events and not _resolve_category(events, config_path, "cultural_events", manifest_path=manifest):
         skip_events = True
         logger.info("Cultural events disabled (flag or cultural_events.enabled)")
     elif events is True:
         logger.info("Cultural events enabled by --events, overriding config")
 
-    if not no_trails and not _resolve_category(trails, config_path, "trails"):
+    if not no_trails and not _resolve_category(trails, config_path, "trails", manifest_path=manifest):
         no_trails = True
         logger.info("Trail discovery disabled (flag or trails.enabled)")
     elif trails is True:
         logger.info("Trail discovery enabled by --trails, overriding config")
 
-    disable_en_route = not _resolve_category(en_route, config_path, "en_route_stops")
+    disable_en_route = not _resolve_category(en_route, config_path, "en_route_stops", manifest_path=manifest)
     # Restaurants default ON: unlike the other three this is arguably core
     # itinerary content, so the switch exists without changing behaviour.
     disable_restaurants = not _resolve_category(
-        restaurants, config_path, "restaurants", default=True
+        restaurants, config_path, "restaurants", default=True, manifest_path=manifest
     )
     # Say WHICH input decided, not just the outcome -- a message reading
     # "disabled by config" after the user passed --no-restaurants sends them

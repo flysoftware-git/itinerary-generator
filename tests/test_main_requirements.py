@@ -1786,15 +1786,14 @@ class TestOptionalCategorySwitches:
     def test_shipped_config_matches_the_intended_switch_state(self):
         """Guards against a priced category being switched on by accident.
 
-        Trails were turned back on deliberately (2026-08-29, owner request)
-        after a run showed 42 trail_links_disabled and zero alltrails.com
-        links on the published page. The other two stay off, and this test
-        stays as their guard -- the point was never "all three off", it was
-        "no category changes state without someone meaning it".
+        All three stay off globally. Trails were wanted back for the
+        Southwest trip (2026-08-29) but that answer belongs in its manifest,
+        not here -- flipping the global switch would also have bought trails
+        for Europe, whose manifest asks for no hikes. See
+        TestPerTripCategorySwitches.
         """
         from generator.main import _category_enabled
-        assert _category_enabled("config.yaml", "trails") is True
-        for section in ("en_route_stops", "cultural_events"):
+        for section in ("trails", "en_route_stops", "cultural_events"):
             assert _category_enabled("config.yaml", section) is False, section
 
     def test_each_switch_is_independent(self, tmp_path):
@@ -1847,3 +1846,74 @@ class TestEnRouteStopsCanBeSwitchedOffEntirely:
         with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
             disc = URLDiscoverer(config_path="config.yaml", llm_client=mock_llm, disable_en_route=False)
         assert disc._disable_en_route is False
+
+
+class TestPerTripCategorySwitches:
+    """A priced category can be answered by the trip, not just globally.
+
+    A single config flag meant enabling trails for the Southwest trip also
+    bought them for Europe, whose manifest asks for no hikes. Precedence is
+    CLI, then manifest, then config: the run-specific answer wins, the trip's
+    own answer is sticky across runs, and config remains the default.
+    """
+
+    def _manifest(self, tmp_path, body):
+        p = tmp_path / "m.yaml"
+        p.write_text(body, encoding="utf-8")
+        return str(p)
+
+    def test_manifest_can_enable_a_category_config_leaves_off(self, tmp_path):
+        from generator.main import _resolve_category
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("trails:\n  enabled: false\n", encoding="utf-8")
+        m = self._manifest(tmp_path, "categories:\n  trails: true\n")
+        assert _resolve_category(None, str(cfg), "trails", manifest_path=m) is True
+
+    def test_manifest_can_disable_a_category_config_leaves_on(self, tmp_path):
+        from generator.main import _resolve_category
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("trails:\n  enabled: true\n", encoding="utf-8")
+        m = self._manifest(tmp_path, "categories:\n  trails: false\n")
+        assert _resolve_category(None, str(cfg), "trails", manifest_path=m) is False
+
+    def test_cli_still_beats_the_manifest(self, tmp_path):
+        from generator.main import _resolve_category
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("trails:\n  enabled: false\n", encoding="utf-8")
+        m = self._manifest(tmp_path, "categories:\n  trails: true\n")
+        assert _resolve_category(False, str(cfg), "trails", manifest_path=m) is False
+
+    def test_silent_manifest_falls_through_to_config(self, tmp_path):
+        from generator.main import _resolve_category
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("trails:\n  enabled: true\n", encoding="utf-8")
+        m = self._manifest(tmp_path, "trip:\n  title: No categories here\n")
+        assert _resolve_category(None, str(cfg), "trails", manifest_path=m) is True
+
+    def test_nested_under_trip_is_accepted(self, tmp_path):
+        from generator.main import _resolve_category
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("trails:\n  enabled: false\n", encoding="utf-8")
+        m = self._manifest(tmp_path, "trip:\n  categories:\n    trails: true\n")
+        assert _resolve_category(None, str(cfg), "trails", manifest_path=m) is True
+
+    def test_enabled_subkey_form_is_accepted(self, tmp_path):
+        from generator.main import _resolve_category
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("trails:\n  enabled: false\n", encoding="utf-8")
+        m = self._manifest(tmp_path, "categories:\n  trails:\n    enabled: true\n")
+        assert _resolve_category(None, str(cfg), "trails", manifest_path=m) is True
+
+    def test_unreadable_manifest_does_not_raise(self, tmp_path):
+        from generator.main import _manifest_category_override
+        assert _manifest_category_override(str(tmp_path / "missing.yaml"), "trails") is None
+
+    def test_malformed_manifest_does_not_raise(self, tmp_path):
+        from generator.main import _manifest_category_override
+        m = self._manifest(tmp_path, "categories: [this, is, not, a, mapping\n")
+        assert _manifest_category_override(m, "trails") is None
+
+    def test_non_boolean_value_is_ignored(self, tmp_path):
+        from generator.main import _manifest_category_override
+        m = self._manifest(tmp_path, "categories:\n  trails: maybe\n")
+        assert _manifest_category_override(m, "trails") is None
