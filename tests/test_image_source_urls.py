@@ -82,10 +82,18 @@ class TestServiceWorkerCachesRemoteImages:
         assert "event.request.destination === 'image'" in sw
         assert "!sameOrigin && !cacheableCdn && !isImage" in sw
 
-    def test_cache_name_was_bumped(self, tmp_path):
-        """An installed client holding the v1 shell must not keep serving it."""
+    def test_cache_name_is_per_build_not_a_constant(self, tmp_path):
+        """An installed client must not keep serving a superseded shell.
+
+        This previously asserted the literal 'roadtrip-shell-v2', which pinned
+        the constant in place: bumping it by hand once fixed the v1 holdover
+        and then froze, so every later republish left clients on the build
+        before it. The intent was always "the key moves when the build does",
+        so assert that instead. See tests/test_sw_cache_key.py.
+        """
         sw = self._sw(tmp_path, self._trip())
-        assert "roadtrip-shell-v2" in sw
+        assert "roadtrip-shell-v2';" not in sw
+        assert "const CACHE = 'roadtrip-shell-" in sw
 
     def test_a_trip_with_no_images_still_writes_valid_sw(self, tmp_path):
         sw = self._sw(tmp_path, {"trip": {"title": "T"}, "destinations": []})
