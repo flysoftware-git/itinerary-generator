@@ -428,6 +428,44 @@ DEFAULT_EN_ROUTE_SOURCE = "search"
 #: real trails -- while reading correctly in the source.
 TRAIL_NAME_PATTERN = chr(92) + "btrails?" + chr(92) + "b"
 
+#: Which check in _retain_discovered_url refused a URL. The function has 30
+#: rejection exits and recorded none of them, so every conclusion about why
+#: a link was dropped had to be inferred from outside -- three separate
+#: fixes for Upheaval Dome each targeted a gate that turned out not to be
+#: the one firing. Labels are the guarding condition, captured from source.
+_RETENTION_EXIT_LABELS = {
+    1: 'if not url:',
+    2: 'logger.info("URL domain denylist hit for %s \'%s\': %s", kind, item_name, url)',
+    3: 'if self._is_obviously_generic_url(lower):',
+    4: 'if self._is_alltrails_trail_url(url) and bool(getattr(self, "_disable_trails", False)):',
+    5: 'if not allow_alltrails and self._is_alltrails_trail_url(url):',
+    6: 'logger.info("URL rejected due to unescaped whitespace for %s \'%s\': %s", kind, item_name, u',
+    7: 'logger.info("URL rejected incomplete google maps place link for %s \'%s\': %s", kind, item_n',
+    8: ')',
+    9: ')',
+    10: ')',
+    11: ')',
+    12: ')',
+    13: ')',
+    14: ')',
+    15: ')',
+    16: ')',
+    17: ')',
+    18: 'logger.info("AllTrails slug denylist hit for %s \'%s\': %s", kind, item_name, url)',
+    19: ')',
+    20: ')',
+    21: ')',
+    22: ')',
+    23: 'logger.info("Scenic-drive URL rejected (non-route target) for \'%s\': %s", item_name, url)',
+    24: 'if not self._alltrails_url_meets_seed_relaxed_standard(url, item_name):',
+    25: 'if not self._meets_alltrails_publish_confidence(url, item_name, dest_name):',
+    26: 'if not self._passes_alltrails_post_search_filters(url, item_name, dest_name):',
+    27: ')',
+    28: ')',
+    29: '):',
+    30: ')',
+}
+
 DEFAULT_FALLBACK_MODE = "search"
 DEFAULT_DIRECT_LINK_BATCH_COUNT = 20
 DEFAULT_DIRECT_BATCH_AUTHORITATIVE = True
@@ -3270,17 +3308,17 @@ class URLDiscoverer:
             allow_shallow_relevance=allow_shallow_relevance,
         )
         if not url:
-            return ""
+            return self._reject_retention(1)
         if self._is_url_domain_denied(url):
             logger.info("URL domain denylist hit for %s '%s': %s", kind, item_name, url)
-            return ""
+            return self._reject_retention(2)
         lower = url.lower()
         allowlisted_urls = getattr(self, "_url_policy_allowlisted_urls", set())
         if url in allowlisted_urls:
             return url
         is_safe_fallback = any(lower.startswith(prefix) for prefix in SAFE_FALLBACK_URL_PREFIXES)
         if self._is_obviously_generic_url(lower):
-            return ""
+            return self._reject_retention(3)
         # The trails switch, enforced at the single chokepoint every candidate
         # URL passes through. Guarding call sites one at a time failed four
         # times: three search entry points, then the direct batch, and the
@@ -3289,15 +3327,15 @@ class URLDiscoverer:
         # hunt passes allow_alltrails=True and nothing downstream reconciled
         # that with the category being off.
         if self._is_alltrails_trail_url(url) and bool(getattr(self, "_disable_trails", False)):
-            return ""
+            return self._reject_retention(4)
         if not allow_alltrails and self._is_alltrails_trail_url(url):
-            return ""
+            return self._reject_retention(5)
         if self._has_unescaped_whitespace(url):
             logger.info("URL rejected due to unescaped whitespace for %s '%s': %s", kind, item_name, url)
-            return ""
+            return self._reject_retention(6)
         if self._is_incomplete_google_maps_place_url(url):
             logger.info("URL rejected incomplete google maps place link for %s '%s': %s", kind, item_name, url)
-            return ""
+            return self._reject_retention(7)
         if self._is_deterministic_google_maps_place_url(url) and kind in {"attraction", "en-route stop", "en_route_stop"}:
             if self._looks_synthetic_google_maps_place_url(url):
                 logger.info(
@@ -3306,7 +3344,7 @@ class URLDiscoverer:
                     item_name,
                     url,
                 )
-                return ""
+                return self._reject_retention(8)
             # Require substantial entity-token overlap for deterministic place pages.
             item_tokens = self._significant_tokens(item_name)
             if item_tokens:
@@ -3318,7 +3356,7 @@ class URLDiscoverer:
                         item_name,
                         url,
                     )
-                    return ""
+                    return self._reject_retention(9)
                 lower_html = page_html.lower()
                 parsed = urlparse(url)
                 place_label = ""
@@ -3336,7 +3374,7 @@ class URLDiscoverer:
                         "Maps place URL rejected: weak entity token overlap for %s '%s': %s",
                         kind, item_name, url,
                     )
-                    return ""
+                    return self._reject_retention(10)
                 generic_entity_tokens = {
                     "historic",
                     "district",
@@ -3365,7 +3403,7 @@ class URLDiscoverer:
                             item_name,
                             url,
                         )
-                        return ""
+                        return self._reject_retention(11)
         if self._direct_batch_is_authoritative() and self._is_remembered_direct_batch_authoritative_url(url, item_name):
             logger.info(
                 "Remembered authoritative direct-batch URL preserved for %s '%s' (%s): %s",
@@ -3417,7 +3455,7 @@ class URLDiscoverer:
                         dest_name or "unknown destination",
                         url,
                     )
-                    return ""
+                    return self._reject_retention(12)
                 # This leniency still must not publish a URL that is definitively
                 # dead (404/410, or a DNS/connection failure meaning the host
                 # doesn't exist at all). Relevance leniency is not a liveness
@@ -3437,7 +3475,7 @@ class URLDiscoverer:
                         url,
                         fetch_status,
                     )
-                    return ""
+                    return self._reject_retention(13)
                 redirect_target = self._redirect_target_lacks_item_relevance(
                     url, item_name, dest_name, self._significant_tokens(item_name), kind, fetch_text
                 )
@@ -3450,7 +3488,7 @@ class URLDiscoverer:
                         url,
                         redirect_target,
                     )
-                    return ""
+                    return self._reject_retention(14)
                 logger.info(
                     "Item-matched authoritative direct-batch URL preserved for %s '%s' (%s): %s",
                     kind,
@@ -3468,7 +3506,7 @@ class URLDiscoverer:
                     item_name,
                     url,
                 )
-                return ""
+                return self._reject_retention(15)
             _rest_tokens = self._restaurant_significant_tokens(item_name)
             if self._looks_like_item_specific_homepage(url, item_name, item_tokens=_rest_tokens):
                 return url
@@ -3479,7 +3517,7 @@ class URLDiscoverer:
                     item_name,
                     url,
                 )
-                return ""
+                return self._reject_retention(16)
         if kind in {"generic", "attraction", "en-route stop", "en_route_stop", "getting_there route option"}:
             if self._is_generic_section_landing_page(url):
                 if not self._looks_like_item_specific_homepage(url, item_name):
@@ -3489,14 +3527,14 @@ class URLDiscoverer:
                         item_name,
                         url,
                     )
-                    return ""
+                    return self._reject_retention(17)
                 # Falls through to the relevance gate so page text can confirm the entity.
         # AllTrails slug denylist: fast-reject known-invalid slugs before any fetch.
         if self._is_alltrails_trail_url(url):
             slug = urlparse(url).path.rsplit("/", 1)[-1].lower()
             if slug in getattr(self, "_alltrails_slug_denylist", frozenset()):
                 logger.info("AllTrails slug denylist hit for %s '%s': %s", kind, item_name, url)
-                return ""
+                return self._reject_retention(18)
         # Wikipedia entity-path check: wiki page name is deterministic in the URL.
         # Reject when no item token appears in the wiki slug (catches wrong-entity links).
         if not is_safe_fallback and "wikipedia.org/wiki/" in lower:
@@ -3507,7 +3545,7 @@ class URLDiscoverer:
                     "Wikipedia entity-path mismatch for %s '%s': %s",
                     kind, item_name, url,
                 )
-                return ""
+                return self._reject_retention(19)
             generic_wiki_tokens = {
                 "historic",
                 "district",
@@ -3531,7 +3569,7 @@ class URLDiscoverer:
                     "Wikipedia entity-path generic-only overlap rejected for %s '%s': %s",
                     kind, item_name, url,
                 )
-                return ""
+                return self._reject_retention(20)
         if kind in {"generic", "attraction"} and self._is_category_style_activity(item_name):
             if self._is_generic_geographic_url_for_category(url, item_name):
                 logger.info(
@@ -3540,7 +3578,7 @@ class URLDiscoverer:
                     item_name,
                     url,
                 )
-                return ""
+                return self._reject_retention(21)
             if self._is_category_offer_listing_url(url):
                 logger.info(
                     "Category-style activity rejected offer/listing URL for %s '%s': %s",
@@ -3548,10 +3586,10 @@ class URLDiscoverer:
                     item_name,
                     url,
                 )
-                return ""
+                return self._reject_retention(22)
         if kind == "scenic drive" and not self._is_route_specific_scenic_drive_url(url):
             logger.info("Scenic-drive URL rejected (non-route target) for '%s': %s", item_name, url)
-            return ""
+            return self._reject_retention(23)
         if allow_alltrails and self._is_alltrails_trail_url(url):
             if is_seed:
                 # Seeds were attached via the relaxed seed standard (see
@@ -3562,12 +3600,12 @@ class URLDiscoverer:
                 # non-seed-aware gate here would silently undo the seed
                 # exemption and discard a correct, explicitly-requested link.
                 if not self._alltrails_url_meets_seed_relaxed_standard(url, item_name):
-                    return ""
+                    return self._reject_retention(24)
             else:
                 if not self._meets_alltrails_publish_confidence(url, item_name, dest_name):
-                    return ""
+                    return self._reject_retention(25)
                 if not self._passes_alltrails_post_search_filters(url, item_name, dest_name):
-                    return ""
+                    return self._reject_retention(26)
         if not is_safe_fallback:
             # Keep the direct-batch fail-closed rule narrow: only reject a curated
             # row when the URL is explicitly dead (404/410). Generic landing pages
@@ -3592,7 +3630,7 @@ class URLDiscoverer:
                         dest_name or "unknown destination",
                         url,
                     )
-                    return ""
+                    return self._reject_retention(27)
                 item_tokens = self._significant_tokens(item_name)
                 # En-route stops sit along the route, not inside the
                 # destination itself, so the deep relevance gate's
@@ -3626,7 +3664,7 @@ class URLDiscoverer:
                             url,
                             redirect_target,
                         )
-                        return ""
+                        return self._reject_retention(28)
                     logger.info(
                         "Preserved direct-batch %s %s '%s' (%s): %s",
                         "row-matched en-route stop" if is_multi_token_en_route_stop else "single-token item",
@@ -3642,7 +3680,7 @@ class URLDiscoverer:
                 url, item_name, dest_name, candidate=candidate, deep_check=deep_check,
                 item_description=item_description,
             ):
-                return ""
+                return self._reject_retention(29)
 
         policy_class = self._classify_url_policy_class(url)
         blocked_classes = getattr(self, "_url_policy_blocked_classes", set(DEFAULT_URL_POLICY_BLOCKED_CLASSES))
@@ -3727,7 +3765,7 @@ class URLDiscoverer:
                     dest_name or "unknown destination",
                     url,
                 )
-                return ""
+                return self._reject_retention(30)
         if blocked and policy_mode == "monitor":
             logger.info(
                 "URL policy monitor hit [%s] for %s '%s' (%s): %s",
@@ -4457,6 +4495,18 @@ class URLDiscoverer:
         store = getattr(self, "_retention_evidence", None) or {}
         return store.get(self._retention_evidence_key(item_name, url), {})
 
+    def _reject_retention(self, exit_id: int) -> str:
+        """Record which retention check refused, then return the empty string.
+
+        Every rejection exit in _retain_discovered_url routes through here, so
+        the branch that fired is recoverable instead of being inferred.
+        """
+        self._last_retention_rejection = (
+            exit_id,
+            _RETENTION_EXIT_LABELS.get(exit_id, "unknown"),
+        )
+        return ""
+
     def _log_rejected_url(self, kind: str, dest_name: str, item_name: str, url: str) -> None:
         """Log a URL thrown away after it had already been accepted.
 
@@ -4491,7 +4541,10 @@ class URLDiscoverer:
             dest_name=dest_name,
             item_name=item_name,
             reason="audit_discarded_previously_accepted_url",
-            message="url accepted during discovery was rejected by the audit pass",
+            message=(
+                "url accepted during discovery was rejected by the audit pass"
+                f" [retention exit {getattr(self, '_last_retention_rejection', ('?', 'not recorded'))}]"
+            ),
             url=url,
             level=logging.DEBUG,
         )
