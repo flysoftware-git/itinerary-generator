@@ -2784,6 +2784,7 @@ class URLDiscoverer:
                     ):
                         eligible_attractions.append(attr)
                     continue
+                evidence = self._recall_retention_evidence(attr_name, url)
                 cleaned = self._retain_discovered_url(
                     url,
                     attr_name,
@@ -2792,6 +2793,8 @@ class URLDiscoverer:
                     kind="attraction",
                     is_seed=is_seed,
                     item_description=str(attr.get("description", "") or ""),
+                    candidate=evidence.get("candidate"),
+                    allow_shallow_relevance=bool(evidence.get("allow_shallow_relevance")),
                 )
                 if cleaned != url:
                     self._log_rejected_url("attraction", dest_name, attr_name, url)
@@ -3230,6 +3233,20 @@ class URLDiscoverer:
         is_seed: bool = False,
         item_description: str = "",
     ) -> str:
+        # Remember the context this call had, so the audit pass can judge the
+        # same URL on the same evidence. audit_discovered_urls takes `trip` as
+        # its only input -- candidate rows are transient to discovery and were
+        # never persisted -- so it could not pass `candidate` or
+        # `allow_shallow_relevance`, and `deep_check = not
+        # allow_shallow_relevance` silently read that absence as "be stricter".
+        # Discovery and audit then reached opposite verdicts on one link:
+        # Upheaval Dome's alltrails.com/trail/us/utah/upheaval-dome-via-crater-
+        # view-trail was accepted during discovery and discarded during audit,
+        # leaving the item with no URL at all.
+        self._remember_retention_evidence(
+            item_name, url, candidate=candidate,
+            allow_shallow_relevance=allow_shallow_relevance,
+        )
         if not url:
             return ""
         if self._is_url_domain_denied(url):
@@ -4382,6 +4399,41 @@ class URLDiscoverer:
         that calls itself a trail. "Trails" plural is accepted.
         """
         return bool(re.search(TRAIL_NAME_PATTERN, str(item_name or "").lower()))
+
+    @staticmethod
+    def _retention_evidence_key(item_name: str, url: str) -> tuple[str, str]:
+        # Punctuation removed rather than collapsed to a space, so "Queen's
+        # Garden Trail" and "Queens Garden Trail" key alike. Both stages pass
+        # the same attr["name"] today, but a key that depends on that staying
+        # true is a silent miss rather than a visible failure.
+        return (
+            re.sub(r"[^a-z0-9]+", "", str(item_name or "").lower()),
+            str(url or "").strip(),
+        )
+
+    def _remember_retention_evidence(
+        self, item_name: str, url: str, *,
+        candidate: dict[str, Any] | None, allow_shallow_relevance: bool,
+    ) -> None:
+        """Record the context a retention call was made with.
+
+        Only recorded when there is something to recall -- a bare call adds
+        nothing and must not overwrite a richer earlier one for the same
+        (item, url).
+        """
+        if candidate is None and not allow_shallow_relevance:
+            return
+        if not hasattr(self, "_retention_evidence"):
+            self._retention_evidence: dict[tuple[str, str], dict[str, Any]] = {}
+        self._retention_evidence[self._retention_evidence_key(item_name, url)] = {
+            "candidate": candidate,
+            "allow_shallow_relevance": bool(allow_shallow_relevance),
+        }
+
+    def _recall_retention_evidence(self, item_name: str, url: str) -> dict[str, Any]:
+        """The context discovery had for this (item, url), or empty."""
+        store = getattr(self, "_retention_evidence", None) or {}
+        return store.get(self._retention_evidence_key(item_name, url), {})
 
     def _log_rejected_url(self, kind: str, dest_name: str, item_name: str, url: str) -> None:
         """Log a URL thrown away after it had already been accepted.
