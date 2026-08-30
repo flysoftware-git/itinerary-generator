@@ -11936,6 +11936,16 @@ class URLDiscoverer:
                     )
 
         resolved_stops: list[dict[str, Any]] = []
+        # Two en-route stops must not publish the same link. Each assignment
+        # path validates its own choice and none of them looked at what the
+        # others had already claimed, so a plausible page could stand in for
+        # several different places at once: five Asheville-leg stops shared
+        # https://www.knoxvilletn.gov -- a city homepage for a waterfall and a
+        # national park -- and Lebanon and Franklin each had a pair sharing one
+        # URL across the direct_batch_existing_preserved and discovery_selected
+        # paths. Nothing was wrong with either claim alone; only the pair was.
+        # Restaurants have had this guard (claimed_restaurant_urls) all along.
+        claimed_en_route_urls: set[str] = set()
         for stop in stops:
             stop_name = stop.get("name", "")
             geocoded_lat = stop.get("geocode_lat")
@@ -11990,7 +12000,20 @@ class URLDiscoverer:
                         # lines below, now applied uniformly here too.
                         allow_google_maps_search=True,
                     )
+                    if cleaned_existing and self._url_already_claimed(
+                        cleaned_existing, claimed_en_route_urls
+                    ):
+                        self._log_decision(
+                            kind="en_route_stop",
+                            dest_name=dest_name,
+                            item_name=stop_name,
+                            reason="en_route_url_collision_rejected",
+                            message="another en-route stop already claimed this link",
+                            url=cleaned_existing,
+                        )
+                        cleaned_existing = ""
                     if cleaned_existing:
+                        claimed_en_route_urls.add(self._collision_key(cleaned_existing))
                         stop["url"] = cleaned_existing
                         stop["_url_assigned_by"] = "direct_batch_existing_preserved"
                         self._log_decision(
@@ -12062,7 +12085,18 @@ class URLDiscoverer:
                     dest_name=dest_name,
                     allow_alltrails=False,
                 )
+            if url and self._url_already_claimed(url, claimed_en_route_urls):
+                self._log_decision(
+                    kind="en_route_stop",
+                    dest_name=dest_name,
+                    item_name=stop_name,
+                    reason="en_route_url_collision_rejected",
+                    message="another en-route stop already claimed this link",
+                    url=url,
+                )
+                url = None
             if url:
+                claimed_en_route_urls.add(self._collision_key(url))
                 stop["url"] = url
                 stop["_url_assigned_by"] = "discovery_selected"
                 resolved_stops.append(stop)
