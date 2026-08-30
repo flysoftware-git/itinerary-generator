@@ -4484,6 +4484,33 @@ class URLDiscoverer:
         }
 
     @staticmethod
+    def _is_unverifiable_maps_query(url: str) -> bool:
+        """A Maps link that _item_has_verified_url will refuse.
+
+        Exactly the inverse of that gate's Maps handling, deliberately: a text
+        query ("?query=Balanced+Rock") is a best guess, a coordinate query
+        ("?query=38.7,-109.5") names a point on the earth. Accepting the first
+        as an item's url guarantees the item is deleted downstream -- and, worse,
+        marks it resolved, so the per-item search that would have found its real
+        page never runs.
+
+        Measured on the 2026-08-29 runs: Prague Castle, St. Vitus Cathedral,
+        Balanced Rock, Navajo Loop Trail and Queen's Garden Trail were all lost
+        this way, with their official pages ranking second in a plain search.
+        test-coverage.md already documents Maps links as usable "only after
+        direct-batch and ordinary web search paths are exhausted"; this restores
+        that, rather than changing it.
+        """
+        if not URLDiscoverer._is_google_maps_candidate_url(url):
+            return False
+        if URLDiscoverer._is_coordinate_maps_query_url(url):
+            return False
+        return URLDiscoverer._classify_url_policy_class(url) in {
+            "google_maps_search",
+            "google_maps_dir",
+        }
+
+    @staticmethod
     def _is_coordinate_maps_query_url(url: str | None) -> bool:
         """True for a Maps search URL whose query is a bare `lat,lng` pair.
 
@@ -7864,6 +7891,23 @@ class URLDiscoverer:
                         strongest_candidates,
                         key=lambda entry: (entry[1], entry[2], entry[3], entry[4], entry[5]),
                     )[6]
+            if selected and self._is_unverifiable_maps_query(selected):
+                # Do not let a text-query Maps link stand as the attraction's
+                # url: it cannot satisfy _item_has_verified_url, so returning
+                # it resolves the item into deletion and suppresses the search
+                # that would have found a real page. Fall through instead.
+                self._log_decision(
+                    kind="attraction",
+                    dest_name=dest_name,
+                    item_name=item_name,
+                    reason="direct_batch_maps_query_not_accepted_as_url",
+                    message=(
+                        "maps text query declined as the item url; continuing to "
+                        "search rather than resolving to an unverifiable link"
+                    ),
+                    url=selected,
+                )
+                selected = ""
             if selected:
                 self._remember_direct_batch_authoritative_url(selected, item_name)
                 self._log_decision(
