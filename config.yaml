@@ -17,6 +17,18 @@ ai:
   model: "grok-latest"
   temperature: 0.7
   max_tokens: 4096
+  # Runaway-spend guard, in US dollars of estimated model cost. 0 disables it,
+  # which is the default: a guard that can stop a build partway through belongs
+  # to whoever asked for it.
+  #
+  # Checked before each model call, never after, so the ceiling is crossed at
+  # most once -- by the call that reaches it. It counts estimated token and
+  # tool-call cost across the whole run, including any failover provider, and
+  # a cached answer is still served once the ceiling is reached because it
+  # costs nothing. A model with no pricing entry is costed at $0.00 and so is
+  # invisible to this guard; usage_summary() reports those under
+  # `unpriced_models`, and the run ledger records them alongside the cost.
+  run_cost_ceiling_usd: 0
   max_concurrent_destinations: 4
   # Raised 1 -> 2 on 2026-08-24, the step
   # live-fetch-and-execution-time-reduction.md 2.1 recommends. The cap existed to
