@@ -2556,7 +2556,7 @@ class HTMLAssembler:
                         # Link the specific named place where it appears in the tip text.
                         tip_html = (
                             html_escape.escape(tip_text[:match.start()])
-                            + f'<a href="{self._safe_href(tip_url)}" target="_blank" rel="noopener">'
+                            + f'<a href="{self._safe_href(tip_url)}" class="tip-link" target="_blank" rel="noopener">'
                             + html_escape.escape(tip_text[match.start():match.end()])
                             + '</a>'
                             + html_escape.escape(tip_text[match.end():])
@@ -2566,7 +2566,7 @@ class HTMLAssembler:
                         # mention rather than silently dropping a real, verified URL.
                         tip_html = (
                             html_escape.escape(tip_text)
-                            + f' <a href="{self._safe_href(tip_url)}" target="_blank" rel="noopener">'
+                            + f' <a href="{self._safe_href(tip_url)}" class="tip-link" target="_blank" rel="noopener">'
                             + html_escape.escape(tip_name)
                             + '</a>'
                         )

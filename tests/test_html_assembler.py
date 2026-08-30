@@ -2253,7 +2253,7 @@ def test_build_events_local_tip_renders_anchor_around_named_place() -> None:
 
     assert (
         '<a href="https://www.google.com/maps/search/?api=1&amp;query=Moab%20Farmers%20Market" '
-        'target="_blank" rel="noopener">Moab Farmers Market</a>' in html
+        'class="tip-link" target="_blank" rel="noopener">Moab Farmers Market</a>' in html
     )
     assert "Check out " in html
     assert "on Thursday evenings for fresh produce." in html
@@ -2274,7 +2274,10 @@ def test_build_events_local_tip_appends_link_when_name_not_verbatim_in_text() ->
 
     html = assembler._build_events(events, "Moab")
 
-    assert '<a href="https://moabfarmersmarket.org/" target="_blank" rel="noopener">Moab Farmers Market</a>' in html
+    # class="tip-link" is load-bearing: the page loads Tailwind, whose Preflight
+    # sets a{color:inherit;text-decoration:inherit}, and the template has no base
+    # anchor rule -- so an unclassed tip link is invisible as a link.
+    assert '<a href="https://moabfarmersmarket.org/" class="tip-link" target="_blank" rel="noopener">Moab Farmers Market</a>' in html
     assert "Head downtown Thursday evenings for fresh local produce." in html
 
 

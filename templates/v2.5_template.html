@@ -454,6 +454,13 @@
       .links-list { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
       .links-list li a { display: inline-flex; align-items: center; gap: 5px; background: #fff; border: 1px solid #d4c4a8; color: var(--canyon); border-radius: 9999px; padding: 4px 14px; font-size: 0.82rem; font-weight: 600; text-decoration: none; transition: background 0.15s; }
       .links-list li a:hover { background: var(--sandstone); }
+      /* The page loads Tailwind, whose Preflight sets a{color:inherit;
+         text-decoration:inherit}, and the template defines no base rule --
+         so an unclassed anchor is invisible as a link rather than browser
+         blue. The local tip is often the best recommendation on the card
+         ("live music at the Bluebird Cafe") and read as plain prose. */
+      .tip-link { color: var(--canyon); text-decoration: underline; text-underline-offset: 2px; font-weight: 700; }
+      .tip-link:hover { text-decoration-thickness: 2px; }
       .local-tip { background: #fef3c7; border: 1px solid #fde68a; border-radius: 8px; padding: 0.6rem 0.9rem; font-size: 0.86rem; color: #78350f; line-height: 1.55; margin-top: 0.75rem; font-weight: 600; }
 
       /* ── Photo gallery ── */
