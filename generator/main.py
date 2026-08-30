@@ -1207,6 +1207,9 @@ def _write_destination_status_markdown_report(output_dir: Path, status_report: d
                     if not isinstance(event, dict) or not event.get("url"):
                         continue
                     lines.append(f"    - {event.get('reason', '?')}: {event.get('url', '')}")
+                    detail = str(event.get("detail", "") or "")
+                    if "retention exit" in detail:
+                        lines.append(f"      {detail[detail.index('[retention exit'):]}")
 
     path = output_dir / "destination_status_report.md"
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")

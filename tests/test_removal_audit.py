@@ -244,6 +244,7 @@ def test_removal_trail_reads_the_real_event_keys():
         "url": "https://www.hrad.cz/en",
         "source": "direct_batch",
         "stage": "attraction",
+        "detail": "already claimed",
     }]
 
 

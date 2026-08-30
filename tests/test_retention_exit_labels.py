@@ -63,3 +63,32 @@ def test_an_unknown_id_does_not_raise():
 
 def test_labels_are_non_empty_strings():
     assert all(isinstance(v, str) and v.strip() for v in _RETENTION_EXIT_LABELS.values())
+
+
+def test_the_exit_label_reaches_the_removal_trail():
+    """The label is carried in the event message, which the trail was dropping.
+
+    The instrumentation was added to name the branch that discards a URL, and
+    the first version put the label in the disposition event's message while
+    _removal_trail recorded only reason/url/source/stage. It never reached the
+    report it was written for -- the tool being narrower than the question,
+    for the fourth time in this feature's short life.
+    """
+    from threading import Lock
+
+    from generator.url_discovery import URLDiscoverer
+
+    d = URLDiscoverer.__new__(URLDiscoverer)
+    d._decision_threads_by_destination = {}
+    d._request_cache_lock = Lock()
+    d._decision_event_sequence = 0
+
+    ctx = dict(kind="attraction", dest_name="Canyonlands", item_name="Upheaval Dome")
+    d._record_disposition_thread_event(
+        trace_id=d._trace_id(**ctx), reason_code="audit_discarded_previously_accepted_url",
+        source_code="direct_batch",
+        message="url accepted during discovery was rejected [retention exit (17, 'if not ok:')]",
+        rendered_url="https://www.alltrails.com/trail/us/utah/x", **ctx,
+    )
+    trail = d._removal_trail(**ctx)
+    assert "retention exit (17" in trail[0]["detail"]

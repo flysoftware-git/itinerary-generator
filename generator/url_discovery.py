@@ -4629,6 +4629,10 @@ class URLDiscoverer:
                 "url": str(event.get("url", "") or ""),
                 "source": str(event.get("source", "") or ""),
                 "stage": str(event.get("kind", "") or ""),
+                # The event carries a message and the extraction was dropping
+                # it, so the retention-exit label added to diagnose Upheaval
+                # Dome never reached the report it was written for.
+                "detail": str(event.get("message", "") or "")[:200],
             })
         return trail
 
