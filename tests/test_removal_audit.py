@@ -243,6 +243,7 @@ def test_removal_trail_reads_the_real_event_keys():
         "reason": "url_collision_rejected",
         "url": "https://www.hrad.cz/en",
         "source": "direct_batch",
+        "stage": "attraction",
     }]
 
 
@@ -313,3 +314,61 @@ def test_the_same_url_refused_by_two_different_checks_is_kept_twice():
             message="m", rendered_url="https://www.hrad.cz/en", **ctx,
         )
     assert len(d._removal_trail(**ctx)) == 2
+
+
+def test_the_trail_spans_stages_not_just_one_kind():
+    """_trace_id keys on kind|destination|item, so stages get separate threads.
+
+    Filtering to one kind hid the stage that actually discarded a URL. Balanced
+    Rock's trail showed its real page recovered by search and then stopped,
+    while the item was removed -- the clearing happened under a different kind
+    and was invisible.
+    """
+    from threading import Lock
+
+    from generator.url_discovery import URLDiscoverer
+
+    d = URLDiscoverer.__new__(URLDiscoverer)
+    d._decision_threads_by_destination = {}
+    d._request_cache_lock = Lock()
+    d._decision_event_sequence = 0
+
+    dest, item = "Arches National Park", "Balanced Rock"
+    for kind, reason, url in [
+        ("attraction", "direct_batch_candidate_rejected", "https://www.nps.gov/arch/index.htm"),
+        ("search", "authoritative_no_match_recovered_via_general_search",
+         "https://www.nps.gov/arch/planyourvisit/balancedrock.htm"),
+        ("audit", "audit_rejected_generic_url",
+         "https://www.nps.gov/arch/planyourvisit/balancedrock.htm"),
+    ]:
+        d._record_disposition_thread_event(
+            trace_id=d._trace_id(kind=kind, dest_name=dest, item_name=item),
+            kind=kind, dest_name=dest, item_name=item,
+            reason_code=reason, source_code="s", message="m", rendered_url=url,
+        )
+
+    trail = d._removal_trail(kind="attraction", dest_name=dest, item_name=item)
+    assert [e["stage"] for e in trail] == ["attraction", "search", "audit"]
+    assert trail[-1]["reason"] == "audit_rejected_generic_url"
+
+
+def test_trail_events_stay_in_the_order_they_happened():
+    from threading import Lock
+
+    from generator.url_discovery import URLDiscoverer
+
+    d = URLDiscoverer.__new__(URLDiscoverer)
+    d._decision_threads_by_destination = {}
+    d._request_cache_lock = Lock()
+    d._decision_event_sequence = 0
+
+    dest, item = "D", "I"
+    for i, kind in enumerate(["audit", "attraction", "search"]):
+        d._record_disposition_thread_event(
+            trace_id=d._trace_id(kind=kind, dest_name=dest, item_name=item),
+            kind=kind, dest_name=dest, item_name=item,
+            reason_code=f"r{i}", source_code="s", message="m",
+            rendered_url=f"https://example.com/{i}",
+        )
+    trail = d._removal_trail(kind="attraction", dest_name=dest, item_name=item)
+    assert [e["reason"] for e in trail] == ["r0", "r1", "r2"]

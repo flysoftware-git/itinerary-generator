@@ -4384,6 +4384,22 @@ class URLDiscoverer:
         """
         threads = getattr(self, "_decision_threads_by_destination", {}) or {}
         by_trace = threads.get(str(dest_name or "").strip() or "unknown", {})
+        # Gather every thread for this item, not just this kind. _trace_id keys
+        # on kind|destination|item, so events logged as kind="search" or
+        # "audit" for the same item live in separate threads -- and those are
+        # exactly the later stages that can clear a url the batch had assigned.
+        # Filtering to one kind made the trail stop at the last attraction-kind
+        # event: Balanced Rock showed its real page being recovered and then
+        # nothing, with the item removed and no record of what discarded it.
+        wanted_item = str(item_name or "").strip().lower()
+        events: list[dict] = []
+        for thread in by_trace.values():
+            for event in thread or []:
+                if not isinstance(event, dict):
+                    continue
+                if str(event.get("item", "") or "").strip().lower() == wanted_item:
+                    events.append(event)
+        events.sort(key=lambda e: int(e.get("seq", 0) or 0))
         trace_id = self._trace_id(kind=kind, dest_name=dest_name, item_name=item_name)
         trail = []
         # A retry re-runs discovery against the same disposition threads, which
@@ -4398,7 +4414,7 @@ class URLDiscoverer:
         # were tried and what refused them", and an identical pair repeated is
         # the same answer, not a second one.
         seen_events: set[tuple[str, str]] = set()
-        for event in by_trace.get(trace_id, []) or []:
+        for event in events:
             if not isinstance(event, dict):
                 continue
             signature = (str(event.get("reason", "") or ""), str(event.get("url", "") or ""))
@@ -4414,6 +4430,7 @@ class URLDiscoverer:
                 "reason": str(event.get("reason", "") or ""),
                 "url": str(event.get("url", "") or ""),
                 "source": str(event.get("source", "") or ""),
+                "stage": str(event.get("kind", "") or ""),
             })
         return trail
 
