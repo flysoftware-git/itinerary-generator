@@ -60,3 +60,41 @@ def test_item_name_matching_ignores_punctuation_and_case():
     d = _discoverer()
     d._remember_retention_evidence("Queen's Garden Trail", URL, candidate=ROW, allow_shallow_relevance=True)
     assert d._recall_retention_evidence("queens garden trail", URL)["candidate"] == ROW
+
+
+def test_a_url_the_audit_substitutes_carries_its_own_evidence():
+    """The audit can introduce a URL discovery never saw.
+
+    audit_discovered_urls prefers an AllTrails link the trail batch already
+    harvested over whatever the attraction category found. That URL has no
+    discovery-side retention evidence by construction, so the retention check
+    a few lines later judged it with no context and could discard it -- the
+    audit rejecting its own replacement.
+
+    Upheaval Dome, sw 2026-08-30: the batch had
+    alltrails.com/trail/us/utah/upheaval-dome-via-crater-view-trail, the audit
+    preferred it over an unrelated nps.gov photography-permit page, then
+    discarded it and removed the item for having no verified URL. The
+    retention-evidence handoff added earlier did not cover this, because it
+    only records what discovery passes through.
+    """
+    d = _discoverer()
+    # nothing recorded during discovery for this URL
+    assert d._recall_retention_evidence(ITEM, URL) == {}
+    # the audit's substitution records its own
+    d._remember_retention_evidence(ITEM, URL, candidate=None, allow_shallow_relevance=True)
+    recalled = d._recall_retention_evidence(ITEM, URL)
+    assert recalled["allow_shallow_relevance"] is True
+    assert recalled["candidate"] is None
+
+
+def test_shallow_only_evidence_is_recorded_without_a_candidate():
+    """allow_shallow_relevance alone must be enough to record.
+
+    The guard skips recording when there is nothing to record. A substitution
+    has no candidate row, so keying that guard on the candidate alone would
+    silently drop exactly this case.
+    """
+    d = _discoverer()
+    d._remember_retention_evidence("Some Item", URL, candidate=None, allow_shallow_relevance=True)
+    assert d._recall_retention_evidence("Some Item", URL) != {}

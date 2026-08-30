@@ -2570,6 +2570,28 @@ class URLDiscoverer:
                             message=f"replacing {url or '(none)'} with already-harvested {batch_trail_url}",
                         )
                         url = batch_trail_url
+                        # This URL is introduced BY the audit, so discovery
+                        # never recorded retention evidence for it -- and the
+                        # retention check a few lines below then judges it with
+                        # no context and can discard it. The audit was
+                        # replacing a link with a better one it had already
+                        # bought, then rejecting its own replacement.
+                        #
+                        # Upheaval Dome, sw 2026-08-30: the trail batch had
+                        # alltrails.com/trail/us/utah/upheaval-dome-via-crater-
+                        # view-trail, the audit preferred it over an unrelated
+                        # nps.gov photography-permit page, then discarded it and
+                        # removed the item for having no verified URL.
+                        #
+                        # The trail batch already vetted this link when it
+                        # harvested it, so the audit should not re-derive deep
+                        # relevance blind. Recorded as shallow-relevance
+                        # evidence rather than trusted outright: the AllTrails
+                        # slug/confidence gates still apply.
+                        self._remember_retention_evidence(
+                            attr_name, batch_trail_url,
+                            candidate=None, allow_shallow_relevance=True,
+                        )
                 direct_batch_authoritative_url = self._is_remembered_direct_batch_authoritative_url(url, attr_name)
                 maps_url = str(attr.get("maps_url", "") or "").strip()
                 if not maps_url and self._classify_url_policy_class(url) in {"google_maps_search", "google_maps_dir"}:
