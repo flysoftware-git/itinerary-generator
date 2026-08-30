@@ -6,5 +6,5 @@ self-contained HTML itinerary using multi-provider LLMs, xAI Grok semantic searc
 and Wikimedia Commons.
 """
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 __template_version__ = "2.5"

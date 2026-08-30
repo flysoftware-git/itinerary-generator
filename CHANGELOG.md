@@ -13,6 +13,60 @@ published artifact; **patch** for fixes that leave behaviour unchanged.
 `__template_version__` tracks the frozen HTML template separately and does
 not move with this number.
 
+## 2.5.0 — 2026-08-29
+
+6 commits since 2.4.0, same day. Three reports that looked unrelated —
+seed badges on a trip with no seeds, a pushed site that looked unpushed,
+verified fixes that seemed not to land — turned out to be one bug in the
+service worker.
+
+### Added
+
+- **Priced categories can be answered per trip.** `_resolve_category` now
+  consults the manifest between the CLI flag and `config.yaml`: the
+  run-specific answer wins, the trip's own answer is sticky across runs, and
+  config remains the default. A manifest may carry `categories: {trails: true}`
+  at top level or under `trip:`, with either a bool or an `enabled:` subkey.
+  Enabling trails globally would have bought them for Europe, whose manifest
+  asks for no hikes.
+- **Removed items record the URLs they were offered** and which check refused
+  each one. `candidates_considered: 0` distinguishes "nothing was ever found"
+  from "a link was found and rejected" — different problems needing opposite
+  fixes. This is what identified the Prague Castle and Balanced Rock defect
+  described below.
+
+### Fixed
+
+- **Every republish left browsers on the previous build.** The service
+  worker's cache name was the literal `roadtrip-shell-v2`. Its activate
+  handler purges caches whose key is not current, so a key that never changed
+  meant the old shell was never purged. True since the first PWA commit. Now
+  keyed on the run id, falling back to a content hash of `index.html`.
+- **A test held that bug in place.** `test_cache_name_was_bumped` asserted the
+  literal constant while its docstring described the intent. Bumping the value
+  by hand once satisfied it permanently. It now asserts that the key moves
+  with the build.
+- **The candidate trail read the wrong keys** and reported "0 candidates
+  considered" for every removed item in a full run — which reads as a finding
+  rather than a broken read. The tests added with the feature built the trail
+  in its output shape and never exercised the extraction.
+
+### Changed
+
+- Trail discovery is on for the Southwest trip, via its manifest rather than
+  the global switch. Measured cost was ~15% more per run, not the doubling the
+  `config.yaml` comment implies.
+
+### Known
+
+- An attraction whose only candidate is a Google Maps **text query** is marked
+  resolved, which suppresses the paid per-item search that would have found its
+  real page, and the query then fails `_item_has_verified_url` by design — so
+  the item is deleted as unfindable. Prague Castle, Balanced Rock and several
+  named trails are lost this way while their official pages rank second in a
+  plain search. Unfixed: correcting it increases paid fallback calls, which is
+  an owner cost decision.
+
 ## 2.4.0 — 2026-08-29
 
 24 commits since 2.3.0. A session that began with "the Europe trip has blue
