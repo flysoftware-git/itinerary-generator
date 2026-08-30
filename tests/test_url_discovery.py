@@ -16165,7 +16165,7 @@ def test_audit_strips_non_alltrails_url_for_trail_like_attraction_but_assigns_ma
     assert trip["destinations"][0]["ai_content"]["top_attractions"] == []
 
 
-def test_audit_real_bryce_point_misclassified_viewpoint_gets_maps_fallback_not_stripped() -> None:
+def test_audit_real_bryce_point_misclassified_viewpoint_keeps_its_nps_page() -> None:
     """Regression using the real affected name from the SW2026-dipstick64 run:
     Bryce Canyon's "Bryce Point" is a viewpoint that _is_trail_like_attraction
     misclassifies as trail-like purely because its description mentions "a
@@ -16177,13 +16177,20 @@ def test_audit_real_bryce_point_misclassified_viewpoint_gets_maps_fallback_not_s
     fallback every other "no URL found" attraction gets instead of leaving no
     link at all.
 
-    Under the verified-link-or-seed policy (2026-08-17) a maps-search
-    fallback is explicitly not "verified", so this non-seed item is then
-    removed from top_attractions entirely -- a real nps.gov page existed but
-    the audit pass's own AllTrails-only rule for trail-like items discarded
-    it before the fallback was assigned, and the fallback itself doesn't earn
-    it a spot on the card list. This is a known, deliberate trade-off of the
-    2026-08-17 policy, not a bug in this pass.
+    That used to end with the item removed: the maps-search fallback is not
+    "verified" under the verified-link-or-seed policy (2026-08-17), so a real
+    nps.gov page existed and the card was dropped anyway. This test asserted
+    that outcome and called it a deliberate trade-off.
+
+    Owner rule (2026-08-29) changes it: when a trail-type target has both
+    available, prefer AllTrails if the title contains "trail", otherwise
+    prefer NPS. "Bryce Point" does not claim to be a trail, so its official
+    page now survives the audit. AllTrails-first still governs anything that
+    does -- it exists because non-AllTrails trail URLs were generated badly.
+
+    Same defect, same shape, found again on 2026-08-29 as Balanced Rock and
+    Upheaval Dome: a formation and a crater, both entity_class=trail, both
+    stripped of correct nps.gov pages.
     """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._url_validator = MagicMock()
@@ -16225,11 +16232,14 @@ def test_audit_real_bryce_point_misclassified_viewpoint_gets_maps_fallback_not_s
     # "Bryce Point" already shares a token ("Bryce") with the destination name,
     # so _maps_fallback_query_text uses the item name alone rather than
     # appending the destination again.
-    assert attraction.get("url") == "https://www.google.com/maps/search/?api=1&query=Bryce%20Point"
-    assert attraction.get("maps_url") == attraction.get("url")
-    assert attraction.get("url") != "https://www.nps.gov/brca/planyourvisit/brycepoint.htm"
-    # Policy (2026-08-17): non-seed, maps-fallback-only -- removed.
-    assert trip["destinations"][0]["ai_content"]["top_attractions"] == []
+    assert attraction.get("url") == "https://www.nps.gov/brca/planyourvisit/brycepoint.htm"
+    assert not attraction.get("url", "").startswith("https://www.google.com/maps/search/")
+    # It keeps a real verified URL now, so verified-link-or-seed keeps the
+    # card. Previously this asserted [] -- the item was dropped despite its
+    # official page having been found, because the audit had already replaced
+    # that page with a maps-search fallback that cannot satisfy the policy.
+    kept = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert [a["name"] for a in kept] == ["Bryce Point"]
 
 
 def test_semantic_scoring_prefers_cultural_domain_over_preserve_domain():

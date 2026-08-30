@@ -422,6 +422,12 @@ DEFAULT_RESTAURANT_SOURCE = "direct_link_batch"
 DEFAULT_EN_ROUTE_SOURCE = "search"
 # "search" = today's paid per-item fallback. "geocode_maps" replaces it
 # with a free geocode-backed coordinate Maps link. See _search_first.
+#: Word-boundary "trail"/"trails". Built with chr(92) because writing the
+#: escape inline through a patch script silently produced a backspace
+#: character instead, giving a pattern that matched nothing -- including
+#: real trails -- while reading correctly in the source.
+TRAIL_NAME_PATTERN = chr(92) + "btrails?" + chr(92) + "b"
+
 DEFAULT_FALLBACK_MODE = "search"
 DEFAULT_DIRECT_LINK_BATCH_COUNT = 20
 DEFAULT_DIRECT_BATCH_AUTHORITATIVE = True
@@ -2710,6 +2716,27 @@ class URLDiscoverer:
                             rendered_url=url if is_seed else "",
                             rejection_reason="" if is_seed else "url_rejected",
                         )
+                    elif not self._title_claims_a_trail(attr_name):
+                        # Trail-like by description but not by name: keep the
+                        # official (e.g. nps.gov) page. AllTrails-first applies
+                        # to things that call themselves trails; Balanced Rock
+                        # and Upheaval Dome are a rock formation and a crater,
+                        # classed trail_like and stripped of correct nps.gov
+                        # pages purely for not being alltrails.com.
+                        self._log_decision(
+                            kind="attraction",
+                            dest_name=dest_name,
+                            item_name=attr_name,
+                            reason="official_url_kept_for_non_trail_named_item",
+                            message=(
+                                "trail-like item whose name does not claim a trail; "
+                                "keeping the official non-AllTrails link"
+                            ),
+                            url=url,
+                        )
+                        if maps_url:
+                            attr["maps_url"] = maps_url
+                        self._annotate_registry_url_decision(attr, rendered_url=url)
                     else:
                         self._log_rejected_url("attraction", dest_name, attr_name, url)
                         attr.pop("url", None)
@@ -4333,6 +4360,28 @@ class URLDiscoverer:
             "drive",
         )
         return any(marker in path_and_query for marker in route_markers)
+
+    @staticmethod
+    def _title_claims_a_trail(item_name: str) -> bool:
+        """True when the item's own name says it is a trail.
+
+        The AllTrails-first rule for trail-like items exists because
+        non-AllTrails trail URLs were being generated badly (owner decision).
+        It keyed on `trail_like`, which is inferred from the description, so a
+        rock formation whose blurb mentions a short walk was held to it too --
+        and its correct nps.gov page was stripped for not being AllTrails.
+
+        Owner rule, 2026-08-29: when a trail-type target has both available,
+        prefer AllTrails if the title contains "trail", otherwise prefer NPS.
+        The name is the item's own claim about what it is; the description is
+        someone describing how to reach it.
+
+        Matched on a word boundary rather than as a substring. Read literally
+        the rule sends "Trailview Overlook" to AllTrails, which is an overlook
+        that happens to start with those five letters -- the intent is an item
+        that calls itself a trail. "Trails" plural is accepted.
+        """
+        return bool(re.search(TRAIL_NAME_PATTERN, str(item_name or "").lower()))
 
     def _log_rejected_url(self, kind: str, dest_name: str, item_name: str, url: str) -> None:
         """Log a URL thrown away after it had already been accepted.
