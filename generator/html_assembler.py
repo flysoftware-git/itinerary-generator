@@ -2060,10 +2060,24 @@ class HTMLAssembler:
                 description = html_escape.escape(description_raw)
                 practical_note = html_escape.escape(practical_note_raw)
                 note_html = f'<div class="stop-note">{practical_note}</div>' if practical_note else ""
+                # The lunch stop is a recommendation to eat somewhere, so it
+                # gets a badge and a link that searches for food there. Before
+                # this it rendered as an ordinary stop whose map link pointed
+                # at the place itself -- accurate, but not the thing being
+                # suggested. ai_content._inject_lunch_stop_suggestions marks it.
+                lunch_html = ""
+                if stop.get("is_lunch_stop"):
+                    lunch_url = str(stop.get("lunch_maps_url", "") or "").strip()
+                    lunch_html = ' <span class="badge badge-lunch">🍽 Lunch stop</span>'
+                    if lunch_url:
+                        lunch_html += (
+                            f' <a href="{self._safe_href(lunch_url)}" class="lunch-link"'
+                            f' target="_blank" rel="noopener">Find lunch here</a>'
+                        )
                 html += (
                     f'    <div class="stop-card">'
                     f'<span class="stop-icon">{icon}</span>'
-                    f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}{rating_badge_html}{caution_html}{maps_corner_html}'
+                    f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}{rating_badge_html}{lunch_html}{caution_html}{maps_corner_html}'
                     f'<div class="stop-desc">{description}</div>{note_html}</div>'
                     f'</div>\n'
                 )

@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from difflib import SequenceMatcher
 import logging
+from urllib.parse import quote
 from math import asin, cos, radians, sqrt
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -2287,6 +2288,16 @@ class AIContentGenerator:
             periods[0]["summary"] = (
                 f"{summary} Break for lunch around {name}, roughly the midpoint."
             ).strip()
+            # Mark the stop itself, not just the schedule prose. Until now this
+            # only appended a sentence, so the picked stop rendered as an
+            # ordinary en-route card with no indication it was the lunch
+            # suggestion, and its map link pointed at the place rather than at
+            # somewhere to eat. Both are what the suggestion is FOR.
+            stop["is_lunch_stop"] = True
+            stop["lunch_maps_url"] = (
+                "https://www.google.com/maps/search/?api=1&query="
+                + quote(f"restaurants near {name}")
+            )
             logger.info(
                 "  Lunch stop suggested for '%s': %s (%s)",
                 dest.get("name", ""), name, getting_here.get("drive_time", ""),
