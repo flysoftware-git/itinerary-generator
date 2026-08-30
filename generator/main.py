@@ -1730,8 +1730,19 @@ def _is_us_coordinates(lat: object, lng: object) -> bool:
     return False
 
 
-def _write_pwa_assets(output_dir: Path, trip: dict) -> None:
-        """Write manifest.webmanifest and sw.js next to generated index.html."""
+def _write_pwa_assets(output_dir: Path, trip: dict, build_id: str = "") -> None:
+        """Write manifest.webmanifest and sw.js next to generated index.html.
+
+        `build_id` becomes part of the service worker's cache name. It has to
+        change per build: the activate handler deletes every cache whose key is
+        not the current one, so a constant key means the old shell is never
+        purged and a republished site keeps serving the previous build
+        indefinitely. That is what it did -- the key was the literal
+        'roadtrip-shell-v2' from the first PWA commit onward, so browsers held
+        stale itineraries across every republish, and the symptoms read as
+        unrelated bugs: seed badges that were removed, pages that looked
+        unpushed, fixes that appeared not to have landed.
+        """
         trip_meta = trip.get("trip", {}) if isinstance(trip, dict) else {}
         title = str(trip_meta.get("title", "Road Trip Itinerary") or "Road Trip Itinerary").strip()
         subtitle = str(trip_meta.get("subtitle", "Interactive road trip itinerary") or "Interactive road trip itinerary").strip()
@@ -1816,7 +1827,7 @@ def _write_pwa_assets(output_dir: Path, trip: dict) -> None:
                 encoding="utf-8",
         )
 
-        sw_js = """const CACHE = 'roadtrip-shell-v2';
+        sw_js = """const CACHE = 'roadtrip-shell-__BUILD_ID__';
 const SHELL = ['./', './index.html', './manifest.webmanifest'];
 const IMAGES = __IMAGE_URLS__;
 
@@ -1900,6 +1911,21 @@ self.addEventListener('fetch', (event) => {
 });
 """
         sw_js = sw_js.replace("__IMAGE_URLS__", images_json)
+        # Fall back to a content hash of the shell when no build id is given,
+        # so the key still changes when the page changes rather than silently
+        # reverting to the constant-key behaviour this replaced.
+        import hashlib
+        import re as _re_cache
+
+        cache_id = _re_cache.sub(r"[^A-Za-z0-9_.-]", "", str(build_id or "").strip())
+        if not cache_id:
+            index_html = output_dir / "index.html"
+            try:
+                payload = index_html.read_bytes()
+            except OSError:
+                payload = images_json.encode("utf-8")
+            cache_id = hashlib.sha256(payload).hexdigest()[:12]
+        sw_js = sw_js.replace("__BUILD_ID__", cache_id)
         (output_dir / "sw.js").write_text(sw_js, encoding="utf-8")
 
 
@@ -2952,7 +2978,7 @@ def main(
     click.echo(f"  ✓ URL diff report: {url_diff_report_path}")
     click.echo(f"  ✓ URL diff summary: {url_diff_markdown_path}")
 
-    _write_pwa_assets(output_dir, trip)
+    _write_pwa_assets(output_dir, trip, build_id=run_id)
     click.echo("  ✓ PWA assets written (manifest.webmanifest, sw.js)")
 
     # ── Validate ─────────────────────────────────────────────────────────────
