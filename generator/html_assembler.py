@@ -2525,9 +2525,24 @@ class HTMLAssembler:
         else:
             # Fallback: no confirmed ticketed events
             html += '<h3>🎭 Cultural Events</h3>\n'
-            honest = events.get("honest_assessment", "")
+            # prompts/cultural_events.txt defines two shapes: Format A
+            # (has_events true, events[], ambient_scene) and Format B
+            # (has_events false, honest_assessment). The model returns hybrids
+            # -- Format B's flag with Format A's prose field -- and this branch
+            # only read honest_assessment, so a populated ambient_scene was
+            # discarded in favour of boilerplate. That is content generated and
+            # billed, then thrown away: 8 destinations across the three trips
+            # on 2026-08-30, each warning about a "missing" field while
+            # carrying a perfectly usable one.
+            honest = str(events.get("honest_assessment", "") or "").strip()
             if not honest:
-                logger.warning("No honest_assessment for '%s' (events=%s)", dest_name, events)
+                honest = str(events.get("ambient_scene", "") or "").strip()
+            if not honest:
+                # Neither field present: a real gap, still worth a warning.
+                logger.warning(
+                    "No honest_assessment or ambient_scene for '%s' (events=%s)",
+                    dest_name, events,
+                )
                 honest = "No ticketed events were confidently verified for these dates. Check visitor center and local calendars close to travel dates."
             html += f'<p>{honest}</p>\n'
             tip = events.get("local_tip", "")
