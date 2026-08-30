@@ -3048,6 +3048,7 @@ class URLDiscoverer:
                     self._log_rejected_url("en-route stop", dest_name, stop_name, url)
                     if cleaned:
                         stop["url"] = cleaned
+                        stop["_url_assigned_by"] = "audit_retention_cleaned"
                         if maps_url:
                             stop["maps_url"] = maps_url
                         self._annotate_registry_url_decision(stop, rendered_url=cleaned)
@@ -11991,6 +11992,7 @@ class URLDiscoverer:
                     )
                     if cleaned_existing:
                         stop["url"] = cleaned_existing
+                        stop["_url_assigned_by"] = "direct_batch_existing_preserved"
                         self._log_decision(
                             kind="en_route_stop",
                             dest_name=dest_name,
@@ -12018,6 +12020,7 @@ class URLDiscoverer:
                 if not url and self._direct_batch_is_authoritative():
                     if fallback_url:
                         stop["url"] = fallback_url
+                        stop["_url_assigned_by"] = "fallback_after_existing_rejected"
                         self._log_decision(
                             kind="en_route_stop",
                             dest_name=dest_name,
@@ -12061,10 +12064,12 @@ class URLDiscoverer:
                 )
             if url:
                 stop["url"] = url
+                stop["_url_assigned_by"] = "discovery_selected"
                 resolved_stops.append(stop)
             else:
                 if fallback_url:
                     stop["url"] = fallback_url
+                    stop["_url_assigned_by"] = "fallback_no_url_found"
                     self._log_decision(
                         kind="en_route_stop",
                         dest_name=dest_name,
@@ -12106,10 +12111,12 @@ class URLDiscoverer:
                     geocoded_lng = stop.get("geocode_lng")
                     if isinstance(geocoded_lat, (int, float)) and isinstance(geocoded_lng, (int, float)):
                         stop["url"] = f"https://www.google.com/maps/search/?api=1&query={geocoded_lat},{geocoded_lng}"
+                        stop["_url_assigned_by"] = "geocode_coordinate"
                     else:
                         q = self._en_route_maps_fallback_query_text(sn, origin_name, dest_name)
                         if q:
                             stop["url"] = f"https://www.google.com/maps/search/?api=1&query={quote(q)}"
+                            stop["_url_assigned_by"] = "maps_query_rebuilt"
                         logger.warning("  En-route safety fallback assigned url for '%s'", sn)
 
         # Derive distance/time from the actual route rather than AI-generated estimates.

@@ -1012,6 +1012,29 @@ def _build_destination_status_report(
             })
         removed_items.sort(key=lambda r: (r["section_target"], r["display_name"]))
 
+        # Which code path put a URL on each en-route stop. The removal audit
+        # records why a link was REJECTED; nothing recorded why one was KEPT,
+        # so a wrong link that survives every gate is invisible. Five Asheville
+        # stops shared https://www.knoxvilletn.gov -- a city homepage standing
+        # in for a waterfall and a national park -- while _retain_discovered_url
+        # rejects that URL in isolation and the audit logged no rejection for
+        # them. Static reading could not reconcile that; this can.
+        en_route_url_sources = []
+        ai_block = dest.get("ai_content", {}) if isinstance(dest.get("ai_content"), dict) else {}
+        gh = ai_block.get("getting_here", {}) if isinstance(ai_block.get("getting_here"), dict) else {}
+        for stop in gh.get("en_route_stops", []) or []:
+            if not isinstance(stop, dict):
+                continue
+            url = str(stop.get("url", "") or "").strip()
+            if not url:
+                continue
+            en_route_url_sources.append({
+                "name": str(stop.get("name", "") or ""),
+                "url": url,
+                "assigned_by": str(stop.get("_url_assigned_by", "") or "(unstamped)"),
+                "is_seed": bool(stop.get("is_seed")),
+            })
+
         destination_status = "healthy"
         if quarantined_entity_ids or validation_counts["quarantined"] > 0:
             destination_status = "quarantined"
@@ -1061,6 +1084,7 @@ def _build_destination_status_report(
                         "en_route_reliability": en_route_reliability,
                         "removed_no_verified_url_count": len(removed_items),
                         "removed_no_verified_url": removed_items,
+                        "en_route_url_sources": en_route_url_sources,
                     },
                     "reconciliation": {
                         "status": "completed",
