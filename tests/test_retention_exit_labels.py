@@ -92,3 +92,57 @@ def test_the_exit_label_reaches_the_removal_trail():
     )
     trail = d._removal_trail(**ctx)
     assert "retention exit (17" in trail[0]["detail"]
+
+
+def test_labels_match_the_conditions_they_describe():
+    """Regenerated from the AST, so they cannot drift from the source.
+
+    The first version took the nearest preceding code line, which for a
+    multi-line condition is a bare ')'. 18 of 30 labels were meaningless, and
+    the diagnosis they were built for had to read around them.
+    """
+    import ast as _ast
+
+    src = inspect.getsource(URLDiscoverer._retain_discovered_url)
+    fn = _ast.parse(src.strip()).body[0]
+    parent = {c: n for n in _ast.walk(fn) for c in _ast.iter_child_nodes(n)}
+
+    for node in _ast.walk(fn):
+        if not (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Attribute)
+                and node.func.attr == "_reject_retention" and node.args):
+            continue
+        exit_id = node.args[0].value
+        cur, expected = node, None
+        while cur in parent:
+            cur = parent[cur]
+            if isinstance(cur, _ast.If):
+                expected = "if " + _ast.unparse(cur.test)
+                break
+            if isinstance(cur, _ast.ExceptHandler):
+                expected = "except " + (_ast.unparse(cur.type) if cur.type else "Exception")
+                break
+        assert expected, f"exit {exit_id} has no enclosing condition"
+        import re as _re
+        assert _RETENTION_EXIT_LABELS[exit_id] == _re.sub(r"\s+", " ", expected)[:120], (
+            f"exit {exit_id} label is stale: {_RETENTION_EXIT_LABELS[exit_id]!r}"
+        )
+
+
+def test_no_label_is_a_bare_punctuation_fragment():
+    for exit_id, label in _RETENTION_EXIT_LABELS.items():
+        assert label.strip() not in (")", "):", "("), f"exit {exit_id}: {label!r}"
+        assert len(label.strip()) > 5, f"exit {exit_id}: {label!r}"
+
+
+def test_the_rejection_record_is_cleared_per_call():
+    """Instance state must not leak a previous call's branch into a later one.
+
+    The first run reported exit 1 ("if not url") for items that plainly had
+    URLs -- a stale value from an earlier rejection being read by a later
+    discard.
+    """
+    d = URLDiscoverer.__new__(URLDiscoverer)
+    d._reject_retention(25)
+    assert d._last_retention_rejection[0] == 25
+    d._retain_discovered_url("", "Item", "Dest", allow_alltrails=False)
+    assert d._last_retention_rejection is None or d._last_retention_rejection[0] == 1

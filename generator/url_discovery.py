@@ -434,36 +434,36 @@ TRAIL_NAME_PATTERN = chr(92) + "btrails?" + chr(92) + "b"
 #: fixes for Upheaval Dome each targeted a gate that turned out not to be
 #: the one firing. Labels are the guarding condition, captured from source.
 _RETENTION_EXIT_LABELS = {
-    1: 'if not url:',
-    2: 'logger.info("URL domain denylist hit for %s \'%s\': %s", kind, item_name, url)',
-    3: 'if self._is_obviously_generic_url(lower):',
-    4: 'if self._is_alltrails_trail_url(url) and bool(getattr(self, "_disable_trails", False)):',
-    5: 'if not allow_alltrails and self._is_alltrails_trail_url(url):',
-    6: 'logger.info("URL rejected due to unescaped whitespace for %s \'%s\': %s", kind, item_name, u',
-    7: 'logger.info("URL rejected incomplete google maps place link for %s \'%s\': %s", kind, item_n',
-    8: ')',
-    9: ')',
-    10: ')',
-    11: ')',
-    12: ')',
-    13: ')',
-    14: ')',
-    15: ')',
-    16: ')',
-    17: ')',
-    18: 'logger.info("AllTrails slug denylist hit for %s \'%s\': %s", kind, item_name, url)',
-    19: ')',
-    20: ')',
-    21: ')',
-    22: ')',
-    23: 'logger.info("Scenic-drive URL rejected (non-route target) for \'%s\': %s", item_name, url)',
-    24: 'if not self._alltrails_url_meets_seed_relaxed_standard(url, item_name):',
-    25: 'if not self._meets_alltrails_publish_confidence(url, item_name, dest_name):',
-    26: 'if not self._passes_alltrails_post_search_filters(url, item_name, dest_name):',
-    27: ')',
-    28: ')',
-    29: '):',
-    30: ')',
+    1: 'if not url',
+    2: 'if self._is_url_domain_denied(url)',
+    3: 'if self._is_obviously_generic_url(lower)',
+    4: "if self._is_alltrails_trail_url(url) and bool(getattr(self, '_disable_trails', False))",
+    5: 'if not allow_alltrails and self._is_alltrails_trail_url(url)',
+    6: 'if self._has_unescaped_whitespace(url)',
+    7: 'if self._is_incomplete_google_maps_place_url(url)',
+    8: 'if self._looks_synthetic_google_maps_place_url(url)',
+    9: 'if not ok or not page_html',
+    10: 'if max(page_overlap, label_overlap) < required_overlap',
+    11: 'if anchor_overlap < 1',
+    12: "if leniency_policy_class in leniency_blocked_classes and leniency_policy_mode == 'enforce'",
+    13: 'if not ok and self._is_definitively_dead_status(fetch_status) and (not self._is_bot_block_false_negative_dead_status(url',
+    14: 'if redirect_target',
+    15: 'if self._is_google_maps_candidate_url(url)',
+    16: 'if self._is_generic_restaurant_landing_url(url, item_name, dest_name, item_tokens=_rest_tokens)',
+    17: 'if not self._looks_like_item_specific_homepage(url, item_name)',
+    18: "if slug in getattr(self, '_alltrails_slug_denylist', frozenset())",
+    19: 'if item_tokens and (not any((t in wiki_slug for t in item_tokens)))',
+    20: 'if distinctive_item_tokens and (not any((t in wiki_slug for t in distinctive_item_tokens)))',
+    21: 'if self._is_generic_geographic_url_for_category(url, item_name)',
+    22: 'if self._is_category_offer_listing_url(url)',
+    23: "if kind == 'scenic drive' and (not self._is_route_specific_scenic_drive_url(url))",
+    24: 'if not self._alltrails_url_meets_seed_relaxed_standard(url, item_name)',
+    25: 'if not self._meets_alltrails_publish_confidence(url, item_name, dest_name)',
+    26: 'if not self._passes_alltrails_post_search_filters(url, item_name, dest_name)',
+    27: 'if not ok and self._is_definitively_dead_status(status) and (not self._is_bot_block_false_negative_dead_status(url, stat',
+    28: 'if redirect_target',
+    29: 'if not self._is_relevant_result(url, item_name, dest_name, candidate=candidate, deep_check=deep_check, item_description=',
+    30: "if allow_google_maps_search and policy_class in {'google_maps_search', 'google_maps_dir'}",
 }
 
 DEFAULT_FALLBACK_MODE = "search"
@@ -3307,6 +3307,11 @@ class URLDiscoverer:
             item_name, url, candidate=candidate,
             allow_shallow_relevance=allow_shallow_relevance,
         )
+        # Cleared per call. _last_retention_rejection is instance state, so a
+        # value left by a previous call would be attached to a later discard
+        # that had nothing to do with it -- the first run reported exit 1
+        # ("if not url") for items that plainly had URLs.
+        self._last_retention_rejection = None
         if not url:
             return self._reject_retention(1)
         if self._is_url_domain_denied(url):
@@ -4543,7 +4548,7 @@ class URLDiscoverer:
             reason="audit_discarded_previously_accepted_url",
             message=(
                 "url accepted during discovery was rejected by the audit pass"
-                f" [retention exit {getattr(self, '_last_retention_rejection', ('?', 'not recorded'))}]"
+                f" [retention exit {getattr(self, '_last_retention_rejection', None) or 'not recorded'}]"
             ),
             url=url,
             level=logging.DEBUG,
