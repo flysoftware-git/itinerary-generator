@@ -358,6 +358,51 @@ Two things survive the reframing:
   gate that made the upstream defects visible. Publishing unverified items is how a
   Snoqualmie trail once reached a Utah itinerary.
 
+### Revisited 2026-08-29: the numbers behind §5 were partly measurement error
+
+§5's conclusion holds — none of the causes had anything to do with parks, cities
+or towns — but the figures that drove the investigation were inflated, and the
+note should not be read as if they were sound.
+
+**Removal counts double-counted retried destinations.** `_registry_decisions`
+accumulates and never resets, so a selective retry recorded every removal a
+second time. Old Hickory logged 37 removals for 20 distinct items; the
+duplicated destinations were exactly the retried ones. Both fixtures behind the
+"77%" — Old Hickory and Brussels — were repeat-retry destinations, so both
+headline numbers were overstated by an unknown amount.
+
+**A dead search backend inflated them further.** Serper reported an exhausted
+balance as HTTP 400 and the client discarded the body, so every per-item
+fallback returned empty and the items were reported as "removed for no verified
+URL". On `sw` this alone accounted for more than half: 93 removals became 41 once
+credits were restored, then 18 once the double-count was fixed.
+
+True counts on 2026-08-29, after both fixes: Europe **28**, `sw` **18**, Old
+Hickory **46**. Against the 39 / 93 / 71 that were being reported hours earlier.
+
+This does not resurrect the destination-type question. It sharpens §5's actual
+lesson: the frame was wrong *and* the instrument was wrong, and the second was
+invisible for longer because a bigger number looks like a worse trip rather than
+like the same trip counted twice. See
+`instrumentation-curation-and-provenance.md`, "Counts are not evidence; names
+are".
+
+**What the named data then showed.** With removed items recorded by name, the
+remaining Europe removals resolve into two unrelated groups, neither about
+destination type:
+
+- Friteries, snack bars and kebab counters — *Fritland*, *Patatak*, *Broodje van
+	Kootje*, *Doner Kebab Zizkov*. A low-budget manifest selects for exactly the
+	businesses least likely to have a website, and verified-link-or-seed then
+	drops them. Two correct policies in tension, not a defect.
+- Landmarks whose official pages exist and rank first or second — *Prague
+	Castle* (`hrad.cz`), *Balanced Rock* (`nps.gov/.../balancedrock.htm`). These
+	were pipeline defects, since fixed.
+
+Only the second group was ever a bug. Aggregate counts could not tell the two
+apart, which is why five explanations were offered and discarded before the
+names were recorded.
+
 ### Still open
 
 - **`europe_cities.yaml` is not a coverage experiment any more.** It earned its place

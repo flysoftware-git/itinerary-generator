@@ -108,6 +108,49 @@ Per run, emit:
 
 This report should be versioned with run metadata (config hash, manifest hash, timestamp) so decisions are reproducible.
 
+### Counts are not evidence; names are (2026-08-29)
+
+The quality gate reported "restaurants removed for no verified URL: 39" and no
+artifact said *which* 39. The names were on the `_registry_decisions` records
+the whole time -- counted, then discarded -- and neither
+`destination_status_report.json` nor `run_ledger.jsonl` kept them.
+
+That gap was expensive. A high removal rate coincided with an exhausted Serper
+balance, so the balance looked like the cause; confirming otherwise took topping
+up the account and a full paid rerun, which returned an identical 39. A list of
+names would have shown at a glance that Chez Leon and Atomium are not search
+failures. Three further explanations were offered and discarded the same way
+before the audit was built.
+
+Now recorded per destination in `removed_no_verified_url`, with each item's
+`candidate_trail`: the URLs it was offered and the check that refused each.
+`candidates_considered: 0` distinguishes "nothing was ever found" from "a link
+was found and rejected" -- different problems needing opposite fixes. This is
+what identified the Maps-text-query and trail-gate defects within one run each.
+
+Three cautions learned building it, each of which produced a confident-looking
+but wrong picture:
+
+- **Retried destinations double-count.** `_registry_decisions` and the
+	disposition threads both accumulate across passes and neither resets. The
+	first fix cleared one and not the other, so the counts became right while
+	`candidates_considered` stayed inflated. Old Hickory recorded 37 removals
+	for 20 distinct items; Brussels carried 65 duplicated events of 131. In both
+	cases the duplicated destinations were exactly the retried ones.
+- **The trail read the wrong keys.** Events store `reason`/`source`/`url`; the
+	extraction read the `_log_decision` *parameter* names. Every removed item in
+	a full run reported "0 candidates considered", which reads as a finding
+	rather than a broken read. The tell was 238 captured events against 33 items
+	all reporting zero.
+- **The trail stopped at the stage boundary.** `_trace_id` keys on
+	`kind|destination|item`, so `search` and `audit` events for the same item
+	live in separate threads. Reading only the removal's own kind hid the step
+	that actually discarded the URL.
+
+The pattern in all three: a measurement narrower than the question it was built
+to answer, producing an answer that looked complete. Prefer asserting on
+compiled/observed behaviour over on the shape a value is expected to have.
+
 ## Integration Points in Current Code
 
 Current instrumentation signals already exist in URL discovery logging and stats aggregation, including reason-code counting. Extend that surface to include transform-chain accounting and cache-hit accounting for discovery experiments.

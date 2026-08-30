@@ -134,6 +134,35 @@ PWA:
 - `manifest.webmanifest`
 - `sw.js`
 
+### The service worker cache name must change per build
+
+`sw.js`'s `activate` handler deletes every cache whose key is not the current
+one, so the cache name is the only thing that invalidates an installed shell.
+It was the literal `'roadtrip-shell-v2'` from the first PWA commit until
+2026-08-29 — a constant — so the old shell was never purged and **a republished
+site kept serving the previous build indefinitely**.
+
+The symptoms did not look like one bug, and were investigated separately:
+
+- seed badges ("Your Pick") on a trip whose seeds had been removed
+- a freshly pushed site that looked unpushed
+- fixes confirmed live over HTTP that appeared not to have landed in the browser
+
+In each case the server was correct and the browser was serving a cached shell.
+Verifying with `curl` against the published URL — bypassing the service worker
+entirely — is what separated the two.
+
+A test had been holding the bug in place. `test_cache_name_was_bumped` asserted
+the literal constant while its docstring described the intent ("an installed
+client holding the v1 shell must not keep serving it"). Bumping the value by
+hand once satisfied it permanently. A test that names the current value cannot
+distinguish *correct* from *unchanged*.
+
+Now keyed on the run id, falling back to a content hash of `index.html` when
+none is supplied, and sanitised because it is interpolated into a JS string
+literal. Note the fix only takes effect once the **new** `sw.js` reaches a
+client: an already-installed copy needs one hard reload or site-data clear.
+
 Report:
 - validation report JSON in output directory
 

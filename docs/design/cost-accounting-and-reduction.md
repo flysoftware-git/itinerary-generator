@@ -899,6 +899,47 @@ movement comes from the warm-cache path (§8.5 pivot 1), not from tuning the bat
 
 ---
 
+## 8.11 Trails, re-enabled and re-measured (2026-08-29)
+
+`config.yaml` carried `trails.enabled: false` as a cost measure, on the figure
+recorded next to it: `alltrails_trail_filtered` was **124 of 246 paid fallback
+calls**, half that path's spend. The reasonable reading of that is "trails
+roughly double the fallback cost", and it was cited that way when the switch was
+turned back on.
+
+Measured on `sw` immediately before and after: **$0.0947 -> $0.1089**, about
+**15% more per run**, not a doubling. The 124/246 figure describes a share of one
+path on one 2026-08-22 run, not a multiplier on run cost. Quoting it as a
+prediction was wrong.
+
+The switch is also no longer global. `_resolve_category` consults CLI, then the
+manifest, then config, so a trip answers for itself -- enabling trails globally
+would have bought them for Europe, whose manifest asks for no hikes.
+
+Non-cost consequence, recorded here because the cost case is what will be
+revisited: re-enabling trails also re-enables the audit's AllTrails-only gate,
+which strips correct non-AllTrails pages from anything classified `trail_like`.
+`sw` attraction removals went 7 -> 17 in the next run. See
+`url-discovery-and-audit.md`.
+
+## 8.12 An exhausted search balance is billed as HTTP 400
+
+Serper reports "Not enough credits" as **HTTP 400** -- the same status it uses for
+a malformed query -- and the client logged the status while discarding the body
+that said why. Runs completed, validation passed, and every item that was never
+searched for was reported as "removed for no verified URL", which reads as *the
+web has nothing for these*.
+
+Three trips published in that state on 2026-08-29 before it was noticed. The
+usage counter is unaffected and its figures remain sound: `_record_usage` fires
+on the request, so a 4xx that consumed a credit is still counted. What failed
+was diagnosis, not accounting.
+
+`serper_search.py` now logs the response body and treats quota exhaustion as its
+own condition -- one error naming the consequence for output quality, rather than
+a warning per call. The circuit breaker stays for transient trouble; an empty
+balance does not recover on a cooldown.
+
 ## 9. Open items
 
 - **The residual 18%.** The corrected `$2.00/$6.00` rate computes $4.45 against $3.75

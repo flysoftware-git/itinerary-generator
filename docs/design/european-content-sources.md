@@ -107,3 +107,32 @@ key and no per-request charge.
    destinations too.
 
 Sequenced deliberately: (3) may make (2) unnecessary, and both are free.
+
+## Low budget selects for businesses without websites (2026-08-29)
+
+With removed items finally recorded by name, Europe's restaurant removals
+resolve into a coherent group: *Fritland*, *Friterie Tabora*, *Friterie de la
+Barrière*, *Patatak*, *Munch*, *Kaf Kaf*, *Ratz Food Market* (Brussels);
+*Broodje van Kootje*, *Pietersma Snacks* (Amsterdam); *Doner Kebab Zizkov*,
+*Station Anděl* (Prague); *Frittenwerk*, *Im Biss*, *Gref-Völsings Braterei*
+(Frankfurt).
+
+Friteries, snack bars, kebab counters and market stalls. The manifest asks for
+low-cost restaurants, discovery correctly finds exactly the right places, and
+then verified-link-or-seed removes them for having no verifiable URL — because
+that class of business largely does not have a website.
+
+Nothing is malfunctioning. Two policies set independently pull against each
+other: *find me cheap local food* selects for the businesses least likely to
+have a web presence, and *every item needs a verified link* then deletes them.
+
+This is a genuine European-content characteristic in a way most of this note's
+other findings are not — a US suburb's cheap restaurant usually still has a
+site. It is worth deciding deliberately rather than reading as a discovery
+failure. The candidate trail distinguishes the two cases directly:
+`candidates_considered: 0` means nothing was ever found, while a non-zero count
+with rejections means a link was found and refused.
+
+Not to be confused with the landmark removals in the same reports — *Prague
+Castle*, *St. Vitus Cathedral* — which had official pages ranking first or
+second and were pipeline defects, since fixed. See `url-discovery-and-audit.md`.

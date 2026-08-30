@@ -90,6 +90,16 @@ Important nuance:
 - If links look wrong but order looks right, inspect URL discovery/audit logic.
 - If final count is too low, check for aggressive de-duplication or en-route overlap removals.
 - If a requested seed attraction is missing, inspect seed canonicalization and the seed-injection path before URL discovery.
+- If a non-trail feature loses its official page, check `trail_like`. It is
+  inferred from the *description*, so "accessible via a short walk" is enough to
+  classify a rock formation or a crater as a trail. The audit's AllTrails-only
+  gate then strips any non-AllTrails URL it carries. Since 2026-08-29 the gate
+  defers to the item's **title**: AllTrails when the name claims a trail,
+  otherwise the official/NPS page (`_title_claims_a_trail`). See
+  `url-discovery-and-audit.md`, Known Failure Modes.
+- This whole class of failure is dormant while `trails.enabled` is false, which
+  it was between the 2026-08-22 cost reduction and 2026-08-29. Re-enabling
+  trails re-enables it; `sw` attraction removals rose 7 -> 17 in the next run.
 
 ## Suggested Follow-On Design Notes
 To keep architecture discoverable for new contributors, add sibling notes under `docs/design` for:
