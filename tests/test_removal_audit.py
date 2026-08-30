@@ -372,3 +372,32 @@ def test_trail_events_stay_in_the_order_they_happened():
         )
     trail = d._removal_trail(kind="attraction", dest_name=dest, item_name=item)
     assert [e["reason"] for e in trail] == ["r0", "r1", "r2"]
+
+
+def test_an_audit_discard_appears_in_the_trail():
+    """The audit pass throwing away an accepted url must be recorded.
+
+    _log_rejected_url wrote a logger.warning and no disposition event, so the
+    single most consequential step in Balanced Rock's history -- the audit
+    discarding nps.gov/arch/planyourvisit/balancedrock.htm after general
+    search had found it -- was absent from the item's trail. The record
+    ended with the url being assigned, while the item was removed for having
+    none.
+    """
+    from threading import Lock
+
+    from generator.url_discovery import URLDiscoverer
+
+    d = URLDiscoverer.__new__(URLDiscoverer)
+    d._decision_threads_by_destination = {}
+    d._request_cache_lock = Lock()
+    d._decision_event_sequence = 0
+
+    dest, item = "Arches National Park", "Balanced Rock"
+    url = "https://www.nps.gov/arch/planyourvisit/balancedrock.htm"
+    d._log_rejected_url("attraction", dest, item, url)
+
+    trail = d._removal_trail(kind="attraction", dest_name=dest, item_name=item)
+    assert len(trail) == 1
+    assert trail[0]["reason"] == "audit_discarded_previously_accepted_url"
+    assert trail[0]["url"] == url

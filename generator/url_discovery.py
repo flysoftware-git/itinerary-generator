@@ -4334,8 +4334,21 @@ class URLDiscoverer:
         )
         return any(marker in path_and_query for marker in route_markers)
 
-    @staticmethod
-    def _log_rejected_url(kind: str, dest_name: str, item_name: str, url: str) -> None:
+    def _log_rejected_url(self, kind: str, dest_name: str, item_name: str, url: str) -> None:
+        """Log a URL thrown away after it had already been accepted.
+
+        This is the audit pass re-running _retain_discovered_url over a url
+        discovery had assigned, with different arguments -- no candidate row,
+        no shallow-relevance allowance -- so the two stages can and do reach
+        opposite verdicts on the same link.
+
+        It wrote only a logger.warning, never a disposition event, so the
+        discard was absent from the item's trail. Balanced Rock's record
+        showed general search recovering
+        nps.gov/arch/planyourvisit/balancedrock.htm and then simply stopped,
+        with the item removed for having no verified URL and nothing saying
+        what took it away.
+        """
         lower_url = (url or "").lower()
         expected_policy_rejection = (
             "alltrails.com" in lower_url
@@ -4349,6 +4362,15 @@ class URLDiscoverer:
             item_name or "unknown",
             dest_name or "unknown destination",
             url or "(empty)",
+        )
+        self._log_decision(
+            kind=kind,
+            dest_name=dest_name,
+            item_name=item_name,
+            reason="audit_discarded_previously_accepted_url",
+            message="url accepted during discovery was rejected by the audit pass",
+            url=url,
+            level=logging.DEBUG,
         )
 
     @staticmethod
