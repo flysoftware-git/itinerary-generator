@@ -1,0 +1,13 @@
+{
+  "_comment": [
+    "Append-only. Maps __template_version__ to the SHA-256 of the template",
+    "file at that version. Editing an existing row instead of adding one",
+    "defeats the guard -- add a new version rather than rewriting history.",
+    "2.5 is absent deliberately: it was the declared version from the",
+    "initial rebuild through several template edits, so no single checksum",
+    "is honestly attributable to it."
+  ],
+  "versions": {
+    "2.5.1": "a74d41d2650a6346a66203de42f71b0171c7352821bb28c3bfb90cf3f65147d4"
+  }
+}
