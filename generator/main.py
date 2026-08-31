@@ -36,6 +36,7 @@ from time import perf_counter
 from typing import Any
 import click
 from generator import __version__, __template_version__
+from generator.environments import ENVIRONMENTS, UnknownEnvironment, resolve_environment
 from generator.entity_registry import build_entity_registry, reconcile_schedule_from_registry, reconcile_trip_from_registry
 
 logger = logging.getLogger(__name__)
@@ -1827,8 +1828,8 @@ def _write_development_build_info(output_dir: Path, build_info: dict[str, Any]) 
 )
 @click.option(
     "--environment",
-    type=click.Choice(["dev", "eval", "prod"], case_sensitive=False),
-    help="Environment override (dev/eval/prod). Optional.",
+    type=click.Choice(list(ENVIRONMENTS), case_sensitive=False),
+    help=f"Environment override ({'/'.join(ENVIRONMENTS)}). Optional.",
 )
 @click.option(
     "--env-file",
@@ -2152,9 +2153,15 @@ def main(
     env_from_cli = environment
     env_from_env = os.environ.get("ENVIRONMENT")
 
-    environment_selected = (
-        (env_from_cli or env_from_manifest or env_from_env or "dev").lower()
-    )
+    # Resolved in one place, and *checked* whichever of the three wins -- the
+    # value becomes a directory segment and the ledger's path, and only two of
+    # the three sources used to validate it.
+    try:
+        environment_selected = resolve_environment(
+            cli=env_from_cli, manifest=env_from_manifest, variable=env_from_env
+        )
+    except UnknownEnvironment as exc:
+        raise click.ClickException(str(exc)) from exc
     # Correct the pre-resolution "dev" placeholder now that the real
     # environment is known, so the run ledger for this (and every later)
     # environment lands in its own file instead of always under dev/.
