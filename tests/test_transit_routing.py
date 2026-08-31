@@ -308,3 +308,32 @@ def test_shipped_prompt_renders_and_forbids_times_and_links():
 
 def test_format_b_helper_omits_an_empty_tip():
     assert "local_tip" not in format_b("Nothing here.")
+
+
+class TestOptionDuration:
+    def test_returns_the_first_bands(self):
+        from generator.transit_routing import option_duration
+
+        assert option_duration({
+            "has_transit": True,
+            "options": [{"duration": "3-4 hours"}, {"duration": "6 hours"}],
+        }) == "3-4 hours"
+
+    def test_skips_an_option_with_no_duration(self):
+        from generator.transit_routing import option_duration
+
+        assert option_duration({
+            "has_transit": True,
+            "options": [{"label": "Bus"}, {"duration": "5 hours"}],
+        }) == "5 hours"
+
+    def test_format_b_has_no_duration(self):
+        from generator.transit_routing import option_duration
+
+        assert option_duration({"has_transit": False, "honest_assessment": "None."}) == ""
+
+    def test_missing_or_malformed_input(self):
+        from generator.transit_routing import option_duration
+
+        assert option_duration(None) == ""
+        assert option_duration({"has_transit": True, "options": "a bus"}) == ""

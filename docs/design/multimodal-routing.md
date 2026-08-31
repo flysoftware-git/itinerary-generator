@@ -475,6 +475,18 @@ transit leg set `drive_time = "3 hr 15 min"` and left `distance_miles` empty (as
 — §4.2), then `current_miles` is falsy, the condition is **true**, and a real transit
 duration is silently replaced by a car estimate two stages later.
 
+**A second reader of the same hazard, found 2026-08-30 and fixed.** Guarding
+`_update_route_distance_and_time` closes the stage-5b path, but two stage-3 paths write the
+same field from road geometry: `_override_grouped_child_distance_from_geocode`'s
+implausible-leg correction, and the model itself, which was never told the leg was transit
+because `_build_arrival_mode_guidance` keyed on a BOOKED leg. A declared-but-unbooked
+transit leg therefore kept a drive estimate and scheduled from it. All three now key on the
+resolved mode, and `main._enforce_transit_leg_durations` is the backstop: on a declared
+transit leg, `travel_time` is a Routes API figure, else the Phase 1 duration band, else
+empty -- never a road-derived one. Clearing costs that day its travel subtraction, which is
+the honest trade: an unstated arrival is a gap, an invented one is a wrong answer the reader
+cannot see is wrong.
+
 `_update_route_distance_and_time` must **return early** for any leg whose `transport_mode`
 resolves to `transit`. Add a regression test running the full Stage 3 → Stage 5b ordering;
 a unit test of either function alone will pass while the pipeline is broken.

@@ -2033,6 +2033,70 @@ def _apply_transit_routing(
     return updated
 
 
+def _enforce_transit_leg_durations(trip: dict) -> int:
+    """Leave no driving figure standing on a leg that is not a drive.
+
+    Runs last, after the Routes API pass, and is the backstop for the case
+    that pass cannot serve: no API key, or a corridor Routes cannot price.
+    Preference order for a declared-transit leg:
+
+      1. a real Routes API estimate -- already applied, and left alone here;
+      2. the Phase 1 option's duration band, which is a band on purpose;
+      3. nothing.
+
+    Never a road-derived figure. `getting_here.travel_time` is not a badge:
+    the schedule normalizer derives the arrival clock time and the whole
+    arrival-day activity budget from it, so a car estimate left there
+    produces a page showing a 3h15 bus in one card and scheduling a 2h drive
+    in the next -- the exact internal contradiction the dipstick69 guard was
+    written to prevent (multimodal-routing.md 1.2).
+
+    Clearing rather than guessing costs the schedule its travel subtraction
+    for that day. That is the honest trade: an unstated arrival time is a
+    gap, an invented one is a wrong answer the reader cannot see is wrong.
+
+    Returns the number of legs whose figures were corrected.
+    """
+    from generator.transit_routing import option_duration, resolved_mode
+
+    corrected = 0
+    for dest in (trip.get("destinations") or []):
+        if not isinstance(dest, dict) or resolved_mode(dest) != "transit":
+            continue
+        ai = dest.get("ai_content")
+        if not isinstance(ai, dict):
+            continue
+        getting_here = ai.get("getting_here")
+        if not isinstance(getting_here, dict):
+            continue
+        if getting_here.get("duration_is_estimate"):
+            continue  # a real Routes figure; nothing to correct
+
+        stale_time = str(getting_here.get("travel_time", "") or "").strip()
+        stale_miles = str(getting_here.get("distance_miles", "") or "").strip()
+        band = option_duration(getting_here.get("transit_options"))
+
+        if band:
+            getting_here["travel_time"] = band
+            getting_here["duration_is_estimate"] = True
+        elif stale_time:
+            getting_here["travel_time"] = ""
+        # Road miles are meaningless on a rail leg, and an empty value is
+        # what the badge row was restructured to survive.
+        if stale_miles:
+            getting_here["distance_miles"] = ""
+        getting_here["travel_mode"] = "transit"
+
+        if stale_time or stale_miles:
+            corrected += 1
+            logger.info(
+                "Transit leg '%s': replaced road figures (%s / %s) with %s",
+                dest.get("name", ""), stale_miles or "no distance", stale_time or "no time",
+                f"the suggested band '{band}'" if band else "no duration",
+            )
+    return corrected
+
+
 def _apply_transit_estimates(trip: dict, *, departure_hint: str = "") -> int:
     """Replace invented drive figures with real transit estimates.
 
@@ -2043,6 +2107,7 @@ def _apply_transit_estimates(trip: dict, *, departure_hint: str = "") -> int:
     Returns the number of legs updated, for the run summary.
     """
     from generator.transit_estimate import TRANSIT_MODES, TransitEstimator, format_duration
+    from generator.transit_routing import resolved_mode
 
     estimator = TransitEstimator()
     if not estimator.available:
@@ -2067,7 +2132,13 @@ def _apply_transit_estimates(trip: dict, *, departure_hint: str = "") -> int:
                 if mode:
                     break
 
-        if mode in TRANSIT_MODES and previous_name and name:
+        # Two ways a leg qualifies: a booking that names a transit type, or a
+        # manifest that declares the leg transit without one (GH #2). The
+        # second is why this gate widened -- a declared-but-unbooked leg had
+        # no source of a real duration at all, so it kept whatever the model
+        # guessed, which was a drive.
+        declared_transit = resolved_mode(dest) == "transit"
+        if (mode in TRANSIT_MODES or declared_transit) and previous_name and name:
             estimate = estimator.estimate(previous_name, name)
             if estimate:
                 ai = dest.get("ai_content")
@@ -2082,7 +2153,7 @@ def _apply_transit_estimates(trip: dict, *, departure_hint: str = "") -> int:
                     # Consumed by the renderer so the figure reads as an
                     # approximation; transit times move with the timetable.
                     getting_here["duration_is_estimate"] = True
-                    getting_here["travel_mode"] = mode
+                    getting_here["travel_mode"] = mode or "transit"
                     updated += 1
                     logger.info(
                         "Transit estimate %s -> %s: %s, %s mi",
@@ -2874,6 +2945,7 @@ def main(
     _apply_transit_estimates(
         trip, departure_hint=str((trip.get("trip") or {}).get("departure", "") or "")
     )
+    _enforce_transit_leg_durations(trip)
     click.echo("  ✓ Content normalized")
     trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
     click.echo("  ✓ Entity registry reconciled")
@@ -2950,6 +3022,7 @@ def main(
         _apply_transit_estimates(
             trip, departure_hint=str((trip.get("trip") or {}).get("departure", "") or "")
         )
+        _enforce_transit_leg_durations(trip)
         trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
         destination_status_report = _build_destination_status_report(
             trip=trip,

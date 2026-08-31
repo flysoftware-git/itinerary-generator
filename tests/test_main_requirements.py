@@ -2054,3 +2054,131 @@ def test_transit_routing_kill_switch_skips_the_stage(tmp_path) -> None:
     stamp_resolved_modes(trip)
 
     assert main_mod._apply_transit_routing(trip, config_path=str(cfg)) == 0
+
+
+# ── GH #2: no driving figure survives on a leg that is not a drive ────────
+
+def _transit_trip(travel_time="2 hrs 15 min", distance="95", transit_options=None,
+                  duration_is_estimate=False):
+    from generator.transit_routing import stamp_resolved_modes
+
+    gh = {"travel_time": travel_time, "distance_miles": distance,
+          "route_summary": "US-89 to UT-12."}
+    if transit_options is not None:
+        gh["transit_options"] = transit_options
+    if duration_is_estimate:
+        gh["duration_is_estimate"] = True
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"id": "bryce", "name": "Bryce Canyon", "ai_content": {}},
+            {"id": "capitol_reef", "name": "Capitol Reef", "transport_mode": "transit",
+             "ai_content": {"getting_here": gh}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    return trip
+
+
+_BAND = {
+    "has_transit": True,
+    "confidence": "unverified",
+    "options": [{"label": "Regional bus via Panguitch", "duration": "3-4 hours", "transfers": 1}],
+}
+
+
+def test_transit_leg_takes_its_duration_from_the_suggested_band() -> None:
+    """The card and the schedule must agree. Left alone, this leg showed a
+    3-4 hour bus in one card and scheduled a 2h15 drive in the next."""
+    import generator.main as main_mod
+
+    trip = _transit_trip(transit_options=_BAND)
+    assert main_mod._enforce_transit_leg_durations(trip) == 1
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "3-4 hours"
+    assert gh["distance_miles"] == ""
+    assert gh["duration_is_estimate"] is True
+    assert gh["travel_mode"] == "transit"
+
+
+def test_the_schedule_reads_the_band_the_card_shows() -> None:
+    """The point of the whole fix: one number, both places. The normalizer's
+    existing range handling takes the midpoint of 3-4 hours."""
+    import generator.main as main_mod
+    from generator.ai_content import AIContentGenerator
+
+    trip = _transit_trip(transit_options=_BAND)
+    main_mod._enforce_transit_leg_durations(trip)
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+
+    assert AIContentGenerator._parse_duration_minutes(gh["travel_time"]) == 210
+
+
+def test_a_transit_leg_with_no_band_is_left_blank_not_guessed() -> None:
+    """An unstated arrival is a gap; an invented one is a wrong answer the
+    reader cannot see is wrong."""
+    import generator.main as main_mod
+
+    trip = _transit_trip(transit_options={"has_transit": False, "honest_assessment": "None."})
+    assert main_mod._enforce_transit_leg_durations(trip) == 1
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == ""
+    assert gh["distance_miles"] == ""
+
+
+def test_a_real_routes_estimate_outranks_the_band() -> None:
+    """A priced figure from the Routes API beats a model's guess at a range,
+    and must not be overwritten by it."""
+    import generator.main as main_mod
+
+    trip = _transit_trip(travel_time="2 hrs 16 min", distance="187",
+                         transit_options=_BAND, duration_is_estimate=True)
+    assert main_mod._enforce_transit_leg_durations(trip) == 0
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "2 hrs 16 min"
+    assert gh["distance_miles"] == "187"
+
+
+def test_a_driving_leg_is_untouched() -> None:
+    import generator.main as main_mod
+    from generator.transit_routing import stamp_resolved_modes
+
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"id": "zion", "name": "Zion", "ai_content": {}},
+            {"id": "bryce", "name": "Bryce", "ai_content": {"getting_here": {
+                "travel_time": "2 hrs 15 min", "distance_miles": "95"}}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    assert main_mod._enforce_transit_leg_durations(trip) == 0
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "2 hrs 15 min"
+    assert gh["distance_miles"] == "95"
+
+
+def test_a_mixed_leg_keeps_its_car_estimate() -> None:
+    """Under `mixed` the drive is still the answer and the transit options
+    sit beside it -- so the drive figures stay."""
+    import generator.main as main_mod
+    from generator.transit_routing import stamp_resolved_modes
+
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"id": "zion", "name": "Zion", "ai_content": {}},
+            {"id": "bryce", "name": "Bryce", "transport_mode": "mixed",
+             "ai_content": {"getting_here": {
+                 "travel_time": "2 hrs 15 min", "distance_miles": "95",
+                 "transit_options": _BAND}}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    assert main_mod._enforce_transit_leg_durations(trip) == 0
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "2 hrs 15 min"
+    assert gh["distance_miles"] == "95"

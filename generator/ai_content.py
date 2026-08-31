@@ -19,7 +19,7 @@ import requests
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient, LLMCircuitOpenError
 from generator.multi_site_grouping import group_base_id, is_grouped, is_park_like
-from generator.transit_routing import suppresses_en_route_stops
+from generator.transit_routing import resolved_mode, suppresses_en_route_stops
 from generator.road_estimate import (
     ROAD_DISTANCE_FACTOR,
     drive_minutes,
@@ -1620,6 +1620,20 @@ class AIContentGenerator:
         """
         mode = self._arrival_mode(dest)
         if not mode:
+            # GH #2: a manifest can declare a transit leg without booking one.
+            # Silence here used to mean "assume a drive", which is right for a
+            # road trip and wrong for the leg the manifest just said is a
+            # train -- the model then invented highways and a drive time, and
+            # the drive time became the arrival-day scheduling input.
+            if resolved_mode(dest) == "transit":
+                return (
+                    "By scheduled public transport, not booked yet. Describe THAT "
+                    "journey: the kind of service, the stations or terminals, and "
+                    "what the leg is like. Name no highways, give no driving "
+                    "directions, and do not mention parking. Omit travel_time and "
+                    "distance_miles entirely -- a driving estimate for a train is a "
+                    "factual error, and a real figure is supplied elsewhere."
+                )
             return (
                 "Not stated. Assume the traveler drives, and write the route "
                 "summary as a drive."
@@ -2394,6 +2408,14 @@ class AIContentGenerator:
             ai_content = dest.get("ai_content")
             getting_here = ai_content.get("getting_here") if isinstance(ai_content, dict) else None
             if not isinstance(getting_here, dict):
+                continue
+            # Every figure below is road geometry -- a 1.30 road factor over a
+            # straight line at 60 mph. Correcting one invented drive into
+            # another is not an improvement on a leg that is not a drive, and
+            # this pass runs BEFORE the transit figures are applied, so
+            # without this it would be writing the value they then have to
+            # undo (multimodal-routing.md 4.1).
+            if resolved_mode(dest) == "transit":
                 continue
             miles, time_str = _estimate_haversine_route(
                 origin.get("lat"), origin.get("lng"), dest.get("lat"), dest.get("lng"),

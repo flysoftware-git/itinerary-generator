@@ -175,6 +175,24 @@ def normalize_transit_options(
     return result
 
 
+def option_duration(transit_options: Any) -> str:
+    """The duration band from the best Format A option, e.g. "3-4 hours".
+
+    This is the only figure Phase 1 has for a leg nobody has booked and no
+    API priced. It is a band on purpose, and it stays a band: the schedule
+    normalizer already parses a range to its midpoint, which is the
+    convention every other free-text duration in this codebase follows.
+    """
+    if not isinstance(transit_options, dict) or not transit_options.get("has_transit"):
+        return ""
+    for option in (transit_options.get("options") or []):
+        if isinstance(option, dict):
+            duration = str(option.get("duration", "") or "").strip()
+            if duration:
+                return duration
+    return ""
+
+
 def format_b(honest_assessment: str, *, local_tip: str = "") -> dict[str, Any]:
     """The honest negative. `source`/`confidence` are omitted deliberately --
     there is no claim here for them to qualify."""

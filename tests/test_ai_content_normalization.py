@@ -3364,3 +3364,70 @@ def test_departure_leg_leaves_an_existing_value_alone() -> None:
     gt = trip["destinations"][0]["ai_content"]["getting_there"]
     assert gt["distance_miles"] == 130
     assert gt["travel_time"] == "2 hr 5 min"
+
+
+# ── GH #2: an unbooked transit leg is not described as a drive ────────────
+
+def test_arrival_guidance_covers_a_declared_but_unbooked_transit_leg() -> None:
+    """Silence used to mean "assume a drive", which is right for a road trip
+    and wrong for the leg the manifest just said is a train."""
+    g = _gen()
+
+    guidance = g._build_arrival_mode_guidance(
+        {"name": "Capitol Reef", "_transport_mode": "transit"}
+    )
+
+    assert "public transport" in guidance.lower()
+    assert "no highways" in guidance.lower()
+    assert "omit travel_time" in guidance.lower()
+
+
+def test_arrival_guidance_still_assumes_a_drive_when_nothing_is_stated() -> None:
+    g = _gen()
+    assert "drives" in g._build_arrival_mode_guidance({"name": "Bryce"})
+
+
+def test_arrival_guidance_leaves_a_mixed_leg_as_a_drive() -> None:
+    g = _gen()
+    guidance = g._build_arrival_mode_guidance({"name": "Bryce", "_transport_mode": "mixed"})
+    assert "drives" in guidance
+
+
+def test_road_geometry_does_not_rewrite_a_transit_leg() -> None:
+    """_estimate_haversine_route is a 1.30 road factor over a straight line at
+    60 mph. Correcting one invented drive into another is not an improvement
+    on a leg that is not a drive."""
+    g = _gen()
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"id": "bryce", "name": "Bryce", "lat": 37.6, "lng": -112.1, "ai_content": {}},
+            {"id": "capitol_reef", "name": "Capitol Reef", "lat": 38.2, "lng": -111.2,
+             "_transport_mode": "transit",
+             "ai_content": {"getting_here": {"distance_miles": "1200", "travel_time": "10 min"}}},
+        ],
+    }
+
+    g._override_grouped_child_distance_from_geocode(trip)
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["distance_miles"] == "1200"
+    assert gh["travel_time"] == "10 min"
+
+
+def test_road_geometry_still_corrects_an_implausible_driving_leg() -> None:
+    """The guard must not disarm the correction it sits beside."""
+    g = _gen()
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"id": "bryce", "name": "Bryce", "lat": 37.6, "lng": -112.1, "ai_content": {}},
+            {"id": "capitol_reef", "name": "Capitol Reef", "lat": 38.2, "lng": -111.2,
+             "ai_content": {"getting_here": {"distance_miles": "1200", "travel_time": "10 min"}}},
+        ],
+    }
+
+    g._override_grouped_child_distance_from_geocode(trip)
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["distance_miles"] != "1200"

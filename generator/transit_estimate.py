@@ -22,6 +22,14 @@ build on them generally. Using a duration in a published static page is exactly
 the case that section flagged. That trade-off was accepted by the product owner
 on 2026-08-27 for transit estimates specifically.
 
+**Scope widened 2026-08-30 (GH #2).** Callers now price a leg the manifest
+DECLARES as transit, not only one with a booking attached. Same data, same
+handling, no new terms question -- but it is more calls: one per declared
+transit leg, on trips that previously made none. Two gates still stand in
+front of it, and both are the manifest's: a leg qualifies only if it says
+`transport_mode: transit` (or a `legs:` entry does), and the whole feature
+is off without `transit_routing.enabled`. A road-trip manifest is unaffected.
+
 Two consequences follow, and both are deliberate:
 
   * **Nothing is cached to disk.** A run makes one call per leg -- five for the
