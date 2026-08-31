@@ -15,7 +15,7 @@ class TestDurationFormatting:
         "minutes, expected",
         [(136, "2 hrs 16 min"), (60, "1 hr"), (29, "29 min"), (125, "2 hrs 5 min"), (61, "1 hr 1 min")],
     )
-    def test_matches_the_existing_drive_time_shape(self, minutes, expected):
+    def test_matches_the_existing_travel_time_shape(self, minutes, expected):
         assert format_duration(minutes) == expected
 
     @pytest.mark.parametrize("minutes", [0, None, -5])

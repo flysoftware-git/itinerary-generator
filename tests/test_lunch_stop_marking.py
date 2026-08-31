@@ -18,7 +18,7 @@ def _trip(drive_minutes=240):
         "destinations": [{
             "name": "Asheville, North Carolina",
             "ai_content": {
-                "getting_here": {"drive_time": f"{drive_minutes} min", "en_route_stops": [stop]},
+                "getting_here": {"travel_time": f"{drive_minutes} min", "en_route_stops": [stop]},
                 "possible_daily_schedule": [{"periods": [{"summary": "Arrive and settle in."}]}],
             },
         }]
@@ -72,7 +72,7 @@ def test_the_card_shows_a_badge_and_a_food_link():
         "detour_miles": 24.0,
         "detour_minutes": 30,
     }
-    ai = {"getting_here": {"en_route_stops": [stop], "drive_time": "4 hr", "distance_miles": 220}}
+    ai = {"getting_here": {"en_route_stops": [stop], "travel_time": "4 hr", "distance_miles": 220}}
     html = a._build_getting_here(ai, {"name": "Asheville, North Carolina"}, "Old Hickory, Tennessee")
     assert "badge-lunch" in html and "Lunch stop" in html
     assert 'class="lunch-link"' in html and "Find lunch here" in html

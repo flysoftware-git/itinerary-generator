@@ -961,7 +961,7 @@ class HTMLAssembler:
         return_name = str((trip_meta or {}).get("return", "") or "").strip()
         route_summary = str(getting_there.get("route_summary", "") or "").strip()
         distance = str(getting_there.get("distance_miles", "") or "").strip()
-        drive_time = str(getting_there.get("drive_time", "") or "").strip()
+        travel_time = str(getting_there.get("travel_time", "") or "").strip()
         route_options = getting_there.get("route_options", []) or []
         return_date_label, return_time_label = self._format_trip_datetime_label(
             str((trip_meta or {}).get("return_datetime", "") or "")
@@ -1020,13 +1020,13 @@ class HTMLAssembler:
             html += f'    <a href="{gmaps_url}" target="_blank" rel="noopener" class="gmaps-link">Open in Google Maps →</a>\n'
         html += '  </div>\n'
 
-        if distance and drive_time:
+        if distance and travel_time:
             html += '  <div class="route-headline-row">\n'
             if route_label:
                 html += f'    <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
             html += '    <div class="route-badges route-badges-inline">\n'
             html += f'      <span class="badge badge-distance">{distance} mi</span>\n'
-            html += f'      <span class="badge badge-time">{drive_time}</span>\n'
+            html += f'      <span class="badge badge-time">{travel_time}</span>\n'
             html += '    </div>\n'
             html += '  </div>\n'
         elif route_label:
@@ -1881,7 +1881,7 @@ class HTMLAssembler:
             return ""
         route_summary = gh.get("route_summary", "")
         distance = gh.get("distance_miles", "")
-        drive_time = gh.get("drive_time", "")
+        travel_time = gh.get("travel_time", "")
         stops = gh.get("en_route_stops", [])
         route_label = ""
         if previous_name:
@@ -1974,7 +1974,7 @@ class HTMLAssembler:
         )
 
         # Route summary with distance and time badges
-        if distance and drive_time:
+        if distance and travel_time:
             html += '  <div class="route-headline-row">\n'
             if route_label:
                 html += f'    <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
@@ -1982,7 +1982,7 @@ class HTMLAssembler:
             if day_trip_badge:
                 html += f'      {day_trip_badge}'
             html += f'      <span class="badge badge-distance">{distance} mi</span>\n'
-            html += f'      <span class="badge badge-time">{drive_time}</span>\n'
+            html += f'      <span class="badge badge-time">{travel_time}</span>\n'
             html += '    </div>\n'
             html += '  </div>\n'
         elif route_label:

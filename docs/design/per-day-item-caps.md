@@ -107,7 +107,7 @@ destination, which happens once regardless of how many days the traveler
 then stays -- so "days at the destination" is an imperfect scaling proxy
 here, unlike attractions/restaurants which are genuinely consumed
 day-by-day throughout the stay. A distance- or drive-time-scaled cap would
-be conceptually cleaner, but `getting_here.distance_miles`/`drive_time` are
+be conceptually cleaner, but `getting_here.distance_miles`/`travel_time` are
 themselves AI-guessed at this point in the pipeline and already documented
 elsewhere in `ai_content.py` (see `_override_grouped_child_distance_from_geocode`)
 as sometimes wildly wrong (a real dipstick68 case rendered an 424-mph-implied

@@ -132,7 +132,7 @@ def test_schedule_injects_arrival_and_departure_context() -> None:
 
     updated = g._inject_travel_realism(
         schedule,
-        {"drive_time": "2 hrs 15 min", "route_summary": "US-89 to UT-12"},
+        {"travel_time": "2 hrs 15 min", "route_summary": "US-89 to UT-12"},
         "Zion National Park",
         "Capitol Reef National Park",
     )
@@ -181,7 +181,7 @@ def test_inject_travel_realism_no_leading_colon_when_arrival_already_present() -
 
     updated = g._inject_travel_realism(
         days,
-        {"drive_time": "1 hr 45 min"},
+        {"travel_time": "1 hr 45 min"},
         "Zion National Park",
         "Capitol Reef National Park",
     )
@@ -236,7 +236,7 @@ def test_inject_travel_realism_corrects_implausible_morning_activity_claim_on_ar
 
     out = g._inject_travel_realism(
         days,
-        {"drive_time": "2 hrs 15 min"},
+        {"travel_time": "2 hrs 15 min"},
         "Zion National Park",
         "Capitol Reef National Park",
         default_day_start_time="10:00 AM",
@@ -630,7 +630,7 @@ def test_inject_travel_realism_moab_schedule_can_name_arches_not_just_canyonland
 
     out = g._inject_travel_realism(
         days,
-        {"drive_time": "1 hr 45 min"},
+        {"travel_time": "1 hr 45 min"},
         "Capitol Reef National Park",
         "Telluride",
         attractions=[
@@ -748,7 +748,7 @@ def test_normalize_schedule_moab_day_trip_days_stay_local_only_last_evening_ment
         restaurants=[{"name": "Moab Kitchen"}, {"name": "Desert Bistro"}],
         dates="October 22-24, 2026",
         attractions=[{"name": "Delicate Arch"}, {"name": "Corona Arch Trail"}],
-        getting_here={"drive_time": "2 hr"},
+        getting_here={"travel_time": "2 hr"},
         previous_destination="Capitol Reef National Park",
         next_destination="Telluride",
     )
@@ -1084,7 +1084,7 @@ def test_normalize_getting_here_applies_enroute_cap_and_preserves_seed() -> None
     new en-route cap."""
     g = _gen()
     getting_here = {
-        "drive_time": "45 min",
+        "travel_time": "45 min",
         "en_route_stops": [{"name": f"Stop {i}"} for i in range(6)] + [{"name": "Seeded Overlook"}],
     }
     dest = {"name": "Moab", "en_route_seeds": ["Seeded Overlook"]}
@@ -1108,7 +1108,7 @@ def test_normalize_getting_here_applies_en_route_exclude() -> None:
     under the cap, not just deprioritized."""
     g = _gen()
     getting_here = {
-        "drive_time": "1 hr 30 min",
+        "travel_time": "1 hr 30 min",
         "en_route_stops": [
             {"name": "Confluence Park", "detour_distance_miles": 1.0},
             {"name": "La Verkin Overlook", "detour_distance_miles": 3.9},
@@ -1128,7 +1128,7 @@ def test_normalize_getting_here_applies_en_route_exclude() -> None:
 def test_normalize_getting_here_en_route_exclude_matches_case_and_punctuation_insensitively() -> None:
     g = _gen()
     getting_here = {
-        "drive_time": "1 hr",
+        "travel_time": "1 hr",
         "en_route_stops": [
             {"name": "confluence park", "detour_distance_miles": 1.0},
             {"name": "Real Stop", "detour_distance_miles": 2.0},
@@ -1218,7 +1218,7 @@ def test_normalize_schedule_fills_sparse_multi_day_periods_and_departure_on_last
         schedule=schedule,
         restaurants=[{"name": "Zax Restaurant & Watering Hole"}],
         dates="October 10-12, 2026",
-        getting_here={"drive_time": "1 hr 30 min"},
+        getting_here={"travel_time": "1 hr 30 min"},
         previous_destination="Capitol Reef National Park",
         next_destination="Telluride",
     )
@@ -1265,7 +1265,7 @@ def test_normalize_schedule_reserves_first_day_morning_for_origin_transport() ->
         schedule=schedule,
         restaurants=[{"name": "Local Bistro"}],
         dates="October 7-8, 2026",
-        getting_here={"drive_time": "2 hrs"},
+        getting_here={"travel_time": "2 hrs"},
         previous_destination="none",
         next_destination="Bryce Canyon National Park",
         trip_origin="Las Vegas",
@@ -1307,7 +1307,7 @@ def test_inject_travel_realism_removes_inbound_drive_and_checkin_from_day2_plus(
 
     out = g._inject_travel_realism(
         days,
-        {"drive_time": "1 hr 45 min"},
+        {"travel_time": "1 hr 45 min"},
         "Zion National Park",
         "Capitol Reef National Park",
     )
@@ -1346,7 +1346,7 @@ def test_inject_travel_realism_removes_checkin_from_non_afternoon_day2_blocks() 
 
     out = g._inject_travel_realism(
         days,
-        {"drive_time": "2 hr 30 min"},
+        {"travel_time": "2 hr 30 min"},
         "Moab",
         "Pagosa Springs",
     )
@@ -1377,7 +1377,7 @@ def test_inject_travel_realism_single_day_transfer_includes_arrival_checkin_guid
 
     out = g._inject_travel_realism(
         days,
-        {"drive_time": "2 hr"},
+        {"travel_time": "2 hr"},
         "Telluride",
         "Santa Fe",
     )
@@ -1411,7 +1411,7 @@ def test_normalize_schedule_softens_first_day_heavy_afternoon_after_origin_trave
         schedule=schedule,
         restaurants=[{"name": "Local Bistro"}],
         dates="October 7-8, 2026",
-        getting_here={"drive_time": "2 hrs"},
+        getting_here={"travel_time": "2 hrs"},
         previous_destination="none",
         next_destination="Bryce Canyon National Park",
         trip_origin="Las Vegas",
@@ -1453,7 +1453,7 @@ def test_normalize_schedule_reserves_last_day_afternoon_for_return_and_drops_eve
         schedule=schedule,
         restaurants=[{"name": "Local Bistro"}],
         dates="October 18-19, 2026",
-        getting_here={"drive_time": "1 hr"},
+        getting_here={"travel_time": "1 hr"},
         previous_destination="Pagosa Springs",
         next_destination="",
         trip_origin="Las Vegas",
@@ -1492,7 +1492,7 @@ def test_normalize_schedule_ensures_each_day_has_unique_signal() -> None:
         schedule=schedule,
         restaurants=[{"name": "Zax Restaurant & Watering Hole"}],
         dates="October 10-11, 2026",
-        getting_here={"drive_time": "1 hr 20 min"},
+        getting_here={"travel_time": "1 hr 20 min"},
         previous_destination="Capitol Reef National Park",
         next_destination="Telluride",
     )
@@ -1527,7 +1527,7 @@ def test_inject_travel_realism_day2_plus_scrub_uses_activity_aware_variation() -
 
     out = g._inject_travel_realism(
         days,
-        {"drive_time": "1 hr 45 min"},
+        {"travel_time": "1 hr 45 min"},
         "Page",
         "Capitol Reef National Park",
         attractions=[
@@ -1617,7 +1617,7 @@ def test_inject_travel_realism_scrubs_premature_departure_mentions_on_earlier_da
 
     out = g._inject_travel_realism(
         days,
-        {"drive_time": "2 hr 20 min"},
+        {"travel_time": "2 hr 20 min"},
         "Bryce Canyon National Park",
         "Moab",
     )
@@ -1772,7 +1772,7 @@ def test_inject_travel_realism_rotates_focus_to_reduce_adjacent_duplicates() -> 
 
     out = g._inject_travel_realism(
         days,
-        {"drive_time": "1 hr 45 min"},
+        {"travel_time": "1 hr 45 min"},
         "Page",
         "Capitol Reef National Park",
         attractions=[
@@ -1841,7 +1841,7 @@ def test_inject_travel_realism_rotates_evening_focus_across_a_multi_day_stay() -
 
     out = g._inject_travel_realism(
         days,
-        {"drive_time": "1 hr 45 min"},
+        {"travel_time": "1 hr 45 min"},
         "Page",
         "Capitol Reef National Park",
         attractions=[
@@ -2048,7 +2048,7 @@ def test_normalize_schedule_dipstick68_leaked_instruction_never_reaches_rendered
         restaurants=[{"name": "Bryce Canyon Pines Restaurant"}],
         dates="October 9-11, 2026",
         attractions=[{"name": "Bryce Point"}],
-        getting_here={"drive_time": "1 hr 45 min"},
+        getting_here={"travel_time": "1 hr 45 min"},
         previous_destination="Zion National Park",
         next_destination="Capitol Reef National Park",
     )
@@ -2123,7 +2123,7 @@ def test_normalize_schedule_dipstick68_evening_duplicate_resolves_via_restaurant
         ],
         dates="October 9-11, 2026",
         attractions=[{"name": "Bryce Point"}],
-        getting_here={"drive_time": "1 hr 45 min"},
+        getting_here={"travel_time": "1 hr 45 min"},
         previous_destination="Zion National Park",
         next_destination="Capitol Reef National Park",
     )
@@ -2182,7 +2182,7 @@ def test_normalize_schedule_restaurant_rotation_substitutes_dining_phrasing_not_
         ],
         dates="October 9-11, 2026",
         attractions=[{"name": "Bryce Point"}],
-        getting_here={"drive_time": "1 hr 45 min"},
+        getting_here={"travel_time": "1 hr 45 min"},
         previous_destination="Zion National Park",
         next_destination="Capitol Reef National Park",
     )
@@ -2669,7 +2669,7 @@ def test_normalize_destination_content_scales_restaurants_with_bryce_canyon_thre
 def test_normalize_getting_here_returns_normalized_dict() -> None:
     g = _gen()
     getting_here = {
-        "drive_time": "1 hr 30 min",
+        "travel_time": "1 hr 30 min",
         "en_route_stops": [
             {"name": "Viewpoint", "detour_distance_miles": "", "detour_time_minutes": None}
         ],
@@ -2683,9 +2683,54 @@ def test_normalize_getting_here_returns_normalized_dict() -> None:
     assert "Arrival leg into Moab" in out.get("route_summary", "")
 
 
+def test_normalize_getting_here_renames_model_drive_time_to_travel_time() -> None:
+    """docs/design/multimodal-routing.md 4.1: the prompt asks for
+    `travel_time`, but a model asked for one key sometimes emits the other.
+    The normalizer is the single boundary that tolerates it, and nothing
+    downstream ever sees `drive_time` again."""
+    g = _gen()
+
+    out = g._normalize_getting_here({"drive_time": "2 hrs 15 min"}, "Bryce Canyon")
+
+    assert out["travel_time"] == "2 hrs 15 min"
+    assert "drive_time" not in out
+
+
+def test_normalize_getting_here_prefers_travel_time_over_drive_time() -> None:
+    """A model emitting BOTH keys is not a coin flip: the canonical name
+    wins, and the legacy one is dropped rather than left to be read by
+    something that still remembers it."""
+    g = _gen()
+
+    out = g._normalize_getting_here(
+        {"travel_time": "3 hrs", "drive_time": "2 hrs 15 min"}, "Bryce Canyon"
+    )
+
+    assert out["travel_time"] == "3 hrs"
+    assert "drive_time" not in out
+
+
+def test_normalize_getting_here_renames_drive_time_on_a_booked_rail_leg() -> None:
+    """The not-self-driven branch returns early to drop en-route stops. The
+    rename has to happen ahead of it, or a rail leg keeps the legacy key and
+    renders no duration badge at all."""
+    g = _gen()
+    dest = {"transportation": [{"type": "train", "provider": "SNCF"}]}
+
+    out = g._normalize_getting_here(
+        {"drive_time": "2 hrs 16 min", "en_route_stops": [{"name": "Mechelen"}]},
+        "Brussels",
+        dest=dest,
+    )
+
+    assert out["travel_time"] == "2 hrs 16 min"
+    assert "drive_time" not in out
+    assert out["en_route_stops"] == []
+
+
 def test_override_grouped_child_distance_from_geocode_fixes_impossible_ai_guess() -> None:
     """Real dipstick68 regression: Arches National Park (group_with: moab)
-    rendered distance_miles=212 / drive_time="30 min" from the AI's own
+    rendered distance_miles=212 / travel_time="30 min" from the AI's own
     getting_here guess -- physically impossible (424 mph) and nowhere close
     to the real ~7-minute drive from Moab. Real geocoded coordinates from
     that run's console log (Moab lat=38.5738 lng=-109.5462, Arches
@@ -2699,7 +2744,7 @@ def test_override_grouped_child_distance_from_geocode_fixes_impossible_ai_guess(
                 "name": "Moab",
                 "lat": 38.5738,
                 "lng": -109.5462,
-                "ai_content": {"getting_here": {"distance_miles": 5, "drive_time": "10 min"}},
+                "ai_content": {"getting_here": {"distance_miles": 5, "travel_time": "10 min"}},
             },
             {
                 "id": "arches",
@@ -2710,7 +2755,7 @@ def test_override_grouped_child_distance_from_geocode_fixes_impossible_ai_guess(
                 "ai_content": {
                     "getting_here": {
                         "distance_miles": 212,
-                        "drive_time": "30 min",
+                        "travel_time": "30 min",
                         "route_summary": "Take US-191 N from Moab.",
                     }
                 },
@@ -2722,16 +2767,16 @@ def test_override_grouped_child_distance_from_geocode_fixes_impossible_ai_guess(
 
     arches_gh = trip["destinations"][1]["ai_content"]["getting_here"]
     assert arches_gh["distance_miles"] != 212
-    assert arches_gh["drive_time"] != "30 min"
+    assert arches_gh["travel_time"] != "30 min"
     assert arches_gh["distance_miles"] < 20
-    assert "hr" not in arches_gh["drive_time"]  # under an hour, minutes-only string
+    assert "hr" not in arches_gh["travel_time"]  # under an hour, minutes-only string
     # route_summary (real prose, not a derived number) is left untouched.
     assert arches_gh["route_summary"] == "Take US-191 N from Moab."
     # The base entry itself is never a grouped child -- its own numbers
     # (however implausible) are out of scope for this override.
     moab_gh = trip["destinations"][0]["ai_content"]["getting_here"]
     assert moab_gh["distance_miles"] == 5
-    assert moab_gh["drive_time"] == "10 min"
+    assert moab_gh["travel_time"] == "10 min"
 
 
 def test_estimate_haversine_route_moab_to_arches_is_not_timed_at_highway_speed() -> None:
@@ -3179,7 +3224,7 @@ def test_inject_travel_realism_does_not_repeat_focus_two_days_later() -> None:
 
     out = g._inject_travel_realism(
         days,
-        {"drive_time": "40 min"},
+        {"travel_time": "40 min"},
         "Nashville",
         "Asheville",
         attractions=[
@@ -3209,18 +3254,18 @@ def test_inject_travel_realism_does_not_repeat_focus_two_days_later() -> None:
 
 def test_pick_lunch_stop_fires_only_above_the_threshold() -> None:
     gh = {
-        "drive_time": "4 hr 45 min",
+        "travel_time": "4 hr 45 min",
         "en_route_stops": [{"name": "Knoxville", "route_progress_ratio": 0.62}],
     }
     assert AIContentGenerator._pick_lunch_stop(gh)["name"] == "Knoxville"
-    assert AIContentGenerator._pick_lunch_stop({**gh, "drive_time": "1 hr 10 min"}) is None
+    assert AIContentGenerator._pick_lunch_stop({**gh, "travel_time": "1 hr 10 min"}) is None
 
 
 def test_pick_lunch_stop_prefers_a_seeded_stop_over_a_closer_one() -> None:
     """A seed is an explicit human intent -- it outranks whatever discovery
     happened to place nearest the midpoint."""
     gh = {
-        "drive_time": "5 hr",
+        "travel_time": "5 hr",
         "en_route_stops": [
             {"name": "Discovered Midpoint", "route_progress_ratio": 0.50},
             {"name": "Oak Ridge", "route_progress_ratio": 0.58, "is_seed": True},
@@ -3232,14 +3277,14 @@ def test_pick_lunch_stop_prefers_a_seeded_stop_over_a_closer_one() -> None:
 def test_pick_lunch_stop_is_silent_without_verified_candidates() -> None:
     """Option A by design: it never names a place of its own, so with
     en-route discovery disabled there is nothing to recommend."""
-    assert AIContentGenerator._pick_lunch_stop({"drive_time": "6 hr", "en_route_stops": []}) is None
+    assert AIContentGenerator._pick_lunch_stop({"travel_time": "6 hr", "en_route_stops": []}) is None
 
 
 def test_pick_lunch_stop_skips_stops_with_no_resolved_position() -> None:
     """Same reasoning as _route_waypoint_sort_key: an unresolved ratio must
     not be treated as position zero."""
     gh = {
-        "drive_time": "5 hr",
+        "travel_time": "5 hr",
         "en_route_stops": [
             {"name": "Unplaced"},
             {"name": "Placed", "route_progress_ratio": 0.55},
@@ -3250,7 +3295,7 @@ def test_pick_lunch_stop_skips_stops_with_no_resolved_position() -> None:
 
 def test_departure_leg_gets_distance_and_time_badges() -> None:
     """html_assembler gates the Departure Route Options mileage/duration
-    badges on getting_there.distance_miles + drive_time, and nothing ever set
+    badges on getting_there.distance_miles + travel_time, and nothing ever set
     them, so the card rendered a bare label."""
     g = _gen()
     trip = {
@@ -3268,7 +3313,7 @@ def test_departure_leg_gets_distance_and_time_badges() -> None:
 
     gt = trip["destinations"][0]["ai_content"]["getting_there"]
     assert gt["distance_miles"]
-    assert gt["drive_time"]
+    assert gt["travel_time"]
 
 
 def test_departure_leg_measures_from_the_base_when_the_last_stop_is_a_day_trip() -> None:
@@ -3310,7 +3355,7 @@ def test_departure_leg_leaves_an_existing_value_alone() -> None:
         "trip": {"return": "Charlotte", "return_lat": 35.2144, "return_lng": -80.9473},
         "destinations": [
             {"id": "asheville", "name": "Asheville", "lat": 35.5951, "lng": -82.5515,
-             "ai_content": {"getting_there": {"distance_miles": 130, "drive_time": "2 hr 5 min"}}},
+             "ai_content": {"getting_there": {"distance_miles": 130, "travel_time": "2 hr 5 min"}}},
         ],
     }
 
@@ -3318,4 +3363,4 @@ def test_departure_leg_leaves_an_existing_value_alone() -> None:
 
     gt = trip["destinations"][0]["ai_content"]["getting_there"]
     assert gt["distance_miles"] == 130
-    assert gt["drive_time"] == "2 hr 5 min"
+    assert gt["travel_time"] == "2 hr 5 min"

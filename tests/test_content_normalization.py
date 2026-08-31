@@ -165,7 +165,7 @@ def test_inject_travel_realism_uses_default_day_start_time_for_arrival_leg():
 
     out = gen._inject_travel_realism(
         days=days,
-        getting_here={"drive_time": "2 hours"},
+        getting_here={"travel_time": "2 hours"},
         previous_destination="Las Vegas Airport",
         next_destination="Zion National Park",
         default_day_start_time="10:00 AM",
@@ -192,7 +192,7 @@ def test_inject_travel_realism_honors_destination_start_time_override():
 
     out = gen._inject_travel_realism(
         days=days,
-        getting_here={"drive_time": "2 hours"},
+        getting_here={"travel_time": "2 hours"},
         previous_destination="Las Vegas Airport",
         next_destination="Zion National Park",
         default_day_start_time="10:00 AM",
@@ -224,7 +224,7 @@ def test_inject_travel_realism_packs_multiple_afternoon_activities_with_default_
 
     out = gen._inject_travel_realism(
         days=days,
-        getting_here={"drive_time": "2 hours"},
+        getting_here={"travel_time": "2 hours"},
         previous_destination="Las Vegas Airport",
         next_destination="Zion National Park",
         default_day_start_time="10:00 AM",
@@ -264,7 +264,7 @@ def test_inject_travel_realism_respects_destination_activity_hour_override():
 
     out = gen._inject_travel_realism(
         days=days,
-        getting_here={"drive_time": "2 hours"},
+        getting_here={"travel_time": "2 hours"},
         previous_destination="Las Vegas Airport",
         next_destination="Zion National Park",
         default_day_start_time="10:00 AM",
@@ -402,7 +402,7 @@ def test_normalize_schedule_multi_day_strips_arrival_checkin_from_day_two_plus()
         restaurants=[{"name": "Bryce Canyon Lodge"}],
         dates="June 1-3, 2026",
         attractions=[],
-        getting_here={"drive_time": "2 hours"},
+        getting_here={"travel_time": "2 hours"},
         previous_destination="Zion National Park",
         next_destination="Capitol Reef National Park",
     )
@@ -434,7 +434,7 @@ def test_inject_travel_realism_does_not_duplicate_existing_dinner_phrase():
 
     out = gen._inject_travel_realism(
         days,
-        {"drive_time": "2 hours"},
+        {"travel_time": "2 hours"},
         "Las Vegas Airport",
         "St. George",
         restaurants=[{"name": "Painted Pony Restaurant"}],
@@ -464,7 +464,7 @@ def test_inject_travel_realism_does_not_duplicate_restaurant_name_around_dinner_
 
     out = gen._inject_travel_realism(
         days,
-        {"drive_time": "2 hours"},
+        {"travel_time": "2 hours"},
         "Las Vegas Airport",
         "St. George",
         restaurants=[{"name": "Red Fort Cuisine"}],
@@ -490,7 +490,7 @@ def test_inject_travel_realism_does_not_append_block_filler_phrases() -> None:
 
     out = gen._inject_travel_realism(
         days=days,
-        getting_here={"drive_time": "2 hours"},
+        getting_here={"travel_time": "2 hours"},
         previous_destination="Las Vegas Airport",
         next_destination="Zion National Park",
         attractions=[{"name": "The Narrows", "duration": "2 hours"}],

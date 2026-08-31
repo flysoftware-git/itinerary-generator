@@ -93,7 +93,7 @@ artifacts before embedding.
 For the last destination only, assembly renders a dedicated `Getting There` card
 using `ai_content.getting_there` fields:
 - `route_summary`
-- `distance_miles` / `drive_time` (optional)
+- `distance_miles` / `travel_time` (optional)
 - `route_options` (optional departure-route items)
 
 This keeps return-route logistics distinct from in-stay attractions and schedule

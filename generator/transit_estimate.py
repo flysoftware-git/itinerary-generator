@@ -157,7 +157,7 @@ class TransitEstimator:
 
 
 def format_duration(minutes: int | None) -> str:
-    """"2 hrs 16 min", matching the existing drive_time strings."""
+    """"2 hrs 16 min", matching the existing travel_time strings."""
     if not minutes or minutes <= 0:
         return ""
     hours, mins = divmod(int(minutes), 60)

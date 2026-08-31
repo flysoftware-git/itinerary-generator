@@ -2876,7 +2876,7 @@ def test_build_getting_here_omits_route_stop_when_no_usable_url_exists() -> None
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "El Rito",
@@ -2905,7 +2905,7 @@ def test_build_getting_here_renders_en_route_stop_maps_search_fallback_link() ->
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "Snow Canyon",
@@ -2940,7 +2940,7 @@ def test_build_getting_here_non_seed_stop_with_no_url_is_absent() -> None:
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "Adobe Plaza",
@@ -2968,7 +2968,7 @@ def test_build_getting_here_seed_stop_with_no_url_renders_caution_badge() -> Non
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "Adobe Plaza",
@@ -2992,7 +2992,7 @@ def test_build_getting_here_maps_fallback_does_not_append_map_suffix() -> None:
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "El Rito",
@@ -3017,7 +3017,7 @@ def test_build_getting_here_falls_back_to_maps_url_when_canonical_missing() -> N
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "El Rito",
@@ -3044,7 +3044,7 @@ def test_build_getting_here_renders_detour_and_practical_note() -> None:
         "getting_here": {
             "route_summary": "Drive with one worthwhile stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             "en_route_stops": [
                 {
                     "name": "Wilson Arch",
@@ -3075,7 +3075,7 @@ def test_build_getting_here_extracts_rating_from_stop_description_into_badge() -
         "getting_here": {
             "route_summary": "Drive with one worthwhile stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             "en_route_stops": [
                 {
                     "name": "Wilson Arch",
@@ -3101,7 +3101,7 @@ def test_build_getting_here_prefers_structured_rating_field_over_text_extraction
         "getting_here": {
             "route_summary": "Drive with one worthwhile stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             "en_route_stops": [
                 {
                     "name": "Wilson Arch",
@@ -3341,7 +3341,7 @@ def test_build_getting_here_renders_discovered_maps_search_url_as_primary() -> N
         "getting_here": {
             "route_summary": "Drive with one worthwhile stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             "en_route_stops": [
                 {
                     "name": "Wilson Arch",
@@ -3366,7 +3366,7 @@ def test_build_getting_here_renders_en_route_stop_maps_fallback_link() -> None:
         "getting_here": {
             "route_summary": "Drive with one questionable stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             "en_route_stops": [
                 {
                     "name": "Harrisburg Homestead Ruins",
@@ -3391,7 +3391,7 @@ def test_build_getting_here_rewrites_en_route_directions_link_to_stop_location()
         "getting_here": {
             "route_summary": "Drive with one route-linked stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             "en_route_stops": [
                 {
                     "name": "Red Cliffs Desert Reserve",
@@ -3415,7 +3415,7 @@ def test_build_getting_here_does_not_duplicate_stop_note_when_same_as_descriptio
         "getting_here": {
             "route_summary": "Drive with one worthwhile stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             # is_seed=True: no url on this fixture; seeding keeps it visible
             # under the verified-link-or-seed policy (2026-08-17) so this test
             # can verify note/description dedup, which is what it's actually
@@ -3724,7 +3724,7 @@ def test_build_getting_here_renders_day_trip_badge_for_grouped_entry() -> None:
     ai = {
         "getting_here": {
             "distance_miles": "5",
-            "drive_time": "15 min",
+            "travel_time": "15 min",
             "en_route_stops": [],
         }
     }
@@ -3736,7 +3736,7 @@ def test_build_getting_here_renders_day_trip_badge_for_grouped_entry() -> None:
 
 def test_build_getting_here_no_day_trip_badge_for_ungrouped_entry() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
-    ai = {"getting_here": {"distance_miles": "120", "drive_time": "2h 30m", "en_route_stops": []}}
+    ai = {"getting_here": {"distance_miles": "120", "travel_time": "2h 30m", "en_route_stops": []}}
     dest = {"id": "moab", "name": "Moab"}
 
     html = assembler._build_getting_here(ai, dest, previous_name="Zion National Park")
@@ -3784,7 +3784,7 @@ def test_build_getting_here_renders_en_route_pointer_when_deferred_and_empty() -
     dest_by_id = {d["id"]: d for d in destinations}
     arches = dict(dest_by_id["arches"])
     arches["base_owned_categories"] = ["en_route_stop"]
-    ai = {"getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []}}
+    ai = {"getting_here": {"distance_miles": "5", "travel_time": "15 min", "en_route_stops": []}}
 
     html = assembler._build_getting_here(ai, arches, previous_name="Moab", dest_by_id=dest_by_id)
 
@@ -3826,7 +3826,7 @@ def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_cluster
                         {"name": "Delicate Arch", "type": "hike", "description": "Iconic hike.", "url": "https://www.nps.gov/arch/delicate"},
                     ],
                     "dinner_recommendations": [],
-                    "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "5", "travel_time": "15 min", "en_route_stops": []},
                 },
                 "scenic_drives": [],
                 "images": [],
@@ -3843,7 +3843,7 @@ def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_cluster
                         {"name": "Grand View Point", "type": "viewpoint", "description": "Sweeping canyon views.", "url": "https://www.nps.gov/cany/grandview"},
                     ],
                     "dinner_recommendations": [],
-                    "getting_here": {"distance_miles": "32", "drive_time": "40 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "32", "travel_time": "40 min", "en_route_stops": []},
                 },
                 "scenic_drives": [],
                 "images": [],
@@ -3933,7 +3933,7 @@ def test_assemble_grouped_child_getting_here_uses_base_not_preceding_sibling() -
                         {"name": "Delicate Arch", "type": "hike", "description": "Iconic hike.", "url": "https://www.nps.gov/arch/delicate"},
                     ],
                     "dinner_recommendations": [],
-                    "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "5", "travel_time": "15 min", "en_route_stops": []},
                 },
                 "scenic_drives": [],
                 "images": [],
@@ -3950,7 +3950,7 @@ def test_assemble_grouped_child_getting_here_uses_base_not_preceding_sibling() -
                         {"name": "Grand View Point", "type": "viewpoint", "description": "Sweeping canyon views.", "url": "https://www.nps.gov/cany/grandview"},
                     ],
                     "dinner_recommendations": [],
-                    "getting_here": {"distance_miles": "32", "drive_time": "40 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "32", "travel_time": "40 min", "en_route_stops": []},
                 },
                 "scenic_drives": [],
                 "images": [],
@@ -4015,7 +4015,7 @@ def test_assemble_moab_group_suppresses_schedule_card_for_grouped_children() -> 
                     "possible_daily_schedule": [
                         {"day_label": "Day 1", "periods": [{"period": "morning", "summary": "Hike to Delicate Arch."}]},
                     ],
-                    "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "5", "travel_time": "15 min", "en_route_stops": []},
                 },
                 "scenic_drives": [],
                 "images": [],
@@ -4071,7 +4071,7 @@ def test_assemble_moab_group_dedupes_base_attractions_against_grouped_child() ->
                         {"name": "Delicate Arch", "type": "hike", "description": "Arches own coverage of the arch.", "url": "https://www.nps.gov/arch/delicate"},
                     ],
                     "dinner_recommendations": [],
-                    "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "5", "travel_time": "15 min", "en_route_stops": []},
                 },
                 "scenic_drives": [],
                 "images": [],
@@ -4127,7 +4127,7 @@ def test_assemble_departure_card_renders_on_base_when_last_destination_is_groupe
                 "ai_content": {
                     "top_attractions": [],
                     "dinner_recommendations": [],
-                    "getting_here": {"distance_miles": "32", "drive_time": "40 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "32", "travel_time": "40 min", "en_route_stops": []},
                     "getting_there": {"route_summary": "Head toward Grand Junction for departure.", "route_options": []},
                 },
                 "scenic_drives": [],
@@ -4159,7 +4159,7 @@ def test_build_group_child_card_omits_schedule_and_renders_nested_div() -> None:
     arches["ai_content"] = {
         "top_attractions": [{"name": "Delicate Arch", "type": "hike", "description": "Iconic hike.", "url": "https://www.nps.gov/arch/delicate"}],
         "possible_daily_schedule": [{"day_label": "Day 1", "periods": [{"period": "morning", "summary": "Should never render."}]}],
-        "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+        "getting_here": {"distance_miles": "5", "travel_time": "15 min", "en_route_stops": []},
     }
 
     html = assembler._build_group_child_card(arches, {}, "Moab", "Moab Springs Ranch, Moab, UT", "Arches National Park", dest_by_id)
@@ -4617,7 +4617,7 @@ def test_build_getting_here_renders_maps_corner_link_when_distinct_from_primary_
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "El Rito",
@@ -4647,7 +4647,7 @@ def test_build_getting_here_omits_maps_corner_link_when_redundant_with_primary_u
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "El Rito",

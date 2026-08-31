@@ -32,7 +32,7 @@ All string values follow the voice and style rules in the system prompt.
   }},
 
   "getting_here": {{
-    "drive_time": "e.g. 2 hrs 15 min — the time for the ARRIVAL MODE stated
+    "travel_time": "e.g. 2 hrs 15 min — the time for the ARRIVAL MODE stated
       below, not necessarily a drive. Omit the field entirely if the mode is
       booked and you do not know its duration; do not substitute a driving
       estimate.",

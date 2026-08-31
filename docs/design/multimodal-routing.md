@@ -393,6 +393,12 @@ confidence as a property of the path a fact travelled).
 
 ### 4.1 Scheduling: rename to `travel_time` first, then guard the overwrite
 
+**LANDED 2026-08-30.** `getting_here.travel_time` (and `getting_there.travel_time`) is the
+canonical field. `_normalize_getting_here` accepts either key from the model and emits the
+canonical one; every internal reader now reads `travel_time` only. Full suite green,
+unchanged at 1865 tests. The byte-identical-output check in the table below is the one part
+not done — it needs a live run.
+
 **Decided 2026-08-21 (open question 4): rename now, as its own change, before the routing
 work.** This section previously recommended reusing `drive_time` and renaming later. That
 recommendation was explicitly conditional on transit being an occasional variation. The

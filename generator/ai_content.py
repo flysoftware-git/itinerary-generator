@@ -56,7 +56,7 @@ def _estimate_haversine_route(
     """Estimate driving distance/time from straight-line (Haversine) coordinates.
 
     A real validation run (SW2026-dipstick68) showed the AI's own
-    `getting_here.distance_miles`/`drive_time` guess for a grouped day-trip
+    `getting_here.distance_miles`/`travel_time` guess for a grouped day-trip
     child (Arches National Park, based from Moab) come back as "212 mi" /
     "30 min" -- internally impossible (424 mph) and wildly wrong versus the
     real ~7-minute drive. This function recomputes those numbers from real
@@ -318,10 +318,10 @@ class AIContentGenerator:
         """
         if not isinstance(getting_here, dict):
             return None
-        drive_minutes = AIContentGenerator._parse_duration_minutes(
-            str(getting_here.get("drive_time", "") or "")
+        travel_minutes = AIContentGenerator._parse_duration_minutes(
+            str(getting_here.get("travel_time", "") or "")
         )
-        if drive_minutes < max(0, int(threshold_minutes or 0)):
+        if travel_minutes < max(0, int(threshold_minutes or 0)):
             return None
 
         best: tuple[int, float, dict[str, Any]] | None = None
@@ -1193,7 +1193,7 @@ class AIContentGenerator:
         No comparison figure (e.g. "~50 mi vs ~60 mi via the direct
         interstate") is fabricated here: nothing in this pipeline currently
         computes a real direct-route distance for this leg to compare
-        against (`getting_there.distance_miles`/`drive_time` are declared in
+        against (`getting_there.distance_miles`/`travel_time` are declared in
         the schema but no code path ever populates them for the departure
         leg) -- inventing a number would be worse than the vaguer label this
         produces. If a real comparison distance becomes available upstream
@@ -1640,7 +1640,7 @@ class AIContentGenerator:
             f"By {mode}, already booked.{detail} Describe THAT journey: operator, "
             f"stations or terminals, and what the leg is like. Name no highways, "
             f"give no driving directions, and do not mention parking. If you do "
-            f"not know the duration, omit drive_time rather than estimating a drive."
+            f"not know the duration, omit travel_time rather than estimating a drive."
         )
 
     def _build_budget_guidance(self, trip_meta: dict[str, Any]) -> str:
@@ -1891,6 +1891,19 @@ class AIContentGenerator:
             return {}
         out = dict(getting_here)
 
+        # The one place `drive_time` is still tolerated. The prompt asks for
+        # `travel_time`, but a model asked for one key sometimes emits the
+        # other and prompts drift, so this boundary accepts either and emits
+        # the canonical name -- permanent defensive handling of model output,
+        # not a deprecation window (docs/design/multimodal-routing.md 4.1).
+        # From here on there is exactly one name: every internal reader sees
+        # `travel_time` only. Deliberately ahead of the not-self-driven early
+        # return below, so a booked rail leg is renamed too.
+        if "drive_time" in out:
+            legacy = out.pop("drive_time")
+            if not str(out.get("travel_time", "") or "").strip():
+                out["travel_time"] = legacy
+
         # En-route stops are a ROAD-TRIP concept: pull off, look at something,
         # drive on. On a booked train, ferry or flight the traveller cannot
         # stop anywhere, so every such stop is noise at best and an invitation
@@ -1956,8 +1969,8 @@ class AIContentGenerator:
             en_route_stops_per_day=self._resolve_enroute_target(dest or {}, trip_meta or {}),
             protected_names=seed_names,
         )
-        if not out.get("route_summary") and out.get("drive_time"):
-            out["route_summary"] = f"Arrival leg into {dest_name} typically takes about {out.get('drive_time')}."
+        if not out.get("route_summary") and out.get("travel_time"):
+            out["route_summary"] = f"Arrival leg into {dest_name} typically takes about {out.get('travel_time')}."
         return out
 
     def _resolve_enroute_target(self, dest: dict[str, Any], trip_meta: dict[str, Any]) -> int:
@@ -2184,7 +2197,7 @@ class AIContentGenerator:
 
         The Departure Route Options card has always been able to render
         mileage and duration badges -- html_assembler gates them on
-        `getting_there.distance_miles` and `drive_time` -- but nothing ever
+        `getting_there.distance_miles` and `travel_time` -- but nothing ever
         set those two keys. The only writer of that dict populates it when a
         one-way scenic drive aligns with the return route, which is about
         route OPTIONS and says nothing about the leg itself, so the badges
@@ -2230,7 +2243,7 @@ class AIContentGenerator:
         if not isinstance(getting_there, dict):
             getting_there = {}
             ai_content["getting_there"] = getting_there
-        if str(getting_there.get("distance_miles", "") or "").strip() and                 str(getting_there.get("drive_time", "") or "").strip():
+        if str(getting_there.get("distance_miles", "") or "").strip() and                 str(getting_there.get("travel_time", "") or "").strip():
             return
 
         miles, time_str = _estimate_haversine_route(
@@ -2240,7 +2253,7 @@ class AIContentGenerator:
         if miles is None or time_str is None:
             return
         getting_there["distance_miles"] = miles
-        getting_there["drive_time"] = time_str
+        getting_there["travel_time"] = time_str
         logger.info(
             "  Departure leg from '%s' to '%s': %s mi / %s",
             origin.get("name", ""), trip_meta.get("return", ""), miles, time_str,
@@ -2253,7 +2266,7 @@ class AIContentGenerator:
         _inject_travel_realism where the rest of the schedule text is built.
         It has to: the two inputs it needs are not ready any earlier.
 
-          - `drive_time` is corrected by
+          - `travel_time` is corrected by
             _override_grouped_child_distance_from_geocode, which runs in
             this same pass. Built earlier, this read the AI's uncorrected
             guess -- and on the leg that motivated the feature that guess
@@ -2300,7 +2313,7 @@ class AIContentGenerator:
             )
             logger.info(
                 "  Lunch stop suggested for '%s': %s (%s)",
-                dest.get("name", ""), name, getting_here.get("drive_time", ""),
+                dest.get("name", ""), name, getting_here.get("travel_time", ""),
             )
 
     def _override_grouped_child_distance_from_geocode(self, trip: dict[str, Any]) -> None:
@@ -2308,7 +2321,7 @@ class AIContentGenerator:
         with a value computed from real geocoded coordinates.
 
         Real dipstick68 run: Arches National Park (a GH #68 grouped child,
-        `group_with: moab`) rendered distance_miles=212 / drive_time="30 min"
+        `group_with: moab`) rendered distance_miles=212 / travel_time="30 min"
         -- physically impossible (424 mph) and nowhere close to the real
         ~7-minute drive from its Moab base. The AI is asked to estimate
         these numbers itself (prompts/destination_content.txt) and can
@@ -2385,10 +2398,10 @@ class AIContentGenerator:
                 logger.info(
                     "  Correcting implausible leg for '%s': %s / %s -> %s mi / %s",
                     dest.get("name", ""), getting_here.get("distance_miles", ""),
-                    getting_here.get("drive_time", ""), miles, time_str,
+                    getting_here.get("travel_time", ""), miles, time_str,
                 )
             getting_here["distance_miles"] = miles
-            getting_here["drive_time"] = time_str
+            getting_here["travel_time"] = time_str
 
     # Implied average speed a stated distance/time pair must fall within to
     # be believed. The floor catches a time so long it implies walking; the
@@ -2445,7 +2458,7 @@ class AIContentGenerator:
         except (TypeError, ValueError, IndexError):
             return True
         minutes = AIContentGenerator._parse_duration_minutes(
-            str(getting_here.get("drive_time", "") or "")
+            str(getting_here.get("travel_time", "") or "")
         )
         if miles <= 0 or minutes <= 0:
             return True
@@ -3372,11 +3385,11 @@ class AIContentGenerator:
                     f"{arrival_phrase}, take a meal break and a short orientation stop; keep activity light after travel.",
                 )
 
-        drive_time = str(getting_here.get("drive_time", "") or "").strip()
-        drive_minutes = _parse_duration_minutes(drive_time)
+        travel_time = str(getting_here.get("travel_time", "") or "").strip()
+        travel_minutes = _parse_duration_minutes(travel_time)
         first = days[0]
         first_periods = first.get("periods", [])
-        if first_periods and not is_first_destination and (drive_time or previous_destination.lower() != "none"):
+        if first_periods and not is_first_destination and (travel_time or previous_destination.lower() != "none"):
             existing_morning_summary = ""
             for period in first_periods:
                 if str(period.get("period", "")).title() == "Morning":
@@ -3385,8 +3398,8 @@ class AIContentGenerator:
             morning_already_arrival_aware = bool(
                 re.search(r"\b(arrive|arrival|drive|driving|route|i-\d+|us-\d+)\b", existing_morning_summary, re.IGNORECASE)
             )
-            if drive_minutes > 0:
-                arrival_minutes = effective_start_minutes + drive_minutes
+            if travel_minutes > 0:
+                arrival_minutes = effective_start_minutes + travel_minutes
                 arrival_label = _format_minutes_as_time(arrival_minutes)
                 if not morning_already_arrival_aware:
                     _set_period_summary(
@@ -3446,7 +3459,7 @@ class AIContentGenerator:
                 # being free time on top of it, so it must be subtracted
                 # before deciding what else fits in the afternoon.
                 packed_afternoon = _build_multi_activity_afternoon_summary(
-                    max(0, effective_activity_budget_minutes - drive_minutes)
+                    max(0, effective_activity_budget_minutes - travel_minutes)
                 )
                 if packed_afternoon:
                     _set_period_summary(first, "Afternoon", packed_afternoon)

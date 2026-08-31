@@ -16609,7 +16609,7 @@ def test_update_route_distance_skips_live_fetch_when_disabled():
 
     discoverer._parse_route_info_from_maps_html.assert_not_called()
     assert getting_here.get("distance_miles")
-    assert getting_here.get("drive_time")
+    assert getting_here.get("travel_time")
 
 
 def test_update_route_distance_uses_live_fetch_when_enabled():
@@ -16632,7 +16632,7 @@ def test_update_route_distance_uses_live_fetch_when_enabled():
 
     discoverer._parse_route_info_from_maps_html.assert_called_once()
     assert getting_here.get("distance_miles") == "84"
-    assert getting_here.get("drive_time") == "1 hr 45 min"
+    assert getting_here.get("travel_time") == "1 hr 45 min"
 
 
 # --- dipstick55 Theme B/C regression: remembered-authoritative-URL cache must

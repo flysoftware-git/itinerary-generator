@@ -15026,7 +15026,7 @@ class URLDiscoverer:
             return
 
         current_miles_raw = str(getting_here.get("distance_miles", "") or "").strip()
-        current_time_raw = str(getting_here.get("drive_time", "") or "").strip()
+        current_time_raw = str(getting_here.get("travel_time", "") or "").strip()
 
         try:
             current_miles = float(re.sub(r"[^\d.]", "", current_miles_raw)) if current_miles_raw else None
@@ -15040,9 +15040,9 @@ class URLDiscoverer:
                 ai["getting_here"] = getting_here
                 logger.info("  Route distance updated to %d mi (was '%s')", int(round(best_miles)), current_miles_raw)
         if best_time and (not current_time_raw or not current_miles):
-            getting_here["drive_time"] = best_time
+            getting_here["travel_time"] = best_time
             ai["getting_here"] = getting_here
-            logger.info("  Route drive_time updated to '%s' (was '%s')", best_time, current_time_raw)
+            logger.info("  Route travel_time updated to '%s' (was '%s')", best_time, current_time_raw)
 
     def _parse_route_info_from_maps_html(self, route_url: str) -> tuple[float | None, str | None]:
         """Fetch Google Maps directions HTML and extract distance (miles) and duration."""

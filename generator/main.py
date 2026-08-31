@@ -1999,7 +1999,7 @@ def _apply_transit_estimates(trip: dict, *, departure_hint: str = "") -> int:
                     if not isinstance(getting_here, dict):
                         getting_here = {}
                         ai["getting_here"] = getting_here
-                    getting_here["drive_time"] = format_duration(estimate["minutes"])
+                    getting_here["travel_time"] = format_duration(estimate["minutes"])
                     if estimate.get("miles"):
                         getting_here["distance_miles"] = estimate["miles"]
                     # Consumed by the renderer so the figure reads as an
@@ -2010,7 +2010,7 @@ def _apply_transit_estimates(trip: dict, *, departure_hint: str = "") -> int:
                     logger.info(
                         "Transit estimate %s -> %s: %s, %s mi",
                         previous_name, name,
-                        getting_here["drive_time"], estimate.get("miles"),
+                        getting_here["travel_time"], estimate.get("miles"),
                     )
         if name:
             previous_name = name

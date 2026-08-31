@@ -818,7 +818,7 @@ trip
 │   ├── lat, lng, lodging.lat/lng, nps_park_code       ← stage 2
 │   ├── ai_content                                     ← stage 3 (one merged call)
 │   │   ├── expected_environment { summary, temperature_high_f, temperature_low_f, what_to_pack[] }
-│   │   ├── getting_here { route_summary, drive_time, distance_miles, en_route_stops[] }
+│   │   ├── getting_here { route_summary, travel_time, distance_miles, en_route_stops[] }
 │   │   ├── getting_there { route_summary, route_options[] }   ← created in RECONCILE,
 │   │   │        last destination only; NOT produced by stage 3
 │   │   ├── top_attractions[]         { name, type, difficulty, duration, must_see,
