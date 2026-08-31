@@ -168,11 +168,18 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                 },
                 "environment": {
                     "type": "string",
-                    "enum": ["dev", "test", "prod"],
+                    # Must stay in step with the --environment choice in
+                    # generator/main.py: the same setting is reachable from a
+                    # manifest, a flag and an env var, and a value the flag
+                    # rejects is not one the manifest should accept.
+                    # `test` was the previous name for `eval`.
+                    "enum": ["dev", "eval", "prod"],
                     "description": "Optional environment tag for hybrid selection. "
                                    "Priority: CLI > manifest > ENVIRONMENT env var. "
                                    "Does not affect config.yaml unless user chooses "
-                                   "to implement environment-specific configs later."
+                                   "to implement environment-specific configs later. "
+                                   "Renamed from `test` to `eval`; a manifest still "
+                                   "carrying `test` needs the one-word change."
                 },
                 "llm_features": {
                     "type": "object",
