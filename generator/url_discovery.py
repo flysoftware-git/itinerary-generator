@@ -37,6 +37,7 @@ import threading
 from threading import Lock
 from typing import Any
 from generator.llm_client import MultiLLMClient
+from generator.transit_routing import suppresses_en_route_stops
 from generator.road_estimate import (
     ROAD_DISTANCE_FACTOR,
     drive_minutes,
@@ -11644,6 +11645,10 @@ class URLDiscoverer:
     def _arrival_is_not_self_driven(cls, dest: dict[str, Any] | None) -> bool:
         if not isinstance(dest, dict):
             return False
+        # GH #2: a manifest can say the leg is transit without any booking.
+        # `mixed` is excluded on purpose -- see AIContentGenerator's copy.
+        if suppresses_en_route_stops(dest):
+            return True
         for leg in (dest.get("transportation") or []):
             if isinstance(leg, dict):
                 mode = str(leg.get("type", "") or "").strip().lower()
@@ -12163,6 +12168,7 @@ class URLDiscoverer:
             origin_lng=origin_lng,
             dest_lat=dest_lat,
             dest_lng=dest_lng,
+            dest=dest,
         )
 
         getting_there = ai.get("getting_there", {}) if isinstance(ai.get("getting_there", {}), dict) else {}
@@ -14995,8 +15001,26 @@ class URLDiscoverer:
         origin_lng: Any,
         dest_lat: Any,
         dest_lng: Any,
+        dest: dict[str, Any] | None = None,
     ) -> None:
-        """Overwrite AI-generated distance/time with values derived from the real route."""
+        """Overwrite AI-generated distance/time with values derived from the real route.
+
+        Not on a transit leg. `best_time` below is a scraped Google DRIVING
+        duration or a 60 mph Haversine estimate, and the overwrite condition
+        fires when `distance_miles` is empty -- which is exactly the state a
+        transit leg is supposed to be in, road miles being meaningless there.
+        Without this return a real 3h15 rail duration is silently replaced by
+        a car estimate two stages later (multimodal-routing.md 4.1).
+
+        Belt and braces: the only caller reaches this after an early return
+        that already covers booked non-road arrivals. That return is about
+        en-route stops and could move; this one is about the number.
+        """
+        if suppresses_en_route_stops(dest):
+            logger.info(
+                "  Route distance/time left alone for '%s': transit leg, not a drive", dest_name
+            )
+            return
         fetched_miles: float | None = None
         fetched_time: str | None = None
         if bool(

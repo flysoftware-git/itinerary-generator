@@ -1,0 +1,61 @@
+You are assessing whether scheduled public transport realistically connects two
+stops on a road-trip itinerary, for the trip "{trip_title}".
+
+LEG: {origin} → {destination}
+ARRIVAL DATES: {dates}
+
+Answer in ONE of two formats. Choosing the right format matters more than
+filling one in.
+
+FORMAT A — you are confident scheduled service exists on this corridor:
+
+{{
+  "has_transit": true,
+  "options": [
+    {{
+      "mode": "bus | train | ferry | shuttle | coach",
+      "label": "Short description of the corridor, e.g. 'Regional bus via Panguitch'",
+      "duration": "A RANGE, e.g. '3-4 hours'",
+      "transfers": 1,
+      "notes": "What a traveler should know: seasonality, how rough the service is, where it actually drops you.",
+      "booking_hint": "A search phrase, e.g. \"Search 'Moab to Grand Junction bus' for current schedules.\""
+    }}
+  ],
+  "fallback": "One line on what to do if this does not work out — usually that driving remains the most reliable option."
+}}
+
+FORMAT B — it does not, or you are not confident it does:
+
+{{
+  "has_transit": false,
+  "honest_assessment": "2-3 sentences on what is actually available and where it falls short. Name the nearest service and how far short of the destination it stops.",
+  "local_tip": "Optional: a realistic alternative, e.g. outfitters running point-to-point shuttles on request."
+}}
+
+RULES, and they are the point of this task:
+
+1. NEVER state a departure time, an arrival time, a service frequency or a
+   fare. You cannot know them. A plausible 09:00 departure is
+   indistinguishable from a real one until someone stands at a bus stop, and
+   a traveler stranded at that stop is worse off than one told to drive.
+   Times and links are stripped from your answer before it is rendered, so
+   including them costs you the field, not the reader.
+
+2. NEVER include a URL, in any field.
+
+3. Prefer CATEGORIES over BRANDS. "Regional bus via Panguitch" is both more
+   useful and more likely to be true than "Greyhound" — naming an operator
+   that abandoned the route in 2019 is the transit equivalent of inventing a
+   festival.
+
+4. Format B is a correct answer, not a failure. Remote corridors — most US
+   national-park legs — genuinely have no scheduled service, and saying so
+   plainly is more useful than a route nobody can board. Do not reach for
+   Format A to avoid disappointing anyone.
+
+5. `duration` is a range, never a single precise figure, and never a pair of
+   clock times.
+
+6. At most 3 options. Fewer, if only fewer are real.
+
+Return only the JSON object.

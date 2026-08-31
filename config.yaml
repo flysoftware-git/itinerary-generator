@@ -259,6 +259,30 @@ cultural_events:
   # generator/claude_search.py, docs/design/search-provider-capability-probe.md.
   search_provider: "grok"
 
+# ── Transit routing (GH #2, Phase 1) ──────────────────────────────────
+transit_routing:
+  # The global kill switch. Left ON because the real gate is the manifest:
+  # a leg only costs a call when it says `transport_mode: transit`/`mixed`
+  # or a `legs:` entry names it, so a trip that never asks for transit never
+  # pays for it. Set false to force every leg back to `auto` regardless of
+  # what the manifest asks for.
+  enabled: true
+  # ai | google_directions.
+  #
+  # `ai` is Phase 1: corridor descriptions, duration ranges and a search
+  # phrase. It cannot know a departure time and does not claim to -- clock
+  # times and URLs are stripped from its output in code, not merely
+  # discouraged in the prompt.
+  #
+  # `google_directions` is Phase 2 and NOT IMPLEMENTED; selecting it raises
+  # rather than quietly falling back, because a silent fallback would report
+  # an AI guess under a name that reads as API-verified. The blocker is not
+  # cost: docs/design/multimodal-routing.md 6.4 records that Maps Platform
+  # terms appear incompatible with this product's publish-a-static-page
+  # model, so the open question is which source instead.
+  provider: "ai"
+
+
 # ── URL discovery ─────────────────────────────────────────────────────────────
 url_discovery:
   # Two independent search-provider knobs for two different clients this

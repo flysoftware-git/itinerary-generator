@@ -19,6 +19,7 @@ import re
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
+from generator.transit_routing import resolved_mode
 from generator.multi_site_grouping import (
     DEFAULT_BASE_OWNED_CATEGORIES,
     category_deferred_to_base,
@@ -1020,17 +1021,11 @@ class HTMLAssembler:
             html += f'    <a href="{gmaps_url}" target="_blank" rel="noopener" class="gmaps-link">Open in Google Maps →</a>\n'
         html += '  </div>\n'
 
-        if distance and travel_time:
-            html += '  <div class="route-headline-row">\n'
-            if route_label:
-                html += f'    <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
-            html += '    <div class="route-badges route-badges-inline">\n'
-            html += f'      <span class="badge badge-distance">{distance} mi</span>\n'
-            html += f'      <span class="badge badge-time">{travel_time}</span>\n'
-            html += '    </div>\n'
-            html += '  </div>\n'
-        elif route_label:
-            html += f'  <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
+        # Independent badges, same reasoning as the arrival side: this pair
+        # gate dropped the duration whenever the distance was missing.
+        html += self._build_route_badges_row(
+            route_label=route_label, distance=distance, travel_time=travel_time,
+        )
 
         if route_summary:
             html += f'  <p class="route-summary">{html_escape.escape(route_summary)}</p>\n'
@@ -1315,13 +1310,31 @@ class HTMLAssembler:
 
         # This link sits inside "Getting Here". Opening driving directions for a
         # booked rail leg made the link contradict the section around it.
+        # GH #2 adds the second way a leg can say it is not a drive: a
+        # manifest `transport_mode: transit`, with no booking involved.
+        # `mixed` stays driving -- there the drive is still the primary
+        # answer and the transit options sit beside it.
         travelmode = self._MAPS_TRAVELMODE_BY_ARRIVAL.get(
             self._booked_arrival_mode(dest), "driving"
         )
+        if resolved_mode(dest) == "transit":
+            travelmode = "transit"
         params = [f"destination={quote(destination)}", f"travelmode={travelmode}", "api=1"]
-        transit_mode = travelmode == "transit"
         if previous_name:
             params.append(f"origin={quote(previous_name)}")
+
+        # Everything below is waypoints, and waypoints are a car concept: you
+        # cannot take a 12-mile detour off a scheduled train. Transit mode
+        # also rejects them outright -- Google returns "Sorry, we could not
+        # calculate transit directions" and the link is dead.
+        #
+        # An early return rather than a branch threaded through the loop, on
+        # purpose. This function's failures live in that loop (the
+        # `optimize:true` mis-geocode below, and design.md 4.5 item 16's
+        # unresolved en-route case), so the transit path is kept out of it
+        # entirely and the driving path is left byte-identical.
+        if travelmode != "driving":
+            return "https://www.google.com/maps/dir/?" + "&".join(params)
 
         waypoint_names: list[str] = []
         destination_name = str(destination or "").strip()
@@ -1386,12 +1399,7 @@ class HTMLAssembler:
             # clinic) and producing a 33-hour, 2,196-mile route instead of
             # the correct ~10-minute local one. Reverted -- there is no
             # working reorder-via-URL option for this scheme.
-            # Transit mode rejects waypoints outright -- Google returns
-            # "Sorry, we could not calculate transit directions" and the link
-            # is dead. Dropping them yields a working point-to-point journey,
-            # which is what a rail leg actually is.
-            if not transit_mode:
-                params.append("waypoints=" + quote("|".join(waypoint_names), safe="|"))
+            params.append("waypoints=" + quote("|".join(waypoint_names), safe="|"))
         return "https://www.google.com/maps/dir/?" + "&".join(params)
 
     def _build_destination_scope_maps_url(self, destination_name: str = "", source_url: str = "") -> str:
@@ -1495,6 +1503,161 @@ class HTMLAssembler:
         "shuttle": ("\U0001f690", "Shuttle"),
         "other": ("\U0001f9f3", "Travel"),
     }
+
+    #: Icons for a SUGGESTED transit option, sharing the vocabulary of
+    #: _TRANSPORT_KINDS so a booked leg and a suggested one read as siblings.
+    #: What distinguishes them is what they carry -- a confirmation number
+    #: versus an Unverified badge -- not a separate visual language
+    #: (multimodal-routing.md 3.3).
+    _TRANSIT_OPTION_ICONS: dict[str, str] = {
+        "bus": "\U0001f68c",
+        "coach": "\U0001f68c",
+        "train": "\U0001f686",
+        "rail": "\U0001f686",
+        "ferry": "\u26f4\ufe0f",
+        "shuttle": "\U0001f690",
+        "tram": "\U0001f68b",
+        "metro": "\U0001f687",
+        "subway": "\U0001f687",
+    }
+
+    def _build_route_badges_row(
+        self,
+        *,
+        route_label: str,
+        distance: Any,
+        travel_time: Any,
+        day_trip_badge: str = "",
+        transit_options: Any = None,
+    ) -> str:
+        """The headline row: route label plus whichever badges actually apply.
+
+        Each badge is independent. Gating them as a pair meant an empty
+        `distance_miles` -- the correct state for a leg measured in
+        timetables rather than road miles -- also suppressed the duration.
+
+        On a Format A transit leg a transfer count stands in for distance:
+        "1 transfer" is the figure a traveler on that leg plans around, and
+        road mileage is not.
+        """
+        distance_text = str(distance or "").strip()
+        time_text = str(travel_time or "").strip()
+
+        badges: list[str] = []
+        if day_trip_badge:
+            badges.append(day_trip_badge.strip())
+        if distance_text:
+            badges.append(
+                f'<span class="badge badge-distance">{html_escape.escape(distance_text)} mi</span>'
+            )
+        if time_text:
+            badges.append(
+                f'<span class="badge badge-time">{html_escape.escape(time_text)}</span>'
+            )
+
+        options = transit_options if isinstance(transit_options, dict) else {}
+        if options.get("has_transit"):
+            first = (options.get("options") or [{}])[0]
+            transfers = first.get("transfers") if isinstance(first, dict) else None
+            if not distance_text and isinstance(transfers, int):
+                label = "1 transfer" if transfers == 1 else f"{transfers} transfers"
+                badges.append(f'<span class="badge badge-transfers">{label}</span>')
+            if options.get("confidence") != "api_verified":
+                badges.append('<span class="badge badge-unverified">&#9888; Unverified</span>')
+
+        if not badges:
+            if not route_label:
+                return ""
+            return f'  <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
+
+        html = '  <div class="route-headline-row">\n'
+        if route_label:
+            html += f'    <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
+        html += '    <div class="route-badges route-badges-inline">\n'
+        for badge in badges:
+            html += f'      {badge}\n'
+        html += '    </div>\n'
+        html += '  </div>\n'
+        return html
+
+    def _build_transit_options_html(self, transit_options: Any) -> str:
+        """The Phase 1 transit block: suggestions, or an honest negative.
+
+        Every prose field goes through html_escape. design.md 4.5 item 11
+        records that `route_summary` is interpolated raw one function away
+        from an identical line that is escaped; that inconsistency stops here
+        rather than being extended (multimodal-routing.md 4.2).
+
+        No field here is ever a link. The model is not permitted to produce
+        one and the normalizer strips it, so there is no href to build.
+        """
+        if not isinstance(transit_options, dict) or not transit_options:
+            return ""
+
+        if not transit_options.get("has_transit"):
+            assessment = str(transit_options.get("honest_assessment", "") or "").strip()
+            if not assessment:
+                return ""
+            html = '  <div class="transit-options">\n'
+            html += '    <div class="transit-header">\U0001f687 PUBLIC TRANSPORT</div>\n'
+            html += f'    <p class="transit-assessment">{html_escape.escape(assessment)}</p>\n'
+            tip = str(transit_options.get("local_tip", "") or "").strip()
+            if tip:
+                html += f'    <p class="transit-local-tip">{html_escape.escape(tip)}</p>\n'
+            html += '  </div>\n'
+            return html
+
+        html = '  <div class="transit-options">\n'
+        html += '    <div class="transit-header">\U0001f687 PUBLIC TRANSPORT OPTIONS</div>\n'
+        for option in (transit_options.get("options") or []):
+            if not isinstance(option, dict):
+                continue
+            mode = str(option.get("mode", "") or "").strip().lower()
+            icon = self._TRANSIT_OPTION_ICONS.get(mode, "\U0001f9f3")
+            label = html_escape.escape(str(option.get("label", "") or ""))
+            html += '    <div class="stop-card transit-option">\n'
+            html += f'      <div class="transit-option-name">{icon} {label}</div>\n'
+
+            meta: list[str] = []
+            duration = str(option.get("duration", "") or "").strip()
+            if duration:
+                meta.append(
+                    f'<span class="badge badge-time">{html_escape.escape(duration)}</span>'
+                )
+            transfers = option.get("transfers")
+            if isinstance(transfers, int):
+                transfer_label = "Direct" if transfers == 0 else (
+                    "1 transfer" if transfers == 1 else f"{transfers} transfers"
+                )
+                meta.append(f'<span class="badge badge-transfers">{transfer_label}</span>')
+            if meta:
+                html += '      <div class="route-badges">' + " ".join(meta) + '</div>\n'
+
+            for field, css in (
+                ("notes", "transit-option-notes"),
+                ("booking_hint", "transit-option-hint"),
+            ):
+                value = str(option.get(field, "") or "").strip()
+                if value:
+                    html += f'      <p class="{css}">{html_escape.escape(value)}</p>\n'
+            html += '    </div>\n'
+
+        fallback = str(transit_options.get("fallback", "") or "").strip()
+        if fallback:
+            html += f'    <p class="transit-fallback">{html_escape.escape(fallback)}</p>\n'
+
+        # The card must not read as a timetable. Same posture as an unlinked
+        # attraction's Unverified marker: a traveler who arrives to find a
+        # fabricated festival is worse off than one told there is nothing on,
+        # and a traveler stranded at a bus stop is worse off still.
+        if transit_options.get("confidence") != "api_verified":
+            html += (
+                '    <p class="transit-disclaimer">&#9888; These options are AI-suggested '
+                'and unverified. Confirm schedules with the operator before relying on '
+                'them.</p>\n'
+            )
+        html += '  </div>\n'
+        return html
 
     def _build_trip_transportation(self, trip: dict[str, Any]) -> str:
         """Trip-wide travel chips rendered under the route overview map.
@@ -1973,26 +2136,24 @@ class HTMLAssembler:
             else ""
         )
 
-        # Route summary with distance and time badges
-        if distance and travel_time:
-            html += '  <div class="route-headline-row">\n'
-            if route_label:
-                html += f'    <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
-            html += '    <div class="route-badges route-badges-inline">\n'
-            if day_trip_badge:
-                html += f'      {day_trip_badge}'
-            html += f'      <span class="badge badge-distance">{distance} mi</span>\n'
-            html += f'      <span class="badge badge-time">{travel_time}</span>\n'
-            html += '    </div>\n'
-            html += '  </div>\n'
-        elif route_label:
-            html += f'  <div class="route-headline">{html_escape.escape(route_label)}'
-            if day_trip_badge:
-                html += f' {day_trip_badge}'
-            html += '</div>\n'
+        # Route summary with distance and time badges. Each badge now
+        # renders on its own merits. This was gated on `distance and
+        # travel_time` together, so a transit leg -- where road miles are
+        # meaningless and `distance_miles` is correctly left empty -- lost
+        # the DURATION badge too, silently, which is the one figure that leg
+        # actually has (multimodal-routing.md 4.2).
+        html += self._build_route_badges_row(
+            route_label=route_label,
+            distance=distance,
+            travel_time=travel_time,
+            day_trip_badge=day_trip_badge,
+            transit_options=gh.get('transit_options'),
+        )
 
         if route_summary:
             html += f'  <p class="route-summary">{route_summary}</p>\n'
+
+        html += self._build_transit_options_html(gh.get('transit_options'))
 
         # GH #68 multi-site grouping §5: en-route stops deferred to the
         # group base render a pointer instead of just silently vanishing.

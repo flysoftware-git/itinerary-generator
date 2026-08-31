@@ -1917,3 +1917,140 @@ class TestPerTripCategorySwitches:
         from generator.main import _manifest_category_override
         m = self._manifest(tmp_path, "categories:\n  trails: maybe\n")
         assert _manifest_category_override(m, "trails") is None
+
+
+# ── GH #2 Phase 1: transit options in the pipeline ────────────────────────
+
+def test_generated_transit_options_are_not_redacted() -> None:
+    """Asserted explicitly so a later reader does not "fix" the asymmetry
+    with booked legs. A booked leg carries a record locator that is enough to
+    change someone else's reservation; a generated option is a guess about a
+    bus, with no personal data in it at all."""
+    import generator.main as main_mod
+
+    trip = {
+        "trip": {},
+        "destinations": [{
+            "id": "bryce",
+            "name": "Bryce Canyon",
+            "planning_links": [{"label": "Plans", "url": "https://example.com"}],
+            "transportation": [{"type": "train", "confirmation_number": "XR7Q2M"}],
+            "ai_content": {"getting_here": {"transit_options": {
+                "has_transit": True,
+                "options": [{"label": "Regional bus via Panguitch"}],
+            }}},
+        }],
+    }
+
+    main_mod._apply_privacy_redaction(trip)
+
+    gh = trip["destinations"][0]["ai_content"]["getting_here"]
+    assert gh["transit_options"]["options"][0]["label"] == "Regional bus via Panguitch"
+    # The booked leg beside it still goes.
+    assert trip["destinations"][0]["transportation"] == []
+
+
+def test_transit_routing_spend_is_attributed_to_a_stage() -> None:
+    """design.md 4.4 records two incidents of spend silently excluded from
+    stage attribution because its operation prefix matched no branch."""
+    import generator.main as main_mod
+
+    metrics = main_mod._build_gate_a_metrics(
+        trip={"trip": {}, "destinations": [{"id": "zion", "name": "Zion"}]},
+        usage_summary={"records": [
+            {"operation": "transit_routing:Bryce Canyon", "estimated_cost_usd": 0.12},
+        ], "total_estimated_cost_usd": 0.12},
+        stage_timings={"stage_3_ai_generation": 60.0, "stage_4_5_parallel": 60.0},
+        skip_events=True,
+        skip_images=True,
+        skip_url_discovery=True,
+        image_counter_delta={},
+        url_validator_counter_delta={},
+    )
+
+    assert metrics["stage_cost_usd"]["stage_3_ai_generation"] == 0.12
+
+
+def test_transit_routing_only_pays_for_legs_the_manifest_asked_about() -> None:
+    import generator.main as main_mod
+    from generator.transit_routing import stamp_resolved_modes
+
+    calls = []
+
+    class _Provider:
+        def generate_transit_options(self, origin, dest, trip_meta):
+            calls.append((origin.get("id"), dest.get("id")))
+            return {"has_transit": False, "honest_assessment": "None."}
+
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"id": "zion", "name": "Zion", "ai_content": {}},
+            {"id": "bryce", "name": "Bryce", "transport_mode": "transit", "ai_content": {}},
+            {"id": "moab", "name": "Moab", "ai_content": {}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+
+    import generator.transit_routing as tr
+    original = tr.build_transit_provider
+    tr.build_transit_provider = lambda *a, **k: _Provider()
+    try:
+        updated = main_mod._apply_transit_routing(trip)
+    finally:
+        tr.build_transit_provider = original
+
+    assert updated == 1
+    assert calls == [("zion", "bryce")]
+    assert "transit_options" in trip["destinations"][1]["ai_content"]["getting_here"]
+    assert "getting_here" not in trip["destinations"][2].get("ai_content", {})
+
+
+def test_a_booked_leg_costs_no_transit_call() -> None:
+    """multimodal-routing.md 4.6: the cheapest branch in the design."""
+    import generator.main as main_mod
+    import generator.transit_routing as tr
+    from generator.transit_routing import stamp_resolved_modes
+
+    calls = []
+
+    class _Provider:
+        def generate_transit_options(self, origin, dest, trip_meta):
+            calls.append(dest.get("id"))
+            return {}
+
+    trip = {
+        "trip": {"transport_mode": "transit"},
+        "destinations": [
+            {"id": "tokyo", "name": "Tokyo", "ai_content": {}},
+            {"id": "kyoto", "name": "Kyoto", "ai_content": {},
+             "transportation": [{"type": "train", "confirmation_number": "XR7Q2M"}]},
+        ],
+    }
+    stamp_resolved_modes(trip)
+
+    original = tr.build_transit_provider
+    tr.build_transit_provider = lambda *a, **k: _Provider()
+    try:
+        assert main_mod._apply_transit_routing(trip) == 0
+    finally:
+        tr.build_transit_provider = original
+    assert calls == []
+
+
+def test_transit_routing_kill_switch_skips_the_stage(tmp_path) -> None:
+    import generator.main as main_mod
+    from generator.transit_routing import stamp_resolved_modes
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("transit_routing:\n  enabled: false\n", encoding="utf-8")
+    trip = {
+        "trip": {"transport_mode": "transit"},
+        "destinations": [
+            {"id": "a", "name": "A", "ai_content": {}},
+            {"id": "b", "name": "B", "ai_content": {}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+
+    assert main_mod._apply_transit_routing(trip, config_path=str(cfg)) == 0

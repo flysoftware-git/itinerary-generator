@@ -119,6 +119,21 @@ outside the registry, which is the right default (§7 non-goals).
 
 ### 2.1 Phase 1 — AI-only, and what it honestly cannot do
 
+**LANDED 2026-08-30**, as specified below. `generator/transit_routing.py` holds the
+normalizer, the leg-mode resolution and the `ai | google_directions` factory;
+`prompts/transit_options.txt` asks for Shape B; `config.yaml`'s `transit_routing` block
+carries the kill switch and the provider key. Options are generated at the end of stage 3
+(`main._apply_transit_routing`) and render in `_build_getting_here` behind an
+`⚠ Unverified` badge and the §4.5 disclaimer. Selecting `google_directions` raises rather
+than falling back, so nothing can report an AI guess under a name that reads as verified.
+
+Not done, and each needs a live run rather than more code: whether the model's claims are
+true, real per-run cost against §6, and whether the transit card and the day schedule agree
+on the page. `travelmode=transit` in the public Maps URL scheme was already live-verified
+before this work (the waypoint-rejection note in `_build_route_gmaps_url`), which is why
+§4.3's early return could be written as a certainty rather than an experiment.
+
+
 The issue accepts that "this information initially may not be reliable." That is the right
 instinct but understates the problem, so state it plainly:
 

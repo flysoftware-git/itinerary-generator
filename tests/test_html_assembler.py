@@ -5173,3 +5173,180 @@ def test_previous_lodging_stop_returns_the_immediate_predecessor_when_ungrouped(
     ]
 
     assert HTMLAssembler._previous_lodging_stop(destinations, 1)["name"] == "Moab, Utah"
+
+
+# ── GH #2 Phase 1: transit options rendering ──────────────────────────────
+
+def _transit_ai(transit_options, **getting_here):
+    gh = {"route_summary": "By rail.", "travel_time": "3 hours"}
+    gh.update(getting_here)
+    gh["transit_options"] = transit_options
+    return {"getting_here": gh}
+
+
+_FORMAT_A = {
+    "has_transit": True,
+    "source": "ai",
+    "confidence": "unverified",
+    "options": [
+        {
+            "mode": "bus",
+            "label": "Regional bus via Panguitch",
+            "duration": "3-4 hours",
+            "transfers": 1,
+            "notes": "Runs daily in peak season.",
+            "booking_hint": "Search 'Bryce to Capitol Reef bus' for schedules.",
+        }
+    ],
+    "fallback": "Driving remains the most reliable option on this corridor.",
+}
+
+_FORMAT_B = {
+    "has_transit": False,
+    "honest_assessment": "No scheduled public transit connects Bryce Canyon to Capitol Reef.",
+    "local_tip": "Springdale outfitters run point-to-point shuttles on request.",
+}
+
+
+def test_transit_card_renders_format_a_options() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_getting_here(
+        _transit_ai(_FORMAT_A), {"name": "Capitol Reef"}, previous_name="Bryce Canyon"
+    )
+    assert "PUBLIC TRANSPORT OPTIONS" in html
+    assert "Regional bus via Panguitch" in html
+    assert "3-4 hours" in html
+    assert "1 transfer" in html
+    assert "Runs daily in peak season." in html
+    assert "Driving remains the most reliable option" in html
+
+
+def test_transit_card_renders_format_b_honest_assessment() -> None:
+    """The honest negative is a product surface, not an empty card."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_getting_here(
+        _transit_ai(_FORMAT_B), {"name": "Capitol Reef"}, previous_name="Bryce Canyon"
+    )
+    assert "No scheduled public transit connects" in html
+    assert "point-to-point shuttles" in html
+    assert "PUBLIC TRANSPORT OPTIONS" not in html
+
+
+def test_unverified_badge_shown_unless_api_verified() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_getting_here(
+        _transit_ai(_FORMAT_A), {"name": "Capitol Reef"}, previous_name="Bryce Canyon"
+    )
+    assert "Unverified" in html
+    assert "AI-suggested and unverified" in html
+
+    verified = dict(_FORMAT_A, confidence="api_verified", source="google_directions")
+    html = assembler._build_getting_here(
+        _transit_ai(verified), {"name": "Capitol Reef"}, previous_name="Bryce Canyon"
+    )
+    assert "Unverified" not in html
+    assert "AI-suggested and unverified" not in html
+
+
+def test_duration_badge_survives_an_empty_distance() -> None:
+    """The rendering trap in multimodal-routing.md 4.2: the badge row used to
+    be gated on distance AND duration, so a transit leg with no road mileage
+    silently lost the one figure it does have."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_getting_here(
+        _transit_ai(_FORMAT_A, distance_miles=""),
+        {"name": "Capitol Reef"},
+        previous_name="Bryce Canyon",
+    )
+    assert "badge-time" in html
+    assert "3 hours" in html
+    assert "badge-distance" not in html
+
+
+def test_transfer_badge_substitutes_for_distance_on_a_transit_leg() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_getting_here(
+        _transit_ai(_FORMAT_A, distance_miles=""),
+        {"name": "Capitol Reef"},
+        previous_name="Bryce Canyon",
+    )
+    assert "badge-transfers" in html
+
+
+def test_distance_badge_still_renders_without_a_duration() -> None:
+    """The same gate, the other way round."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {"distance_miles": "212", "travel_time": ""}}
+    html = assembler._build_getting_here(ai, {"name": "Moab"}, previous_name="Bryce Canyon")
+    assert "212 mi" in html
+    assert "badge-time" not in html
+
+
+def test_every_transit_prose_field_is_escaped() -> None:
+    """design.md 4.5 item 11 records route_summary being interpolated raw one
+    function away from an identical escaped line. Do not extend that."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    hostile = "<script>alert('x')</script>"
+    payload = {
+        "has_transit": True,
+        "confidence": "unverified",
+        "options": [{
+            "mode": "bus",
+            "label": hostile,
+            "duration": hostile,
+            "notes": hostile,
+            "booking_hint": hostile,
+        }],
+        "fallback": hostile,
+    }
+    html = assembler._build_getting_here(
+        _transit_ai(payload), {"name": "Capitol Reef"}, previous_name="Bryce Canyon"
+    )
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+    html_b = assembler._build_getting_here(
+        _transit_ai({"has_transit": False, "honest_assessment": hostile, "local_tip": hostile}),
+        {"name": "Capitol Reef"},
+        previous_name="Bryce Canyon",
+    )
+    assert "<script>" not in html_b
+
+
+def test_a_leg_with_no_transit_options_renders_exactly_as_before() -> None:
+    """The default path must be untouched: no transit markup at all."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {"route_summary": "US-89 to UT-12.", "distance_miles": "95",
+                           "travel_time": "2 hrs 15 min"}}
+    html = assembler._build_getting_here(ai, {"name": "Bryce"}, previous_name="Zion")
+    assert "transit-options" not in html
+    assert "Unverified" not in html
+    assert "95 mi" in html and "2 hrs 15 min" in html
+
+
+def test_transit_leg_maps_url_is_transit_mode_without_waypoints() -> None:
+    """multimodal-routing.md 4.3: an early return past the waypoint block.
+    Transit mode rejects waypoints outright -- Google returns 'could not
+    calculate transit directions' and the link is dead."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest = {"name": "Capitol Reef", "_transport_mode": "transit"}
+    stops = [{"name": "Escalante", "geocode_lat": 37.7, "geocode_lng": -111.6}]
+
+    url = assembler._build_route_gmaps_url("Bryce Canyon", dest, stops)
+
+    assert "travelmode=transit" in url
+    assert "waypoints=" not in url
+    assert "destination=Capitol%20Reef" in url
+
+
+def test_mixed_leg_keeps_driving_directions_and_its_waypoints() -> None:
+    """Under `mixed` the drive is still the primary answer, so its roadside
+    stops are still real."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest = {"name": "Capitol Reef", "_transport_mode": "mixed"}
+    stops = [{"name": "Escalante", "geocode_lat": 37.7, "geocode_lng": -111.6}]
+
+    url = assembler._build_route_gmaps_url("Bryce Canyon", dest, stops)
+
+    assert "travelmode=driving" in url
+    assert "waypoints=" in url

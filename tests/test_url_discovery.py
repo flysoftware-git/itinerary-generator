@@ -17657,3 +17657,65 @@ class TestTrailsSwitchClosesThePrewarm:
             disc._prewarm_attraction_batch_with_itinerary_items(
                 ai=ai, dest_name="Zion National Park", dest_dates="", seed_names=None)
         trail.assert_called_once()
+
+
+# ── GH #2 Phase 1: the stage-3-to-stage-5b overwrite hazard ───────────────
+
+def test_route_distance_update_returns_early_on_a_transit_leg() -> None:
+    """multimodal-routing.md 4.1. `best_time` here is a scraped Google
+    DRIVING duration or a 60 mph Haversine estimate, and the overwrite fires
+    when `distance_miles` is empty -- which is exactly the state a transit leg
+    is supposed to be in. Without the guard a real rail duration set in stage
+    3 is silently replaced by a car estimate in stage 5b."""
+    from generator.url_discovery import URLDiscoverer
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    getting_here = {"travel_time": "3 hr 15 min", "distance_miles": ""}
+    ai = {"getting_here": getting_here}
+
+    discoverer._update_route_distance_and_time(
+        ai=ai,
+        getting_here=getting_here,
+        origin_name="Bryce Canyon",
+        dest_name="Capitol Reef",
+        origin_lat=37.6, origin_lng=-112.1,
+        dest_lat=38.2, dest_lng=-111.2,
+        dest={"name": "Capitol Reef", "_transport_mode": "transit"},
+    )
+
+    assert getting_here["travel_time"] == "3 hr 15 min"
+    assert getting_here["distance_miles"] == ""
+
+
+def test_route_distance_update_still_runs_on_a_driving_leg() -> None:
+    """The guard must not disarm the correction it was added beside."""
+    from generator.url_discovery import URLDiscoverer
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._route_distance_live_fetch_enabled = False
+    getting_here = {"travel_time": "", "distance_miles": ""}
+    ai = {"getting_here": getting_here}
+
+    discoverer._update_route_distance_and_time(
+        ai=ai,
+        getting_here=getting_here,
+        origin_name="Bryce Canyon",
+        dest_name="Capitol Reef",
+        origin_lat=37.6, origin_lng=-112.1,
+        dest_lat=38.2, dest_lng=-111.2,
+        dest={"name": "Capitol Reef"},
+    )
+
+    assert getting_here["travel_time"]
+    assert getting_here["distance_miles"]
+
+
+def test_en_route_discovery_skipped_on_a_transport_mode_transit_leg() -> None:
+    """There is no roadside to stop at on a train, and this path harvests its
+    own stops independently of ai_content's -- two sources, one rule."""
+    from generator.url_discovery import URLDiscoverer
+
+    assert URLDiscoverer._arrival_is_not_self_driven({"_transport_mode": "transit"}) is True
+    # `mixed` keeps them: the drive is still on the table there.
+    assert URLDiscoverer._arrival_is_not_self_driven({"_transport_mode": "mixed"}) is False
+    assert URLDiscoverer._arrival_is_not_self_driven({}) is False

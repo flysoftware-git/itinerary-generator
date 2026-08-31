@@ -522,6 +522,7 @@ def _build_gate_a_metrics(
             "what_to_know:",
             "scenic_drives:",
             "url_candidates:",
+            "transit_routing:",   # GH #2 Phase 1, generated during stage 3
         )):
             ai_calls += 1
             ai_cost = round(ai_cost + cost, 6)
@@ -1956,6 +1957,82 @@ self.addEventListener('fetch', (event) => {
         (output_dir / "sw.js").write_text(sw_js, encoding="utf-8")
 
 
+def _transit_routing_enabled(config_path: str | Any) -> bool:
+    """`transit_routing.enabled`, the global kill switch above the manifest.
+
+    Fail-open to enabled: the per-leg gate is the manifest itself, so an
+    unreadable config should not silently drop a feature a trip asked for.
+    """
+    try:
+        import yaml
+
+        with open(str(config_path), "r", encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh) or {}
+        section = cfg.get("transit_routing") or {}
+        return bool(section.get("enabled", True))
+    except Exception:
+        return True
+
+
+def _apply_transit_routing(
+    trip: dict, *, config_path: str | Any = "config.yaml", llm_client: Any = None
+) -> int:
+    """Attach `getting_here.transit_options` to legs the manifest asked about.
+
+    Only legs whose resolved mode is `transit` or `mixed` and that carry no
+    booked arrival cost a call (transit_routing.should_generate_options), so
+    a manifest that never mentions transit never pays for this stage.
+
+    Returns the number of legs given options, for the run summary.
+    """
+    from generator import transit_routing
+    from generator.multi_site_grouping import is_grouped
+
+    if not _transit_routing_enabled(config_path):
+        logger.info("Transit routing skipped: transit_routing.enabled is false")
+        return 0
+
+    destinations = [d for d in (trip.get("destinations") or []) if isinstance(d, dict)]
+    trip_meta = trip.get("trip") if isinstance(trip.get("trip"), dict) else {}
+
+    wanted: list[tuple[dict, dict]] = []
+    previous: dict | None = None
+    for dest in destinations:
+        mode = transit_routing.resolved_mode(dest)
+        if previous is not None and transit_routing.should_generate_options(dest, mode):
+            wanted.append((previous, dest))
+        # The traveler leaves from where they slept, so a grouped day-trip
+        # entry is not the origin of the next leg -- the same correction the
+        # departure-leg label makes.
+        if not is_grouped(dest):
+            previous = dest
+    if not wanted:
+        return 0
+
+    try:
+        provider = transit_routing.build_transit_provider(config_path, llm_client=llm_client)
+    except NotImplementedError as exc:
+        logger.warning("Transit routing disabled for this run: %s", exc)
+        return 0
+
+    updated = 0
+    for origin, dest in wanted:
+        ai = dest.get("ai_content")
+        if not isinstance(ai, dict):
+            continue
+        getting_here = ai.get("getting_here")
+        if not isinstance(getting_here, dict):
+            getting_here = {}
+            ai["getting_here"] = getting_here
+        getting_here["transit_options"] = provider.generate_transit_options(
+            origin, dest, trip_meta
+        )
+        updated += 1
+
+    logger.info("Transit routing: %d leg(s) given options", updated)
+    return updated
+
+
 def _apply_transit_estimates(trip: dict, *, departure_hint: str = "") -> int:
     """Replace invented drive figures with real transit estimates.
 
@@ -2435,6 +2512,14 @@ def main(
         click.echo(f"  ERROR: {exc}", err=True)
         _finalize_run("input_error", 1, str(exc))
         sys.exit(1)
+    # Resolve every leg's travel mode once, here, and stamp it on the
+    # arriving destination. Both ai_content and url_discovery act on the
+    # answer but see only a destination, never the trip-wide default or the
+    # `legs:` list; two independent resolutions would be free to drift.
+    from generator.transit_routing import stamp_resolved_modes
+
+    stamp_resolved_modes(trip)
+
     stripped_seed_count = _strip_destination_seeds(trip) if noseed else 0
     if noseed:
         click.echo(f"   Seeds    : disabled for this run ({stripped_seed_count} seed(s) ignored)")
@@ -2688,6 +2773,16 @@ def main(
                 dest["ai_content"]["possible_daily_schedule"] = []
 
     click.echo(f"  ✓ AI content generated for {len(trip['destinations'])} destination(s)")
+
+    # Runs inside stage 3 and not later: url_discovery (stage 5b) reads the
+    # resolved leg mode to decide whether to hunt for roadside stops, and a
+    # transit leg that gains its options after that has already paid for
+    # discovery it did not want.
+    _transit_legs = _apply_transit_routing(
+        trip, config_path=config_path, llm_client=llm_client
+    )
+    if _transit_legs:
+        click.echo(f"  ✓ Transit options generated for {_transit_legs} leg(s)")
     stage_timings["stage_3_ai_generation"] = _elapsed_seconds(stage_3_started)
 
     # ── Stages 4 + 5a + 5b: run concurrently (all independent of each other) ─

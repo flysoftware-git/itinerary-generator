@@ -19,6 +19,7 @@ import requests
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient, LLMCircuitOpenError
 from generator.multi_site_grouping import group_base_id, is_grouped, is_park_like
+from generator.transit_routing import suppresses_en_route_stops
 from generator.road_estimate import (
     ROAD_DISTANCE_FACTOR,
     drive_minutes,
@@ -1870,12 +1871,19 @@ class AIContentGenerator:
 
     @classmethod
     def _arrival_is_not_self_driven(cls, dest: dict[str, Any] | None) -> bool:
-        """True only when a booked leg SAYS the arrival is not by road.
+        """True when the arrival is stated not to be by road.
+
+        Two ways to state it: a booked leg whose type says so, or a manifest
+        `transport_mode: transit` on the leg (GH #2). `mixed` is deliberately
+        not included -- there the drive is still on the table, so its
+        roadside stops are still real.
 
         Silence means unknown, and unknown keeps the existing behaviour: a
         manifest that states no transportation is most likely a road trip,
         which is what this generator was built for.
         """
+        if suppresses_en_route_stops(dest):
+            return True
         return cls._arrival_mode(dest) in cls._NON_DRIVING_ARRIVAL_MODES
 
     def _normalize_getting_here(
