@@ -1,3 +1,10 @@
+# Priced categories, answered per trip. All three are off globally in
+# config.yaml as a cost measure. This trip buys cultural events back
+# for itself; trails stay off (the manifest asks for no hikes) and
+# en-route stops stay off (the legs are trains, not drives).
+categories:
+  cultural_events: true
+
 # ============================================================
 # Europe Exploration — five capitals by rail
 # ============================================================
