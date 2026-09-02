@@ -390,10 +390,18 @@
          reliably tellable apart across cards even before parsing the tiny
          glyph inside: a warm tan pill always means "primary source link",
          a blue pill always means "secondary open-in-maps corner badge". */
-      .attr-external-link { display: inline-flex; align-items: center; background: #f3e8db; color: #6b4a2b; border: 1px solid #e3cfae; border-radius: 9999px; padding: 2px 9px; font-size: 0.82rem; font-weight: 600; text-decoration: none; margin-left: 0.45rem; line-height: 1.5; }
-      .attr-external-link:hover { background: #e9d9c0; text-decoration: none; }
-      .badge-map { background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; text-decoration: none; cursor: pointer; }
+      /* The designator says what KIND of source the title link is. It is a
+         <span>, not a control, and it had a hover background that said
+         otherwise -- so it read as a second, broken link. It now sits flat and
+         muted with cursor:default, and carries no hover state at all. */
+      .attr-external-link { display: inline-flex; align-items: center; background: transparent; color: #8a7a66; border: none; border-radius: 0; padding: 0 0 0 2px; font-size: 0.8rem; font-weight: 400; text-decoration: none; margin-left: 0.35rem; line-height: 1.5; opacity: 0.75; cursor: default; }
+      /* The real map link is a control and must look like one: larger glyph,
+         its own pill, a pointer, and a hover state. Previously it inherited
+         .badge's 12px while the designator beside it rendered at 0.82rem, so
+         the clickable one was the SMALLER of the two. */
+      .badge-map { background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; text-decoration: none; cursor: pointer; font-size: 15px; line-height: 1; padding: 4px 10px; }
       .badge-map:hover { background: #bae6fd; }
+      .badge-map:focus-visible { outline: 2px solid #0369a1; outline-offset: 2px; }
       .badge-hike-strenuous { background: #fee2e2; color: #991b1b; font-size: 0.75rem; }
       .badge-hike-moderate { background: #dcfce7; color: #15803d; font-size: 0.75rem; }
       .badge-hike-easy { background: #dcfce7; color: #15803d; font-size: 0.75rem; }
