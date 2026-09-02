@@ -328,6 +328,7 @@
       .route-headline-row { display: flex; align-items: center; justify-content: space-between; gap: 0.8rem; flex-wrap: nowrap; margin: 0.35rem 0 0.55rem; }
       .route-headline-row .route-badges { margin: 0; }
       .badge-distance, .badge-time { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; border-radius: 9999px; padding: 4px 12px; font-size: 0.83rem; font-weight: 600; }
+      .badge-fare { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; border-radius: 9999px; padding: 4px 12px; font-size: 0.83rem; font-weight: 600; }
       .badge-transfers { background: #e0e7ff; color: #3730a3; border: 1px solid #c7d2fe; border-radius: 9999px; padding: 4px 12px; font-size: 0.83rem; font-weight: 600; }
       .badge-unverified { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; border-radius: 9999px; padding: 4px 12px; font-size: 0.83rem; font-weight: 600; }
       /* Public transport: suggested, never booked. Deliberately the same
@@ -603,7 +604,12 @@
         if(typeof L==='undefined'){setTimeout(init,150);return;}
         var stops='<!--MAP_MARKERS_JSON-->';
         var map=L.map('overview-map',{zoomControl:true,scrollWheelZoom:false});
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors',maxZoom:13}).addTo(map);
+        /* CARTO Voyager rather than standard OSM tiles: OSM renders place labels in
+           the local language, so a Japan itinerary came back captioned in Japanese
+           for an English-language page. Voyager labels in Latin script worldwide.
+           Keyless and same {s}/{z}/{x}/{y} scheme, so this is a URL swap; CARTO's
+           attribution is required alongside OSM's and is included below. */
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',{attribution:'© OpenStreetMap contributors © CARTO',subdomains:'abcd',maxZoom:13}).addTo(map);
         L.polyline(stops.map(function(s){return s.c;}),{color:'<!--THEME_COLOR-->',weight:2.5,dashArray:'7,6',opacity:0.85}).addTo(map);
         stops.forEach(function(s){
           var stopIndex = s.stop_index || s.idx;

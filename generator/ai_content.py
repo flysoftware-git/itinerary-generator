@@ -880,6 +880,7 @@ class AIContentGenerator:
         trip.update(strip_markdown_emphasis(trip))
 
         self._enforce_banned_marketing_language(trip)
+        self._clear_unanchored_first_leg(trip)
         self._override_grouped_child_distance_from_geocode(trip)
         self._populate_departure_leg_distance(trip)
         self._inject_lunch_stop_suggestions(trip)
@@ -2213,6 +2214,61 @@ class AIContentGenerator:
         selected = list(protected_items)
         selected.extend(remaining[: max(0, target - len(selected))])
         return selected
+
+    def _clear_unanchored_first_leg(self, trip: dict[str, Any]) -> None:
+        """Drop the first destination's arrival figures when nothing precedes it.
+
+        The prompt asks for `getting_here` unconditionally, so the first stop
+        gets a leg description whether or not there is a journey to describe.
+        With no `trip.departure` set there is no origin, and the model fills
+        the gap from the only thing in front of it -- the prompt's own
+        example values. The Japan acceptance run rendered Shinagawa as
+        "95 mi / 2 hrs 15 min / Drive from your previous stop", which are
+        verbatim the numbers in destination_content.txt, for a destination
+        that has no previous stop.
+
+        The arrival-side counterpart to _populate_departure_leg_distance,
+        which fills the departure leg's badges because they are computable.
+        These are not: nothing in the manifest says where the traveler
+        started, so the honest render is no badges at all. Set
+        `trip.departure` and this stops applying -- there is a real origin
+        then, and the leg is real with it.
+
+        Deliberately narrow: the figures and the leg prose only. En-route
+        stops are left alone -- url_discovery cannot harvest them without an
+        origin either, so in practice there are none, and silently deleting
+        content that a path not considered here did produce is a bigger risk
+        than an empty list is a win.
+        """
+        destinations = [d for d in (trip.get("destinations") or []) if isinstance(d, dict)]
+        if not destinations:
+            return
+        trip_meta = trip.get("trip", {}) if isinstance(trip.get("trip"), dict) else {}
+        if str(trip_meta.get("departure", "") or "").strip():
+            return
+
+        first = destinations[0]
+        ai_content = first.get("ai_content")
+        if not isinstance(ai_content, dict):
+            return
+        getting_here = ai_content.get("getting_here")
+        if not isinstance(getting_here, dict):
+            return
+
+        dropped = {
+            key: getting_here.get(key)
+            for key in ("distance_miles", "travel_time", "route_summary")
+            if getting_here.get(key)
+        }
+        if not dropped:
+            return
+        for key in dropped:
+            getting_here[key] = ""
+        logger.info(
+            "  First destination '%s' has no stated origin (trip.departure unset): "
+            "dropped invented arrival leg (%s)",
+            first.get("name", ""), ", ".join(sorted(dropped)),
+        )
 
     def _populate_departure_leg_distance(self, trip: dict[str, Any]) -> None:
         """Give the departure leg the distance/time the arriving legs have.

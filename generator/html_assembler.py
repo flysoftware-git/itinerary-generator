@@ -1655,6 +1655,11 @@ class HTMLAssembler:
                 meta.append(
                     f'<span class="badge badge-time">{html_escape.escape(duration)}</span>'
                 )
+            fare = str(option.get("fare", "") or "").strip()
+            if fare:
+                meta.append(
+                    f'<span class="badge badge-fare">{html_escape.escape(fare)}</span>'
+                )
             transfers = option.get("transfers")
             if isinstance(transfers, int):
                 meta.append(
@@ -2153,6 +2158,21 @@ class HTMLAssembler:
             "market": "🛍️",
         }
         
+        # Nothing to describe: no leg label, no figures, no prose, no stops
+        # and no transit options. Rendering the header alone leaves a card
+        # that says "Getting Here" and then stops, which is what the first
+        # destination of a manifest with no `trip.departure` produced once
+        # its invented figures were dropped upstream.
+        if not any((
+            route_label,
+            str(distance or "").strip(),
+            str(travel_time or "").strip(),
+            str(route_summary or "").strip(),
+            visible_stops,
+            gh.get("transit_options"),
+        )):
+            return ""
+
         html = '<div class="card getting-here-card getting-here-subcard">\n'
         html += '  <div class="getting-here-header">\n'
         html += '    <h3>🚗 Getting Here</h3>\n'

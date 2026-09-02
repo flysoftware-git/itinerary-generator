@@ -197,7 +197,19 @@ order-of-magnitude signal, a search phrase, and — most valuably — a defensib
 
 **What Phase 1 cannot deliver, and must not appear to:** departure times, arrival times,
 service frequency, seasonal windows stated as fact, operator names presented as verified,
-fares, or booking links. The issue lists "scheduled departures", "service availability",
+~~fares,~~ or booking links.
+
+> **Fares: reversed by owner call 2026-09-02, as a band.** The objection was
+> that "a fare quoted at build time is wrong by the time it is read" (§7.2) — which is an
+> argument against a *quote*, and would have excluded duration too had duration been emitted
+> as a single figure. It is not; it is a band, and so is `fare`. A range in local currency is
+> the same class of claim as "3-4 hours": an order of magnitude a traveler budgets with,
+> under the same `⚠ Unverified` badge, that nobody can hold the page to. Enforced the same
+> way as everything else here rather than asked for: a `fare` with no digit in it is dropped,
+> because "varies by season" and "cheap" are what a model writes when it does not know and
+> both read as information once they are in a badge. The prompt also asks that a leg commonly
+> covered by a rail pass or travelcard say so in `notes` — for many travelers that is the
+> real answer and the fare is moot. The issue lists "scheduled departures", "service availability",
 "seasonal variations" and "ticketing URLs" as goals. Phase 1 addresses none of them
 honestly. It addresses *shape*. Say so in the UI (§4.5) rather than hoping the reader
 infers it.
@@ -779,8 +791,10 @@ identically. If they behave the same, one is dead config. Proposed split in open
 - **No intra-destination transit** — local buses, park shuttles, gondolas. Shuttle
   requirements already surface through `expected_environment` and attraction
   `practical_note`s.
-- **No booking, fares, seat availability, or real-time status.** The output is a static file
-  with no server; a fare quoted at build time is wrong by the time it is read.
+- **No booking, seat availability, or real-time status.** The output is a static file
+  with no server. ~~Fares~~ — **reversed 2026-09-02, see §2.1**: a fare *quote* is what this
+  ruled out, and a band is not a quote. Booking, seat availability and real-time status stay
+  out, for the reason that still holds: they are only true at the instant they are read.
 - **No replacement of `scenic_drives` or `has_high_clearance_vehicle`** (§4.4).
 - **No change to booked legs** — `TRANSPORTATION_ITEM_SCHEMA`, `reservation_ingest` and the
   transportation pills are untouched (§3.3).

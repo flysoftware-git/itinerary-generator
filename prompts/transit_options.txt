@@ -16,6 +16,7 @@ FORMAT A — you are confident scheduled service exists on this corridor:
       "mode": "bus | train | ferry | shuttle | coach",
       "label": "Short description of the corridor, e.g. 'Regional bus via Panguitch'",
       "duration": "A RANGE, e.g. '3-4 hours'",
+      "fare": "Approximate one-way cost for one adult, as a RANGE in the local currency, e.g. '¥13,000-14,500'. Omit the field entirely if you are unsure.",
       "transfers": 1,
       "notes": "What a traveler should know: seasonality, how rough the service is, where it actually drops you.",
       "booking_hint": "A search phrase, e.g. \"Search 'Moab to Grand Junction bus' for current schedules.\""
@@ -56,6 +57,15 @@ RULES, and they are the point of this task:
 5. `duration` is a range, never a single precise figure, and never a pair of
    clock times.
 
-6. At most 3 options. Fewer, if only fewer are real.
+6. `fare` is a range too, and for the same reason: you cannot know today's
+   price, and a page cannot be updated after it is read. Give the
+   order of magnitude a traveler budgets with, not a number they would take
+   to a ticket window. A fare with no digits in it is dropped, so write
+   "unknown" by OMITTING the field, never by filling it with "varies".
+   If a widely-held pass (a rail pass, a regional travelcard) commonly covers
+   this leg, say so in `notes` -- for many travelers that is the real answer
+   and the fare is moot.
+
+7. At most 3 options. Fewer, if only fewer are real.
 
 Return only the JSON object.

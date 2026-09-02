@@ -123,10 +123,10 @@ class TestNormalizer:
     def test_unknown_keys_do_not_ride_along(self):
         out = normalize_transit_options({
             "has_transit": True,
-            "options": [_option(fare="$45", operator_phone="555-0100")],
+            "options": [_option(operator_phone="555-0100", seat_class="green car")],
         })
         assert set(out["options"][0]) <= {
-            "mode", "label", "duration", "transfers", "notes", "booking_hint"
+            "mode", "label", "duration", "fare", "transfers", "notes", "booking_hint"
         }
 
     def test_non_numeric_transfers_is_dropped_not_guessed(self):
@@ -337,3 +337,54 @@ class TestOptionDuration:
 
         assert option_duration(None) == ""
         assert option_duration({"has_transit": True, "options": "a bus"}) == ""
+
+
+class TestFare:
+    """Owner call 2026-09-02, reversing the fare exclusion in 2.1 and 7.2.
+
+    The objection there was that a fare quoted at build time is wrong by the
+    time it is read -- true of a quote, and equally true of duration had it
+    been emitted as a single figure. Both are bands.
+    """
+
+    def test_a_fare_band_survives(self):
+        out = normalize_transit_options({
+            "has_transit": True,
+            "options": [_option(fare="\u00a513,000-14,500")],
+        })
+        assert out["options"][0]["fare"] == "\u00a513,000-14,500"
+
+    @pytest.mark.parametrize("fare", ["varies by season", "cheap", "ask at the counter", ""])
+    def test_a_fare_with_no_digits_is_dropped(self, fare):
+        """The shapes a model reaches for when it does not know. All of them
+        read as information once they are sitting in a badge."""
+        out = normalize_transit_options({
+            "has_transit": True, "options": [_option(fare=fare)],
+        })
+        assert "fare" not in out["options"][0]
+
+    def test_a_url_in_the_fare_is_stripped_like_any_other_prose(self):
+        out = normalize_transit_options({
+            "has_transit": True,
+            "options": [_option(fare="$45 at https://greyhound.com")],
+        })
+        assert "greyhound.com" not in out["options"][0]["fare"]
+        assert "45" in out["options"][0]["fare"]
+
+    def test_an_option_is_still_valid_without_a_fare(self):
+        out = normalize_transit_options({
+            "has_transit": True, "options": [_option()],
+        })
+        assert out["has_transit"] is True
+        assert "fare" not in out["options"][0]
+
+
+def test_the_prompt_asks_for_a_fare_band_not_a_price():
+    from generator.transit_routing import PROMPTS_DIR
+
+    template = (PROMPTS_DIR / "transit_options.txt").read_text(encoding="utf-8")
+    rendered = template.format(origin="A", destination="B", dates="", trip_title="T")
+    assert "fare" in rendered
+    assert "RANGE in the local currency" in rendered
+    # The pass caveat: for many travelers the fare is moot.
+    assert "rail pass" in rendered

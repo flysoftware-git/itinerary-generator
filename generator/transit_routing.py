@@ -49,7 +49,9 @@ VALID_TRANSIT_PROVIDERS = ("ai", "google_directions")
 
 #: Fields an option may carry. Everything else the model invents is dropped --
 #: an allowlist, so a new hallucinated key cannot ride along by default.
-_ALLOWED_OPTION_FIELDS = ("mode", "label", "duration", "transfers", "notes", "booking_hint")
+_ALLOWED_OPTION_FIELDS = (
+    "mode", "label", "duration", "fare", "transfers", "notes", "booking_hint",
+)
 
 #: Keys dropped from an option unconditionally, whatever they contain. A
 #: booking URL from a model is the thing design.md 1.4 exists to prevent, and
@@ -107,6 +109,22 @@ def _clean_option(raw: Any) -> dict[str, Any] | None:
     option: dict[str, Any] = {}
     for field in _ALLOWED_OPTION_FIELDS:
         if field not in raw:
+            continue
+        if field == "fare":
+            # Owner call 2026-09-02, reversing the fare exclusion in 2.1 and
+            # 7.2. The objection there was that "a fare quoted at build time
+            # is wrong by the time it is read" -- true of a QUOTE, and the
+            # same objection duration would face if it were emitted as a
+            # single figure. It is emitted as a band, and so is this: an
+            # order-of-magnitude planning signal, under the same Unverified
+            # badge, never a price anyone can hold the page to.
+            #
+            # A value with no digit in it is not a fare. "Varies by season"
+            # and "cheap" are the shapes a model reaches for when it does not
+            # know, and both read as information in a badge.
+            fare = _clean_prose(raw[field])
+            if fare and any(char.isdigit() for char in fare):
+                option["fare"] = fare
             continue
         if field == "transfers":
             try:
