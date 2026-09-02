@@ -2941,6 +2941,10 @@ class URLDiscoverer:
                             message="no website found; resolved to a coordinate Maps link via free geocode",
                             url=geo_url,
                         )
+                for field in ("url", "maps_url"):
+                    existing = str(attr.get(field, "") or "")
+                    if existing:
+                        attr[field] = self.requalify_maps_query_url(existing, attr_name, dest_name)
                 if self._keep_item_if_verified_or_seed(
                     dest, attr, attr_name,
                     is_seed=is_seed,
@@ -3060,6 +3064,12 @@ class URLDiscoverer:
                         else:
                             stop.pop("maps_url", None)
                         self._annotate_registry_url_decision(stop, rendered_url="", rejection_reason="url_rejected")
+                # Final values for this stop: make any bare Maps text query
+                # name its destination before it reaches the page.
+                for field in ("url", "maps_url"):
+                    existing = str(stop.get(field, "") or "")
+                    if existing:
+                        stop[field] = self.requalify_maps_query_url(existing, stop_name, dest_name)
                 if self._keep_item_if_verified_or_seed(
                     dest, stop, stop_name,
                     is_seed=stop_is_seed,
@@ -15582,6 +15592,46 @@ class URLDiscoverer:
         if not name_tokens or not dest_tokens:
             return False
         return bool(name_tokens & dest_tokens)
+
+    @classmethod
+    def requalify_maps_query_url(cls, url: str, item_name: str, dest_name: str) -> str:
+        """Rebuild a Maps text-query link so its query names the destination.
+
+        Every builder in this file qualifies through _maps_fallback_query_text,
+        yet the sw run published
+
+            https://www.google.com/maps/search/?api=1&query=Rico%20Historic%20District
+
+        for a stop on the Telluride -> Pagosa Springs leg, and carried the same
+        bare text as a waypoint in that leg's route URL. A bare place name is
+        ambiguous to Google: "Rico Historic District" is not unique, and an
+        unqualified waypoint is how a Colorado route acquires a pin in
+        Washington.
+
+        Applied where the value is final rather than at each builder. One
+        call site passes an empty dest_name and reading did not find it; this
+        makes the output correct regardless of which, and is a no-op for a
+        query that already names the destination.
+
+        Coordinate queries are left exactly as they are -- they are the
+        precise form, and rewriting one into a name search is the downgrade
+        the 2026-08-22 run was caught doing.
+        """
+        raw = str(url or "").strip()
+        if not raw or "google.com/maps/search/" not in raw:
+            return raw
+        if cls._is_coordinate_maps_query_url(raw):
+            return raw
+        match = re.search(r"([?&])query=([^&]*)", raw)
+        if not match:
+            return raw
+        current = unquote(match.group(2)).replace("+", " ").strip()
+        if not current:
+            return raw
+        wanted = cls._maps_fallback_query_text(item_name or current, dest_name)
+        if not wanted or wanted.strip().lower() == current.lower():
+            return raw
+        return raw[:match.start(2)] + quote(wanted) + raw[match.end(2):]
 
     @classmethod
     def _maps_fallback_query_text(cls, item_name: str, dest_name: str) -> str:

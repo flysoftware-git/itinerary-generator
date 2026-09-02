@@ -504,7 +504,11 @@ def test_build_getting_here_uses_destination_name_not_lodging_for_route_target()
 
     assert "origin=Harry%20Reid%20International%20Airport%2C%20Las%20Vegas%2C%20NV" in html
     assert "destination=Riverbend%20Retreat" in html
-    assert "waypoints=Scenic%20Overlook" in html
+    # "Scenic Overlook" with no geocode is exactly the ambiguous case now left
+    # off the route line rather than guessed at -- a bare name of that
+    # generality resolves anywhere. This test's subject is the origin and
+    # destination asserted above; this records the safer waypoint contract.
+    assert "waypoints=Scenic%20Overlook" not in html
     assert 'class="gmaps-link"' in html
     assert 'target="_blank"' in html
 

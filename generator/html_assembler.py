@@ -1372,7 +1372,24 @@ class HTMLAssembler:
             elif waypoint_scope and self._looks_location_qualified(waypoint_scope):
                 waypoint_names.append(self._maps_fallback_query_text(stop_name, waypoint_scope))
             else:
-                waypoint_names.append(stop_name)
+                # No coordinate and no safe scope. The two options this comment
+                # already rejects are appending the arrival destination (wrong
+                # for a stop not near it) and emitting the bare name -- which
+                # is what shipped, and is how "Rico Historic District" on the
+                # Telluride -> Pagosa Springs leg put a San Juan Island pin in
+                # Washington State, the same failure as the Snoqualmie case
+                # above.
+                #
+                # There is a third option: leave the stop off the route line.
+                # A map missing one pin is a smaller loss than a map that
+                # detours 1,200 miles, and the stop still has its own card
+                # with its own link. Silence beats a confident wrong answer.
+                logger.info(
+                    "Route waypoint omitted for %r: no geocode and no "
+                    "location-qualified scope, so a bare name would be "
+                    "ambiguous to Google Maps",
+                    stop_name,
+                )
         if waypoint_names:
             # Our own waypoint ordering (_route_waypoint_sort_key /
             # route_progress_ratio) is a straight-line projection onto the
