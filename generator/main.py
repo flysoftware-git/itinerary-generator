@@ -2987,12 +2987,6 @@ def main(
     )
     _enforce_transit_leg_durations(trip)
     click.echo("  ✓ Content normalized")
-    _restaurant_cap = _enforce_restaurant_per_day_cap(trip, ai_gen)
-    if _restaurant_cap["removed"]:
-        click.echo(
-            f"  ✓ Restaurant per-day cap applied: {_restaurant_cap['removed']} trimmed "
-            f"across {_restaurant_cap['destinations_trimmed']} destination(s)"
-        )
     trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
     click.echo("  ✓ Entity registry reconciled")
     destination_status_report = _build_destination_status_report(
@@ -3142,6 +3136,20 @@ def main(
 
     # ── Stage 6: Assemble HTML ───────────────────────────────────────────────
     stage_6_started = perf_counter()
+    # After reconciliation, not before. reconcile_trip_from_registry rebuilds
+    # ai["dinner_recommendations"] from the registry
+    # (entity_registry.py: ai["dinner_recommendations"] = _payloads(...)), so a
+    # trim applied earlier is simply overwritten by the pre-trim snapshot. The
+    # first attempt at this ran before reconciliation and silently did nothing:
+    # the sw run still published 19 at Capitol Reef and 20 at Santa Fe, with no
+    # "cap applied" line because the trim had been undone rather than skipped.
+    _restaurant_cap = _enforce_restaurant_per_day_cap(trip, ai_gen)
+    if _restaurant_cap["removed"]:
+        click.echo(
+            f"  ✓ Restaurant per-day cap applied: {_restaurant_cap['removed']} trimmed "
+            f"across {_restaurant_cap['destinations_trimmed']} destination(s)"
+        )
+
     click.echo("Stage 6/6 — Assembling HTML…")
     from generator.html_assembler import HTMLAssembler
     trip["_meta"] = {

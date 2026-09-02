@@ -16,6 +16,7 @@ expensive bistro is a worse answer than eight that differ.
 """
 
 import pytest
+from pathlib import Path
 
 from generator.ai_content import AIContentGenerator
 from generator.main import _enforce_restaurant_per_day_cap
@@ -98,3 +99,24 @@ def test_malformed_input_is_safe(bad):
     trip = {"trip": {}, "destinations": [{"name": "X", "dates": "October 1, 2026",
                                           "ai_content": {"dinner_recommendations": bad}}]}
     _enforce_restaurant_per_day_cap(trip, AIContentGenerator.__new__(AIContentGenerator))
+
+
+def test_the_cap_runs_after_registry_reconciliation():
+    """Ordering is the whole fix, so it is asserted rather than assumed.
+
+    reconcile_trip_from_registry rebuilds ai["dinner_recommendations"] from the
+    registry, so a trim applied before it is overwritten by the pre-trim
+    snapshot. The first attempt ran before reconciliation and silently did
+    nothing -- the sw run still published 19 restaurants at Capitol Reef and 20
+    at Santa Fe, and printed no "cap applied" line, because the trim had been
+    undone rather than skipped.
+    """
+    from generator import main
+
+    src = Path(main.__file__).read_text(encoding="utf-8")
+    cap_at = src.rindex("_enforce_restaurant_per_day_cap(trip")
+    last_reconcile = src.rindex("_reconcile_trip_via_registry(trip")
+    assert cap_at > last_reconcile, (
+        "the per-day cap must run after every registry reconciliation, "
+        "or the reconciled list overwrites the trim"
+    )
