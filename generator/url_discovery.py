@@ -11547,6 +11547,24 @@ class URLDiscoverer:
         # implied speed as a final pass; if it's still unrealistic, neither
         # individual number can be trusted, so replace both with the
         # geometry-grounded estimate rather than patching just one.
+        # Both checks above only ever RAISE a value: they floor an under-stated
+        # detour and never question an over-stated one. So a stop sitting on
+        # the route keeps whatever the model wrote about it, and the card reads
+        # "46.0 mi detour" for somewhere you drive straight past. Reported on
+        # the Capitol Reef -> Moab leg (San Rafael Swell, John Wesley Powell
+        # Museum -- both on I-70) and again for Mancos State Park Entrance.
+        #
+        # The geometry gives an upper bound as well as a lower one. A detour
+        # cannot sensibly cost several times the round trip its own offset
+        # implies, so a text figure far above that is not a better estimate
+        # than the geometry -- it is a worse one. Tolerance is deliberately
+        # loose (3x plus a 5-mile allowance) because real roads bend, and the
+        # aim is to catch the absurd rather than to second-guess the plausible.
+        if final_miles is not None and estimate_miles is not None:
+            ceiling_miles = max(estimate_miles * 3.0, estimate_miles + 5.0)
+            if final_miles > ceiling_miles:
+                final_miles, final_minutes = estimate_miles, estimate_minutes
+                overridden = True
         if final_miles and final_minutes:
             implied_mph = final_miles / (final_minutes / 60.0)
             if implied_mph > MAX_PLAUSIBLE_EN_ROUTE_DETOUR_MPH:

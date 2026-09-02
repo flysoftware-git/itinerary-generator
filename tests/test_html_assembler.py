@@ -3061,7 +3061,9 @@ def test_build_getting_here_renders_detour_and_practical_note() -> None:
 
     html = assembler._build_getting_here(ai, dest, previous_name="Capitol Reef National Park")
 
-    assert "3 mi detour" in html
+    # "round trip", not "detour": both the geometry floor and the estimate in
+    # url_discovery are 2x the perpendicular offset, and the card never said so.
+    assert "3 mi round trip" in html
     assert "8 min" in html
     assert "Pullout is on the right when driving north." in html
 

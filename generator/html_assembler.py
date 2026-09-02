@@ -2187,13 +2187,21 @@ class HTMLAssembler:
                 detour_parts: list[str] = []
                 detour_miles = stop.get("detour_distance_miles")
                 detour_minutes = stop.get("detour_time_minutes")
+                # Round trip, not one way. Both the geometry floor and the
+                # estimate in url_discovery are 2x the stop's perpendicular
+                # offset from the route, and the card never said so -- "24.0 mi
+                # detour" reads as one-way to anyone planning a day.
                 if detour_miles not in (None, ""):
-                    detour_parts.append(f"{detour_miles} mi detour")
+                    detour_parts.append(f"{detour_miles} mi round trip")
                 if detour_minutes not in (None, ""):
                     detour_parts.append(f"{detour_minutes} min")
                 detour_html = ""
                 if detour_parts:
-                    detour_html = f' <span class="stop-detour">({html_escape.escape(" | ".join(detour_parts))})</span>'
+                    label = html_escape.escape(" | ".join(detour_parts))
+                    detour_html = (
+                        f' <span class="stop-detour" title="Added distance and time'
+                        f' for the round-trip detour off the main route">({label})</span>'
+                    )
                 description_raw = str(stop.get("description", "") or "").strip()
                 practical_note_raw = str(stop.get("practical_note", "") or "").strip()
                 if practical_note_raw and practical_note_raw.casefold() == description_raw.casefold():
