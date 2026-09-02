@@ -248,6 +248,13 @@ corridors?* — for a few cents. And unlike its predecessor, **commit it**: `des
 item 14 notes that `scripts/probe_multi_provider_search_2026.py`, cited as re-runnable by
 two design notes, is not in the repository.
 
+**Written, committed and run, 2026-09-02: `scripts/probe_transit_coverage.py`.** First
+result, against the acceptance manifest: **0 of 4 Japan legs answered**, with and without a
+pinned departure time, while the control corridor (Brussels -> Amsterdam) answered in 220
+minutes. So the key works and the coverage does not — Japanese rail is not in the feed set
+this API routes on. The probe justified itself on its first run, which is the whole argument
+of this section.
+
 ---
 
 ## 3. Manifest schema changes
@@ -821,7 +828,15 @@ identically. If they behave the same, one is dead config. Proposed split in open
    takes a train to Moab may still rent a jeep there. `has_high_clearance_vehicle` remains
    the orthogonal flag, and scenic drives are destination content, not leg content.
 8. ~~**Which corridor is the acceptance case?**~~ **RESOLVED 2026-08-21: `Japan_manifest.yaml`,
-   confirmed suitable.** This is acceptance testing — which real corridor proves the feature
+   confirmed suitable** — **for Phase 1 only. Corrected 2026-09-02.** The reasoning below is
+   about the world, not about the API: Japan's legs are indeed all rail-served, and Google
+   Routes returns nothing for every one of them (§2.2's probe, run against this manifest).
+   Japan proves the AI path and can never prove the API-backed one, so Phase 2 needs a
+   different acceptance corridor — Europe, where the same probe answers. Two further findings
+   from that run, both now fixed: the manifest was written to the issue's rejected
+   `transport_mode_from_previous` spelling, which unknown-key tolerance would have swallowed
+   silently (the parser now raises), and the headline badge rendered "0 transfers" beside an
+   option card reading "Direct" for the same leg. This is acceptance testing — which real corridor proves the feature
    end to end. Bryce → Capitol Reef has no transit at all, so it exercises only the
    honest-negative path (Format B); shipping on that alone would mean never having run the
    success path. Japan's four legs are all rail-served with strong feed coverage:

@@ -901,3 +901,34 @@ def test_transport_mode_on_grouped_entry_warns_and_is_ignored(tmp_path, caplog):
         data = parser.load(str(_write(tmp_path, content)))
     assert data["destinations"][2]["transport_mode"] == "transit"
     assert any("'arches'" in r.getMessage() for r in caplog.records)
+
+
+def test_the_issues_rejected_key_name_raises_rather_than_being_ignored(tmp_path):
+    """`transport_mode_from_previous` is the name GH #2's issue proposed and
+    the design rejected. Destination items allow unknown keys, so accepting
+    it silently means a manifest written to the issue's spelling validates
+    clean, resolves every leg to the trip-wide default, and ships an
+    itinerary telling the traveler to drive a leg they meant as a train.
+
+    Not hypothetical: the Japan acceptance manifest was written that way.
+    """
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        trip_extra="  transport_mode: mixed\n",
+        bryce_extra="    transport_mode_from_previous: transit\n",
+    ))
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(f))
+    message = str(exc_info.value)
+    assert "transport_mode_from_previous" in message
+    assert "bryce_canyon" in message
+    # Names the right key, and what would have happened instead.
+    assert "'transport_mode'" in message
+    assert "mixed" in message
+
+
+def test_the_correct_key_still_parses(tmp_path):
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(bryce_extra="    transport_mode: transit\n"))
+    data = parser.load(str(f))
+    assert data["destinations"][1]["transport_mode"] == "transit"

@@ -451,6 +451,7 @@ class ManifestParser:
         self._validate_en_route_exclude(data)
         self._validate_ids_unique(data)
         self._validate_group_with(data)
+        self._reject_legacy_transport_mode_key(data)
         self._validate_legs(data)
         self._warn_transport_mode_on_grouped(data)
         logger.info(
@@ -656,6 +657,34 @@ class ManifestParser:
                     "base destination."
                 )
             self._warn_if_group_dates_outside_base_range(dest, base)
+
+    #: The name GH #2's issue proposed for the per-destination mode, rejected
+    #: in favour of plain `transport_mode` (multimodal-routing.md 3.1). It has
+    #: to RAISE rather than be quietly accepted as an alias: destination items
+    #: allow unknown keys, so a manifest written to the issue's spelling
+    #: validates clean, resolves every leg to the trip-wide default, and ships
+    #: an itinerary telling the traveler to drive a leg they meant as a train.
+    #: That is the same silent-fallback failure the `legs:` id contract exists
+    #: to prevent, arriving through a different door. Found 2026-09-02 by the
+    #: acceptance manifest itself, which was written to the issue's names.
+    _REJECTED_TRANSPORT_MODE_KEYS = ("transport_mode_from_previous", "transport_mode_from")
+
+    def _reject_legacy_transport_mode_key(self, data: dict[str, Any]) -> None:
+        for dest in data.get("destinations", []) or []:
+            if not isinstance(dest, dict):
+                continue
+            for key in self._REJECTED_TRANSPORT_MODE_KEYS:
+                if key in dest:
+                    raise ValueError(
+                        f"Destination '{dest.get('id')}': '{key}' is not a manifest key. "
+                        f"Use 'transport_mode' -- it already means the leg ARRIVING at "
+                        f"this destination, matching en_route_seeds and transportation. "
+                        f"Renaming it here is required rather than assumed, because an "
+                        f"unrecognised key would otherwise be ignored and the leg would "
+                        f"silently stay '"
+                        + str((data.get("trip") or {}).get("transport_mode", "auto") or "auto")
+                        + "'."
+                    )
 
     def _validate_legs(self, data: dict[str, Any]) -> None:
         """Validate the optional `legs:` list (multimodal-routing.md 3.2).

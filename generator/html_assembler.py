@@ -1538,6 +1538,19 @@ class HTMLAssembler:
         "subway": "\U0001f687",
     }
 
+    @staticmethod
+    def _transfer_label(transfers: int) -> str:
+        """"Direct", "1 transfer", "N transfers".
+
+        Shared by the headline badge and the option card so one value cannot
+        render two ways on the same card. The Japan acceptance run showed
+        exactly that: "Direct" inside the option, "0 transfers" in the badge
+        above it, describing the same leg.
+        """
+        if transfers == 0:
+            return "Direct"
+        return "1 transfer" if transfers == 1 else f"{transfers} transfers"
+
     def _build_route_badges_row(
         self,
         *,
@@ -1577,8 +1590,9 @@ class HTMLAssembler:
             first = (options.get("options") or [{}])[0]
             transfers = first.get("transfers") if isinstance(first, dict) else None
             if not distance_text and isinstance(transfers, int):
-                label = "1 transfer" if transfers == 1 else f"{transfers} transfers"
-                badges.append(f'<span class="badge badge-transfers">{label}</span>')
+                badges.append(
+                    f'<span class="badge badge-transfers">{self._transfer_label(transfers)}</span>'
+                )
             if options.get("confidence") != "api_verified":
                 badges.append('<span class="badge badge-unverified">&#9888; Unverified</span>')
 
@@ -1643,10 +1657,9 @@ class HTMLAssembler:
                 )
             transfers = option.get("transfers")
             if isinstance(transfers, int):
-                transfer_label = "Direct" if transfers == 0 else (
-                    "1 transfer" if transfers == 1 else f"{transfers} transfers"
+                meta.append(
+                    f'<span class="badge badge-transfers">{self._transfer_label(transfers)}</span>'
                 )
-                meta.append(f'<span class="badge badge-transfers">{transfer_label}</span>')
             if meta:
                 html += '      <div class="route-badges">' + " ".join(meta) + '</div>\n'
 
