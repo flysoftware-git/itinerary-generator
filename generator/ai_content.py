@@ -4165,6 +4165,78 @@ class AIContentGenerator:
             parsed = default_target
         return parsed
 
+    @classmethod
+    def select_diverse_restaurants(
+        cls, restaurants: list[dict[str, Any]], *, target: int
+    ) -> list[dict[str, Any]]:
+        """Trim a restaurant list to `target`, keeping range rather than just
+        the top-rated.
+
+        The per-day target (`restaurants_per_day * day_count`) was applied to
+        the AI-generated list only. With `restaurant_source: direct_link_batch`
+        the published list comes from the batch instead -- a flat
+        `restaurant_direct_batch_item_count` per destination, 20 regardless of
+        whether the stay is one night or four -- written straight to
+        dinner_recommendations after the cap had already run on a different
+        list. The cap was correct and simply did not govern.
+
+        It went unnoticed because the verified-link-or-seed policy was
+        discarding 60-77% of candidates, so the surviving count landed near the
+        target by accident. Once link discovery improved, a two-day stop at
+        Capitol Reef published 18 dinner recommendations.
+
+        Ranking by rating alone would answer that with eight variations on the
+        same expensive bistro, so selection runs in three passes: the best of
+        each distinct cuisine, then the best of each price level not yet
+        represented, then best-rated to fill. Diversity first, quality within
+        it.
+        """
+        if not isinstance(restaurants, list) or len(restaurants) <= max(1, int(target)):
+            return restaurants if isinstance(restaurants, list) else []
+
+        def rank(item: dict[str, Any]) -> tuple[float, int, str]:
+            rating = cls._coerce_float(item.get("rating"))
+            try:
+                votes = int(item.get("votes") or 0)
+            except (TypeError, ValueError):
+                votes = 0
+            return (-(rating if rating is not None else 0.0), -votes, str(item.get("name", "")).lower())
+
+        def bucket(item: dict[str, Any], field: str) -> str:
+            return re.sub(r"[^a-z0-9]+", " ", str(item.get(field, "") or "").lower()).strip()
+
+        ranked = sorted((r for r in restaurants if isinstance(r, dict)), key=rank)
+        chosen: list[dict[str, Any]] = []
+        taken: set[int] = set()
+
+        for field in ("cuisine", "price_range"):
+            seen: set[str] = set()
+            for i, item in enumerate(ranked):
+                if len(chosen) >= target:
+                    break
+                if i in taken:
+                    continue
+                key = bucket(item, field)
+                # A blank value is not a category -- it must not claim the slot
+                # that a real one would, or unlabelled entries crowd out range.
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                taken.add(i)
+                chosen.append(item)
+
+        for i, item in enumerate(ranked):
+            if len(chosen) >= target:
+                break
+            if i not in taken:
+                taken.add(i)
+                chosen.append(item)
+
+        # Restore the incoming order so the page is not silently re-sorted by
+        # rating as a side effect of trimming.
+        keep = {id(x) for x in chosen}
+        return [r for r in restaurants if isinstance(r, dict) and id(r) in keep]
+
     def _apply_manifest_restaurant_target(
         self,
         restaurants: list[dict[str, Any]],

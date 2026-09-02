@@ -656,6 +656,46 @@ def _build_gate_a_metrics(
     }
 
 
+def _enforce_restaurant_per_day_cap(trip: dict, ai_gen) -> dict[str, int]:
+    """Apply the per-day restaurant target to the FINAL list.
+
+    ai_content applies it to the AI-generated list, but with
+    `restaurant_source: direct_link_batch` the published list is the batch's --
+    a flat `restaurant_direct_batch_item_count` (20) per destination, written
+    to dinner_recommendations after that cap had run on a different list. So a
+    two-night stop published 18 dinner recommendations while the documented
+    target was 8.
+
+    Runs here, after discovery and the audit, because this is the first point
+    where the list is final regardless of which source produced it.
+    """
+    counts = {"destinations_trimmed": 0, "removed": 0}
+    trip_meta = trip.get("trip", {}) if isinstance(trip.get("trip"), dict) else {}
+    for dest in trip.get("destinations", []) or []:
+        if not isinstance(dest, dict):
+            continue
+        ai = dest.get("ai_content")
+        if not isinstance(ai, dict):
+            continue
+        restaurants = ai.get("dinner_recommendations")
+        if not isinstance(restaurants, list) or not restaurants:
+            continue
+        per_day = ai_gen._resolve_restaurant_target(dest, trip_meta)
+        day_count = max(1, ai_gen._infer_day_count(str(dest.get("dates", "") or "")))
+        target = max(1, int(per_day) * day_count)
+        if len(restaurants) <= target:
+            continue
+        kept = ai_gen.select_diverse_restaurants(restaurants, target=target)
+        counts["destinations_trimmed"] += 1
+        counts["removed"] += len(restaurants) - len(kept)
+        logger.info(
+            "  %s: %d dinner recommendations trimmed to %d (%d/day x %d days)",
+            dest.get("name", ""), len(restaurants), len(kept), per_day, day_count,
+        )
+        ai["dinner_recommendations"] = kept
+    return counts
+
+
 def _reconcile_trip_via_registry(trip: dict, *, return_registry: bool = False) -> dict | tuple[dict, dict[str, Any]]:
     registry = build_entity_registry(trip)
     reconciled = reconcile_trip_from_registry(trip, registry)
@@ -2947,6 +2987,12 @@ def main(
     )
     _enforce_transit_leg_durations(trip)
     click.echo("  ✓ Content normalized")
+    _restaurant_cap = _enforce_restaurant_per_day_cap(trip, ai_gen)
+    if _restaurant_cap["removed"]:
+        click.echo(
+            f"  ✓ Restaurant per-day cap applied: {_restaurant_cap['removed']} trimmed "
+            f"across {_restaurant_cap['destinations_trimmed']} destination(s)"
+        )
     trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
     click.echo("  ✓ Entity registry reconciled")
     destination_status_report = _build_destination_status_report(
