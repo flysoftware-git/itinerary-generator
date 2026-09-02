@@ -192,7 +192,7 @@ python -m generator.main --manifest trip.yaml --notrails
 
 # Optional categories default OFF in config.yaml because they are the priced
 # ones. Turn them on for a single run without editing config:
-python -m generator.main --manifest manifests/old_hickory.yaml     --trails --events --en-route --first-destination
+python -m generator.main --manifest manifests/alpine_grouped.yaml     --trails --events --en-route --first-destination
 
 # Use one Apify call per destination for trail-like link sourcing
 python -m generator.main --manifest trip.yaml --alltrails-source apify-single-call
