@@ -106,7 +106,7 @@ def test_attaching_a_place_id_leaves_maps_url_alone():
     class _Resolver:
         enabled = True
 
-        def resolve(self, q):
+        def resolve(self, q, *, bias_lat=None, bias_lng=None, bias_radius_m=None):
             return PID
 
     d._place_resolver = _Resolver()
@@ -125,3 +125,66 @@ def test_no_resolver_is_a_no_op():
     stop = {"name": "X"}
     d._attach_place_id(stop, "X", "Y")
     assert "place_id" not in stop
+
+
+class TestLocationBias:
+    """A stop resolves against its own coordinate, not its leg's destination.
+
+    _attach_place_id qualified the query with the arrival destination, so an
+    en-route stop was asked for by a place it may be nowhere near. "Cumberland
+    Plateau Asheville, North Carolina" found nothing -- the plateau is in
+    Tennessee, 250 miles away -- and the whole Asheville leg fell back to
+    coordinates because of that one stop. "Blount Mansion Asheville, North
+    Carolina" resolved only because the name survives a wrong qualifier.
+
+    This is the failure the waypoint code already documents as "Mossy Cave
+    Capitol Reef National Park".
+    """
+
+    def _discoverer(self, seen):
+        from generator.url_discovery import URLDiscoverer
+
+        d = URLDiscoverer.__new__(URLDiscoverer)
+
+        class _Resolver:
+            enabled = True
+
+            def resolve(self, q, *, bias_lat=None, bias_lng=None, bias_radius_m=None):
+                seen.append((q, bias_lat, bias_lng))
+                return PID
+
+        d._place_resolver = _Resolver()
+        return d
+
+    def test_a_geocoded_stop_is_asked_for_by_bare_name_plus_bias(self):
+        seen = []
+        stop = {"name": "Cumberland Plateau", "geocode_lat": 35.9442, "geocode_lng": -84.6816}
+        self._discoverer(seen)._attach_place_id(stop, "Cumberland Plateau", "Asheville, North Carolina")
+        query, lat, lng = seen[0]
+        assert query == "Cumberland Plateau"
+        assert "Asheville" not in query
+        assert (round(lat, 3), round(lng, 3)) == (35.944, -84.682)
+
+    def test_a_stop_without_a_geocode_keeps_the_qualified_name(self):
+        """Still better than an unqualified one when there is no coordinate."""
+        seen = []
+        stop = {"name": "Blount Mansion"}
+        self._discoverer(seen)._attach_place_id(stop, "Blount Mansion", "Asheville, North Carolina")
+        query, lat, lng = seen[0]
+        assert "Asheville" in query
+        assert lat is None and lng is None
+
+
+def test_the_bias_is_part_of_the_cache_key():
+    """Two places sharing a name must not collapse into one cached answer."""
+    from generator.place_resolver import PlaceResolver
+
+    # `enabled` is a property derived from api_key and the disabled reason.
+    r = PlaceResolver.__new__(PlaceResolver)
+    r.api_key = "test-key"
+    r._disabled_reason = ""
+    r._cache = {"Main Street@40.0,-80.0": "ID_EAST"}
+    r.stats = {"cache_hits": 0, "calls": 0, "resolved": 0, "no_match": 0, "refused": 0}
+    r.max_calls = 10
+    assert r.resolve("Main Street", bias_lat=40.0, bias_lng=-80.0) == "ID_EAST"
+    assert r.stats["cache_hits"] == 1

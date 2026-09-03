@@ -2576,11 +2576,28 @@ class URLDiscoverer:
         resolver = getattr(self, "_place_resolver", None)
         if resolver is None or not resolver.enabled:
             return
-        query = self._maps_fallback_query_text(item_name, dest_name)
+        # A geocode is better evidence of where a stop is than the name of the
+        # destination its leg happens to end at. "Cumberland Plateau Asheville,
+        # North Carolina" resolved to nothing -- the plateau is in Tennessee,
+        # 250 miles away -- and "Blount Mansion Asheville, North Carolina"
+        # resolved only because the name survives a wrong qualifier. Both are
+        # the failure the waypoint code already documents as "Mossy Cave
+        # Capitol Reef National Park".
+        #
+        # With a coordinate, ask for the bare name and let the bias say where.
+        # Without one, fall back to the qualified name, which is still better
+        # than an unqualified one.
+        lat, lng = item.get("geocode_lat"), item.get("geocode_lng")
+        has_geocode = isinstance(lat, (int, float)) and isinstance(lng, (int, float))
+        query = item_name if has_geocode else self._maps_fallback_query_text(item_name, dest_name)
         if not query:
             return
         try:
-            place_id = resolver.resolve(query)
+            place_id = resolver.resolve(
+                query,
+                bias_lat=float(lat) if has_geocode else None,
+                bias_lng=float(lng) if has_geocode else None,
+            )
         except PlaceResolutionRefused as exc:
             resolver.disable(str(exc))
             return

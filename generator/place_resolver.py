@@ -62,6 +62,11 @@ PLACES_SEARCH_TEXT_ENDPOINT = "https://places.googleapis.com/v1/places:searchTex
 # The whole compliance story in one constant: ask for the identifier, nothing else.
 PLACE_ID_ONLY_FIELD_MASK = "places.id"
 
+#: Radius for the location bias, in metres. Wide enough to cover a region
+#: named loosely ("Cumberland Plateau") and tight enough to exclude a
+#: same-named place in another state.
+DEFAULT_BIAS_RADIUS_M = 50_000.0
+
 # Checked in order. The first is the name Google itself uses for the product.
 API_KEY_ENV_VARS = ("GOOGLE_MAPS_PLATFORM_KEY", "GOOGLE_MAPS_API_KEY")
 
@@ -131,26 +136,59 @@ class PlaceResolver:
                 reason,
             )
 
-    def resolve(self, query_text: str) -> str | None:
+    def resolve(
+        self,
+        query_text: str,
+        *,
+        bias_lat: float | None = None,
+        bias_lng: float | None = None,
+        bias_radius_m: float = DEFAULT_BIAS_RADIUS_M,
+    ) -> str | None:
         """Return a `place_id` for `query_text`, or None if there is no match.
+
+        `bias_lat`/`bias_lng` bias the search toward where the thing actually
+        is, rather than relying on the query text to say so. En-route stops
+        need this: their name is qualified with the leg's ARRIVAL destination,
+        which can be hundreds of miles away. "Cumberland Plateau Asheville,
+        North Carolina" found nothing -- the plateau is in Tennessee -- and
+        "Blount Mansion Asheville, North Carolina" resolved only because the
+        name is distinctive enough to survive a misleading qualifier. A
+        coordinate the pipeline already geocoded is better evidence than
+        either.
 
         Raises `PlaceResolutionRefused` if the provider refuses the call.
         """
         query = str(query_text or "").strip()
         if not query or not self.enabled:
             return None
-        if query in self._cache:
+        has_bias = isinstance(bias_lat, (int, float)) and isinstance(bias_lng, (int, float))
+        # The bias is part of the question, so it is part of the cache key.
+        # Without it, the same name near two different places would return
+        # whichever was asked first.
+        cache_key = (
+            f"{query}@{round(float(bias_lat), 4)},{round(float(bias_lng), 4)}"
+            if has_bias else query
+        )
+        if cache_key in self._cache:
             self.stats["cache_hits"] += 1
-            return self._cache[query]
+            return self._cache[cache_key]
         if self.stats["calls"] >= self.max_calls:
             self.disable(f"per-run call cap of {self.max_calls} reached")
             return None
 
         try:
             self.stats["calls"] += 1
+            payload: dict[str, Any] = {"textQuery": query, "maxResultCount": 1}
+            if has_bias:
+                payload["locationBias"] = {
+                    "circle": {
+                        "center": {"latitude": float(bias_lat), "longitude": float(bias_lng)},
+                        "radius": float(bias_radius_m),
+                    }
+                }
             response = self.session.post(
                 PLACES_SEARCH_TEXT_ENDPOINT,
-                json={"textQuery": query, "maxResultCount": 1},
+                json=payload,
                 headers={
                     "X-Goog-Api-Key": self.api_key,
                     "X-Goog-FieldMask": PLACE_ID_ONLY_FIELD_MASK,
@@ -162,7 +200,7 @@ class PlaceResolver:
             # Transport trouble is not a refusal; it is noise. Do not shut down
             # the resolver over one flaky socket.
             logger.debug("Place resolution request failed for %r: %s", query, exc)
-            self._cache[query] = None
+            self._cache[cache_key] = None
             return None
 
         status = getattr(response, "status_code", 0)
@@ -174,7 +212,7 @@ class PlaceResolver:
         try:
             places = (response.json() or {}).get("places") or []
         except ValueError:
-            self._cache[query] = None
+            self._cache[cache_key] = None
             return None
 
         place_id = str((places[0] or {}).get("id", "")).strip() if places else ""
@@ -182,7 +220,7 @@ class PlaceResolver:
             self.stats["resolved"] += 1
         else:
             self.stats["no_match"] += 1
-        self._cache[query] = place_id or None
+        self._cache[cache_key] = place_id or None
         return place_id or None
 
     def maps_url_for(self, query_text: str) -> str:
