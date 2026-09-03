@@ -363,7 +363,7 @@ def test_verify_event_urls_assigns_maps_fallback_when_no_url_present() -> None:
     verified = d._verify_event_urls(result, "Moab")
 
     assert verified["events"][0]["url"] == (
-        "https://www.google.com/maps/search/?api=1&query=Canyonlands%20Ultra%20Moab"
+        "https://www.google.com/maps/search/?api=1&query=Moab"
     )
 
 
@@ -385,7 +385,7 @@ def test_verify_event_urls_fallback_omits_redundant_destination_scope() -> None:
     verified = d._verify_event_urls(result, "Moab")
 
     assert verified["events"][0]["url"] == (
-        "https://www.google.com/maps/search/?api=1&query=Moab%20Music%20Festival"
+        "https://www.google.com/maps/search/?api=1&query=Moab"
     )
 
 
@@ -728,3 +728,58 @@ def test_ungrouped_destination_keeps_its_own_event_window() -> None:
     d.discover({"destinations": [{"id": "asheville", "name": "Asheville", "dates": "December 13-16, 2026"}]})
 
     assert captured["Asheville"] == "December 13-16, 2026"
+
+
+def test_event_fallback_maps_the_venue_not_the_show() -> None:
+    """A performance is not a place.
+
+    Reported against "Little Big Town: The Christmas Shows" under Nashville,
+    whose link opened a Google Maps search for the show's title. Maps can find
+    the Ryman; it cannot find a concert. The fallback exists so an event
+    without a verified URL still has somewhere to go, and the venue is the
+    only thing on an event that is actually a location.
+    """
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [{
+            "name": "Little Big Town: The Christmas Shows",
+            "venue": "Ryman Auditorium",
+            "dates_in_range": "December 12, 2026",
+        }],
+    }
+
+    url = d._verify_event_urls(result, "Nashville")["events"][0]["url"]
+
+    assert "Ryman%20Auditorium" in url
+    assert "Little%20Big%20Town" not in url
+    assert "Christmas" not in url
+
+
+def test_event_without_a_venue_gets_no_link_rather_than_a_wrong_one() -> None:
+    """Nothing honest to map, so nothing is linked.
+
+    The card still carries the show's name, dates and admission -- a link to
+    an unrelated map is worse than no link.
+    """
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [{"name": "A Show With No Venue", "dates_in_range": "December 12, 2026"}],
+    }
+
+    assert "url" not in d._verify_event_urls(result, "Nashville")["events"][0]
+
+
+def test_local_tips_still_map_their_own_name() -> None:
+    """The event fix must not narrow the shared helper.
+
+    _event_maps_fallback_url is reused for local tips, where the name IS the
+    place ("the Bluebird Cafe"). Scoping the venue rule to the event call site
+    rather than the helper is what keeps this working -- the first attempt
+    changed the helper and broke four local-tip tests.
+    """
+    from generator.cultural_events import CulturalEventsDiscoverer
+
+    url = CulturalEventsDiscoverer._event_maps_fallback_url({"name": "Bluebird Cafe"}, "Nashville")
+    assert "Bluebird%20Cafe" in url

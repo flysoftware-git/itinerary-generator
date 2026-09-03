@@ -303,7 +303,20 @@ class CulturalEventsDiscoverer:
                         event.pop("url", None)
 
             if not event.get("url"):
-                fallback = self._event_maps_fallback_url(event, dest_name)
+                # The venue, never the show. A performance is not a place, so
+                # "Little Big Town: The Christmas Shows Nashville" as a Maps
+                # query returns whatever Google can make of a concert name --
+                # reported after that exact event linked to a map instead of
+                # to anything about the show. A venue is a real place worth a
+                # pin; a show name is not. With no venue there is nothing
+                # honest to map, so the event keeps no link and the card still
+                # carries its name, date and admission.
+                venue_name = str(event.get("venue", "") or "").strip()
+                has_name = bool(str(event.get("name", "") or "").strip())
+                fallback = (
+                    self._event_maps_fallback_url({"name": venue_name}, dest_name)
+                    if venue_name and has_name else ""
+                )
                 if fallback:
                     event["url"] = fallback
 
@@ -320,6 +333,10 @@ class CulturalEventsDiscoverer:
         or never-found event URL previously left the event with no link at
         all instead of at least a map lookup.
         """
+        # Maps a PLACE name. Shared with the local-tip path (see line ~410),
+        # where the name genuinely is a place ("the Bluebird Cafe"), so this
+        # must stay name-based. The event path passes a venue rather than a
+        # show name -- see _verify_event_urls.
         name = str(event.get("name", "") or "").strip()
         if not name:
             return ""
