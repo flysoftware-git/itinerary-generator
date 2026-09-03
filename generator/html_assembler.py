@@ -5,7 +5,9 @@ Steps:
   1. Verify template SHA-256 checksum (hard fail on mismatch)
   2. Build per-destination section HTML strings
   3. Replace template placeholders with generated content
-  4. Inject attribution block at page bottom
+  4. Inject the generator footer (requirements.md 8.2) -- at the
+     <!--GENERATOR_FOOTER--> placeholder if the template has one,
+     otherwise above the drive-info modal, otherwise before </body>
 
 IMPORTANT: Uses Python string assembly — no Jinja2, no DOM parsing.
 Template placeholders use the pattern <!--PLACEHOLDER_NAME-->.
