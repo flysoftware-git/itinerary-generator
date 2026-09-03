@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 import jsonschema
 
+from generator.environments import ENVIRONMENTS
 from generator.multi_site_grouping import VALID_BASE_OWNED_CATEGORIES
 
 logger = logging.getLogger(__name__)
@@ -168,11 +169,17 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                 },
                 "environment": {
                     "type": "string",
-                    "enum": ["dev", "test", "prod"],
+                    # One list, named in generator/environments.py. The same
+                    # setting is reachable from a manifest, a flag and an env
+                    # var, and a value one of them rejects is not one another
+                    # should accept. `test` was the previous name for `eval`.
+                    "enum": list(ENVIRONMENTS),
                     "description": "Optional environment tag for hybrid selection. "
                                    "Priority: CLI > manifest > ENVIRONMENT env var. "
                                    "Does not affect config.yaml unless user chooses "
-                                   "to implement environment-specific configs later."
+                                   "to implement environment-specific configs later. "
+                                   "Renamed from `test` to `eval`; a manifest still "
+                                   "carrying `test` needs the one-word change."
                 },
                 "llm_features": {
                     "type": "object",

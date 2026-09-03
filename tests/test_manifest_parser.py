@@ -688,3 +688,37 @@ def test_transportation_type_enum_accepts_carried_travel() -> None:
     for rejected in ("cruise", "boat", ""):
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate({"type": rejected}, TRANSPORTATION_ITEM_SCHEMA)
+
+
+def test_manifest_environment_matches_the_cli_choice() -> None:
+    """One setting, three entry points, one set of values.
+
+    `environment` is reachable from a manifest, from `--environment` and from
+    the `ENVIRONMENT` variable, and nothing tied the first two together. They
+    drifted: the flag was renamed `test` -> `eval` while the schema kept `test`,
+    so a manifest could name an environment the CLI refused, and the name the
+    CLI wanted was one the manifest rejected. This test is the tie.
+    """
+    import click
+
+    from generator.main import main as cli
+    from generator.manifest_parser import MANIFEST_SCHEMA
+
+    option = next(
+        param for param in cli.params
+        if isinstance(param, click.Option) and "--environment" in param.opts
+    )
+    schema_values = (
+        MANIFEST_SCHEMA["properties"]["trip"]["properties"]["environment"]["enum"]
+    )
+    assert list(option.type.choices) == list(schema_values)
+
+
+def test_environment_enum_is_dev_eval_prod() -> None:
+    """`eval` rather than `test`, because these runs are evaluated rather than
+    part of a test suite -- and a directory named `test` beside `tests/` reads
+    as somewhere pytest writes."""
+    from generator.manifest_parser import MANIFEST_SCHEMA
+
+    schema = MANIFEST_SCHEMA["properties"]["trip"]["properties"]
+    assert schema["environment"]["enum"] == ["dev", "eval", "prod"]
