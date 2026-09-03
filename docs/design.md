@@ -1175,9 +1175,9 @@ Recorded rather than silently corrected, since the repository is under active de
 on `issue-6-v2`.
 
 - Several module docstrings predate the code they head: `image_fetcher.py` describes a
-  two-provider chain and a base64 data-URI mode that does not exist; `html_assembler.py`
-  says it injects an "attribution block" (it injects a generator footer, above the drive
-  modal); `main.py`'s docstring omits eight of its 26 CLI flags.
+  two-provider chain and a base64 data-URI mode that does not exist; `main.py`'s docstring
+  omits eight of its 26 CLI flags. (`html_assembler.py`'s "attribution block" step was the
+  third; corrected alongside `requirements.md` §8.)
 - `requirements.md` §10's config table lists `ai.max_tokens: 3000`; `config.yaml` has
   `4096`.
 - `config.yaml`'s `grok_search.endpoint` still points at `/v1/chat/completions`, which the
@@ -1188,9 +1188,6 @@ on `issue-6-v2`.
 - `README.md` describes the output as "self-contained"; it references Tailwind, Lucide and
   Leaflet from CDNs.
 - The two documents number pipeline stages differently (§1.2).
-- `requirements.md` §8 requires that no attribution footer block be appended; the assembler
-  injects a generator footer unconditionally. The requirement and the code disagree —
-  §4.1 links §8 for completeness, not because it is satisfied.
 - `provider-model-matrix.md` and `search-provider-capability-probe.md` assign Claude to two
   search roles; `config.yaml` currently runs all three on Grok (§2.4).
 
