@@ -656,6 +656,68 @@ def _build_gate_a_metrics(
     }
 
 
+def _place_id_of(item: dict) -> str:
+    """The item's place_id, wherever it happens to be recorded."""
+    import re
+
+    direct = str(item.get("place_id", "") or "").strip()
+    if direct:
+        return direct
+    m = re.search(r"query_place_id=([A-Za-z0-9_\-]+)", str(item.get("maps_url", "") or ""))
+    return m.group(1) if m else ""
+
+
+def _unify_names_sharing_a_place_id(trip: dict) -> list[tuple[str, str]]:
+    """One place, one name.
+
+    The Old Hickory trip carried "The Hermitage" as an en-route stop on one
+    leg and "Andrew Jackson's Hermitage" on another. Both resolve to place_id
+    ChIJf2rnpoJqZIgRQyx--6HBumM -- the same historic site under two names --
+    while the same itinerary also lists "The Hermitage Hotel", a different
+    place in downtown Nashville. A reader seeing "The Hermitage" could not
+    tell which was meant, and the shorter name is the one that collides.
+
+    A place_id is an identity claim, so two items carrying the same one are
+    the same place and must read the same. The most specific name wins:
+    "Andrew Jackson's Hermitage" cannot be confused with a hotel, and "The
+    Hermitage" can.
+
+    Only names are touched. Nothing is merged or removed -- the same site
+    genuinely appears on two legs, and both cards should stay.
+    """
+    by_place: dict[str, list[dict]] = {}
+    for dest in trip.get("destinations", []) or []:
+        if not isinstance(dest, dict):
+            continue
+        ai = dest.get("ai_content")
+        if not isinstance(ai, dict):
+            continue
+        sections = [ai.get("top_attractions"), ai.get("dinner_recommendations")]
+        gh = ai.get("getting_here")
+        if isinstance(gh, dict):
+            sections.append(gh.get("en_route_stops"))
+        for section in sections:
+            for item in section or []:
+                if not isinstance(item, dict):
+                    continue
+                pid = _place_id_of(item)
+                if pid and str(item.get("name", "") or "").strip():
+                    by_place.setdefault(pid, []).append(item)
+
+    renamed: list[tuple[str, str]] = []
+    for items in by_place.values():
+        names = {str(i.get("name", "") or "").strip() for i in items}
+        if len(names) < 2:
+            continue
+        canonical = max(names, key=lambda n: (len(n), n))
+        for item in items:
+            current = str(item.get("name", "") or "").strip()
+            if current != canonical:
+                item["name"] = canonical
+                renamed.append((current, canonical))
+    return renamed
+
+
 def _enforce_restaurant_per_day_cap(trip: dict, ai_gen) -> dict[str, int]:
     """Apply the per-day restaurant target to the FINAL list.
 
@@ -3174,6 +3236,12 @@ def main(
     # first attempt at this ran before reconciliation and silently did nothing:
     # the sw run still published 19 at Capitol Reef and 20 at Santa Fe, with no
     # "cap applied" line because the trim had been undone rather than skipped.
+    _renamed = _unify_names_sharing_a_place_id(trip)
+    if _renamed:
+        for was, now in _renamed:
+            logger.info("  Renamed %r -> %r (same place_id)", was, now)
+        click.echo(f"  ✓ Names unified for {len(_renamed)} item(s) sharing a place")
+
     _restaurant_cap = _enforce_restaurant_per_day_cap(trip, ai_gen)
     if _restaurant_cap["removed"]:
         click.echo(
