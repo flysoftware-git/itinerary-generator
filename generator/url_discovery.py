@@ -1768,7 +1768,7 @@ class URLDiscoverer:
                 "direct_batch_harvest_restaurants": "_restaurant_direct_batch_cache",
                 "direct_batch_harvest_en_route": "_en_route_direct_batch_cache",
             }
-            for section_name, attr_name in harvest_cache_by_section.items():
+            for section_name, attr_name in list(harvest_cache_by_section.items()):
                 if not hasattr(self, attr_name):
                     setattr(self, attr_name, {})
                 target_cache = getattr(self, attr_name)
@@ -1853,13 +1853,13 @@ class URLDiscoverer:
                 getattr(self, "_persistent_entry_ts", {}).get((section_name, entry_key), now)
             )
 
-        for key, results in self._search_results_cache.items():
+        for key, results in list(self._search_results_cache.items()):
             payload["search_results"][key] = {
                 "ts": _entry_ts("search_results", key),
                 "results": [dict(item) for item in results if isinstance(item, dict)],
             }
 
-        for key, result in self._verify_url_cache.items():
+        for key, result in list(self._verify_url_cache.items()):
             if not isinstance(result, tuple) or len(result) != 2:
                 continue
             payload["verify_results"][key] = {
@@ -1868,7 +1868,7 @@ class URLDiscoverer:
                 "status": result[1],
             }
 
-        for key, result in self._page_text_cache.items():
+        for key, result in list(self._page_text_cache.items()):
             if not isinstance(result, tuple) or len(result) != 3:
                 continue
             final_url = str(getattr(self, "_fetch_final_url_cache", {}).get(key, "") or "")
@@ -1880,7 +1880,7 @@ class URLDiscoverer:
                 "final_url": final_url,
             }
 
-        for key, result in self._en_route_stop_geocode_cache.items():
+        for key, result in list(self._en_route_stop_geocode_cache.items()):
             # Only persist confirmed coordinates -- a "no result" (None) is often
             # a transient Nominatim rate-limit/timeout outcome, not a durable
             # "this place doesn't exist" answer, so it must not be frozen in.
@@ -1892,7 +1892,7 @@ class URLDiscoverer:
                 "lng": result[1],
             }
 
-        for key, result in self._alltrails_fetch_cache.items():
+        for key, result in list(self._alltrails_fetch_cache.items()):
             # Only persist successful fetches -- caching a transient DataDome
             # block (401/403) would freeze that block state in across runs.
             if not isinstance(result, tuple) or len(result) != 3 or not result[0]:
@@ -1904,7 +1904,7 @@ class URLDiscoverer:
                 "text": str(result[2] or "")[: int(DEFAULT_PERSISTENT_PAGE_TEXT_MAX_CHARS)],
             }
 
-        for key, result in self._wayback_fetch_cache.items():
+        for key, result in list(self._wayback_fetch_cache.items()):
             # Only persist successful fetches -- a "no snapshot"/fetch-failure
             # result could be a transient archive.org hiccup rather than a
             # durable "this trail was never archived" answer, and freezing
@@ -1920,7 +1920,7 @@ class URLDiscoverer:
             }
 
         for section_name, attr_name in harvest_cache_by_section.items():
-            for key, rows in getattr(self, attr_name).items():
+            for key, rows in list(getattr(self, attr_name).items()):
                 if not isinstance(rows, list) or not rows:
                     # Never freeze in an empty harvest as a durable negative
                     # result -- an empty batch is often a transient upstream
