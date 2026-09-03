@@ -131,7 +131,7 @@
       .notion-header-btn:hover { background: rgba(255,255,255,0.2); }
 
       @keyframes spin { to { transform: rotate(360deg); } }
-      .drive-link:hover { color:#a0533a; }
+      .drive-link:hover { color: var(--link); }
 
       .weather-link {
         display: inline-flex;
@@ -140,7 +140,7 @@
         margin-top: 0.6rem;
         font-size: 0.8rem;
         font-weight: 600;
-        color: #92400E;
+        color: var(--link);
         text-decoration: none;
         border: 1px solid #FDE68A;
         background: #FEF3C7;
@@ -241,10 +241,10 @@
         color: var(--dark);
       }
       .group-base-pointer a {
-        color: var(--canyon); font-weight: 700; text-decoration: underline;
+        color: var(--link); font-weight: 700; text-decoration: underline;
         text-underline-offset: 2px;
       }
-      .group-base-pointer a:hover { color: var(--terracotta); }
+      .group-base-pointer a:hover { color: var(--link); }
       .intro-note-text { font-size: 0.95rem; line-height: 1.7; color: #5c4a35; margin: 0; }
 
       /* ── Trip-wide travel (html_assembler._build_trip_transportation) ──
@@ -304,8 +304,8 @@
         text-transform: uppercase; letter-spacing: 0.03em; font-size: 0.75rem;
       }
       .lodging-val { color: var(--dark); word-break: break-word; min-width: 0; }
-      .lodging-val a { color: var(--canyon); text-decoration: underline; text-underline-offset: 2px; }
-      .lodging-val a:hover { color: var(--terracotta); }
+      .lodging-val a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
+      .lodging-val a:hover { color: var(--link); }
       /* Confirmation codes are transcribed by hand at a desk -- monospace so
          0/O and 1/I stay distinguishable. */
       .lodging-conf {
@@ -438,7 +438,7 @@
       /* ── Scenic drives ── */
       .drive-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.25rem; }
       .drive-link { cursor: pointer; color: var(--link); text-decoration: underline; }
-      .drive-link:hover { color: #a0533a; }
+      .drive-link:hover { color: var(--link); }
 
       /* ── Cultural events ── */
       .events-card { background: #faf7f2; border-top: 4px solid #e8dcc8; }
@@ -462,8 +462,8 @@
       .rest-name { font-weight: 700; font-size: 0.98rem; color: var(--canyon); }
       /* Anchors do not inherit .rest-name's colour -- the UA stylesheet
          wins -- so without this the restaurant links render default blue. */
-      .rest-name a { color: var(--canyon); text-decoration: underline; text-underline-offset: 2px; }
-      .rest-name a:hover { color: var(--terracotta); }
+      .rest-name a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
+      .rest-name a:hover { color: var(--link); }
       .rest-icon { margin-right: 0.35rem; }
       .rest-link { color: var(--link); text-decoration: none; }
       .rest-link:hover { text-decoration: underline; }
@@ -482,7 +482,7 @@
 
       /* ── Planning links ── */
       .links-list { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
-      .links-list li a { display: inline-flex; align-items: center; gap: 5px; background: #fff; border: 1px solid #d4c4a8; color: var(--canyon); border-radius: 9999px; padding: 4px 14px; font-size: 0.82rem; font-weight: 600; text-decoration: none; transition: background 0.15s; }
+      .links-list li a { display: inline-flex; align-items: center; gap: 5px; background: #fff; border: 1px solid #d4c4a8; color: var(--link); border-radius: 9999px; padding: 4px 14px; font-size: 0.82rem; font-weight: 600; text-decoration: none; transition: background 0.15s; }
       .links-list li a:hover { background: var(--sandstone); }
       /* The page loads Tailwind, whose Preflight sets a{color:inherit;
          text-decoration:inherit}, and the template defines no base rule --
