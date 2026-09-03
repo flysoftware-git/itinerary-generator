@@ -53,6 +53,8 @@ import logging
 import os
 from typing import Any
 
+from urllib.parse import quote
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -87,13 +89,26 @@ class PlaceResolutionRefused(RuntimeError):
     """
 
 
-def maps_place_url(place_id: str) -> str:
+def maps_place_url(place_id: str, query_text: str = "") -> str:
     """A permanent Maps link to one specific place.
 
-    Uses the documented Maps URLs scheme, which needs no key and is not metered.
+    Uses the documented Maps URLs scheme, which needs no key and is not
+    metered: `/maps/search/?api=1&query=<text>&query_place_id=<id>`.
+
+    The earlier form -- `/maps/place/?q=place_id:<id>` -- omitted `api=1` and
+    is not part of that scheme. Without `api=1` Google routes the request to a
+    legacy handler and reports that an API is required, which is what the Old
+    Hickory build showed on 83 of its links while the 53 carrying `api=1`
+    worked. `query` is required by the scheme even when `query_place_id`
+    pins the result, and doubles as the fallback if the id ever stops
+    resolving.
     """
     pid = str(place_id or "").strip()
-    return f"https://www.google.com/maps/place/?q=place_id:{pid}" if pid else ""
+    if not pid:
+        return ""
+    text = str(query_text or "").strip()
+    query = quote(text) if text else quote(f"place_id:{pid}")
+    return f"https://www.google.com/maps/search/?api=1&query={query}&query_place_id={quote(pid)}"
 
 
 class PlaceResolver:
@@ -230,4 +245,4 @@ class PlaceResolver:
         "no match", never "something went wrong".
         """
         place_id = self.resolve(query_text)
-        return maps_place_url(place_id) if place_id else ""
+        return maps_place_url(place_id, query_text) if place_id else ""

@@ -73,7 +73,13 @@ def test_either_env_var_configures_it(monkeypatch, var):
 def test_resolves_a_place_id_and_builds_a_place_url():
     r = _resolver(_Resp(200, {"places": [{"id": "ChIJabc"}]}))
     assert r.resolve("Delicate Arch, Moab, Utah") == "ChIJabc"
-    assert r.maps_url_for("Delicate Arch, Moab, Utah") == "https://www.google.com/maps/place/?q=place_id:ChIJabc"
+    # The documented Maps URLs scheme: api=1 with query + query_place_id.
+    # The old /maps/place/?q=place_id: form carried no api=1, so Google routed
+    # it to a legacy handler and reported that an API was required.
+    assert r.maps_url_for("Delicate Arch, Moab, Utah") == (
+        "https://www.google.com/maps/search/?api=1"
+        "&query=Delicate%20Arch%2C%20Moab%2C%20Utah&query_place_id=ChIJabc"
+    )
 
 
 def test_requests_only_the_id_field():
@@ -175,7 +181,8 @@ def test_configured_call_site_upgrades_to_a_place_id_link():
     d._place_resolver = _resolver(_Resp(200, {"places": [{"id": "ChIJdelicate"}]}))
     item = {"url": "https://www.nps.gov/arch/index.htm"}
     logged = _attach(d, item)
-    assert item["maps_url"] == "https://www.google.com/maps/place/?q=place_id:ChIJdelicate"
+    assert item["maps_url"].startswith("https://www.google.com/maps/search/?api=1&query=")
+    assert item["maps_url"].endswith("&query_place_id=ChIJdelicate")
     assert logged[0]["reason"].endswith(":maps_place_id")
 
 
@@ -206,3 +213,31 @@ def test_place_urls_are_treated_as_safe_fallbacks():
     assert any(
         maps_place_url("ChIJabc").lower().startswith(p) for p in SAFE_FALLBACK_URL_PREFIXES
     )
+
+
+def test_place_url_carries_api_1() -> None:
+    """Without api=1 the link is not part of the keyless Maps URLs scheme.
+
+    The Old Hickory build published 83 links as
+    `/maps/place/?q=place_id:<id>` -- no api=1 -- and Google answered that an
+    API was required. The 53 links on that page that did carry api=1 worked.
+    """
+    from generator.place_resolver import maps_place_url
+
+    url = maps_place_url("ChIJabc", "Some Place")
+    assert "api=1" in url
+    assert "query_place_id=ChIJabc" in url
+    assert "/maps/place/?q=place_id:" not in url
+
+
+def test_place_url_still_pins_the_id_without_query_text() -> None:
+    from generator.place_resolver import maps_place_url
+
+    url = maps_place_url("ChIJabc")
+    assert "api=1" in url and "query_place_id=ChIJabc" in url
+
+
+def test_no_place_id_yields_no_link() -> None:
+    from generator.place_resolver import maps_place_url
+
+    assert maps_place_url("") == ""
