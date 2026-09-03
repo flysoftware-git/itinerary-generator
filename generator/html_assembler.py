@@ -1362,7 +1362,13 @@ class HTMLAssembler:
             stop_name = str(stop.get("name", "") or "").strip()
             if not stop_name:
                 continue
-            place_id = self._place_id_from_maps_url(str(stop.get("maps_url", "") or ""))
+            # url_discovery._attach_place_id stores it as its own field so the
+            # stop keeps its coordinate maps_url for the map badge. The
+            # maps_url parse stays as a fallback for items whose place_id
+            # arrived inside a resolver-built link instead.
+            place_id = str(stop.get("place_id", "") or "").strip() or self._place_id_from_maps_url(
+                str(stop.get("maps_url", "") or "")
+            )
             if place_id:
                 waypoint_names.append(stop_name)
                 waypoint_place_ids.append(place_id)

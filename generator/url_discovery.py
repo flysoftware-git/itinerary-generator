@@ -2550,6 +2550,43 @@ class URLDiscoverer:
             url=fallback_url,
         )
 
+    def _attach_place_id(self, item: dict[str, Any], item_name: str, dest_name: str) -> None:
+        """Record a `place_id` on an item, without touching its maps_url.
+
+        En-route stops take an unconditional coordinate maps_url from route
+        geocoding, which is the precise form and stays. But a coordinate is
+        labelled by Google's reverse geocoder, so a route panel reads
+        "Millcreek 2nd post market, 5FGM+75" where the card says "Red Cliffs
+        National Conservation Area Overlook" -- right pins, unreadable list.
+
+        A place_id is precise AND carries the real name, so the route URL can
+        pass `waypoint_place_ids` alongside readable waypoint names. Stored as
+        its own field rather than folded into maps_url so the map badge keeps
+        the coordinate it already had.
+
+        Resolution is cached per query within a run and bounded by the
+        resolver's own per-run call cap, so a repeated stop costs nothing and
+        a runaway is impossible. A refusal disables the resolver for the rest
+        of the run, exactly as _attach_secondary_maps_link does: this is an
+        enhancement to a link the item already has, so a broken key must be
+        loud but must not cost the customer their guide.
+        """
+        if not item_name or item.get("place_id"):
+            return
+        resolver = getattr(self, "_place_resolver", None)
+        if resolver is None or not resolver.enabled:
+            return
+        query = self._maps_fallback_query_text(item_name, dest_name)
+        if not query:
+            return
+        try:
+            place_id = resolver.resolve(query)
+        except PlaceResolutionRefused as exc:
+            resolver.disable(str(exc))
+            return
+        if place_id:
+            item["place_id"] = place_id
+
     def audit_discovered_urls(self, trip: dict[str, Any]) -> None:
         """Strip low-confidence discovered URLs before HTML assembly.
 
@@ -3064,6 +3101,10 @@ class URLDiscoverer:
                         else:
                             stop.pop("maps_url", None)
                         self._annotate_registry_url_decision(stop, rendered_url="", rejection_reason="url_rejected")
+                # A place_id lets the route URL name this stop instead of
+                # letting Google reverse-geocode its coordinate into whatever
+                # business is nearest. Does not replace maps_url.
+                self._attach_place_id(stop, stop_name, dest_name)
                 # Final values for this stop: make any bare Maps text query
                 # name its destination before it reaches the page.
                 for field in ("url", "maps_url"):

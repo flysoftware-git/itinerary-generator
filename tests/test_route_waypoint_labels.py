@@ -70,3 +70,58 @@ class TestWaypointLabelling:
     def test_a_leg_with_no_ids_is_unchanged(self):
         q = _url([_stop("Somewhere", lat=37.15, lng=-113.4)])
         assert "waypoint_place_ids" not in q
+
+
+class TestPlaceIdField:
+    """Stops carry place_id as its own field, keeping their coordinate maps_url.
+
+    En-route stops take an unconditional coordinate maps_url from route
+    geocoding. That is the precise form and must stay -- the map badge uses it
+    -- so the place_id is stored separately rather than folded into it.
+    """
+
+    def test_the_field_is_preferred_over_parsing_maps_url(self):
+        q = _url([{
+            "name": "Red Cliffs National Conservation Area Overlook", "is_seed": True,
+            "place_id": PID,
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=37.2,-113.4",
+        }])
+        assert PID in q.get("waypoint_place_ids", [""])[0]
+        assert "Red Cliffs National Conservation Area Overlook" in q.get("waypoints", [""])[0]
+
+    def test_a_coordinate_maps_url_alone_still_yields_no_id(self):
+        q = _url([{
+            "name": "Somewhere", "is_seed": True,
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=37.2,-113.4",
+        }])
+        assert "waypoint_place_ids" not in q
+
+
+def test_attaching_a_place_id_leaves_maps_url_alone():
+    """The map badge depends on the coordinate; only the route label changes."""
+    from generator.url_discovery import URLDiscoverer
+
+    d = URLDiscoverer.__new__(URLDiscoverer)
+
+    class _Resolver:
+        enabled = True
+
+        def resolve(self, q):
+            return PID
+
+    d._place_resolver = _Resolver()
+    stop = {"name": "Red Cliffs Overlook",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=37.2,-113.4"}
+    d._attach_place_id(stop, "Red Cliffs Overlook", "St. George, Utah")
+    assert stop["place_id"] == PID
+    assert stop["maps_url"] == "https://www.google.com/maps/search/?api=1&query=37.2,-113.4"
+
+
+def test_no_resolver_is_a_no_op():
+    from generator.url_discovery import URLDiscoverer
+
+    d = URLDiscoverer.__new__(URLDiscoverer)
+    d._place_resolver = None
+    stop = {"name": "X"}
+    d._attach_place_id(stop, "X", "Y")
+    assert "place_id" not in stop
