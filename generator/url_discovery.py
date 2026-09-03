@@ -1919,7 +1919,7 @@ class URLDiscoverer:
                 "text": str(result[2] or "")[: int(DEFAULT_PERSISTENT_PAGE_TEXT_MAX_CHARS)],
             }
 
-        for section_name, attr_name in harvest_cache_by_section.items():
+        for section_name, attr_name in list(harvest_cache_by_section.items()):
             for key, rows in list(getattr(self, attr_name).items()):
                 if not isinstance(rows, list) or not rows:
                     # Never freeze in an empty harvest as a durable negative
