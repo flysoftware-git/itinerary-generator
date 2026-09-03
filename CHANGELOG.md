@@ -13,6 +13,77 @@ published artifact; **patch** for fixes that leave behaviour unchanged.
 `__template_version__` tracks the frozen HTML template separately and does
 not move with this number.
 
+## 2.6.0 — 2026-09-02
+
+31 commits since 2.5.0. Link quality and per-day limits, plus transit-leg
+work. `__template_version__` moved 2.5 -> 2.5.3 across this range; it had
+been frozen at 2.5 since the initial rebuild while the template changed
+repeatedly, which is what the guard below now prevents.
+
+### Fixed
+
+- **The per-day restaurant target did not govern the published list.** It was
+  applied to the AI-generated list, but with `restaurant_source:
+  direct_link_batch` the published list is the batch's — a flat
+  `restaurant_direct_batch_item_count` of 20 per destination regardless of
+  stay length. Invisible while verified-link-or-seed was discarding 60–77% of
+  candidates, since the survivors landed near the target by accident. A
+  two-night stop at Capitol Reef published 19 dinner recommendations; it now
+  publishes 8. Selection keeps range — best of each cuisine, then each price
+  level, then best-rated — rather than eight variations on one bistro.
+- **Maps links that did not say where on earth they meant.** A bare
+  `?query=Rico Historic District` and the same bare text as a route waypoint
+  put a San Juan Island pin in Washington State on a Colorado leg. Text
+  queries are now destination-qualified where the value is final, and an
+  unqualifiable waypoint is omitted from the route line rather than guessed
+  at. The codebase had documented this failure twice before (Snoqualmie; a
+  Washington-state clinic producing a 2,196-mile route) without taking that
+  third option.
+- **On-route stops claiming large detours.** The geometry correction only ever
+  raised a figure, never questioned an inflated one, so a stop on I-70 kept
+  whatever the model wrote. Now bounded in both directions. The figure is also
+  labelled "round trip", which is what the maths has always computed.
+- **A designator that looked like a control.** The link-source icon is a
+  `<span>` and carried a hover background; the real map link inherited a
+  smaller font than it. They rendered the same glyph when the source was
+  itself a Maps URL.
+- **Two en-route stops could publish the same link.** Five Asheville-leg stops
+  shared a city homepage — a waterfall and a national park among them. Each
+  assignment path validated its own choice and none consulted what the others
+  had claimed; restaurants had had this guard all along.
+- **The local tip and the lunch stop were invisible.** Tip links carried no
+  class, and with Tailwind Preflight and no base anchor rule an unclassed
+  anchor inherits its parent's colour — invisible rather than blue. The lunch
+  stop was a sentence in the schedule with no marking on the card it belonged
+  to; it now has a badge and a link that searches for food rather than for the
+  town.
+- **Transit legs scheduling themselves as drives** — a declared train, a
+  mistyped leg, and a field named `drive_time` that scheduled trains.
+- **An attraction resolved by a Maps text query was resolved into deletion**,
+  which also suppressed the search that would have found its real page.
+- **AllTrails-first applied to anything the description made trail-like**,
+  stripping correct nps.gov pages from a rock formation and a crater. It now
+  follows the item's own title.
+
+### Added
+
+- **Removal provenance.** Removed items are recorded by name with the URLs
+  they were offered and the check that refused each; every rejection exit in
+  `_retain_discovered_url` is labelled from its own guarding condition; and
+  each en-route URL records which of seven code paths assigned it. Three
+  defects this release were found by these and not by reading.
+- **A template-version guard.** `templates/template_versions.json` ties a
+  checksum to a declared version, so changing the template without moving
+  `__template_version__` fails the suite. It caught its first edit within the
+  hour.
+
+### Changed
+
+- Real trip manifests no longer live in the generator repo, which also closes
+  a Sandbox/repo drift that had to be maintained by hand.
+- The Travel-apps gallery describes trips rather than the build system, and no
+  longer surfaces template version, validation status or warning counts.
+
 ## 2.5.0 — 2026-08-29
 
 6 commits since 2.4.0, same day. Three reports that looked unrelated —
