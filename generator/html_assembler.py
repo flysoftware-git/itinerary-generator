@@ -1343,10 +1343,31 @@ class HTMLAssembler:
             [stop for stop in stops if isinstance(stop, dict) and stop.get("route_waypoint_eligible") is not False],
             key=self._route_waypoint_sort_key,
         )
+        # A coordinate resolves to the right point but Google LABELS it by
+        # reverse geocoding, so the route panel reads "Millcreek 2nd post
+        # market, 5FGM+75" where the itinerary says "Red Cliffs National
+        # Conservation Area Overlook". The pins are correct and the list is
+        # unreadable, which is indistinguishable from the pins being wrong.
+        #
+        # A place_id is both: it names one specific place permanently AND
+        # Google renders its real name. The resolver already produces them --
+        # 107 place_id links on the last sw build -- and stores each inside the
+        # item's maps_url, so they cost nothing extra to reuse here.
+        #
+        # All-or-nothing: waypoint_place_ids must correspond positionally to
+        # waypoints, so a partial list would misalign labels against points.
+        # One stop without an id sends the whole leg back to coordinates.
+        waypoint_place_ids: list[str] = []
         for stop in ordered_stops[:8]:
             stop_name = str(stop.get("name", "") or "").strip()
             if not stop_name:
                 continue
+            place_id = self._place_id_from_maps_url(str(stop.get("maps_url", "") or ""))
+            if place_id:
+                waypoint_names.append(stop_name)
+                waypoint_place_ids.append(place_id)
+                continue
+            waypoint_place_ids.append("")
             # Prefer a real geocoded coordinate over any name-based guess when
             # one exists (url_discovery.py already verified it's plausibly
             # on-route -- see _prune_en_route_stops_by_geometry). A coordinate
@@ -1417,6 +1438,10 @@ class HTMLAssembler:
             # the correct ~10-minute local one. Reverted -- there is no
             # working reorder-via-URL option for this scheme.
             params.append("waypoints=" + quote("|".join(waypoint_names), safe="|"))
+            if waypoint_place_ids and all(waypoint_place_ids) and len(waypoint_place_ids) == len(waypoint_names):
+                params.append(
+                    "waypoint_place_ids=" + quote("|".join(waypoint_place_ids), safe="|")
+                )
         return "https://www.google.com/maps/dir/?" + "&".join(params)
 
     def _build_destination_scope_maps_url(self, destination_name: str = "", source_url: str = "") -> str:
@@ -3215,6 +3240,17 @@ class HTMLAssembler:
             return "", False
 
         return "", False
+
+    @staticmethod
+    def _place_id_from_maps_url(url: str) -> str:
+        """The place_id inside a resolver-built Maps link, or "".
+
+        place_resolver renders `.../maps/place/?q=place_id:ChIJ...`; the id is
+        never stored separately, so this is where it is recovered from. Reusing
+        it costs no extra API call.
+        """
+        match = re.search(r"place_id:([A-Za-z0-9_\-]+)", str(url or ""))
+        return match.group(1) if match else ""
 
     @staticmethod
     def _link_source_icon(url: str) -> str:
