@@ -722,3 +722,81 @@ def test_environment_enum_is_dev_eval_prod() -> None:
 
     schema = MANIFEST_SCHEMA["properties"]["trip"]["properties"]
     assert schema["environment"]["enum"] == ["dev", "eval", "prod"]
+
+
+def test_trip_brand_schema_valid(tmp_path):
+    manifest_content = """
+trip:
+  title: "Brand Test"
+  subtitle: "Schema"
+  theme_color: "#123456"
+  brand:
+    distributor: "Acme Travel"
+    distributor_url: "https://acme.example"
+    support_url: "mailto:help@acme.example"
+    support_label: "Email us"
+destinations:
+  - id: test
+    name: "Test Destination"
+    dates: "Jan 1-3, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+"""
+    f = tmp_path / "brand_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    trip = parser.load(str(f))
+    assert trip["trip"]["brand"]["distributor"] == "Acme Travel"
+
+
+def test_trip_brand_rejects_non_https_support_url(tmp_path):
+    """A generated guide outlives the run that made it. `javascript:` is script
+    injection through a YAML file and `http://` is a downgrade someone else
+    reads."""
+    manifest_content = """
+trip:
+  title: "Brand Test"
+  subtitle: "Schema"
+  theme_color: "#123456"
+  brand:
+    support_url: "javascript:alert(1)"
+destinations:
+  - id: test
+    name: "Test Destination"
+    dates: "Jan 1-3, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+"""
+    f = tmp_path / "bad_brand_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    with pytest.raises(Exception):
+        parser.load(str(f))
+
+
+def test_trip_brand_rejects_unknown_keys(tmp_path):
+    """`brand` is attribution and support routing. A tier name, an audience or a
+    palette arriving here would be three separate concerns collapsing into one
+    block, which is the thing the block is shaped to avoid."""
+    manifest_content = """
+trip:
+  title: "Brand Test"
+  subtitle: "Schema"
+  theme_color: "#123456"
+  brand:
+    tier: "premium"
+destinations:
+  - id: test
+    name: "Test Destination"
+    dates: "Jan 1-3, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+"""
+    f = tmp_path / "tier_brand_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    with pytest.raises(Exception):
+        parser.load(str(f))

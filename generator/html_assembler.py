@@ -2839,15 +2839,60 @@ class HTMLAssembler:
         html += '</section>\n'
         return html
 
+    # The repository, in one place. All three links below derive from it, so a
+    # rename moves them together instead of leaving one behind.
+    _REPO_URL = "https://github.com/flysoftware-git/itinerary-generator"
+
+    def _brand(self, trip: dict[str, Any]) -> dict[str, str]:
+        """The manifest's optional `trip.brand`, normalised for rendering.
+
+        A value with an unexpected scheme is DROPPED rather than raised on.
+        The schema already rejects those at parse time, so reaching here means
+        something constructed a trip dict by hand -- and the right failure for
+        a footer is the footer this page would have had anyway, not a run that
+        dies after eighteen minutes of paid work at the assembly step.
+        """
+        section = trip.get("trip")
+        brand = section.get("brand") if isinstance(section, dict) else None
+        if not isinstance(brand, dict):
+            return {}
+        out: dict[str, str] = {}
+        for key in ("distributor", "support_label"):
+            value = str(brand.get(key, "") or "").strip()
+            if value:
+                out[key] = value
+        for key, schemes in (
+            ("distributor_url", ("https://",)),
+            ("support_url", ("https://", "mailto:")),
+        ):
+            value = str(brand.get(key, "") or "").strip()
+            if value.startswith(schemes):
+                out[key] = value
+        return out
+
     def _build_generator_footer(self, trip: dict[str, Any]) -> str:
+        """Provenance, then support routing -- two jobs, two rules (§8.2, §8.3).
+
+        Provenance says what built this page, which version, from which
+        manifest, and when. It is static, always rendered, and not
+        configurable: it is the page's record of itself, and the same argument
+        this generator already makes about citing its sources.
+
+        Support routing says where a reader takes a problem. That is a
+        different question with a different answer, because the person who
+        handed someone this page is the person they will actually ask. It
+        defaults to this project's two issue links and a manifest may replace
+        them.
+        """
         meta = trip.get("_meta", {})
         version = meta.get("generator_version", "")
+        brand = self._brand(trip)
         broken_link_issue_link = (
-            "https://github.com/flysoftware-git/itinerary-generator/issues/new"
+            f"{self._REPO_URL}/issues/new"
             "?template=broken-link-report.yml&labels=bug"
         )
         feedback_issue_link = (
-            "https://github.com/flysoftware-git/itinerary-generator/issues/new"
+            f"{self._REPO_URL}/issues/new"
             "?template=itinerary-feedback.yml"
         )
         timestamp = meta.get("generated_at_utc")
@@ -2861,24 +2906,56 @@ class HTMLAssembler:
             shown_time = "unknown"
         manifest_name = str(meta.get("manifest_name", "") or "").strip()
         manifest_segment = f" · Manifest: {html_escape.escape(manifest_name)}" if manifest_name else ""
+        # The distributor credit sits ABOVE the provenance line rather than
+        # replacing anything in it. Whoever handed the reader this page is the
+        # relationship the reader has; what generated it is still recorded,
+        # one line down, unchanged.
+        credit = ""
+        if brand.get("distributor"):
+            shown_name = html_escape.escape(brand["distributor"])
+            if brand.get("distributor_url"):
+                shown_name = (
+                    f'<a href="{html_escape.escape(brand["distributor_url"])}">'
+                    f"{shown_name}</a>"
+                )
+            credit = f'<div style="margin-bottom:0.35rem;">Prepared by {shown_name}</div>'
+
+        if brand.get("support_url"):
+            # One destination, not two. §8.2 requires the project's own links to
+            # stay distinct because nobody triages them; a distributor that
+            # names a support channel is the triage, and splitting it would be
+            # asking a reader to classify their own problem first.
+            support_label = html_escape.escape(brand.get("support_label") or "Contact support")
+            support = (
+                '<div style="margin-top:0.35rem;">'
+                f'Support: <a href="{html_escape.escape(brand["support_url"])}">'
+                f"{support_label}</a>"
+                '</div>'
+            )
+        else:
+            support = (
+                '<div style="margin-top:0.35rem;">'
+                'Issue reporting: '
+                f'<a href="{broken_link_issue_link}">'
+                'Report broken links</a>'
+                ' · '
+                f'<a href="{feedback_issue_link}">'
+                'Share itinerary feedback</a>'
+                '</div>'
+            )
+
         return (
             '<footer class="generator-footer" '
             'style="margin:1.25rem auto 2.5rem;padding:0 1rem;max-width:72rem;">'
             '<div style="border-top:1px solid #e8dcc8;padding-top:0.85rem;'
             'font-size:0.8rem;color:#8B6347;line-height:1.5;text-align:center;">'
+            f'{credit}'
             'Generated by '
-            '<a href="https://github.com/flysoftware-git/itinerary-generator" '
+            f'<a href="{self._REPO_URL}" '
             '>Itinerary Generator</a>'
             f' v{html_escape.escape(str(version))}{manifest_segment}'
             f' · Itinerary output: {html_escape.escape(shown_time)}'
-            '<div style="margin-top:0.35rem;">'
-            'Issue reporting: '
-            f'<a href="{broken_link_issue_link}">'
-            'Report broken links</a>'
-            ' · '
-            f'<a href="{feedback_issue_link}">'
-            'Share itinerary feedback</a>'
-            '</div>'
+            f'{support}'
             '</div>'
             '</footer>'
         )
