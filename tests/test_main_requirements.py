@@ -2182,3 +2182,81 @@ def test_a_mixed_leg_keeps_its_car_estimate() -> None:
     gh = trip["destinations"][1]["ai_content"]["getting_here"]
     assert gh["travel_time"] == "2 hrs 15 min"
     assert gh["distance_miles"] == "95"
+
+
+# ── GH #2: the retry pass must not re-price legs the first pass priced ────
+
+class _CountingEstimator:
+    """Mimics TransitEstimator's memo, which is the thing under test."""
+
+    available = True
+
+    def __init__(self, result=None):
+        self.result = result
+        self.call_count = 0
+        self._memo = {}
+
+    def estimate(self, origin, destination, *, departure_iso=""):
+        key = (origin, destination, departure_iso)
+        if key in self._memo:
+            return self._memo[key]
+        self.call_count += 1
+        self._memo[key] = self.result
+        return self.result
+
+
+def _two_transit_legs():
+    from generator.transit_routing import stamp_resolved_modes
+
+    trip = {
+        "trip": {"transport_mode": "transit"},
+        "destinations": [
+            {"id": "kyoto", "name": "Kyoto", "ai_content": {"getting_here": {}}},
+            {"id": "kanazawa", "name": "Kanazawa", "ai_content": {"getting_here": {}}},
+            {"id": "tokyo", "name": "Tokyo", "ai_content": {"getting_here": {}}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    return trip
+
+
+def test_a_shared_estimator_prices_each_leg_once_across_both_passes():
+    """main calls _apply_transit_estimates a second time after a selective
+    retry. With a fresh estimator per pass that doubled the Routes API bill;
+    the Japan run made 8 calls for 4 legs, every one of them empty."""
+    import generator.main as main_mod
+
+    trip = _two_transit_legs()
+    estimator = _CountingEstimator(result={"minutes": 136, "miles": 133, "estimated": True})
+
+    main_mod._apply_transit_estimates(trip, estimator=estimator)
+    after_first = estimator.call_count
+    main_mod._apply_transit_estimates(trip, estimator=estimator)
+
+    assert after_first == 2          # kyoto->kanazawa, kanazawa->tokyo
+    assert estimator.call_count == 2  # and not 4
+
+
+def test_an_uncovered_corridor_is_only_discovered_once():
+    """The expensive case: every call returns nothing, so without the shared
+    memo the run pays twice to learn the same negative."""
+    import generator.main as main_mod
+
+    trip = _two_transit_legs()
+    estimator = _CountingEstimator(result=None)
+
+    main_mod._apply_transit_estimates(trip, estimator=estimator)
+    main_mod._apply_transit_estimates(trip, estimator=estimator)
+
+    assert estimator.call_count == 2
+
+
+def test_without_a_shared_estimator_it_still_builds_its_own():
+    """Callers that pass nothing keep working -- the parameter is an
+    optimisation, not a new requirement."""
+    import generator.main as main_mod
+
+    trip = _two_transit_legs()
+    # No GOOGLE_MAPS_PLATFORM_KEY in the test environment, so this takes the
+    # unavailable path and returns 0 rather than reaching the network.
+    assert main_mod._apply_transit_estimates(trip) == 0

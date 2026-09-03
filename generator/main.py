@@ -2137,19 +2137,33 @@ def _enforce_transit_leg_durations(trip: dict) -> int:
     return corrected
 
 
-def _apply_transit_estimates(trip: dict, *, departure_hint: str = "") -> int:
+def _apply_transit_estimates(
+    trip: dict, *, departure_hint: str = "", estimator: Any = None
+) -> int:
     """Replace invented drive figures with real transit estimates.
 
     Only touches destinations whose manifest states a public-transport arrival.
     A leg with no estimate available keeps whatever it had rather than being
     zeroed -- and a leg that was suppressed upstream simply has nothing to fill.
 
+    Pass `estimator` to share one across a run. This function is called twice
+    when the selective retry pass fires, and TransitEstimator's memo lives on
+    the instance -- so constructing a fresh one here meant the second pass
+    re-asked the Routes API every leg the first pass had already priced. On the
+    2026-09-02 Japan run that was 8 billed calls for 4 legs, all 8 returning
+    nothing, because the corridor has no coverage and the memo that recorded
+    that fact was thrown away in between. The memo stores None as readily as a
+    result, so a shared instance makes an uncovered corridor free the second
+    time round rather than merely as cheap.
+
     Returns the number of legs updated, for the run summary.
     """
     from generator.transit_estimate import TRANSIT_MODES, TransitEstimator, format_duration
     from generator.transit_routing import resolved_mode
 
-    estimator = TransitEstimator()
+    if estimator is None:
+        estimator = TransitEstimator()
+    calls_before = estimator.call_count
     if not estimator.available:
         logger.info(
             "Transit estimates skipped: GOOGLE_MAPS_PLATFORM_KEY not set. "
@@ -2203,10 +2217,18 @@ def _apply_transit_estimates(trip: dict, *, departure_hint: str = "") -> int:
         if name:
             previous_name = name
 
-    if estimator.call_count:
+    # Calls made by THIS pass, not by the shared instance's lifetime -- a
+    # second pass that answered entirely from the memo should say it made no
+    # calls, which is the whole point of sharing the instance.
+    calls_this_pass = estimator.call_count - calls_before
+    if calls_this_pass:
         logger.info(
             "Transit estimates: %d leg(s) updated from %d Routes API call(s)",
-            updated, estimator.call_count,
+            updated, calls_this_pass,
+        )
+    elif updated:
+        logger.info(
+            "Transit estimates: %d leg(s) updated from cache (no Routes API calls)", updated
         )
     return updated
 
@@ -2982,8 +3004,15 @@ def main(
     # Post-parallel content normalization: cross-section and cross-destination dedup.
     stage_reconcile_started = perf_counter()
     ai_gen.normalize_trip_content(trip)
+    # Built once and reused by the retry pass below, so a leg priced here is
+    # not re-priced there. See _apply_transit_estimates.
+    from generator.transit_estimate import TransitEstimator as _TransitEstimator
+
+    transit_estimator = _TransitEstimator()
     _apply_transit_estimates(
-        trip, departure_hint=str((trip.get("trip") or {}).get("departure", "") or "")
+        trip,
+        departure_hint=str((trip.get("trip") or {}).get("departure", "") or ""),
+        estimator=transit_estimator,
     )
     _enforce_transit_leg_durations(trip)
     click.echo("  ✓ Content normalized")
@@ -3060,7 +3089,9 @@ def main(
         )
         ai_gen.normalize_trip_content(trip)
         _apply_transit_estimates(
-            trip, departure_hint=str((trip.get("trip") or {}).get("departure", "") or "")
+            trip,
+            departure_hint=str((trip.get("trip") or {}).get("departure", "") or ""),
+            estimator=transit_estimator,
         )
         _enforce_transit_leg_durations(trip)
         trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)

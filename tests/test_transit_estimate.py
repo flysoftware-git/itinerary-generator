@@ -61,3 +61,59 @@ def test_transit_modes_exclude_car():
     """A car leg is exactly when the existing drive figures are correct."""
     assert "car" not in TRANSIT_MODES
     assert {"train", "bus", "ferry", "ship", "shuttle"} <= TRANSIT_MODES
+
+
+class TestMemoSurvivesAcrossPasses:
+    """The pipeline calls the estimator twice when the selective retry pass
+    fires. The memo is per-instance, so a fresh instance per pass meant every
+    leg was re-priced -- 8 billed calls for 4 legs on the 2026-09-02 Japan
+    run, all 8 returning nothing.
+    """
+
+    def _stubbed(self, monkeypatch, payload):
+        import json
+        import urllib.request
+
+        calls = []
+
+        class _Response:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+            def read(self_inner):
+                return json.dumps(payload).encode()
+
+        def _fake_urlopen(request, timeout=None):
+            calls.append(request)
+            return _Response()
+
+        monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+        monkeypatch.setattr(json, "load", lambda fh: payload)
+        return calls
+
+    def test_a_repeated_leg_is_answered_from_the_memo(self, monkeypatch):
+        calls = self._stubbed(monkeypatch, {"routes": [{"duration": "8182s", "distanceMeters": 213681}]})
+        est = TransitEstimator(api_key="fake-key")
+
+        first = est.estimate("Brussels", "Amsterdam")
+        second = est.estimate("Brussels", "Amsterdam")
+
+        assert first == second
+        assert len(calls) == 1
+        assert est.call_count == 1
+
+    def test_an_empty_answer_is_memoized_too(self, monkeypatch):
+        """The case that actually costs money: an uncovered corridor returns
+        200 with no routes, and rediscovering that on every pass is pure
+        spend. None must be cached as readily as a result."""
+        calls = self._stubbed(monkeypatch, {"routes": []})
+        est = TransitEstimator(api_key="fake-key")
+
+        assert est.estimate("Kyoto", "Kanazawa") is None
+        assert est.estimate("Kyoto", "Kanazawa") is None
+
+        assert len(calls) == 1
+        assert est.call_count == 1
