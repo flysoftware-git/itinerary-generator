@@ -1188,9 +1188,6 @@ on `issue-6-v2`.
 - `README.md` describes the output as "self-contained"; it references Tailwind, Lucide and
   Leaflet from CDNs.
 - The two documents number pipeline stages differently (§1.2).
-- `requirements.md` §8 requires that no attribution footer block be appended; the assembler
-  injects a generator footer unconditionally. The requirement and the code disagree —
-  §4.1 links §8 for completeness, not because it is satisfied.
 - `provider-model-matrix.md` and `search-provider-capability-probe.md` assign Claude to two
   search roles; `config.yaml` currently runs all three on Grok (§2.4).
 
