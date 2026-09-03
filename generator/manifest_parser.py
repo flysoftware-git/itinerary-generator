@@ -163,6 +163,30 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                     "make. Omitted (or true) = current behavior, unchanged; this "
                                     "is an opt-in filter, never a new default restriction.",
                 },
+                "max_hike_miles": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Optional traveler walking limit, in miles on foot for a "
+                                   "single outing. When set, attractions reporting a longer "
+                                   "`distance_miles` are excluded from the generated output. "
+                                   "Omitted = current behavior, unchanged: this is an opt-in "
+                                   "filter, never a new default restriction, and it mirrors "
+                                   "has_high_clearance_vehicle in that respect.\n\n"
+                                   "An attraction that reports NO distance is never excluded. "
+                                   "The figure is produced by the model rather than measured, "
+                                   "so a missing one means 'not known' and filtering on it "
+                                   "would drop real options for lack of an estimate. Absence "
+                                   "and zero are different things and only one of them is a "
+                                   "number.",
+                },
+                "max_hike_elevation_gain_ft": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Optional traveler climbing limit, in feet of ascent for a "
+                                   "single outing. Works exactly as max_hike_miles: opt-in, "
+                                   "and an attraction reporting no elevation gain is never "
+                                   "excluded.",
+                },
                 "llm_provider": {
                     "type": "string",
                     "enum": ["openai", "anthropic", "deepseek", "gemini", "grok", "azure_openai"],

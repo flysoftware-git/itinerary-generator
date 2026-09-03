@@ -695,6 +695,7 @@ class AIContentGenerator:
         self._filter_oversized_scenic_drives(trip)
         self._filter_departure_aligned_drives(trip)
         self._filter_drives_requiring_high_clearance_vehicle(trip)
+        self._filter_attractions_beyond_traveler_limits(trip)
         self._deduplicate_cross_destination_scenic_drives(trip)
 
     # Exact vehicle_requirement values (prompts/scenic_drives.txt's fixed
@@ -705,6 +706,83 @@ class AIContentGenerator:
     _HIGH_CLEARANCE_VEHICLE_REQUIREMENTS = frozenset(
         {"High-clearance recommended", "4WD required"}
     )
+
+    @staticmethod
+    def _reported_number(item: dict[str, Any], key: str) -> float | None:
+        """A figure the model gave, or None when it gave none.
+
+        Absent, empty, non-numeric and zero all read as "not known". Zero is
+        included deliberately: no walk worth listing is zero miles, so a zero
+        here is a placeholder rather than a measurement, and treating it as one
+        would keep every unknown attraction while filtering nothing.
+        """
+        raw = item.get(key)
+        if raw is None or isinstance(raw, bool):
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _filter_attractions_beyond_traveler_limits(self, trip: dict[str, Any]) -> None:
+        """Optional opt-in filter (manifest trip.max_hike_miles and
+        trip.max_hike_elevation_gain_ft).
+
+        When the traveler has declared how far they walk or climb, drop
+        attractions that report more than that. Omitted limits are a no-op and
+        output is identical to before this filter existed -- absence must never
+        change default behavior, only explicit opt-in does, which is the rule
+        _filter_drives_requiring_high_clearance_vehicle already follows.
+
+        **An attraction reporting no figure is never dropped.** These numbers
+        come from the model rather than from a trail database, so a missing one
+        means "not known"; filtering on absence would quietly remove real
+        places for want of an estimate. What is removed is logged, and for the
+        same reason: a filter that silently shortens a list is indistinguishable
+        from a model that found less.
+        """
+        trip_meta = trip.get("trip", {}) if isinstance(trip.get("trip", {}), dict) else {}
+        limits = [
+            ("distance_miles", self._reported_number(trip_meta, "max_hike_miles"), "mi on foot"),
+            ("elevation_gain_ft",
+             self._reported_number(trip_meta, "max_hike_elevation_gain_ft"), "ft of ascent"),
+        ]
+        limits = [(field, cap, unit) for field, cap, unit in limits if cap is not None]
+        if not limits:
+            return
+
+        for dest in trip.get("destinations", []) or []:
+            if not isinstance(dest, dict):
+                continue
+            attractions = dest.get("top_attractions", [])
+            if not isinstance(attractions, list) or not attractions:
+                continue
+
+            kept, dropped = [], []
+            for item in attractions:
+                if not isinstance(item, dict):
+                    kept.append(item)
+                    continue
+                over = [
+                    (field, reported, cap, unit)
+                    for field, cap, unit in limits
+                    if (reported := self._reported_number(item, field)) is not None
+                    and reported > cap
+                ]
+                (dropped if over else kept).append(item if not over else (item, over))
+
+            if not dropped:
+                continue
+            for item, over in dropped:
+                for _field, reported, cap, unit in over:
+                    logger.info(
+                        "  Traveler limit filter: dropped '%s' from '%s' "
+                        "(%.6g > %.6g %s)",
+                        item.get("name", "unnamed"), dest.get("name", "unnamed"),
+                        reported, cap, unit,
+                    )
+            dest["top_attractions"] = kept
 
     def _filter_drives_requiring_high_clearance_vehicle(self, trip: dict[str, Any]) -> None:
         """Optional opt-in filter (manifest trip.has_high_clearance_vehicle).
