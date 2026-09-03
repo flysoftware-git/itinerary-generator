@@ -13,6 +13,57 @@ published artifact; **patch** for fixes that leave behaviour unchanged.
 `__template_version__` tracks the frozen HTML template separately and does
 not move with this number.
 
+## 2.7.0 — 2026-09-03
+
+11 commits since 2.6.0, almost all found by opening the output rather than
+reading it. `__template_version__` 2.5.3 -> 2.5.5.
+
+### Fixed
+
+- **Google answered "an API is required" on 83 links.** Place links were built
+  as `/maps/place/?q=place_id:<id>`, which omits `api=1` and is not part of
+  the keyless Maps URLs scheme, so Google routed them to a legacy handler. The
+  53 links on the same page carrying `api=1` worked, which is why it looked
+  like a map fault rather than a URL fault. Now
+  `/maps/search/?api=1&query=<text>&query_place_id=<id>`. The builder's own
+  docstring had claimed it used the documented scheme, and its tests asserted
+  the string the code produced — agreement, not verification.
+- **Route panels named a post market where the card named an overlook.** A
+  coordinate waypoint resolves to the right point but Google labels it by
+  reverse geocoding, so "Red Cliffs National Conservation Area Overlook"
+  appeared as "Millcreek 2nd post market, 5FGM+75". En-route stops now carry a
+  `place_id` and legs pass `waypoint_place_ids`, so the panel reads the stop's
+  real name. All-or-nothing per leg: one unresolved stop returns that leg to
+  coordinates rather than misaligning labels against points.
+- **Stops resolved against the wrong place.** The Places query was qualified
+  with the leg's *arrival* destination — "Cumberland Plateau Asheville, North
+  Carolina" for a plateau in Tennessee, 250 miles away. It found nothing, and
+  took its whole leg back to coordinates. Others on that leg were wrong too
+  and survived only because their names are distinctive. A geocoded stop is
+  now asked for by bare name with its own coordinate as a location bias.
+- **One place under two names.** "The Hermitage" and "Andrew Jackson's
+  Hermitage" shared a `place_id` while the same itinerary listed "The
+  Hermitage Hotel", a different place. Items sharing a `place_id` are the same
+  place and now read the same, most specific name winning. Found by opening
+  both links in a browser; the URLs were correct and the names were not.
+- **Blue, green and brown links on one card.** Three colour sources were in
+  play: the theme accent, a fixed canyon brown, and a hardcoded `#c0714a`.
+  Every in-content link now resolves through one `--link` token. The first
+  attempt fixed only the seven `*-link` classes and its test asserted over
+  that same list, so anchors selected by descent stayed brown and the test
+  passed anyway.
+- **A production run died saving its own cache.** `_save_persistent_caches`
+  iterated dicts that discovery threads were still writing to. The publish
+  guard held — nothing shipped — but a paid run was lost.
+- **A concert is not a place.** An event without a verified URL fell back to a
+  Maps search for the show's *title*; it now maps the venue, or links nothing.
+- **Transit estimates were re-bought on every retry pass.**
+
+### Changed
+
+- Detour figures are labelled "round trip", which is what the geometry has
+  always computed, and are now bounded above as well as below.
+
 ## 2.6.0 — 2026-09-02
 
 31 commits since 2.5.0. Link quality and per-day limits, plus transit-leg
