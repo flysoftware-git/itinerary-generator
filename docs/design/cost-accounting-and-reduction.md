@@ -940,6 +940,23 @@ own condition -- one error naming the consequence for output quality, rather tha
 a warning per call. The circuit breaker stays for transient trouble; an empty
 balance does not recover on a cooldown.
 
+## 8.13 Places lookups are not in the reported run cost
+
+`_attach_place_id` resolves one `place_id` per distinct en-route stop —
+roughly 40 on the Southwest trip. The resolver caches per query within a run
+and enforces its own per-run call cap (400), so the volume is bounded and a
+repeated stop costs nothing.
+
+**None of it appears in the `[LLM-COST]` line.** That figure covers LLM tokens
+and web-search tool fees; Places billing is a separate Google Cloud product
+and is not tracked here at all. Runs before and after enabling place-id
+waypoints both reported ~$0.28, which is accurate for what it measures and
+silent about what was added. The Cloud console is the only place that number
+exists.
+
+Worth naming because the reported figure looks complete. Anyone reasoning
+about cost from the run output alone will conclude this feature was free.
+
 ## 9. Open items
 
 - **The residual 18%.** The corrected `$2.00/$6.00` rate computes $4.45 against $3.75

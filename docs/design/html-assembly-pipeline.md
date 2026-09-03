@@ -166,6 +166,62 @@ client: an already-installed copy needs one hard reload or site-data clear.
 Report:
 - validation report JSON in output directory
 
+## Google Maps links: the scheme is load-bearing (2026-09-03)
+
+Every Maps link this pipeline emits must use the **keyless Maps URLs scheme**,
+which means `api=1` is mandatory:
+
+    /maps/search/?api=1&query=<text>&query_place_id=<id>     one place
+    /maps/dir/?api=1&origin=..&destination=..&waypoints=..   a route
+
+`place_resolver` previously emitted `/maps/place/?q=place_id:<id>`. That form
+has no `api=1`, is not part of the scheme, and Google routes it to a legacy
+handler that answers **"an API is required"**. 83 links on one Old Hickory
+build were built that way; the 53 on the same page that carried `api=1`
+worked, which is why it read as a map fault rather than a URL fault.
+
+The function's docstring claimed it "uses the documented Maps URLs scheme",
+and its tests asserted the exact string the function returned. Both agreed
+with the code; neither checked the claim. A test now asserts `api=1` is
+present rather than matching a literal.
+
+### Waypoint labelling: coordinate vs name vs place_id
+
+A route waypoint can be given three ways, and all three were tried:
+
+| form | resolves | labels |
+|---|---|---|
+| bare name | ambiguously — a Colorado route acquired a Washington pin | correctly |
+| coordinate | exactly | by reverse geocoding: "Millcreek 2nd post market, 5FGM+75" |
+| name + `waypoint_place_ids` | exactly | correctly |
+
+Only the third is both. `waypoint_place_ids` must correspond positionally to
+`waypoints`, so a leg is all-or-nothing: one stop without an id sends that
+whole leg back to coordinates rather than pairing the wrong id with the wrong
+place.
+
+A coordinate is still the right answer where no id exists — it is precise, and
+an unreadable label beats a wrong location.
+
+### One colour token for links
+
+Every in-content link resolves through `--link`, filled from the manifest's
+`theme_color`. Before that, three sources were live at once: the theme accent
+(attractions, events, drives), a fixed `--canyon` brown (restaurants, tips,
+lunch), and a hardcoded `#c0714a` (the route link) — so a single card could
+show three colours, and the mix shifted per trip because the accent does.
+
+Three anchors stay off the token deliberately: `.attr-external-link` (a
+designator, muted so it does not read as a control), `.badge-map` (a control
+with its own affordance), and `a[href]::after` (the print stylesheet's URL
+display).
+
+Note the failure mode when fixing this. The first attempt changed the seven
+`*-link` classes and its test asserted over that same list of seven, so
+anchors selected by descent — `.rest-name a`, `.lodging-val a`,
+`.links-list li a` — stayed brown and the test passed anyway. The test now
+walks every rule in the stylesheet that colours an anchor.
+
 ## Design Tradeoffs
 Pros:
 - Deterministic output shape and rendering order.

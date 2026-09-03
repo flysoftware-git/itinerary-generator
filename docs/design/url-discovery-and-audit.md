@@ -1729,6 +1729,51 @@ trail.
 - Mitigation: `_log_rejected_url` now also records
 	`audit_discarded_previously_accepted_url`.
 
+Issue: An en-route stop was resolved to a Places `place_id` using the leg's
+ARRIVAL destination as the qualifier.
+- Consequence: the query described a place the stop may be nowhere near.
+	"Cumberland Plateau Asheville, North Carolina" matched nothing — the
+	plateau is in Tennessee, 250 miles away — and because `waypoint_place_ids`
+	is all-or-nothing per leg, that one stop returned the whole Old Hickory ->
+	Asheville leg to coordinates. The same leg's "Blount Mansion Asheville,
+	North Carolina" and "Sunsphere Asheville, North Carolina" are Knoxville
+	places that resolved anyway, purely because their names are distinctive
+	enough to survive a misleading qualifier — silent near-misses, not successes.
+- Mitigation: `PlaceResolver.resolve` takes a location bias. A geocoded stop is
+	asked for by bare name with its own coordinate (50 km radius); a stop with
+	no geocode keeps the qualified name, which still beats an unqualified one.
+	The bias is part of the cache key, or two places sharing a name near
+	different coordinates collapse into whichever was asked for first.
+- Note: this is the same defect the waypoint code documents as "Mossy Cave
+	Capitol Reef National Park". `_maps_fallback_query_text` carries it by
+	design — it is right for an attraction, which IS at its destination — and
+	reusing it for en-route stops imported the flaw into a context where the
+	answer is checkable.
+
+Issue: One real place appeared under two names in the same itinerary.
+- "The Hermitage" (an en-route stop on one leg) and "Andrew Jackson's
+	Hermitage" (another leg) share `place_id ChIJf2rnpoJqZIgRQyx--6HBumM`,
+	while the same trip listed "The Hermitage Hotel" — a different place with
+	its own id, in downtown Nashville. A reader could not tell which "The
+	Hermitage" meant, and the shorter name is the one that collides.
+- Mitigation: `_unify_names_sharing_a_place_id` (main.py) runs before
+	assembly. A `place_id` is an identity claim, so items carrying the same one
+	are the same place and must read the same; the most specific name wins.
+	Names only — nothing is merged or removed, since a site legitimately
+	appears on more than one leg.
+- Found by opening both links in a browser, not by reading HTML. Both URLs
+	were correct: one resolved to "Andrew Jackson's Hermitage, 4580 Rachels
+	Ln" and the other to "The Hermitage Hotel, 231 6th Ave N". Only the
+	rendering showed that the names disagreed.
+- Limitation: this only unifies items the resolver gave ids to. Two items that
+	are the same place where one never resolved will still disagree, and
+	nothing detects that.
+
+Note: a Maps URL's `query=` text is built before name unification runs, so it
+can lag the card's name. `query_place_id` decides where the link goes, so the
+destination is correct regardless — verified in a browser against a stop whose
+query still read "Old Hickory, Tennessee" for a site in Hermitage, TN.
+
 ## Must-See Badge Policy
 The "Must-See" badge is a deterministic, render-time decision -- not the
 LLM's opinion. The model still emits a `must_see` boolean per attraction

@@ -308,6 +308,40 @@ first entry." A stable truncation that preserves existing order (rather
 than a fabricated ranking heuristic) is therefore not just the safe
 default, it directly respects that primacy convention.
 
+## The restaurant cap did not govern the published list (2026-09-02)
+
+`restaurants_per_day * day_count` was applied in `ai_content` to the
+**AI-generated** list. With `restaurant_source: direct_link_batch` the
+published list is the batch's instead — a flat
+`restaurant_direct_batch_item_count` (20) per destination regardless of stay
+length — written to `dinner_recommendations` after the cap had already run on
+a different list.
+
+It stayed invisible because verified-link-or-seed was discarding 60-77% of
+candidates, so the surviving count landed near the target by accident. Once
+link discovery improved, a two-night stop at Capitol Reef published 19 dinner
+recommendations and Bryce and Santa Fe published exactly 20 — the batch count.
+The owner spotted it and correctly guessed the threshold had never been
+exercised.
+
+`_enforce_restaurant_per_day_cap` (main.py) now applies it after discovery,
+the audit **and registry reconciliation** — the first point where the list is
+final whatever produced it. Ordering is the whole fix: the first attempt ran
+before reconciliation, which rebuilds `dinner_recommendations` from the
+registry, so the trim was silently overwritten by the pre-trim snapshot and
+the run reported nothing removed. A test asserts the ordering by source
+position.
+
+Selection keeps range rather than the top N by rating, which would answer 18
+candidates with eight variations on one expensive bistro: best of each
+distinct cuisine, then best of each price level not yet represented, then
+best-rated to fill. Blank values do not claim a diversity slot, and the
+incoming page order is restored so trimming does not re-sort the section.
+
+Note when measuring this: a rendered section is not a destination. Old Hickory
+groups five destinations under one section, so 26 restaurants there is six
+destinations each within its own target, not one destination over.
+
 ## Key implementation locations
 - Caps and ranking: `generator/ai_content.py`
   (`_resolve_attraction_target`/`_apply_manifest_attraction_target`,
