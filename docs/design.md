@@ -807,7 +807,7 @@ trip
 │   ├── title, subtitle, theme_color(inert), budget?, environment?
 │   ├── departure?, departure_datetime?, return?, return_datetime?
 │   ├── default_day_start_time?, default_daily_activity_hours?, attractions_per_day?
-│   ├── has_high_clearance_vehicle?
+│   ├── has_high_clearance_vehicle?, max_hike_miles?, max_hike_elevation_gain_ft?
 │   ├── llm { provider, model, temperature, max_tokens, features? }
 │   ├── llm_provider?, llm_model?, llm_features?      ← flat legacy twins
 │   └── departure_lat/lng, return_lat/lng             ← stage 2

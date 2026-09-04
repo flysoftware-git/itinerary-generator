@@ -57,6 +57,13 @@ All string values follow the voice and style rules in the system prompt.
       "type": "hike | attraction | viewpoint | activity | landmark",
       "difficulty": "Easy | Moderate | Strenuous | N/A",
       "duration": "e.g. 4–5 hrs round-trip | 45 min | half-day",
+      "distance_miles": "numeric round-trip miles ON FOOT, for a hike or walk.
+        OMIT THIS FIELD ENTIRELY if you do not know it or if the attraction
+        involves no meaningful walking. Do not guess a plausible number and do
+        not write 0 -- a reader with a walking limit is filtered against this,
+        and a made-up figure removes a real place or admits an impossible one.",
+      "elevation_gain_ft": "numeric feet of ascent, same rules as
+        distance_miles: omit when unknown, never zero as a placeholder.",
       "must_see": false,
       "description": "2–3 sentences. Name specific physical features: elevation
         gain, trail length, geological formation, technical element, key
