@@ -9,6 +9,7 @@
 | 3 | §9, §12 | Added `--privacy-mode` (`auto`/`on`/`off`, default `auto`) to redact `planning_links` and `lodging.name` from rendered output. Discovered live: the first real `--environment prod` build (destined for a public repo) rendered real, personal Notion trip-planning links directly into `index.html`'s header buttons with no redaction path available at all. `auto` redacts only in `prod` (the only environment ever published); `lodging.location`/`checkin_time` are deliberately left untouched since both drive geocoding/routing/schedule content, not just display. A redacted planning link renders as an explanatory non-link placeholder rather than vanishing silently |
 | 4 | §7, §13 | Added a sixth template substitution point, `var PWA_INSTALL_ENABLED = true;` (templates/v2.5_template.html, checksum updated), set to `false` by `html_assembler.py` whenever `--privacy-mode` redaction is active. Suppresses the Install App button and the browser's native install prompt together (the template already called `e.preventDefault()` on `beforeinstallprompt` unconditionally, deferring to the custom button as the only install path — disabling that button is sufficient to remove the affordance entirely). Offline caching/service worker registration are unaffected |
 | 5 | §8 | Generator footer now includes the manifest filename (`trip._meta.manifest_name`, set from `--manifest`'s basename), alongside the existing generated-at timestamp — e.g. `... v2.0.0 · Manifest: sw_manifest.yaml · Itinerary output: 2026-08-19 06:47 UTC`. Omitted entirely (no stray separator) when absent, for backward compatibility with any `_meta` built without it |
+| 7 | §8 | Split the footer's two jobs. §8.2's provenance — generator name, repository link, version, manifest, timestamp — stays required and is now stated to be non-configurable. Its support line becomes replaceable by an optional `trip.brand` manifest block (new §8.3): `distributor`/`distributor_url` add a `Prepared by` credit above the provenance line, and `support_url`/`support_label` replace the two issue links with one destination. Prompted by the observation that the footer tells every reader of every generated page to file a GitHub issue on this repository — correct when the person who ran the generator is the person reading the page, and wrong every other time, since a reader's relationship is with whoever handed them the guide. Absent a `brand` block the footer is byte-identical to before, asserted by a test holding the previous markup as a literal; `support_url` accepts `https://` or `mailto:` only |
 | 6 | §8 | Rewrote §8, which contradicted itself and §7. Its one-line prose — "No attribution footer block is appended" — dated from when the block in question was the static "Made by Copilot" table; that table was removed in v0.29 and replaced by the generator footer, and the prose was never updated. Read literally it forbade the footer that §7 and three changelog rows (v0.29 row 3, v2.1 row 7, v2.2 row 5) require, and that `html_assembler` has injected unconditionally ever since. §8 now names both blocks separately: §8.1 the attribution table, removed and not to return; §8.2 the generator footer, required, with its contents enumerated against what `_build_generator_footer` actually emits. No behaviour changed — the code was already correct and the requirement was not |
 
 ### Changelog for v2.1
@@ -755,7 +756,7 @@ required rather than merely permitted, and it must carry all of the following:
 | Generator version | `trip._meta.generator_version` | Rendered as `v{version}` |
 | Manifest filename | `trip._meta.manifest_name` | Omitted entirely, with no stray separator, when absent (v2.2 changelog row 5) |
 | Itinerary output timestamp | `trip._meta.generated_at_utc` | Rendered `YYYY-MM-DD HH:MM UTC`; falls back to the raw value, or `unknown`, if unparseable |
-| Two distinct issue links, on a second line | static | One for broken-link reports, one for itinerary feedback (§7, v2.1 changelog row 7) |
+| A support line, second line | static by default | Two distinct issue links — one for broken-link reports, one for itinerary feedback (§7, v2.1 changelog row 7). This is the **only** row a manifest may replace, and §8.3 says how |
 
 Rendered shape, as emitted by `html_assembler._build_generator_footer`:
 
@@ -766,7 +767,13 @@ Issue reporting: Report broken links · Share itinerary feedback
 
 The two issue links must remain distinct destinations: a single "report a problem" link
 would lose the distinction between a dead link in the output and feedback about the
-itinerary itself, which is the whole point of §7's second-line requirement.
+itinerary itself, which is the whole point of §7's second-line requirement. That rule binds
+*these* links, which nobody triages; §8.3 explains why a configured support channel is not
+held to it.
+
+Everything above except the support line is **provenance**, and provenance is not
+configurable. It is the page's record of what made it — the same standard this project
+already applies to the sources it cites in the itinerary body.
 
 **Do not satisfy §8.1 by deleting the footer.** The prose in this section previously read
 "No attribution footer block is appended to generated itineraries" with no further
@@ -774,6 +781,45 @@ qualification, which — once the Copilot table it referred to had been replaced
 generator footer — read as a blanket prohibition on the block §7 and three changelog
 entries require. Removing `_inject_generator_footer` would satisfy that sentence, break
 those requirements, and take the broken-link reporting channel out of every published page.
+
+### 8.3 Support routing — configurable, and defaulting to §8.2
+
+§8.2 calls the footer "its only feedback channel" and that is exactly right about *why* it
+is required. It is over-specified about *where*: the two links it names point at this
+project's issue tracker, and this project is very often not who a reader should be asking.
+
+**A generated page can travel further than the person who ran the generator.** Someone
+builds a guide for their family; a fork builds guides for a club; a business builds them for
+customers. In every one of those cases the reader's relationship is with whoever handed them
+the page, and telling that reader to open a public GitHub issue routes them to strangers who
+cannot help, in public, with whatever trip detail they choose to paste in. **Whoever
+distributes a guide owns support for it**, and the footer should be able to say so.
+
+An optional `trip.brand` manifest block therefore governs two things, and only these two:
+
+| Key | Effect |
+|---|---|
+| `distributor`, `distributor_url` | Renders a `Prepared by ...` credit **above** the §8.2 provenance line. Additive: it displaces nothing |
+| `support_url`, `support_label` | Replaces the whole support line with a single destination |
+
+Rules:
+
+- **Absent — the ordinary case — the footer renders exactly as §8.2 specifies**, byte for
+  byte, crediting this project and linking its two issue templates.
+- **The block cannot touch provenance.** Generator name, repository link, version, manifest
+  and timestamp are unaffected by any value it carries. A "white-labelled" guide still
+  records what built it.
+- **A configured support channel may be a single destination.** §8.2 keeps its two links
+  distinct because nobody triages them and the reader has to self-classify; a distributor
+  naming a support channel *is* the triage, so splitting it would push classification back
+  onto the reader for no benefit.
+- **`https://` or `mailto:` only**, enforced in the manifest schema. A guide is a published
+  artifact that outlives its run: `http://` is a downgrade someone else reads later, and
+  `javascript:` is script injection through a YAML file.
+- **The block carries attribution and support, and nothing else.** No tier name, no
+  audience or redaction switch (that is §9's `--privacy-mode`), no palette (that is
+  `theme_color`). Those are separate concerns and collapsing them into one block is how a
+  configuration surface stops being explicable.
 
 ---
 

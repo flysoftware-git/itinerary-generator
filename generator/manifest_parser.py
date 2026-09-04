@@ -86,6 +86,26 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                 "title": {"type": "string"},
                 "subtitle": {"type": "string"},
                 "theme_color": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+                "brand": {
+                    "description": (
+                        "Optional distributor credit and support routing for the generated "
+                        "page footer (§8.3). Absent -- the ordinary case -- the footer renders "
+                        "exactly as it always has, crediting this project and pointing at its "
+                        "issue tracker. Provenance (§8.2) is not configurable and is not here."
+                    ),
+                    "type": "object",
+                    "properties": {
+                        "distributor": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "distributor_url": {"type": "string", "pattern": "^https://"},
+                        # https or mailto only. A generated guide is a published
+                        # artifact that outlives the run: `http://` is a downgrade
+                        # someone else can read, and `javascript:` is script
+                        # injection through a YAML file.
+                        "support_url": {"type": "string", "pattern": "^(https://|mailto:)"},
+                        "support_label": {"type": "string", "minLength": 1, "maxLength": 80},
+                    },
+                    "additionalProperties": False,
+                },
                 "budget": {
                     "description": "Optional budget guidance consumed by content generation.",
                     "oneOf": [
