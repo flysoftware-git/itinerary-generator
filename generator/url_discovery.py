@@ -37,6 +37,7 @@ import threading
 from threading import Lock
 from typing import Any
 from generator.llm_client import MultiLLMClient
+from generator.fanout_metrics import pool as instrumented_pool
 from generator.road_estimate import (
     ROAD_DISTANCE_FACTOR,
     drive_minutes,
@@ -2217,7 +2218,7 @@ class URLDiscoverer:
             origin_name = str(dest.get("_en_route_origin", "") or "")
             logger.info("URL discovery for '%s'…", name)
             # Parallelise the four independent URL categories within each destination
-            with ThreadPoolExecutor(max_workers=4) as inner:
+            with instrumented_pool("url_discovery_categories", 4) as inner:
                 futs = [
                     inner.submit(self._discover_attractions, ai, name, nps_code, dest.get("dates"), dest.get("seeds", []), dest=dest),
                     inner.submit(self._discover_restaurants, ai, name, dest.get("dates"), dest),
@@ -2339,7 +2340,7 @@ class URLDiscoverer:
         # fail-open-per-destination behavior.
         self._prefetch_grouped_direct_batch(destinations)
 
-        with ThreadPoolExecutor(max_workers=min(len(destinations), 3)) as pool:
+        with instrumented_pool("url_discovery_destinations", min(len(destinations), 3)) as pool:
             futures = [pool.submit(_discover_one, d) for d in destinations]
             for f in as_completed(futures):
                 f.result()
@@ -6387,7 +6388,7 @@ class URLDiscoverer:
                     exc_info=True,
                 )
 
-        with ThreadPoolExecutor(max_workers=min(len(jobs), 8)) as pool:
+        with instrumented_pool("url_discovery_grouped_prefetch", min(len(jobs), 8)) as pool:
             futs = [pool.submit(_run_one, kind, group) for kind, group in jobs]
             for f in as_completed(futs):
                 f.result()
@@ -12302,7 +12303,7 @@ class URLDiscoverer:
             return
 
         workers = min(8, max(1, len(non_alltrails)))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        with instrumented_pool("url_audit_page_prewarm", workers) as pool:
             futures = [pool.submit(self._fetch_page_text, url, 8) for url in non_alltrails]
             for future in as_completed(futures):
                 try:

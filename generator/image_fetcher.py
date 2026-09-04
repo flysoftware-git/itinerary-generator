@@ -14,6 +14,8 @@ from __future__ import annotations
 import html as html_lib
 import hashlib, json, logging, os, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from generator.fanout_metrics import pool as instrumented_pool
 from pathlib import Path
 import re
 from typing import Any
@@ -173,7 +175,7 @@ class ImageFetcher:
                 )
             logger.info("  %d image(s) acquired for '%s'", len(imgs), dest["name"])
 
-        with ThreadPoolExecutor(max_workers=min(len(destinations), 4)) as pool:
+        with instrumented_pool("image_fetch_destinations", min(len(destinations), 4)) as pool:
             futures = {pool.submit(_fetch_one, d): d for d in destinations}
             for f in as_completed(futures):
                 f.result()
