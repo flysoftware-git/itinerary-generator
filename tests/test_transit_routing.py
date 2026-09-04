@@ -388,3 +388,61 @@ def test_the_prompt_asks_for_a_fare_band_not_a_price():
     assert "RANGE in the local currency" in rendered
     # The pass caveat: for many travelers the fare is moot.
     assert "rail pass" in rendered
+
+
+class TestSelfPoweredModes:
+    """`bike` and `hike` are leg modes, but they are not transit. Nobody
+    operates them, so the whole Phase 1 apparatus -- Format A/B, the strip,
+    the Unverified badge -- has nothing to act on and must not run."""
+
+    @pytest.mark.parametrize("mode", ["bike", "hike"])
+    def test_they_resolve_like_any_other_mode(self, mode):
+        from generator.transit_routing import resolve_leg_mode
+
+        assert resolve_leg_mode({"id": "b", "transport_mode": mode}) == mode
+        assert resolve_leg_mode({"id": "b"}, trip_meta={"transport_mode": mode}) == mode
+
+    @pytest.mark.parametrize("mode", ["bike", "hike"])
+    def test_no_options_are_generated(self, mode):
+        """A 'Public transport options' card on a leg the traveler pedals
+        would answer a question nobody asked -- and would cost a call to do
+        it."""
+        from generator.transit_routing import should_generate_options
+
+        assert should_generate_options({"name": "Bryce"}, mode) is False
+
+    @pytest.mark.parametrize("mode", ["bike", "hike"])
+    def test_en_route_stops_are_kept(self, mode):
+        """The strongest case for stops in the design: a cyclist stops more
+        often than a driver, and the stops are the day rather than an
+        interruption to it."""
+        from generator.transit_routing import suppresses_en_route_stops
+
+        assert suppresses_en_route_stops({"_transport_mode": mode}) is False
+
+    def test_transit_still_suppresses_them(self):
+        from generator.transit_routing import suppresses_en_route_stops
+
+        assert suppresses_en_route_stops({"_transport_mode": "transit"}) is True
+
+    @pytest.mark.parametrize("mode, expected", [("bike", "BICYCLE"), ("hike", "WALK")])
+    def test_each_maps_to_a_routes_travel_mode(self, mode, expected):
+        from generator.transit_routing import ROUTES_TRAVEL_MODE_BY_LEG_MODE
+
+        assert ROUTES_TRAVEL_MODE_BY_LEG_MODE[mode] == expected
+
+    @pytest.mark.parametrize("mode", ["auto", "transit", "mixed"])
+    def test_the_operated_modes_have_no_routes_mode_here(self, mode):
+        """transit is priced by TRANSIT through a different path; auto and
+        mixed are drives. Only the self-powered pair belongs in this map."""
+        from generator.transit_routing import ROUTES_TRAVEL_MODE_BY_LEG_MODE
+
+        assert mode not in ROUTES_TRAVEL_MODE_BY_LEG_MODE
+
+    @pytest.mark.parametrize("mode, expected", [
+        ("bike", True), ("hike", True), ("transit", False), ("auto", False), ("mixed", False),
+    ])
+    def test_is_self_powered(self, mode, expected):
+        from generator.transit_routing import is_self_powered
+
+        assert is_self_powered({"_transport_mode": mode}) is expected

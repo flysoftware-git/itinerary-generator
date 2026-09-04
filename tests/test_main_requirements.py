@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 import generator.main as main_mod
 
 
@@ -2194,10 +2196,14 @@ class _CountingEstimator:
     def __init__(self, result=None):
         self.result = result
         self.call_count = 0
+        self.modes_seen = []
         self._memo = {}
 
-    def estimate(self, origin, destination, *, departure_iso=""):
-        key = (origin, destination, departure_iso)
+    def estimate(self, origin, destination, *, departure_iso="", travel_mode="TRANSIT"):
+        # Mode is part of the real memo key: the same endpoints have a
+        # different answer by bike than by train.
+        key = (origin, destination, departure_iso, travel_mode)
+        self.modes_seen.append(travel_mode)
         if key in self._memo:
             return self._memo[key]
         self.call_count += 1
@@ -2260,3 +2266,65 @@ def test_without_a_shared_estimator_it_still_builds_its_own():
     # No GOOGLE_MAPS_PLATFORM_KEY in the test environment, so this takes the
     # unavailable path and returns 0 rather than reaching the network.
     assert main_mod._apply_transit_estimates(trip) == 0
+
+
+# ── GH #2: self-powered legs are priced, never guessed ────────────────────
+
+def _self_powered_trip(mode, travel_time="2 hrs 15 min", distance="95"):
+    from generator.transit_routing import stamp_resolved_modes
+
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"id": "zion", "name": "Zion", "ai_content": {}},
+            {"id": "bryce", "name": "Bryce", "transport_mode": mode,
+             "ai_content": {"getting_here": {
+                 "travel_time": travel_time, "distance_miles": distance}}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    return trip
+
+
+@pytest.mark.parametrize("mode, expected", [("bike", "BICYCLE"), ("hike", "WALK")])
+def test_a_self_powered_leg_is_priced_by_its_own_travel_mode(mode, expected):
+    import generator.main as main_mod
+
+    trip = _self_powered_trip(mode)
+    estimator = _CountingEstimator(result={"minutes": 300, "miles": 62, "estimated": True})
+
+    assert main_mod._apply_transit_estimates(trip, estimator=estimator) == 1
+    assert estimator.modes_seen == [expected]
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "5 hrs"
+    assert gh["distance_miles"] == 62
+    assert gh["travel_mode"] == mode
+
+
+@pytest.mark.parametrize("mode", ["bike", "hike"])
+def test_an_unpriced_self_powered_leg_is_blank_not_a_drive(mode):
+    """No options card exists for a leg nobody operates, so the Routes figure
+    is the only honest source. Without it, nothing."""
+    import generator.main as main_mod
+
+    trip = _self_powered_trip(mode)
+    assert main_mod._enforce_transit_leg_durations(trip) == 1
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == ""
+    assert gh["distance_miles"] == ""
+    assert gh["travel_mode"] == mode
+
+
+@pytest.mark.parametrize("mode", ["bike", "hike"])
+def test_a_priced_self_powered_leg_is_left_alone(mode):
+    import generator.main as main_mod
+
+    trip = _self_powered_trip(mode, travel_time="5 hrs", distance="62")
+    trip["destinations"][1]["ai_content"]["getting_here"]["duration_is_estimate"] = True
+
+    assert main_mod._enforce_transit_leg_durations(trip) == 0
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "5 hrs"
+    assert gh["distance_miles"] == "62"

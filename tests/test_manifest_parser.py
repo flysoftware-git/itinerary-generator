@@ -932,3 +932,35 @@ def test_the_correct_key_still_parses(tmp_path):
     f = _write(tmp_path, _manifest_yaml(bryce_extra="    transport_mode: transit\n"))
     data = parser.load(str(f))
     assert data["destinations"][1]["transport_mode"] == "transit"
+
+
+@pytest.mark.parametrize("mode", ["bike", "hike"])
+def test_self_powered_modes_are_accepted_at_both_levels(tmp_path, mode):
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        trip_extra=f"  transport_mode: {mode}\n",
+        bryce_extra=f"    transport_mode: {mode}\n",
+    ))
+    data = parser.load(str(f))
+    assert data["trip"]["transport_mode"] == mode
+    assert data["destinations"][1]["transport_mode"] == mode
+
+
+@pytest.mark.parametrize("mode", ["bike", "hike"])
+def test_legs_accept_the_self_powered_modes_too(tmp_path, mode):
+    """`legs:` and `transport_mode` share one enum; a mode accepted by one
+    and rejected by the other would be a trap."""
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        legs=f"legs:\n  - from: zion\n    to: bryce_canyon\n    mode: {mode}\n"
+    ))
+    assert parser.load(str(f))["legs"][0]["mode"] == mode
+
+
+def test_a_near_miss_spelling_is_still_rejected(tmp_path):
+    """Widening the enum must not widen it to anything plausible-looking."""
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(bryce_extra="    transport_mode: biking\n"))
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(f))
+    assert "bryce_canyon" in str(exc_info.value)

@@ -311,6 +311,30 @@ def stamp_resolved_modes(trip: dict[str, Any]) -> None:
             previous_id = str(dest.get("id", "") or "").strip()
 
 
+#: Modes the traveler powers themselves. They are leg modes like any other,
+#: but they are not TRANSIT: nobody operates them, so there is no timetable to
+#: guess at, no operator to name wrongly, no fare and no transfers. Phase 1's
+#: whole apparatus -- Format A/B, the strip, the Unverified badge -- exists
+#: because a model cannot know a departure time. On a bike there is no
+#: departure time to know, so none of it applies and none of it runs.
+SELF_POWERED_MODES: tuple[str, ...] = ("bike", "hike")
+
+#: Google Routes travelMode per self-powered leg mode. Real geometry beats a
+#: guess here in a way it does not for transit: a cycling duration is a fact
+#: about roads and gradients rather than about whose timetable Google
+#: licenses, so coverage does not evaporate the way TRANSIT's did on every
+#: Japanese corridor the probe tried.
+ROUTES_TRAVEL_MODE_BY_LEG_MODE: dict[str, str] = {
+    "bike": "BICYCLE",
+    "hike": "WALK",
+}
+
+
+def is_self_powered(dest: dict[str, Any] | None) -> bool:
+    """True on a `bike` or `hike` leg."""
+    return resolved_mode(dest) in SELF_POWERED_MODES
+
+
 def resolved_mode(dest: dict[str, Any] | None) -> str:
     """The stamped mode, or `auto` for a trip that never ran the stamp."""
     if not isinstance(dest, dict):
@@ -325,6 +349,10 @@ def suppresses_en_route_stops(dest: dict[str, Any] | None) -> bool:
     structurally meaningless -- and skipping one of the four parallel
     discovery jobs is a real cost saving. Under `mixed` the drive is still on
     the table, so its stops are still real.
+
+    `bike` and `hike` keep theirs, and are the strongest case for them in the
+    whole design: a cyclist stops more often than a driver, not less, and the
+    stops are the day rather than an interruption to it.
     """
     return resolved_mode(dest) == "transit"
 
@@ -343,6 +371,10 @@ def should_generate_options(dest: dict[str, Any] | None, mode: str) -> bool:
     forwarded a car-rental confirmation in August has not made an error.
     Logged at INFO so the divergence stays discoverable.
     """
+    # Self-powered legs never reach the provider. `bike` and `hike` are absent
+    # from this tuple because there is nothing to suggest: no operator, no
+    # timetable, no fare, no transfers. A "Public transport options" card on a
+    # leg the traveler pedals would answer a question nobody asked.
     if mode not in ("transit", "mixed"):
         return False
     booking = booked_arrival_leg(dest)

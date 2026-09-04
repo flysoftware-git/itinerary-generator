@@ -273,6 +273,22 @@ of this section.
 
 ### 3.1 `transport_mode`
 
+> **Extended 2026-09-03 (owner call): `bike` and `hike` join the enum.** They are leg
+> modes, but they are not transit, and the distinction is what makes them cheap: nobody
+> operates them, so there is no timetable to guess at, no operator to name wrongly, no fare
+> and no transfers. §2.1's entire apparatus — Format A/B, the strip, the `⚠ Unverified`
+> badge — exists because a model cannot know a departure time; on a bike there is no
+> departure time to know, so none of it runs and a self-powered leg costs zero provider
+> calls. What they do change: the Maps link (`bicycling`/`walking`, and unlike transit they
+> **keep** their waypoints, since the scheme accepts them and on a two-day ride the stops
+> are the itinerary), the card heading, what the model is told to describe, and the
+> duration — priced through Routes with `travelMode` `BICYCLE`/`WALK`. That last is a
+> better bet than TRANSIT ever was: a cycling duration is a fact about roads and gradients
+> rather than about whose timetable Google licenses, so §2.2's probe result does not apply
+> to it. En-route stops are kept, and are stronger here than anywhere else in this note —
+> a cyclist stops more often than a driver, not less.
+
+
 Two additions to `MANIFEST_SCHEMA`, both optional, both defaulting to today's behaviour:
 
 ```python

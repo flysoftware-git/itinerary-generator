@@ -78,7 +78,7 @@ TRANSPORTATION_ITEM_SCHEMA: dict[str, Any] = {
 #: behaviour, unchanged: every leg is a drive. Kept as an explicit enum member
 #: rather than only "omitted", so a manifest can state the assumption it is
 #: relying on. See docs/design/multimodal-routing.md 3.1.
-TRANSPORT_MODES: tuple[str, ...] = ("auto", "transit", "mixed")
+TRANSPORT_MODES: tuple[str, ...] = ("auto", "transit", "mixed", "bike", "hike")
 
 #: One authored leg between two adjacent destinations. `from`/`to` are
 #: destination `id`s, never display names -- the issue's free-text matching
@@ -146,8 +146,11 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                    "is a drive. 'transit' asks for scheduled public "
                                    "transport instead, including the arrival-day "
                                    "schedule. 'mixed' renders transit options alongside "
-                                   "the drive rather than in place of it. Overridable "
-                                   "per destination.",
+                                   "the drive rather than in place of it. 'bike' and "
+                                   "'hike' are SELF-POWERED: nobody operates them, so "
+                                   "there is no timetable to suggest and no options card "
+                                   "-- they change the leg's duration, its map link and "
+                                   "how it is described. Overridable per destination.",
                 },
                 "transportation": {
                     "type": "array",

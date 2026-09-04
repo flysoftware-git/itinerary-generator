@@ -56,6 +56,12 @@ ROUTES_ENDPOINT = "https://routes.googleapis.com/directions/v2:computeRoutes"
 #: Manifest leg types that should be priced as public transport.
 TRANSIT_MODES = frozenset({"train", "bus", "shuttle", "ferry", "ship"})
 
+#: Routes travelMode values this module will send. Anything else is a caller
+#: bug rather than a runtime condition, so it raises rather than defaulting --
+#: silently falling back to TRANSIT would price a bike ride as a bus, and
+#: nothing in the output would say so.
+VALID_TRAVEL_MODES = frozenset({"TRANSIT", "BICYCLE", "WALK"})
+
 _FIELD_MASK = "routes.duration,routes.distanceMeters"
 
 _TIMEOUT_SECONDS = 20
@@ -80,6 +86,7 @@ class TransitEstimator:
         destination: str,
         *,
         departure_iso: str = "",
+        travel_mode: str = "TRANSIT",
     ) -> dict[str, Any] | None:
         """Return {'minutes', 'miles', 'estimated': True} or None.
 
@@ -87,22 +94,41 @@ class TransitEstimator:
         caller must treat that as "no figure available" and omit, never as
         zero, and never by falling back to a driving estimate: substituting a
         drive for a train is the defect this module exists to remove.
+
+        `travel_mode` is a Routes travelMode: TRANSIT, BICYCLE or WALK. The
+        last two arrived with the `bike`/`hike` leg modes, and they are a
+        better bet than TRANSIT ever was -- a cycling duration is a fact about
+        roads and gradients rather than about whose timetable Google licenses,
+        so its coverage does not evaporate outside Europe and North America
+        the way the Japan probe found TRANSIT's did.
         """
         origin = str(origin or "").strip()
         destination = str(destination or "").strip()
         if not (self.available and origin and destination):
             return None
 
-        memo_key = (origin.lower(), destination.lower(), departure_iso)
+        travel_mode = str(travel_mode or "TRANSIT").strip().upper()
+        if travel_mode not in VALID_TRAVEL_MODES:
+            raise ValueError(
+                f"travel_mode {travel_mode!r} is not one of {sorted(VALID_TRAVEL_MODES)}"
+            )
+
+        # Keyed by mode too: the same pair of endpoints has a different answer
+        # by bike than by train, and a memo that conflated them would hand one
+        # leg the other's duration.
+        memo_key = (origin.lower(), destination.lower(), departure_iso, travel_mode)
         if memo_key in self._memo:
             return self._memo[memo_key]
 
         body: dict[str, Any] = {
             "origin": {"address": origin},
             "destination": {"address": destination},
-            "travelMode": "TRANSIT",
+            "travelMode": travel_mode,
         }
-        if departure_iso:
+        # A pinned departure time is what makes a TRANSIT answer reproducible
+        # rather than "now". A bike ride does not vary by timetable, so sending
+        # one would add nothing and invite a rejection on a past date.
+        if departure_iso and travel_mode == "TRANSIT":
             body["departureTime"] = departure_iso
 
         result: dict[str, Any] | None = None

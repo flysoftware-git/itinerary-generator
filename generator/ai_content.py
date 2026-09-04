@@ -1626,7 +1626,20 @@ class AIContentGenerator:
             # road trip and wrong for the leg the manifest just said is a
             # train -- the model then invented highways and a drive time, and
             # the drive time became the arrival-day scheduling input.
-            if resolved_mode(dest) == "transit":
+            leg_mode = resolved_mode(dest)
+            if leg_mode in ("bike", "hike"):
+                verb = "cycling" if leg_mode == "bike" else "walking"
+                return (
+                    f"By {verb}, under the traveler's own power. Describe THAT "
+                    f"journey: the terrain and surface, roughly how much climbing, "
+                    f"where water and food are, and what the leg is like taken "
+                    f"slowly. Name no highways and give no driving directions. Do "
+                    f"name places worth stopping -- on a self-powered leg the stops "
+                    f"are the day rather than an interruption to it. Omit "
+                    f"travel_time and distance_miles entirely: a driving estimate is "
+                    f"a factual error here, and a real figure is supplied elsewhere."
+                )
+            if leg_mode == "transit":
                 return (
                     "By scheduled public transport, not booked yet. Describe THAT "
                     "journey: the kind of service, the stations or terminals, and "
@@ -2471,7 +2484,9 @@ class AIContentGenerator:
             # this pass runs BEFORE the transit figures are applied, so
             # without this it would be writing the value they then have to
             # undo (multimodal-routing.md 4.1).
-            if resolved_mode(dest) == "transit":
+            # bike and hike join transit here for the same reason: a 1.30 road
+            # factor at 60 mph describes none of them.
+            if resolved_mode(dest) in ("transit", "bike", "hike"):
                 continue
             miles, time_str = _estimate_haversine_route(
                 origin.get("lat"), origin.get("lng"), dest.get("lat"), dest.get("lng"),

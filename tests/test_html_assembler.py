@@ -5356,3 +5356,62 @@ def test_mixed_leg_keeps_driving_directions_and_its_waypoints() -> None:
 
     assert "travelmode=driving" in url
     assert "waypoints=" in url
+
+
+# ── GH #2: self-powered legs ───────────────────────────────────────────────
+
+@pytest.mark.parametrize("mode, travelmode", [("bike", "bicycling"), ("hike", "walking")])
+def test_self_powered_legs_get_their_own_maps_travelmode(mode, travelmode) -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest = {"name": "Capitol Reef", "_transport_mode": mode}
+
+    url = assembler._build_route_gmaps_url("Bryce Canyon", dest, [])
+
+    assert f"travelmode={travelmode}" in url
+
+
+@pytest.mark.parametrize("mode", ["bike", "hike"])
+def test_self_powered_legs_keep_their_waypoints(mode) -> None:
+    """Transit returns early past the waypoint block because Google rejects
+    waypoints there. Bicycling and walking accept them, and a self-powered
+    leg is where they matter most -- the stops are the itinerary."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest = {"name": "Capitol Reef", "_transport_mode": mode}
+    stops = [{"name": "Escalante", "geocode_lat": 37.7, "geocode_lng": -111.6}]
+
+    url = assembler._build_route_gmaps_url("Bryce Canyon", dest, stops)
+
+    assert "waypoints=" in url
+
+
+def test_transit_still_drops_its_waypoints() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest = {"name": "Capitol Reef", "_transport_mode": "transit"}
+    stops = [{"name": "Escalante", "geocode_lat": 37.7, "geocode_lng": -111.6}]
+
+    url = assembler._build_route_gmaps_url("Bryce Canyon", dest, stops)
+
+    assert "waypoints=" not in url
+
+
+@pytest.mark.parametrize("mode, word", [("bike", "Riding"), ("hike", "Walking")])
+def test_the_card_heading_matches_the_mode(mode, word) -> None:
+    """A leg the traveler pedals should not sit under a car icon."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {"route_summary": "Gravel and climbing.", "travel_time": "5 hours"}}
+
+    html = assembler._build_getting_here(
+        ai, {"name": "Capitol Reef", "_transport_mode": mode}, previous_name="Bryce"
+    )
+
+    assert word in html
+    assert "Getting Here" not in html
+
+
+def test_a_driving_leg_keeps_the_car_heading() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {"route_summary": "US-89.", "travel_time": "2 hrs", "distance_miles": "95"}}
+
+    html = assembler._build_getting_here(ai, {"name": "Bryce"}, previous_name="Zion")
+
+    assert "Getting Here" in html

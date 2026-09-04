@@ -70,6 +70,23 @@ def _verify_checksum(template_text: str) -> None:
         )
 
 
+#: Google Maps travelmode values for the self-powered leg modes. Kept apart
+#: from HTMLAssembler._MAPS_TRAVELMODE_BY_ARRIVAL, which is keyed by BOOKED leg
+#: type: nobody books a bike ride, so the two never overlap and merging them
+#: would blur what each is answering.
+_MAPS_TRAVELMODE_BY_LEG_MODE: dict[str, str] = {
+    "bike": "bicycling",
+    "hike": "walking",
+}
+
+#: Header icon and label per leg mode, so the card does not say "Getting Here"
+#: under a car icon for a leg the traveler walks.
+_GETTING_HERE_HEADING_BY_LEG_MODE: dict[str, str] = {
+    "bike": "\U0001f6b4 Riding Here",
+    "hike": "\U0001f97e Walking Here",
+}
+
+
 class HTMLAssembler:
     def __init__(self, config_path: Path | str = "config.yaml") -> None:
         import yaml
@@ -1317,23 +1334,32 @@ class HTMLAssembler:
         travelmode = self._MAPS_TRAVELMODE_BY_ARRIVAL.get(
             self._booked_arrival_mode(dest), "driving"
         )
-        if resolved_mode(dest) == "transit":
+        leg_mode = resolved_mode(dest)
+        if leg_mode == "transit":
             travelmode = "transit"
+        elif leg_mode in _MAPS_TRAVELMODE_BY_LEG_MODE:
+            travelmode = _MAPS_TRAVELMODE_BY_LEG_MODE[leg_mode]
         params = [f"destination={quote(destination)}", f"travelmode={travelmode}", "api=1"]
         if previous_name:
             params.append(f"origin={quote(previous_name)}")
 
-        # Everything below is waypoints, and waypoints are a car concept: you
-        # cannot take a 12-mile detour off a scheduled train. Transit mode
-        # also rejects them outright -- Google returns "Sorry, we could not
-        # calculate transit directions" and the link is dead.
+        # Transit rejects waypoints outright -- Google returns "Sorry, we could
+        # not calculate transit directions" and the link is dead -- and they are
+        # meaningless there anyway: you cannot take a 12-mile detour off a
+        # scheduled train.
         #
         # An early return rather than a branch threaded through the loop, on
         # purpose. This function's failures live in that loop (the
         # `optimize:true` mis-geocode below, and design.md 4.5 item 16's
         # unresolved en-route case), so the transit path is kept out of it
         # entirely and the driving path is left byte-identical.
-        if travelmode != "driving":
+        #
+        # bicycling and walking deliberately fall THROUGH to that loop instead
+        # of returning here. The Maps URL scheme accepts waypoints for both,
+        # and a self-powered leg is where they matter most: on a two-day ride
+        # the stops are the itinerary rather than a detour from it. Hence a
+        # test on transit specifically, not on "anything that is not driving".
+        if travelmode == "transit":
             return "https://www.google.com/maps/dir/?" + "&".join(params)
 
         waypoint_names: list[str] = []
@@ -2206,7 +2232,11 @@ class HTMLAssembler:
 
         html = '<div class="card getting-here-card getting-here-subcard">\n'
         html += '  <div class="getting-here-header">\n'
-        html += '    <h3>🚗 Getting Here</h3>\n'
+        # A leg the traveler pedals or walks should not sit under a car.
+        heading = _GETTING_HERE_HEADING_BY_LEG_MODE.get(
+            resolved_mode(dest), '🚗 Getting Here'
+        )
+        html += f'    <h3>{heading}</h3>\n'
         if gmaps_url:
             html += f'    <a href="{gmaps_url}" target="_blank" rel="noopener" class="gmaps-link">Open in Google Maps →</a>\n'
         html += '  </div>\n'

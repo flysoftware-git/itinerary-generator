@@ -2163,7 +2163,10 @@ def _enforce_transit_leg_durations(trip: dict) -> int:
 
     corrected = 0
     for dest in (trip.get("destinations") or []):
-        if not isinstance(dest, dict) or resolved_mode(dest) != "transit":
+        if not isinstance(dest, dict):
+            continue
+        leg_mode = resolved_mode(dest)
+        if leg_mode not in ("transit", "bike", "hike"):
             continue
         ai = dest.get("ai_content")
         if not isinstance(ai, dict):
@@ -2178,22 +2181,30 @@ def _enforce_transit_leg_durations(trip: dict) -> int:
         stale_miles = str(getting_here.get("distance_miles", "") or "").strip()
         band = option_duration(getting_here.get("transit_options"))
 
+        # A self-powered leg has no options card to fall back on -- nobody
+        # operates it, so Phase 1 never generated one -- which leaves the
+        # Routes figure or nothing, and `band` is always empty for it. That is
+        # the honest pair: a cyclist told "2 hrs 15 min" because a car does it
+        # in that time is worse served than one told nothing.
         if band:
             getting_here["travel_time"] = band
             getting_here["duration_is_estimate"] = True
         elif stale_time:
             getting_here["travel_time"] = ""
-        # Road miles are meaningless on a rail leg, and an empty value is
-        # what the badge row was restructured to survive.
+        # Road miles are meaningless on a rail leg, and on a bike or foot leg
+        # the only mileage left at this point is a guess -- a real one would
+        # have come from Routes above and taken the early return with it. An
+        # empty value is what the badge row was restructured to survive.
         if stale_miles:
             getting_here["distance_miles"] = ""
-        getting_here["travel_mode"] = "transit"
+        getting_here["travel_mode"] = leg_mode
 
         if stale_time or stale_miles:
             corrected += 1
             logger.info(
-                "Transit leg '%s': replaced road figures (%s / %s) with %s",
-                dest.get("name", ""), stale_miles or "no distance", stale_time or "no time",
+                "%s leg '%s': replaced road figures (%s / %s) with %s",
+                leg_mode.title(), dest.get("name", ""),
+                stale_miles or "no distance", stale_time or "no time",
                 f"the suggested band '{band}'" if band else "no duration",
             )
     return corrected
@@ -2221,7 +2232,7 @@ def _apply_transit_estimates(
     Returns the number of legs updated, for the run summary.
     """
     from generator.transit_estimate import TRANSIT_MODES, TransitEstimator, format_duration
-    from generator.transit_routing import resolved_mode
+    from generator.transit_routing import ROUTES_TRAVEL_MODE_BY_LEG_MODE, resolved_mode
 
     if estimator is None:
         estimator = TransitEstimator()
@@ -2254,8 +2265,19 @@ def _apply_transit_estimates(
         # no source of a real duration at all, so it kept whatever the model
         # guessed, which was a drive.
         declared_transit = resolved_mode(dest) == "transit"
-        if (mode in TRANSIT_MODES or declared_transit) and previous_name and name:
-            estimate = estimator.estimate(previous_name, name)
+        # bike and hike are priced here too, by BICYCLE/WALK rather than
+        # TRANSIT. They have exactly the problem transit had -- no honest
+        # source for a duration, so the model's driving guess survived -- and
+        # a better answer available than transit ever had: cycling and walking
+        # durations are facts about roads and gradients rather than about
+        # whose timetable Google licenses, so the API knows them on corridors
+        # where TRANSIT returns nothing.
+        routes_travel_mode = ROUTES_TRAVEL_MODE_BY_LEG_MODE.get(resolved_mode(dest))
+        qualifies = mode in TRANSIT_MODES or declared_transit or bool(routes_travel_mode)
+        if qualifies and previous_name and name:
+            estimate = estimator.estimate(
+                previous_name, name, travel_mode=routes_travel_mode or "TRANSIT"
+            )
             if estimate:
                 ai = dest.get("ai_content")
                 if isinstance(ai, dict):
@@ -2269,7 +2291,9 @@ def _apply_transit_estimates(
                     # Consumed by the renderer so the figure reads as an
                     # approximation; transit times move with the timetable.
                     getting_here["duration_is_estimate"] = True
-                    getting_here["travel_mode"] = mode or "transit"
+                    getting_here["travel_mode"] = (
+                        resolved_mode(dest) if routes_travel_mode else (mode or "transit")
+                    )
                     updated += 1
                     logger.info(
                         "Transit estimate %s -> %s: %s, %s mi",

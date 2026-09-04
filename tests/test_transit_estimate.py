@@ -117,3 +117,93 @@ class TestMemoSurvivesAcrossPasses:
 
         assert len(calls) == 1
         assert est.call_count == 1
+
+
+class TestTravelModes:
+    def test_transit_remains_the_default(self):
+        est = TransitEstimator(api_key="")
+        assert est.estimate("A", "B") is None  # no key, but the default stands
+
+    @pytest.mark.parametrize("mode", ["BICYCLE", "WALK", "TRANSIT", "bicycle", " walk "])
+    def test_valid_modes_are_accepted(self, mode, monkeypatch):
+        import json
+        import urllib.request
+
+        sent = []
+
+        class _Response:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+        def _fake_urlopen(request, timeout=None):
+            sent.append(json.loads(request.data.decode()))
+            return _Response()
+
+        monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+        monkeypatch.setattr(json, "load", lambda fh: {"routes": [{"duration": "600s"}]})
+
+        est = TransitEstimator(api_key="fake-key")
+        assert est.estimate("A", "B", travel_mode=mode)["minutes"] == 10
+        assert sent[0]["travelMode"] == mode.strip().upper()
+
+    @pytest.mark.parametrize("mode", ["DRIVE", "driving", "TELEPORT"])
+    def test_an_unknown_mode_raises_rather_than_defaulting(self, mode):
+        """Falling back to TRANSIT would price a bike ride as a bus and
+        nothing in the output would say so."""
+        est = TransitEstimator(api_key="fake-key")
+        with pytest.raises(ValueError):
+            est.estimate("A", "B", travel_mode=mode)
+
+    def test_a_departure_time_is_only_sent_for_transit(self, monkeypatch):
+        """A bike ride does not vary by timetable, and a past date would only
+        invite a rejection."""
+        import json
+        import urllib.request
+
+        sent = []
+
+        class _Response:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+        monkeypatch.setattr(
+            urllib.request, "urlopen",
+            lambda request, timeout=None: (sent.append(json.loads(request.data.decode())), _Response())[1],
+        )
+        monkeypatch.setattr(json, "load", lambda fh: {"routes": []})
+
+        est = TransitEstimator(api_key="fake-key")
+        est.estimate("A", "B", departure_iso="2026-10-14T09:00:00Z", travel_mode="TRANSIT")
+        est.estimate("A", "B", departure_iso="2026-10-14T09:00:00Z", travel_mode="BICYCLE")
+
+        assert "departureTime" in sent[0]
+        assert "departureTime" not in sent[1]
+
+    def test_the_memo_does_not_conflate_modes(self, monkeypatch):
+        """The same endpoints have a different answer by bike than by train.
+        A memo keyed without the mode would hand one leg the other's
+        duration."""
+        import json
+        import urllib.request
+
+        class _Response:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+        monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout=None: _Response())
+        monkeypatch.setattr(json, "load", lambda fh: {"routes": [{"duration": "600s"}]})
+
+        est = TransitEstimator(api_key="fake-key")
+        est.estimate("A", "B", travel_mode="TRANSIT")
+        est.estimate("A", "B", travel_mode="BICYCLE")
+
+        assert est.call_count == 2
