@@ -692,6 +692,13 @@ def _build_attraction_maps_query_variants(name: str, destination: str) -> list[s
     ]
 
 
+def _cached_ok(value: Any) -> bool:
+    """Whether a cached tuple records a success. `(ok, ...)` throughout."""
+    if isinstance(value, tuple) and value:
+        return bool(value[0])
+    return bool(value)
+
+
 class URLDiscoverer:
     def __init__(
         self,
@@ -5785,6 +5792,70 @@ class URLDiscoverer:
         section = self._harvest_section_for(cache)
         preloaded = self._harvest_preloaded_keys.get(section) or set()
         self._harvest_freshness["warm" if key in preloaded else "repeat"] += 1
+
+    def forget_failures(self) -> dict[str, int]:
+        """Drop cached *negative* results so a retry can genuinely try again.
+
+        **This is what made the retry pass unable to resolve anything.** The
+        pass reuses this instance so in-memory caches survive -- deliberately,
+        so it does not re-buy work already paid for -- but the caches hold
+        failures as well as successes. A lookup that failed the first time
+        returned its cached failure on the second, so a retry re-derived the
+        first pass's conclusions and reported them as a fresh result. Measured
+        across 9 runs and 58 destination-instances before this existed: 27
+        retries, 0 resolved.
+
+        **Only negatives go.** A URL that was found and verified is still found
+        and verified; re-buying it would make a retry cost as much as a run.
+        What is forgotten is the record of *not* finding something, which is the
+        only thing a second attempt could possibly change:
+
+        - `_url_cache` entries holding `None` -- a per-item search that found
+          nothing. Module-level and shared across instances, so this clears
+          them for the process, which is what a retry within that process wants.
+        - the direct-batch HTML failure cooldowns, which exist precisely to stop
+          a *repeat within one pass* and should not outlive the pass that set them
+        - verification, AllTrails and Wayback fetch results whose ok-flag is
+          false
+
+        The persistent harvest caches are untouched and need no filtering: an
+        empty harvest is already never written to them, on the deliberate
+        grounds that "an empty batch is often a transient upstream hiccup, not
+        'this destination has no attractions'".
+
+        Returns what it dropped, so a caller can record whether forgetting
+        anything was even possible.
+        """
+        dropped = {"searches": 0, "batch_cooldowns": 0, "verifications": 0, "fetches": 0}
+
+        if not hasattr(self, "_request_cache_lock"):
+            self._request_cache_lock = Lock()
+
+        with self._request_cache_lock:
+            for key in [k for k, v in _url_cache.items() if not v]:
+                del _url_cache[key]
+                dropped["searches"] += 1
+
+            cooldowns = getattr(self, "_direct_batch_html_failure_ts", None)
+            if isinstance(cooldowns, dict):
+                dropped["batch_cooldowns"] = len(cooldowns)
+                cooldowns.clear()
+
+            verify = getattr(self, "_verify_url_cache", None)
+            if isinstance(verify, dict):
+                for key in [k for k, v in verify.items() if not _cached_ok(v)]:
+                    del verify[key]
+                    dropped["verifications"] += 1
+
+            for attr in ("_alltrails_fetch_cache", "_wayback_fetch_cache"):
+                cache = getattr(self, attr, None)
+                if not isinstance(cache, dict):
+                    continue
+                for key in [k for k, v in cache.items() if not _cached_ok(v)]:
+                    del cache[key]
+                    dropped["fetches"] += 1
+
+        return dropped
 
     def harvest_freshness(self) -> dict[str, Any]:
         """How much of this run's harvesting was already on disk when it started.

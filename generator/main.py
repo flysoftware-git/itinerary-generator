@@ -2531,6 +2531,14 @@ def main(
         # and the retry pass below, and this only runs when it's False -- so
         # _run_urls() above has always already populated url_discoverer by
         # the time this fires.
+        #
+        # Forget the *failures* first. Reusing this instance is deliberate --
+        # it is what stops a retry re-buying work already paid for -- but the
+        # caches hold negatives too, so a lookup that failed returned its cached
+        # failure and the retry re-derived the first pass's conclusions. That is
+        # why the retry could never resolve anything: 27 retries, 0 resolved,
+        # measured before this call existed. Successes stay cached.
+        runtime_metrics["retry_forgotten_failures"] = url_discoverer.forget_failures()
         url_discoverer.discover_all(subset_trip)
         url_discoverer.audit_discovered_urls(subset_trip)
 
