@@ -5252,3 +5252,79 @@ def test_brand_urls_with_unexpected_schemes_are_dropped() -> None:
     assert "javascript:" not in footer
     assert "Prepared by Acme Travel" in footer          # the name is still fine
     assert "Report broken links" in footer              # support fell back
+
+
+def test_the_page_title_comes_from_the_manifest_not_the_template():
+    """It was hardcoded to one trip's name since the template was written, so
+    every guide anyone generated carried the wrong browser tab, the wrong default
+    bookmark and the wrong share preview -- while the <h1> and the PWA name were
+    both correct, which is why it survived so long."""
+    import re
+    from pathlib import Path
+
+    template = (Path(__file__).parent.parent / "templates" / "v2.5_template.html").read_text(
+        encoding="utf-8"
+    )
+    head_title = re.search(r"<title>(.*?)</title>", template, re.DOTALL)
+    assert head_title, "the template has no <title>"
+    assert head_title.group(1) == "<!--TRIP_TITLE_TEXT-->", (
+        "the <title> must be substituted from the manifest, not fixed in the template"
+    )
+
+
+def test_the_rendered_title_is_the_trip_and_it_is_escaped() -> None:
+    """`Old Hickory & Asheville` is a real trip title, so the ampersand is not a
+    hypothetical. The <h1> substitution is left raw deliberately -- prose fields
+    are interpolated raw throughout, and fixing one of a dozen here would leave
+    an inconsistency rather than remove one."""
+    import re
+
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {
+        "trip": {"title": "Old Hickory & Asheville", "theme_color": "#C0623E"},
+        "_meta": {
+            "generator_version": "test",
+            "template_version": "test",
+            "generated_at_utc": "2026-07-24T00:00:00+00:00",
+            "llm": {"provider": "openai", "model": "test",
+                    "usage": {"models": [], "total_estimated_cost_usd": 0.0}},
+        },
+        "destinations": [],
+    }
+
+    html = assembler.assemble(trip)
+
+    title = re.search(r"<title>(.*?)</title>", html, re.DOTALL)
+    assert title and title.group(1) == "Old Hickory &amp; Asheville"
+    assert "Southwest Road Trip Itinerary" not in html
+    # And the heading still carries it, which is the half that always worked.
+    assert "Old Hickory & Asheville" in html
+
+
+def test_the_meta_description_names_this_trip_and_where_it_goes() -> None:
+    """The search snippet and half the share preview, hardcoded to the same trip
+    as the title -- and invisible on the page, which is why nobody saw it."""
+    from generator.html_assembler import _trip_description
+
+    assert _trip_description(
+        {"title": "Old Hickory & Asheville"},
+        [{"name": "Nashville, Tennessee"}, {"name": "Asheville, North Carolina"}],
+    ) == "Old Hickory & Asheville — Nashville, Tennessee, Asheville, North Carolina"
+
+    assert _trip_description({"title": "Somewhere"}, []) == "Somewhere"
+    assert _trip_description({"title": "T"}, [{"name": "  "}, {"name": "A"}]) == "T — A"
+
+
+def test_a_trip_with_no_destinations_still_has_a_description() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {
+        "trip": {"title": "Somewhere", "theme_color": "#C0623E"},
+        "_meta": {
+            "generator_version": "test", "template_version": "test",
+            "generated_at_utc": "2026-07-24T00:00:00+00:00",
+            "llm": {"provider": "openai", "model": "test",
+                    "usage": {"models": [], "total_estimated_cost_usd": 0.0}},
+        },
+        "destinations": [],
+    }
+    assert 'content="Somewhere"' in assembler.assemble(trip)
