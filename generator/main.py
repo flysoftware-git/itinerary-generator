@@ -2063,6 +2063,15 @@ def main(
                     record["cost_unpriced_models"] = list(unpriced)
             except Exception as exc:  # pragma: no cover - defensive only
                 logger.warning("Could not read run cost for the ledger: %s", exc)
+
+        # Top level, beside the cost it qualifies, rather than only inside
+        # `runtime_metrics`: anything reading this file to build a cost
+        # distribution needs both, and a figure nested two levels deeper than
+        # the number it explains is a figure that gets left out.
+        #
+        # None on a run that failed before URL discovery, or one that skipped
+        # it -- which is honest. There was no harvesting to be warm or cold.
+        record["route_freshness"] = runtime_metrics.get("route_freshness")
         try:
             _append_run_ledger(ledger_path, record)
         except Exception as exc:  # pragma: no cover - defensive only
@@ -2614,6 +2623,13 @@ def main(
                 circuit_breaker_stats[label] = client.get_circuit_breaker_stats()
         if circuit_breaker_stats:
             runtime_metrics["circuit_breaker_stats"] = circuit_breaker_stats
+
+        # How much of this run's harvesting was already on disk when it started.
+        # Recorded rather than left computable: the same cost means a different
+        # thing on a cold route than on a warm one, and a run that did not say
+        # which it was cannot be re-read later.
+        if hasattr(url_discoverer, "harvest_freshness"):
+            runtime_metrics["route_freshness"] = url_discoverer.harvest_freshness()
 
     if verbose:
         registry_report_path = _write_entity_registry_debug_report(output_dir, registry)

@@ -577,6 +577,17 @@ DEFAULT_PERSISTENT_WAYBACK_CACHE_TTL_HOURS = 720
 # absent. Both are quality-of-ranking drift, not correctness or liveness --
 # and both were already tolerated for up to a day.
 DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS = 168
+
+# The four per-section harvest caches, and the key each is stored under in the
+# persistent cache file. Named once: the mapping was written out twice, in the
+# load path and the save path, and a fifth section added to one of them would
+# silently not be persisted by the other.
+HARVEST_CACHE_SECTIONS: dict[str, str] = {
+    "direct_batch_harvest_alltrails": "_alltrails_direct_batch_cache",
+    "direct_batch_harvest_attractions": "_attraction_direct_batch_cache",
+    "direct_batch_harvest_restaurants": "_restaurant_direct_batch_cache",
+    "direct_batch_harvest_en_route": "_en_route_direct_batch_cache",
+}
 # A failed/empty direct-batch HTML harvest is deliberately never cached (an
 # empty result isn't authoritative), but multiple items at the same
 # destination each independently call the same per-destination-per-kind
@@ -858,6 +869,12 @@ class URLDiscoverer:
         self._en_route_direct_batch_cache: dict[str, list[dict[str, Any]]] = {}
         self._direct_batch_html_key_locks: dict[str, Lock] = {}
         self._direct_batch_html_failure_ts: dict[str, float] = {}
+        # Route freshness. `_harvest_preloaded_keys` is what came off disk at
+        # startup, so a later lookup can tell "this route was already harvested
+        # before today" from "this run harvested it a moment ago" -- two very
+        # different facts that a plain cache-hit counter reports as one.
+        self._harvest_preloaded_keys: dict[str, set[str]] = {}
+        self._harvest_freshness: dict[str, int] = {"warm": 0, "repeat": 0, "cold": 0}
         self._direct_batch_html_failure_cooldown_seconds: float = float(
             DEFAULT_DIRECT_BATCH_HTML_FAILURE_COOLDOWN_SECONDS
         )
@@ -1704,12 +1721,7 @@ class URLDiscoverer:
                 )
 
             harvest_cutoff = now - (float(getattr(self, "_persistent_harvest_cache_ttl_hours", DEFAULT_PERSISTENT_HARVEST_CACHE_TTL_HOURS)) * 3600.0)
-            harvest_cache_by_section = {
-                "direct_batch_harvest_alltrails": "_alltrails_direct_batch_cache",
-                "direct_batch_harvest_attractions": "_attraction_direct_batch_cache",
-                "direct_batch_harvest_restaurants": "_restaurant_direct_batch_cache",
-                "direct_batch_harvest_en_route": "_en_route_direct_batch_cache",
-            }
+            harvest_cache_by_section = HARVEST_CACHE_SECTIONS
             for section_name, attr_name in harvest_cache_by_section.items():
                 if not hasattr(self, attr_name):
                     setattr(self, attr_name, {})
@@ -1726,6 +1738,12 @@ class URLDiscoverer:
                     normalized = [dict(item) for item in rows if isinstance(item, dict)]
                     if normalized:
                         target_cache[key] = normalized
+                        # Remembered before any lookup happens, because after the
+                        # first miss writes to the same dict there is no way to
+                        # tell a restored entry from one this run just bought.
+                        if not hasattr(self, "_harvest_preloaded_keys"):
+                            self._harvest_preloaded_keys = {}
+                        self._harvest_preloaded_keys.setdefault(section_name, set()).add(key)
         except Exception as exc:
             logger.info("Persistent cache load skipped due to read/parse error: %s", exc)
 
@@ -1749,12 +1767,7 @@ class URLDiscoverer:
             self._alltrails_fetch_cache = {}
         if not hasattr(self, "_wayback_fetch_cache"):
             self._wayback_fetch_cache = {}
-        harvest_cache_by_section = {
-            "direct_batch_harvest_alltrails": "_alltrails_direct_batch_cache",
-            "direct_batch_harvest_attractions": "_attraction_direct_batch_cache",
-            "direct_batch_harvest_restaurants": "_restaurant_direct_batch_cache",
-            "direct_batch_harvest_en_route": "_en_route_direct_batch_cache",
-        }
+        harvest_cache_by_section = HARVEST_CACHE_SECTIONS
         for attr_name in harvest_cache_by_section.values():
             if not hasattr(self, attr_name):
                 setattr(self, attr_name, {})
@@ -5729,6 +5742,73 @@ class URLDiscoverer:
             "Include only suggestions with reliable clickable links."
         )
 
+    def _harvest_section_for(self, cache: dict[str, Any]) -> str:
+        """Which section a harvest cache dict belongs to, by identity.
+
+        Identity rather than a parameter threaded through every call site: the
+        four caches are long-lived attributes and the callers already pass the
+        dict itself. An unrecognised cache returns "", which counts as a cold
+        lookup — under-reporting warmth is the direction that fails safe, since
+        the number exists to explain why a run was *cheap*.
+        """
+        for section, attr in HARVEST_CACHE_SECTIONS.items():
+            if getattr(self, attr, None) is cache:
+                return section
+        return ""
+
+    def _note_harvest_lookup(
+        self, cache: dict[str, Any], key: str, *, served_from_cache: bool
+    ) -> None:
+        """Classify one harvest lookup as warm, repeat, or cold.
+
+        - **warm** — served from a harvest this run inherited from disk. The only
+          one that means "this route was already paid for on an earlier day".
+        - **repeat** — served from a harvest this same run performed. Free, and
+          not evidence about the route.
+        - **cold** — about to buy a search.
+
+        The distinction is the whole point. A plain hit rate counts warm and
+        repeat together and therefore rises with the number of destinations that
+        share a query, which has nothing to do with how well-travelled the route
+        is.
+        """
+        # Same `hasattr` guard the rest of this class uses: instances are built
+        # in more ways than __init__, and a counter must never be the reason a
+        # harvest raises.
+        if not hasattr(self, "_harvest_freshness"):
+            self._harvest_freshness = {"warm": 0, "repeat": 0, "cold": 0}
+        if not hasattr(self, "_harvest_preloaded_keys"):
+            self._harvest_preloaded_keys = {}
+        if not served_from_cache:
+            self._harvest_freshness["cold"] += 1
+            return
+        section = self._harvest_section_for(cache)
+        preloaded = self._harvest_preloaded_keys.get(section) or set()
+        self._harvest_freshness["warm" if key in preloaded else "repeat"] += 1
+
+    def harvest_freshness(self) -> dict[str, Any]:
+        """How much of this run's harvesting was already on disk when it started.
+
+        R10 in `commercialization-development-approach.md` is the reason this is
+        recorded rather than merely computable: a cost distribution built from
+        runs that are mostly warm, or mostly cold, is not the same distribution,
+        and a run that does not say which one it was cannot be re-read later.
+        Cheap to record now; impossible to reconstruct from history.
+        """
+        counts = dict(getattr(self, "_harvest_freshness", None) or
+                      {"warm": 0, "repeat": 0, "cold": 0})
+        lookups = counts["warm"] + counts["repeat"] + counts["cold"]
+        billable = counts["warm"] + counts["cold"]
+        return {
+            **counts,
+            "lookups": lookups,
+            # Of the harvests this run would have had to buy had nothing been
+            # cached, the share it did not. `repeat` is excluded from the
+            # denominator: a second lookup of a key bought moments ago was never
+            # going to be a separate purchase.
+            "warm_ratio": round(counts["warm"] / billable, 4) if billable else None,
+        }
+
     def _get_direct_batch_rows_for_destination(
         self,
         *,
@@ -5748,8 +5828,10 @@ class URLDiscoverer:
         with self._request_cache_lock:
             cached = cache.get(key)
             if cached is not None:
+                self._note_harvest_lookup(cache, key, served_from_cache=True)
                 return cached
 
+        self._note_harvest_lookup(cache, key, served_from_cache=False)
         self._note_fallback_call_site("direct_batch_rows")
         rows = self._search_cached(query, count=self._direct_link_batch_limit())
         normalized = [dict(row) for row in rows if isinstance(row, dict)]
@@ -6588,6 +6670,12 @@ class URLDiscoverer:
 
         with self._request_cache_lock:
             hit, rows_or_empty = self._direct_batch_html_cache_hit_or_recent_failure(cache, key)
+            # Counted once per logical lookup, here and not at the post-lock
+            # re-check, which would count a coalesced caller twice. `hit` is also
+            # true for a recent-failure cooldown, which served no harvest at all
+            # -- `key in cache` separates the two, and a cooldown counts cold,
+            # under-reporting warmth rather than over-reporting it.
+            self._note_harvest_lookup(cache, key, served_from_cache=bool(hit) and key in cache)
             if hit:
                 return rows_or_empty
             key_lock = self._direct_batch_html_key_locks.setdefault(key, Lock())
