@@ -13,6 +13,93 @@ published artifact; **patch** for fixes that leave behaviour unchanged.
 `__template_version__` tracks the frozen HTML template separately and does
 not move with this number.
 
+## 3.0.0 — 2026-09-05
+
+19 commits since 2.7.0, plus the merge that brings `v2` in. `__template_version__`
+2.5.5 -> 2.5.7. First release on the `v3` line.
+
+**Major, and the reason is the mainline rather than a broken API.** Nothing here
+forces an existing manifest to change: every new key is optional and a manifest
+that sets none behaves exactly as it did, which is asserted rather than assumed.
+The number moves because the published artifact and the manifest surface both
+grew a dimension they did not have — an itinerary no longer assumes the traveler
+is driving — and because that is the change worth naming when someone asks what
+`v3` is.
+
+### Added
+
+- **Multimodal legs (GH #2).** `transport_mode` says how the traveler covers the
+  ground between two stops: `auto | transit | mixed | bike | hike`, set trip-wide
+  or per destination, with a `legs:` list as an alternative spelling for authors
+  who think in journeys rather than in stops. Omitted, everything behaves as
+  before.
+
+  Every way of getting it wrong raises rather than falling back to a drive. An
+  unknown destination id, a leg that is not adjacent, the same leg twice, or a
+  `legs:` entry disagreeing with a destination's own `transport_mode` — each is a
+  build failure naming the offending leg. A silently ignored leg ships a traveler
+  an itinerary telling them to drive a leg they have no car for, and a build
+  failure costs thirty seconds.
+
+- **Phase 1 transit options**, AI-generated and limited by construction to what a
+  model can be right about: a corridor description, a duration band, a transfer
+  count, a search phrase. Clock times and booking links are stripped in code
+  rather than discouraged in the prompt. "No scheduled service connects these
+  stops" is a first-class answer, not a degraded one — on remote corridors it is
+  usually the true one.
+
+- **`bike` and `hike`, which are not transit.** Nobody operates them, so no
+  options are generated and no provider is called. They change the leg's
+  duration, its map link (`bicycling`/`walking`, keeping their waypoints where
+  transit drops them), the card's heading, and what the model is told to
+  describe. En-route stops stay on: a cyclist stops more often than a driver, not
+  less.
+
+- **Real durations from Google Routes**, in the travel mode the leg actually is.
+  On a self-powered leg spanning days the API's continuous-travel figure is
+  divided by `default_daily_activity_hours` and reads "about 6 days" rather than
+  "45 hrs 55 min" — true, unusable, and precise enough to look plannable.
+
+- **`trail_name`, `trail_section` and `trail_url`** link a walked or ridden leg to
+  its own page in a trail catalogue. The URL may be authored: `design.md` §1.4
+  bars the *model* from producing one, not the human, and a catalogue's own
+  titles and slugs can disagree badly enough that no search phrase resolves them.
+
+- **`scripts/probe_transit_coverage.py`**, committed rather than described. It
+  asks whether the Routes API knows anything about a manifest's corridors before
+  anything is built on the assumption that it does.
+
+### Fixed
+
+- **`getting_here.drive_time` is now `travel_time`.** Not a badge: the schedule
+  normalizer derives arrival clock time and the whole arrival-day activity budget
+  from it, so a car estimate left there produced a page showing a 3h15 bus in one
+  card and scheduling a 2h drive in the next. Renamed on unchanged all-car
+  behaviour, ahead of the routing work, with one permanent tolerance at the model
+  boundary. No manifest migrates — the field was never a manifest input.
+
+- **Road geometry no longer writes to a leg that is not a road leg.** Three paths
+  did: the model was never told the leg was transit, the implausible-leg
+  corrector recomputed it at 60 mph, and stage 5b overwrote it from a scraped
+  driving duration. All three now key on the resolved mode, with a backstop that
+  leaves a leg blank rather than guessing.
+
+- **The overview map shipped watermarked.** CARTO's keyless raster endpoint now
+  stamps "API KEY REQUIRED" across every tile; reverted to OpenStreetMap. Labels
+  therefore render in the local language again — unsolved without a keyed
+  provider, and recorded in the template so it is not retried blind.
+
+### Known limitations
+
+- Distances on `bike`/`hike` legs are road distances. Google routed 123 miles
+  where the trail covers 82.
+- `multimodal-routing.md` §9's multi-day-leg scheduling is open. A thru-hike
+  manifest is made entirely of such legs, so its day schedules describe the stops
+  rather than the walks between them.
+- Phase 2 (`transit_routing.provider: google_directions`) raises rather than
+  falling back. §6.4's Maps Platform terms question is unresolved, and the probe
+  found Routes has no transit coverage on the acceptance corridor anyway.
+
 ## 2.7.0 — 2026-09-03
 
 11 commits since 2.6.0, almost all found by opening the output rather than
