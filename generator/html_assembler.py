@@ -56,6 +56,25 @@ def _image_href(img: dict[str, Any]) -> str:
         return ""
     return f"./images/{quote(Path(local).name)}"
 
+def _trip_description(meta: dict, destinations: list) -> str:
+    """The meta description: this trip, then where it goes.
+
+    Built to the shape the hardcoded one had -- `"<title> — <dest>, <dest>"` --
+    because that was a reasonable description and the defect was only that it
+    described one particular trip forever.
+
+    A separate function so the rule can be tested without assembling a page: the
+    assembler needs fully-formed destinations and this needs only their names.
+    """
+    names = [
+        str(d.get("name", "")).strip()
+        for d in destinations
+        if str(d.get("name", "")).strip()
+    ]
+    title = str(meta.get("title", "")).strip()
+    return f"{title} — {', '.join(names)}" if names else title
+
+
 def _verify_checksum(template_text: str) -> None:
     """Hard fail if template SHA-256 doesn't match stored value."""
     if not CHECKSUM_PATH.exists():
@@ -111,6 +130,29 @@ class HTMLAssembler:
         # ── Trip-level substitutions ─────────────────────────────────────────
         meta = trip["trip"]
         html = html.replace("<!--TRIP_TITLE-->", meta["title"])
+        # The <title> in <head>, which had been hardcoded to one trip's name
+        # since the template was written -- so every guide anyone generated
+        # carried the wrong browser tab, the wrong default bookmark, and the
+        # wrong share preview, while the <h1> and the PWA name were both correct.
+        #
+        # A separate marker rather than reusing TRIP_TITLE, because this one is
+        # escaped: a title is HTML text, and real trip titles contain ampersands
+        # ("Old Hickory & Asheville"). The <h1> substitution above is left as it
+        # was -- raw interpolation of prose fields is a known debt item and
+        # fixing it here would be fixing it in one of a dozen places.
+        html = html.replace(
+            "<!--TRIP_TITLE_TEXT-->", html_escape.escape(str(meta["title"]))
+        )
+        # The meta description, hardcoded to the same trip and for the same
+        # reason: it is the search snippet and half of the share preview, and
+        # nothing on the page shows it, so nobody saw it was wrong. Built to the
+        # shape the hardcoded one had -- the trip, then where it goes.
+        html = html.replace(
+            "<!--TRIP_DESCRIPTION-->",
+            html_escape.escape(
+                _trip_description(meta, trip.get("destinations") or []), quote=True
+            ),
+        )
         html = html.replace("<!--THEME_COLOR-->", meta.get("theme_color", "#C0623E"))
 
         # ── Google Maps overview link ────────────────────────────────────────
