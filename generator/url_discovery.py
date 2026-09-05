@@ -8899,17 +8899,28 @@ class URLDiscoverer:
         dates: str = "",
         *,
         allow_when_disabled: bool = False,
+        force_search: bool = False,
     ) -> str | None:
         """Exhaust high-signal AllTrails queries before non-AllTrails fallback.
 
         `allow_when_disabled` is for the per-leg trail link, which the
         manifest asks for by naming a trail rather than by the --trails
         switch. See _discover_leg_trail_link.
+
+        `force_search` skips the direct-link batch. That batch is a
+        per-destination harvest of trails NEAR one stop, so a leg's trail
+        cannot be in it by construction -- and in authoritative mode its
+        no-match returns None before the search variants are ever tried,
+        which is how the first PCT run asked for "Pacific Crest Trail
+        Callahan's Lodge to Fish Lake Resort" and got nothing.
         """
         if bool(getattr(self, "_disable_trails", False)) and not allow_when_disabled:
             return None
 
-        source_mode = str(getattr(self, "_alltrails_source", "search") or "search")
+        source_mode = (
+            "search" if force_search
+            else str(getattr(self, "_alltrails_source", "search") or "search")
+        )
         if source_mode == "direct_link_batch":
             selected = self._search_alltrails_for_trail_from_direct_batch(item_name, dest_name, dates)
             if selected:
@@ -11801,7 +11812,7 @@ class URLDiscoverer:
         # Tying them together meant turning the wanted one on dragged the
         # unwanted one with it.
         url = self._search_alltrails_for_trail(
-            section, dest_name, allow_when_disabled=True
+            section, dest_name, allow_when_disabled=True, force_search=True
         )
         if not url:
             self._log_decision(

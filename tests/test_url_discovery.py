@@ -17732,8 +17732,9 @@ class TestLegTrailLink:
         d._disable_en_route = disable_en_route
         d.calls = []
 
-        def _search(item_name, dest_name, dates="", *, allow_when_disabled=False):
-            d.calls.append((item_name, allow_when_disabled))
+        def _search(item_name, dest_name, dates="", *, allow_when_disabled=False,
+                    force_search=False):
+            d.calls.append((item_name, allow_when_disabled, force_search))
             return found_url if allow_when_disabled or not d._disable_trails else None
 
         d._search_alltrails_for_trail = _search
@@ -17766,6 +17767,9 @@ class TestLegTrailLink:
         d._discover_leg_trail_link(ai, dest, "A", "B")
 
         assert d.calls[0][1] is True
+        # And past the direct-link batch, which is a per-destination harvest a
+        # leg's trail cannot be in by construction.
+        assert d.calls[0][2] is True
         assert ai["getting_here"]["trail_url"]
 
     def test_no_trail_name_means_no_query(self):
