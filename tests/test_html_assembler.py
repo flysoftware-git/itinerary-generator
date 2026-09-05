@@ -5613,19 +5613,55 @@ def test_brand_urls_with_unexpected_schemes_are_dropped() -> None:
 
 
 @pytest.mark.parametrize("mode, expected", [
-    ("bike", "bicycling"), ("hike", "walking"), ("transit", "transit"),
+    ("bike", "bicycling"), ("hike", "walking"),
 ])
-def test_the_whole_route_link_follows_the_trips_transport_mode(mode, expected) -> None:
-    """`transport_mode` is an explicit statement about every leg; the booked-
-    transportation inference it used to rely on is empty on a self-powered
-    trip. That is how the New England ride shipped a whole-route link opening
-    car directions across five states it is ridden through."""
-    trip = {"trip": {"transport_mode": mode}, "destinations": [{"name": "A"}, {"name": "B"}]}
+def test_the_full_route_link_follows_a_self_powered_trip(mode, expected) -> None:
+    """Tested through _build_google_maps_url, which is what actually builds
+    the link. The first attempt at this fixed _maps_travelmode_for_trip, whose
+    name says it does exactly this and which nothing calls -- the rebuilt page
+    was byte-identical."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [{"name": "Portland, Maine"}, {"name": "New Haven, Connecticut"}]
 
-    assert HTMLAssembler._maps_travelmode_for_trip(trip) == expected
+    url = assembler._build_google_maps_url(
+        destinations, {"departure": "Portland, Maine", "transport_mode": mode}
+    )
+
+    assert f"travelmode={expected}" in url
 
 
-def test_the_whole_route_link_still_infers_from_bookings_when_no_mode_is_set() -> None:
+def test_a_self_powered_full_route_link_keeps_its_waypoints() -> None:
+    """The whole reason transit stays on driving is that Maps drops waypoints
+    for it. Bicycling and walking keep them, so the exception is safe."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [{"name": "A"}, {"name": "B"}, {"name": "C"}]
+
+    url = assembler._build_google_maps_url(
+        destinations, {"departure": "Start", "return": "End", "transport_mode": "bike"}
+    )
+
+    assert "travelmode=bicycling" in url
+    assert "waypoints=" in url
+
+
+@pytest.mark.parametrize("mode", ["transit", "mixed", "auto", ""])
+def test_the_full_route_link_stays_driving_for_everything_else(mode) -> None:
+    """Transit deliberately so: Maps cannot compute transit directions with
+    waypoints, and a full-route map missing every stop between the ends is not
+    a full route."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [{"name": "A"}, {"name": "B"}, {"name": "C"}]
+
+    url = assembler._build_google_maps_url(
+        destinations, {"departure": "Start", "transport_mode": mode}
+    )
+
+    assert "travelmode=driving" in url
+
+
+def test_maps_travelmode_for_trip_still_infers_from_bookings() -> None:
+    """Nothing calls this helper -- see the note on it. Kept under test so the
+    next person to reach for it finds out what it does before wiring it in."""
     trip = {
         "trip": {},
         "destinations": [
@@ -5636,8 +5672,3 @@ def test_the_whole_route_link_still_infers_from_bookings_when_no_mode_is_set() -
     assert HTMLAssembler._maps_travelmode_for_trip(trip) == "transit"
 
 
-def test_a_mixed_trip_keeps_driving_for_the_whole_route_link() -> None:
-    """`mixed` means the drive is still on the table, and the overview link is
-    the one place a single answer has to cover every leg."""
-    trip = {"trip": {"transport_mode": "mixed"}, "destinations": [{"name": "A"}]}
-    assert HTMLAssembler._maps_travelmode_for_trip(trip) == "driving"

@@ -370,18 +370,24 @@ class HTMLAssembler:
         if not ret and waypoints:
             waypoints = waypoints[:-1]
 
-        # DRIVING, always, and this one is deliberate. Google Maps cannot
-        # compute transit directions with waypoints, so making this link follow
-        # the trip's rail mode meant dropping them -- and a "Full Route Map"
-        # that shows only Brussels Airport to Frankfurt is not the full route.
+        # Driving for a transit trip, and that is deliberate: Google Maps
+        # cannot compute transit directions with waypoints, so following the
+        # trip's rail mode meant dropping them -- and a "Full Route Map" that
+        # shows only Brussels Airport to Frankfurt is not the full route.
         # Trading a broken link for a working link to the wrong thing is not an
-        # improvement.
+        # improvement. This link answers "what shape is the trip", which needs
+        # every stop in order, and driving is the only mode that renders that
+        # for rail. Per-leg links in Getting Here still use the booked mode and
+        # give real transit directions, which is where a traveller looks for
+        # times and platforms.
         #
-        # This link answers "what shape is the trip", which needs every stop in
-        # order. Driving is the only mode that renders that. Per-leg links in
-        # Getting Here still use the booked mode and give real transit
-        # directions, which is where a traveller looks for times and platforms.
-        travelmode = "driving"
+        # bicycling and walking are the exception, because the reason above is
+        # about transit specifically: the Maps URL scheme DOES accept waypoints
+        # for both, so a self-powered trip keeps every stop AND gets the right
+        # mode. Without this a five-state bike ride offered to drive itself.
+        travelmode = _MAPS_TRAVELMODE_BY_LEG_MODE.get(
+            str((trip_meta or {}).get("transport_mode", "") or "").strip(), "driving"
+        )
         params = [
             "api=1",
             f"origin={quote(origin)}",
@@ -467,18 +473,12 @@ class HTMLAssembler:
         anything mixed or unstated stays driving, which is this generator's
         original and still most common case.
 
-        `transport_mode` is checked first and wins outright. It is an explicit
-        statement about every leg rather than an inference from what happens
-        to be booked, and a booking list is usually empty on a self-powered
-        trip -- which is how the New England ride shipped a whole-route link
-        that opened car directions across five states it is ridden through.
+        NOTE (2026-09-05): nothing calls this. The full-route link is built in
+        _build_google_maps_url, which decides its own mode and documents why.
+        Kept rather than deleted because the reasoning above is sound and the
+        method is referenced by tests, but do not "fix" the route link here --
+        it was tried, and the fix had no effect on any page.
         """
-        trip_mode = str(((trip or {}).get("trip") or {}).get("transport_mode", "") or "").strip()
-        if trip_mode in _MAPS_TRAVELMODE_BY_LEG_MODE:
-            return _MAPS_TRAVELMODE_BY_LEG_MODE[trip_mode]
-        if trip_mode == "transit":
-            return "transit"
-
         modes = []
         for dest in ((trip or {}).get("destinations") or []):
             if not isinstance(dest, dict):
