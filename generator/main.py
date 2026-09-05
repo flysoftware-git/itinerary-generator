@@ -4,25 +4,28 @@ main.py — CLI entry point for the Itinerary Generator.
 Usage:
   python -m generator.main --manifest trip_manifest.yaml --output output/
 
-Flags:
-  --manifest        Path to trip manifest YAML (required)
-  --output          Output directory (default: output/)
-  --config          Path to config.yaml (default: config.yaml)
-    --llm-provider    Override LLM provider for this run
-    --llm-model       Override LLM model for this run
-    --log-level       Console logging threshold (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-  --dry-run         Parse + validate manifest only; no AI calls, no output
-    --noseed          Ignore destination seeds from the manifest for this run
-  --skip-images     Skip image fetching (useful for fast content iteration)
-  --skip-events     Skip cultural events discovery
-  --skip-url-discovery  Skip URL discovery (AI content only)
-    --notrails        Disable trail link discovery and omit trail links
-    --alltrails-source  Choose trail-link source: direct-link-batch or search
-    --attraction-source Choose non-trail attraction source: search or direct-link-batch
-    --restaurant-source Choose restaurant source: search or direct-link-batch
-    --en-route-source   Choose en-route stop source: search or direct-link-batch
-  --destination     Process only this destination id (repeatable)
-  --verbose         Enable debug logging
+`--help` is the list of flags, and is the only copy that cannot go stale.
+This docstring used to enumerate them and had drifted twice over: it named
+18 of 30, and the note recording the gap said eight of 26. What follows is
+the SHAPE of the surface rather than its contents.
+
+  Inputs          --manifest (required), --config, --env-file
+  Output          --output, --environment, --privacy-mode, --build-tag
+  Model           --llm-provider, --llm-model, --search-provider
+  Stages off      --dry-run, --skip-images, --skip-events, --skip-url-discovery
+  Categories      --trails, --events, --en-route, --restaurants, each with a
+                  negating twin (--no-trails and so on) that overrides the
+                  config switch either way; --notrails is the older one-way
+                  spelling
+  Sources         --alltrails-source, --attraction-source,
+                  --restaurant-source, --en-route-source
+  Scope           --destination (repeatable), --first-destination
+  Content         --noschedule, --noseed, --refresh-image-cache
+  Logging         --log-level, --verbose
+
+Environment is a posture rather than a folder: only prod is
+privacy-redacted, and only prod output is publishable. See
+scripts/run-trip.BAT.
 """
 
 from __future__ import annotations
