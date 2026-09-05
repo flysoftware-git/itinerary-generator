@@ -42,6 +42,8 @@ Two consequences follow, and both are deliberate:
 """
 from __future__ import annotations
 
+from generator import maps_platform
+
 import json
 import logging
 import os
@@ -71,7 +73,11 @@ class TransitEstimator:
     """One instance per run. Holds no disk state."""
 
     def __init__(self, api_key: str | None = None, *, timeout: int = _TIMEOUT_SECONDS) -> None:
-        self._key = str(api_key or os.environ.get("GOOGLE_MAPS_PLATFORM_KEY", "") or "").strip()
+        # See generator/maps_platform.py: config carries the decision, the
+        # environment carries only the credential.
+        self._key = str(
+            api_key if api_key is not None else maps_platform.api_key() or ""
+        ).strip()
         self._timeout = timeout
         self._memo: dict[tuple[str, str, str], dict[str, Any] | None] = {}
         self.call_count = 0

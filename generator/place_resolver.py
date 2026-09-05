@@ -49,6 +49,8 @@ stronger guarantee than a rule someone has to remember.
 
 from __future__ import annotations
 
+from generator import maps_platform
+
 import logging
 import os
 from typing import Any
@@ -69,8 +71,10 @@ PLACE_ID_ONLY_FIELD_MASK = "places.id"
 #: same-named place in another state.
 DEFAULT_BIAS_RADIUS_M = 50_000.0
 
-# Checked in order. The first is the name Google itself uses for the product.
-API_KEY_ENV_VARS = ("GOOGLE_MAPS_PLATFORM_KEY", "GOOGLE_MAPS_API_KEY")
+# Re-exported from `maps_platform`, which is now the one place that knows both
+# where the credential lives and whether it may be used. Kept as a name here
+# because callers and tests import it from this module.
+API_KEY_ENV_VARS = maps_platform.API_KEY_ENV_VARS
 
 # A generated trip is bounded work, so a resolver that has made thousands of
 # calls is a bug rather than a big trip. Cheap insurance against a retry loop
@@ -123,7 +127,9 @@ class PlaceResolver:
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         if api_key is None:
-            api_key = next((os.environ.get(v, "").strip() for v in API_KEY_ENV_VARS if os.environ.get(v, "").strip()), "")
+            # Through the gate, not around it. A key in the environment is a
+            # credential and not a decision -- see generator/maps_platform.py.
+            api_key = maps_platform.api_key()
         self.api_key = api_key or ""
         self.session = session or (requests.Session() if self.api_key else None)
         self.max_calls = int(max_calls)

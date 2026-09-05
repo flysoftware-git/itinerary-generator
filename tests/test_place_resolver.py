@@ -61,10 +61,29 @@ def test_no_key_means_disabled_and_silent(monkeypatch):
 
 
 @pytest.mark.parametrize("var", API_KEY_ENV_VARS)
-def test_either_env_var_configures_it(monkeypatch, var):
+def test_either_env_var_carries_the_key_once_config_permits_it(
+    monkeypatch, tmp_path, var
+):
+    """Both names still work -- and neither is sufficient on its own.
+
+    This test asserted that setting either variable made the resolver live, and
+    that was the behaviour rather than an accident of the test: a key reaching
+    the environment for any reason turned a metered product on for every run
+    afterwards. The credential moved to `generator/maps_platform.py`, which asks
+    config first, so the environment now answers "with what" and config answers
+    "may I".
+    """
     for v in API_KEY_ENV_VARS:
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv(var, "abc123")
+    monkeypatch.chdir(tmp_path)
+
+    config = tmp_path / "config.yaml"
+
+    config.write_text("maps_platform:\n  enabled: false\n", encoding="utf-8")
+    assert PlaceResolver().enabled is False, "a key alone switched it on"
+
+    config.write_text("maps_platform:\n  enabled: true\n", encoding="utf-8")
     assert PlaceResolver().enabled is True
 
 
