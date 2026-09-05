@@ -1,0 +1,141 @@
+# East Coast Greenway — the New England run, Portland to New Haven by bike.
+#
+# Five states in about 305 miles: Maine, New Hampshire, Massachusetts, Rhode
+# Island, Connecticut. Ten riding days averaging ~30 miles, plus three rest
+# days in the cities worth stopping in. That pace is deliberate rather than
+# minimal — this route is roughly half traffic-free rail-trail and half
+# on-road connector, and the connectors are where the day gets long.
+#
+# September: the humidity has broken, the traffic has thinned, and the light
+# is good. Hurricane season is the risk you are accepting in exchange.
+#
+# Every leg is `bike`, so durations come from Routes with travelMode BICYCLE
+# rather than a driving estimate, map links open cycling directions, and no
+# public-transport options are generated for legs nobody operates.
+#
+# ON THE TRAIL LINKS. The East Coast Greenway is a ROUTE stitched from local
+# trails, not a trail with its own pages -- AllTrails' only "East Coast
+# Greenway" entries are in Florida and Pennsylvania. So `trail_url` is set
+# only on the five legs whose local trail genuinely has a page, verified
+# 2026-09-05, and omitted on the rest. A leg with no link is the honest
+# outcome; a guessed one would point a rider at the wrong path.
+
+trip:
+  title: East Coast Greenway — Portland to New Haven
+  subtitle: Five states by bike, September 2027
+  theme_color: "#1F6F5C"
+
+  # Every inter-destination leg is ridden.
+  transport_mode: bike
+
+  trail_name: East Coast Greenway
+
+  departure: Portland, Maine
+  departure_datetime: "2027-09-06"
+
+  return: New Haven, Connecticut
+  return_datetime: "2027-09-19"
+
+  # A riding day, not a sightseeing day. Feeds the leg durations: Routes
+  # returns continuous pedalling time, and this is what it gets divided by.
+  default_daily_activity_hours: 6
+  default_day_start_time: "8:00 AM"
+
+destinations:
+  - id: kennebunk
+    name: Kennebunk, Maine
+    dates: Sep 7, 2027
+    # ~28 mi. The Eastern Trail carries most of it traffic-free through the
+    # Scarborough Marsh; the last stretch is on-road.
+    trail_section: Biddeford to Kennebunk via Eastern Trail
+    trail_url: https://www.alltrails.com/trail/us/maine/biddeford-to-kennebunk-via-eastern-
+    planning_links:
+      - label: East Coast Greenway
+        url: https://www.greenway.org/
+
+  - id: portsmouth
+    name: Portsmouth, New Hampshire
+    dates: Sep 8, 2027
+    # ~28 mi, crossing into New Hampshire at the Piscataqua. Mostly on-road
+    # through York and Kittery.
+    planning_links:
+      - label: East Coast Greenway
+        url: https://www.greenway.org/
+
+  - id: newburyport
+    name: Newburyport, Massachusetts
+    dates: Sep 9-10, 2027
+    # ~22 mi and the shortest day of the trip. Rest day: the Seacoast
+    # Greenway behind you, the Border to Boston trail ahead.
+    trail_section: Hampton to Portsmouth via New Hampshire Seacoast Greenway
+    trail_url: https://www.alltrails.com/trail/us/new-hampshire/hampton-to-portsmouth-via-the
+    planning_links:
+      - label: East Coast Greenway
+        url: https://www.greenway.org/
+
+  - id: boston
+    name: Boston, Massachusetts
+    dates: Sep 11-12, 2027
+    # ~42 mi down the Border to Boston corridor and the Northern Strand into
+    # the city. Rest day.
+    planning_links:
+      - label: East Coast Greenway
+        url: https://www.greenway.org/
+
+  - id: providence
+    name: Providence, Rhode Island
+    dates: Sep 13-14, 2027
+    # ~50 mi, the longest leg. Rest day earned. The Blackstone River
+    # Greenway carries the second half.
+    planning_links:
+      - label: East Coast Greenway
+        url: https://www.greenway.org/
+
+  - id: narragansett
+    name: Narragansett, Rhode Island
+    dates: Sep 15, 2027
+    # ~32 mi. The Washington Secondary and South County paths take most of
+    # the day off the road.
+    trail_section: Washington Secondary Rail Trail
+    trail_url: https://www.alltrails.com/trail/us/rhode-island/washington-secondary-rail-trai
+    planning_links:
+      - label: East Coast Greenway
+        url: https://www.greenway.org/
+
+  - id: westerly
+    name: Westerly, Rhode Island
+    dates: Sep 16, 2027
+    # ~22 mi along the South County coast.
+    trail_section: South County Bike Path
+    trail_url: https://www.alltrails.com/trail/us/rhode-island/south-county-bike-path
+    planning_links:
+      - label: East Coast Greenway
+        url: https://www.greenway.org/
+
+  - id: mystic
+    name: Mystic, Connecticut
+    dates: Sep 17, 2027
+    # ~16 mi, the shortest leg, crossing into Connecticut. A half day on
+    # purpose — the seaport is the reason to stop here.
+    planning_links:
+      - label: East Coast Greenway
+        url: https://www.greenway.org/
+
+  - id: old_saybrook
+    name: Old Saybrook, Connecticut
+    dates: Sep 18, 2027
+    # ~30 mi around the Connecticut River mouth, on-road for most of it.
+    planning_links:
+      - label: East Coast Greenway
+        url: https://www.greenway.org/
+
+  - id: new_haven
+    name: New Haven, Connecticut
+    dates: Sep 19, 2027
+    # ~35 mi. The Shoreline Greenway carries the last stretch into the city,
+    # where the New England section ends and the route continues south.
+    trail_section: Shoreline Greenway Trail
+    trail_url: https://www.alltrails.com/trail/us/connecticut/shoreline-greenway-trail
+    planning_links:
+      - label: East Coast Greenway
+        url: https://www.greenway.org/
