@@ -614,12 +614,16 @@
         if(typeof L==='undefined'){setTimeout(init,150);return;}
         var stops='<!--MAP_MARKERS_JSON-->';
         var map=L.map('overview-map',{zoomControl:true,scrollWheelZoom:false});
-        /* CARTO Voyager rather than standard OSM tiles: OSM renders place labels in
-           the local language, so a Japan itinerary came back captioned in Japanese
-           for an English-language page. Voyager labels in Latin script worldwide.
-           Keyless and same {s}/{z}/{x}/{y} scheme, so this is a URL swap; CARTO's
-           attribution is required alongside OSM's and is included below. */
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',{attribution:'© OpenStreetMap contributors © CARTO',subdomains:'abcd',maxZoom:13}).addTo(map);
+        /* Standard OSM tiles. CARTO Voyager was tried here on 2026-09-02 to get
+           Latin-script labels for a Japan itinerary; its keyless raster
+           endpoint now returns every tile stamped "API KEY REQUIRED" across
+           the image, so the map shipped watermarked. Reverted 2026-09-05.
+           OSM labels places in the local language, so an English page about
+           Japan still gets Japanese labels -- unsolved, and not solvable
+           keylessly as far as this has been probed (Wikimedia's osm-intl
+           returns Japanese too). A Latin-script basemap needs a keyed
+           provider and the terms review that implies. */
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors',maxZoom:13}).addTo(map);
         L.polyline(stops.map(function(s){return s.c;}),{color:'<!--THEME_COLOR-->',weight:2.5,dashArray:'7,6',opacity:0.85}).addTo(map);
         stops.forEach(function(s){
           var stopIndex = s.stop_index || s.idx;

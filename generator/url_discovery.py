@@ -2311,6 +2311,19 @@ class URLDiscoverer:
                         dest,
                     ),
                     inner.submit(self._discover_scenic_drives, dest, name, nps_code),
+                    # Its own job rather than a tail of en-route discovery.
+                    # It was the latter for one release and never ran once:
+                    # en-route stops are a priced enrichment that is off by
+                    # default, and that early return sits well above where
+                    # the trail lookup had been appended. A leg's trail is
+                    # not an en-route stop and must not share its switch.
+                    inner.submit(
+                        self._discover_leg_trail_link,
+                        ai,
+                        dest,
+                        origin_name,
+                        name,
+                    ),
                 ]
                 for f in as_completed(futs):
                     f.result()
@@ -8879,9 +8892,21 @@ class URLDiscoverer:
         )
         return None
 
-    def _search_alltrails_for_trail(self, item_name: str, dest_name: str, dates: str = "") -> str | None:
-        """Exhaust high-signal AllTrails queries before non-AllTrails fallback."""
-        if bool(getattr(self, "_disable_trails", False)):
+    def _search_alltrails_for_trail(
+        self,
+        item_name: str,
+        dest_name: str,
+        dates: str = "",
+        *,
+        allow_when_disabled: bool = False,
+    ) -> str | None:
+        """Exhaust high-signal AllTrails queries before non-AllTrails fallback.
+
+        `allow_when_disabled` is for the per-leg trail link, which the
+        manifest asks for by naming a trail rather than by the --trails
+        switch. See _discover_leg_trail_link.
+        """
+        if bool(getattr(self, "_disable_trails", False)) and not allow_when_disabled:
             return None
 
         source_mode = str(getattr(self, "_alltrails_source", "search") or "search")
@@ -11768,7 +11793,16 @@ class URLDiscoverer:
             return
 
         section = f"{trail_name} {origin_name} to {dest_name}"
-        url = self._search_alltrails_for_trail(section, dest_name)
+        # Deliberately past the --trails switch. That switch governs trail
+        # links for ATTRACTIONS AT a destination -- a priced enrichment, off
+        # by default, and on a thru-hike mostly day loops near the resupply
+        # town. This is the opposite thing: the trail the traveler is
+        # actually on, between two stops, asked for by name in the manifest.
+        # Tying them together meant turning the wanted one on dragged the
+        # unwanted one with it.
+        url = self._search_alltrails_for_trail(
+            section, dest_name, allow_when_disabled=True
+        )
         if not url:
             self._log_decision(
                 kind="leg_trail",
@@ -12290,8 +12324,6 @@ class URLDiscoverer:
                             stop["url"] = f"https://www.google.com/maps/search/?api=1&query={quote(q)}"
                             stop["_url_assigned_by"] = "maps_query_rebuilt"
                         logger.warning("  En-route safety fallback assigned url for '%s'", sn)
-
-        self._discover_leg_trail_link(ai, dest, origin_name, dest_name)
 
         # Derive distance/time from the actual route rather than AI-generated estimates.
         self._update_route_distance_and_time(

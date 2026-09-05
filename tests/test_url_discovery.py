@@ -17719,3 +17719,85 @@ def test_en_route_discovery_skipped_on_a_transport_mode_transit_leg() -> None:
     # `mixed` keeps them: the drive is still on the table there.
     assert URLDiscoverer._arrival_is_not_self_driven({"_transport_mode": "mixed"}) is False
     assert URLDiscoverer._arrival_is_not_self_driven({}) is False
+
+
+# ── GH #2: the leg's own trail, not the day loops near the town ───────────
+
+class TestLegTrailLink:
+    def _discoverer(self, found_url, disable_trails=True, disable_en_route=True):
+        from generator.url_discovery import URLDiscoverer
+
+        d = URLDiscoverer.__new__(URLDiscoverer)
+        d._disable_trails = disable_trails
+        d._disable_en_route = disable_en_route
+        d.calls = []
+
+        def _search(item_name, dest_name, dates="", *, allow_when_disabled=False):
+            d.calls.append((item_name, allow_when_disabled))
+            return found_url if allow_when_disabled or not d._disable_trails else None
+
+        d._search_alltrails_for_trail = _search
+        d._log_decision = lambda **kw: None
+        return d
+
+    def test_it_asks_for_the_named_trail_between_these_two_stops(self):
+        d = self._discoverer("https://www.alltrails.com/trail/us/washington/pct-h")
+        ai = {"getting_here": {}}
+        dest = {"name": "Trout Lake", "_transport_mode": "hike",
+                "_trail_name": "Pacific Crest Trail"}
+
+        d._discover_leg_trail_link(ai, dest, "Cascade Locks", "Trout Lake")
+
+        assert d.calls[0][0] == "Pacific Crest Trail Cascade Locks to Trout Lake"
+        assert ai["getting_here"]["trail_url"].endswith("pct-h")
+        assert ai["getting_here"]["trail_label"] == (
+            "Pacific Crest Trail: Cascade Locks to Trout Lake"
+        )
+
+    def test_it_runs_with_trail_links_switched_off(self):
+        """--trails governs trail links for attractions AT a destination --
+        on a thru-hike, day loops near the resupply town. The leg's own trail
+        is the opposite thing and is asked for by naming it in the manifest,
+        so tying them together meant the wanted one dragged in the unwanted."""
+        d = self._discoverer("https://www.alltrails.com/trail/x", disable_trails=True)
+        ai = {"getting_here": {}}
+        dest = {"name": "B", "_transport_mode": "hike", "_trail_name": "Pacific Crest Trail"}
+
+        d._discover_leg_trail_link(ai, dest, "A", "B")
+
+        assert d.calls[0][1] is True
+        assert ai["getting_here"]["trail_url"]
+
+    def test_no_trail_name_means_no_query(self):
+        """"A to B" alone matches whatever AllTrails has near either end."""
+        d = self._discoverer("https://www.alltrails.com/trail/x")
+        ai = {"getting_here": {}}
+
+        d._discover_leg_trail_link(ai, {"name": "B", "_transport_mode": "hike"}, "A", "B")
+
+        assert d.calls == []
+        assert "trail_url" not in ai["getting_here"]
+
+    def test_nothing_found_leaves_the_card_alone(self):
+        d = self._discoverer(None)
+        ai = {"getting_here": {}}
+        dest = {"name": "B", "_transport_mode": "hike", "_trail_name": "PCT"}
+
+        d._discover_leg_trail_link(ai, dest, "A", "B")
+
+        assert "trail_url" not in ai["getting_here"]
+
+
+def test_leg_trail_discovery_is_its_own_job_not_a_tail_of_en_route():
+    """It was a tail of _discover_en_route_stops for one release and never
+    ran once: en-route stops are off by default and that early return sits
+    above where the lookup had been appended."""
+    import inspect
+
+    from generator.url_discovery import URLDiscoverer
+
+    en_route_src = inspect.getsource(URLDiscoverer._discover_en_route_stops)
+    assert "_discover_leg_trail_link" not in en_route_src
+
+    dispatch = inspect.getsource(URLDiscoverer.discover_all)
+    assert "_discover_leg_trail_link" in dispatch
