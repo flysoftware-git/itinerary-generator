@@ -48,7 +48,10 @@ trip:
 
 destinations:
   - id: callahans
-    name: Callahan's Lodge, Ashland, Oregon
+    # Nominatim resolves the lodge on its own but not with "Ashland"
+    # inserted -- the extra locality breaks the match rather than
+    # narrowing it. Same for Mazama Village and Timberline below.
+    name: Callahan's Lodge, Oregon
     dates: Jun 27, 2026
     # ~27 mi from the state line. First Oregon resupply, half a mile off trail
     # at Highway 99.
@@ -65,7 +68,7 @@ destinations:
         url: https://www.pcta.org/discover-the-trail/trail-conditions/
 
   - id: mazama_village
-    name: Mazama Village, Crater Lake National Park, Oregon
+    name: Mazama Village, Oregon
     dates: Jul 7-8, 2026
     # ~56 mi. Zero day. The Rim Alternate is the scenic line; the official PCT
     # stays low, dry and viewless past the caldera.
@@ -109,7 +112,7 @@ destinations:
         url: https://www.pcta.org/discover-the-trail/trail-conditions/
 
   - id: timberline
-    name: Timberline Lodge, Mount Hood, Oregon
+    name: Timberline Lodge, Oregon
     dates: Jul 30-31, 2026
     # ~51 mi. Zero day. The breakfast buffet is a thru-hiker institution.
     planning_links:

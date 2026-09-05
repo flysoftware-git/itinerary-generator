@@ -19,7 +19,7 @@ import re
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
-from generator.transit_routing import resolved_mode
+from generator.transit_routing import RESOLVED_MODE_KEY, resolved_mode
 from generator.multi_site_grouping import (
     DEFAULT_BASE_OWNED_CATEGORIES,
     category_deferred_to_base,
@@ -2183,9 +2183,16 @@ class HTMLAssembler:
         # link fell back to travelmode=driving -- 11 of 12 links on an all-rail
         # itinerary opened car directions. The trip-level link was correct,
         # which is why testing the helper in isolation missed it.
+        # RESOLVED_MODE_KEY joined it 2026-09-05, for the same reason and after
+        # the same failure: a `hike` itinerary rendered "Walking Here" over a
+        # link that opened driving directions, because the heading read `dest`
+        # and the link read this dict. Anything _build_route_gmaps_url consults
+        # has to be carried here, and an isolated test of that helper cannot
+        # catch the omission -- test through _build_getting_here.
         route_destination = {
             "name": current_route_target or dest.get("name", ""),
             "transportation": dest.get("transportation") or [],
+            RESOLVED_MODE_KEY: resolved_mode(dest),
         }
         # _build_route_gmaps_url applies its own [:8] cap (Google's own
         # interactive directions UI is documented to support only a limited

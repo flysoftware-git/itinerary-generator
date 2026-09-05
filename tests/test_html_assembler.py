@@ -5415,3 +5415,24 @@ def test_a_driving_leg_keeps_the_car_heading() -> None:
     html = assembler._build_getting_here(ai, {"name": "Bryce"}, previous_name="Zion")
 
     assert "Getting Here" in html
+
+
+@pytest.mark.parametrize("mode, travelmode", [
+    ("hike", "walking"), ("bike", "bicycling"), ("transit", "transit"), ("auto", "driving"),
+])
+def test_the_getting_here_link_matches_the_card_it_sits_in(mode, travelmode) -> None:
+    """Through _build_getting_here, not through the URL helper in isolation.
+
+    The helper builds its link from a synthetic route_destination dict, so a
+    field it consults but that dict omits produces a card whose heading and
+    whose link disagree. That happened once for booked transportation (11 of
+    12 links on an all-rail itinerary opened car directions) and again for
+    the resolved leg mode -- a PCT run rendered "Walking Here" above driving
+    directions. Testing the helper alone cannot see either."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {"route_summary": "The leg.", "travel_time": "5 hrs"}}
+    dest = {"name": "Trout Lake", "_transport_mode": mode}
+
+    html = assembler._build_getting_here(ai, dest, previous_name="Cascade Locks")
+
+    assert f"travelmode={travelmode}" in html
