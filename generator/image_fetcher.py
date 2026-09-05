@@ -1,14 +1,21 @@
 """
-image_fetcher.py — Fetch destination images from NPS API and Wikimedia Commons.
+image_fetcher.py — Fetch destination images from NPS, Unsplash and Wikimedia.
 
-Strategy:
-  1. NPS API first for national parks (requires nps_park_code)
-  2. Wikimedia MediaSearch for all destinations
-  3. Automatic fallback query sequence (up to 4 attempts) on failure
-    4. Warn (do not hard fail) if < min_per_destination verified images found
+Strategy, in the order fetch_all actually tries them:
+  1. NPS API for national parks (requires nps_park_code)
+  2. Unsplash, for every destination, up to the remaining count
+  3. Wikimedia MediaSearch for whatever is still short
+  4. A fallback query sequence (up to MAX_FALLBACK_ATTEMPTS) that retries
+     Unsplash and Wikimedia with rephrased queries
+  5. Warn -- never hard fail -- if fewer than min_per_destination verified
+     images were found
 
-Images are embedded as data URIs in the HTML (base64) OR stored as
-relative paths in output/images/ depending on config.
+The rendered page loads each image from its SOURCE url. `output/images/` is a
+download-avoidance cache, not the delivery mechanism: emitting cache paths
+meant every published build shipped its own copy of NPS/Unsplash/Wikimedia
+assets and rehosted third-party images rather than linking them, which is a
+licensing question as much as a bandwidth one. The cache path is used only
+when a record somehow lacks its source url. See html_assembler._image_href.
 """
 from __future__ import annotations
 import html as html_lib

@@ -1178,10 +1178,15 @@ Policy files: [`policy/url_policy_allowlist.txt`](policy/url_policy_allowlist.tx
 Recorded rather than silently corrected, since the repository is under active development
 on `issue-6-v2`.
 
-- Several module docstrings predate the code they head: `image_fetcher.py` describes a
-  two-provider chain and a base64 data-URI mode that does not exist; `main.py`'s docstring
-  omits eight of its 26 CLI flags. (`html_assembler.py`'s "attribution block" step was the
-  third; corrected alongside `requirements.md` §8.)
+- ~~Several module docstrings predate the code they head.~~ **Closed 2026-09-05.** All
+  three are corrected, and the numbers in this entry were themselves stale when it was
+  read: `main.py` named 18 of 30 flags, not 18 of 26. `image_fetcher.py` now names all
+  three providers and drops the data-URI mode it never had; `main.py` points at `--help`
+  and describes the shape of the flag surface rather than enumerating it, since the
+  enumeration is what rotted twice; `html_assembler.py`'s "attribution block" step went
+  with `requirements.md` §8. `tests/test_module_docstrings.py` binds the two shapes that
+  actually rotted -- a docstring naming a flag that no longer exists, and one promising a
+  complete list it does not deliver.
 - `requirements.md` §10's config table lists `ai.max_tokens: 3000`; `config.yaml` has
   `4096`.
 - `config.yaml`'s `grok_search.endpoint` still points at `/v1/chat/completions`, which the
