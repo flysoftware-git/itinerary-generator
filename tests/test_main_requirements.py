@@ -1296,7 +1296,12 @@ def test_build_destination_status_report_flags_rendered_items_missing_links() ->
     )
 
     row = payload["destinations"][0]
-    assert "rendered_items_missing_links" in row["retry_triggers"]
+    # Advisory, not a retry trigger. An item rendered without a link is a
+    # discovery outcome -- nothing was found for it -- and a second pass over the
+    # same sources finds nothing again. Reported so the condition stays visible;
+    # it no longer buys a paid second pass.
+    assert "rendered_items_missing_links" in row["advisory_conditions"]
+    assert "rendered_items_missing_links" not in row["retry_triggers"]
     assert row["stage_status"]["url_discovery"]["rendered_no_url_attractions"] == 1
     assert row["stage_status"]["url_discovery"]["rendered_no_url_restaurants"] == 1
     assert row["stage_status"]["url_discovery"]["rendered_no_url_stops"] == 1
@@ -1838,3 +1843,80 @@ class TestEnRouteStopsCanBeSwitchedOffEntirely:
         with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
             disc = URLDiscoverer(config_path="config.yaml", llm_client=mock_llm, disable_en_route=False)
         assert disc._disable_en_route is False
+
+
+def test_deduplication_does_not_count_against_the_url_acceptance_ratio() -> None:
+    """An attraction found by two sources is one attraction. Scoring it 1
+    accepted + 1 rejected reported a perfect outcome as a 50% failure -- and made
+    the ratio fall as *more* sources were enabled, because more sources propose
+    more overlapping items.
+
+    Measured over 7 runs and 44 destinations before this changed: 21 retries
+    triggered, 0 resolved. Nothing a duplicate rejection describes can be fixed
+    by discovering the same place a second time.
+    """
+    from generator.main import _build_destination_status_report
+
+    trip = {"destinations": [{"id": "d1", "name": "Somewhere", "ai_content": {}}]}
+    registry = {
+        "entities": [
+            {"entity_id": "a", "destination_id": "d1", "validation_status": "accepted"},
+            {"entity_id": "b", "destination_id": "d1", "validation_status": "accepted"},
+            # Deduplicated: the same place, found twice. Not a failure.
+            {"entity_id": "c", "destination_id": "d1", "validation_status": "rejected",
+             "rejection_reasons": ["duplicate_of_attraction"]},
+            {"entity_id": "d", "destination_id": "d1", "validation_status": "rejected",
+             "rejection_reasons": ["en_route_duplicate_of_destination"]},
+        ]
+    }
+
+    payload = _build_destination_status_report(
+        trip=trip, registry=registry, run_id="r1", skip_events=True, skip_images=True,
+        skip_url_discovery=False, retry_policy={},
+    )
+    row = payload["destinations"][0]
+
+    # 2 accepted of 2 evaluated, not 2 of 4.
+    assert row["url_acceptance_ratio"] == 1.0
+    assert row["validation_counts"]["rejected_as_duplicate"] == 2
+
+
+def test_an_unverifiable_duplicate_still_counts_as_a_failure() -> None:
+    """Only entities whose reasons are *all* duplicate-class leave the
+    denominator. One that also failed verification is a real discovery failure
+    wearing a duplicate label as well."""
+    from generator.main import _build_destination_status_report
+
+    trip = {"destinations": [{"id": "d1", "name": "Somewhere", "ai_content": {}}]}
+    registry = {
+        "entities": [
+            {"entity_id": "a", "destination_id": "d1", "validation_status": "accepted"},
+            {"entity_id": "b", "destination_id": "d1", "validation_status": "rejected",
+             "rejection_reasons": ["duplicate_of_attraction", "no_verified_url_removed"]},
+        ]
+    }
+
+    row = _build_destination_status_report(
+        trip=trip, registry=registry, run_id="r1", skip_events=True, skip_images=True,
+        skip_url_discovery=False, retry_policy={},
+    )["destinations"][0]
+    assert row["url_acceptance_ratio"] == 0.5
+    assert row["validation_counts"]["rejected_as_duplicate"] == 0
+
+
+def test_every_duplicate_reason_the_engine_emits_is_recognised() -> None:
+    """Six of the engine's rejection reasons are duplicate-class and every one
+    contains the word, which is why a substring rule is enough -- and why a
+    hand-kept list would be the thing that goes stale."""
+    from generator.main import _is_duplicate_rejection
+
+    for reason in (
+        "duplicate_of_attraction", "duplicate_of_attraction_same_url",
+        "duplicate_of_en_route_stop", "en_route_duplicate_of_destination",
+        "en_route_duplicate_of_destination_own_list",
+        "en_route_duplicate_same_place_in_leg",
+    ):
+        assert _is_duplicate_rejection(reason), reason
+
+    for reason in ("no_verified_url_removed", "closure_removed", "audit_url_rejected", ""):
+        assert not _is_duplicate_rejection(reason), reason

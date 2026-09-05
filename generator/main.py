@@ -51,6 +51,29 @@ _SECTION_TARGETS = {
 }
 
 
+#: Rejection reasons that mean "we already have this", not "we could not use
+#: this". Six of the engine's 74 reasons are duplicate-class and every one of
+#: them contains the word, which is why a substring is enough and a hand-kept
+#: list would be the thing that goes stale:
+#:
+#:   duplicate_of_attraction              duplicate_of_attraction_same_url
+#:   duplicate_of_en_route_stop           en_route_duplicate_of_destination
+#:   en_route_duplicate_of_destination_own_list
+#:   en_route_duplicate_same_place_in_leg
+_DUPLICATE_REJECTION_MARKER = "duplicate"
+
+
+def _is_duplicate_rejection(reason: str) -> bool:
+    """Whether a rejection means the item was deduplicated rather than unusable.
+
+    The distinction decides whether it belongs in the URL acceptance ratio's
+    denominator. Deduplication is discovery *working*: the same attraction
+    turning up from two sources is one attraction, and scoring it 1 accepted +
+    1 rejected reports a perfect outcome as a 50% failure.
+    """
+    return _DUPLICATE_REJECTION_MARKER in str(reason or "").strip().lower()
+
+
 def _load_destination_retry_policy(config_path: str | Path) -> dict[str, Any]:
     policy: dict[str, Any] = {
         "min_url_acceptance_ratio": 0.0,
@@ -886,8 +909,39 @@ def _build_destination_status_report(
             retry_triggers.append("image_shortfall")
         if not skip_url_discovery and validation_counts["total"] > 0 and validation_counts["accepted"] == 0:
             retry_triggers.append("url_collapse")
+        # Reported, not retried. An item rendered without a link is a *discovery
+        # outcome* -- nothing was found for it -- and a second pass over the same
+        # sources finds nothing again. Measured over 7 runs and 44 destinations:
+        # every retry this condition caused was unresolved, and it fired on a
+        # destination at 0.87 acceptance while a near-identical one at 0.875 in
+        # the same run was left alone. Kept as an advisory so the condition is
+        # still visible; it just no longer buys a paid second pass.
+        advisory_conditions: list[str] = []
         if not skip_url_discovery and (rendered_no_url_attractions or rendered_no_url_restaurants or rendered_no_url_stops):
-            retry_triggers.append("rendered_items_missing_links")
+            advisory_conditions.append("rendered_items_missing_links")
+
+        # Deduplication is not a rejection, and counting it as one made a correct
+        # outcome look like a failed one: an attraction found by two sources
+        # scores 1 accepted + 1 "rejected", a ratio of 0.5 for a perfect result.
+        # It also made the ratio fall as *more* sources were enabled, because
+        # more sources propose more overlapping items -- so a richer
+        # configuration scored worse while delivering more verified links.
+        #
+        # Only entities whose rejection reasons are *all* duplicate-class leave
+        # the denominator. One that was also unverifiable stays: that is a real
+        # discovery failure wearing a duplicate label as well.
+        duplicate_rejections = sum(
+            1
+            for entity in destination_entities
+            if str(entity.get("validation_status", "") or "").strip().lower() == "rejected"
+            and [r for r in (entity.get("rejection_reasons") or []) if str(r or "").strip()]
+            and all(
+                _is_duplicate_rejection(reason)
+                for reason in (entity.get("rejection_reasons") or [])
+                if str(reason or "").strip()
+            )
+        )
+        validation_counts["rejected_as_duplicate"] = duplicate_rejections
 
         accepted_for_ratio = validation_counts["accepted"]
         evaluated_for_ratio = (
@@ -896,6 +950,7 @@ def _build_destination_status_report(
             + validation_counts["excluded"]
             + validation_counts["needs_retry"]
             + validation_counts["quarantined"]
+            - duplicate_rejections
         )
         url_acceptance_ratio = (accepted_for_ratio / evaluated_for_ratio) if evaluated_for_ratio > 0 else 1.0
         if (
@@ -1006,9 +1061,14 @@ def _build_destination_status_report(
                 "status": destination_status,
                 "retry_recommended": destination_status in {"needs_retry", "quarantined"},
                 "retry_triggers": retry_triggers,
+                # Conditions worth knowing about that do not justify paying for
+                # a second pass. Reported rather than dropped, so narrowing the
+                # trigger removes the spend and not the signal.
+                "advisory_conditions": advisory_conditions,
                 "retry_stage_scope": retry_stage_scope,
                 "validation_counts": validation_counts,
                 "rejected_reasons": rejected_reasons,
+                "url_acceptance_ratio": round(url_acceptance_ratio, 4),
                 "stage_status": {
                     "ai_generation": {"status": "completed"},
                     "cultural_events": {
