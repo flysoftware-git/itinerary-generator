@@ -1494,6 +1494,23 @@ incorrectly forced into AllTrails because descriptions mention trails or AI sets
 	trail signals unless the attraction name itself contains explicit trail cues.
 - Note: this guard includes plain `park` entities, not just `state park` or
 	`national park` forms.
+- 2026-08-29: the guard is place-level only, so non-place features fall through
+	it. Balanced Rock (a formation) and Upheaval Dome (a crater) were both
+	classified `entity_class=trail`, and the audit pass's AllTrails-only gate
+	stripped their correct `nps.gov` pages -- after discovery had found them.
+	Both were then removed by verified-link-or-seed for having no URL.
+	The same defect was found in the dipstick64 run as "Bryce Point" and
+	accepted at the time: the regression test asserted the loss and its
+	docstring called it "a known, deliberate trade-off ... not a bug in this
+	pass". Owner rule now governs: when a trail-type target has both available,
+	prefer AllTrails if the **title** contains "trail", otherwise prefer the
+	official/NPS page (`_title_claims_a_trail`, word-boundary matched so
+	"Trailview Overlook" is not a trail). AllTrails-first is unchanged for
+	items that name themselves trails -- it exists because non-AllTrails trail
+	URLs were being generated badly.
+- Note: this gate only fires for `trail_like` items, so it is dormant when
+	`trails.enabled` is false. Re-enabling trails re-enables the failure mode;
+	`sw` attraction removals rose 7 -> 17 in the run immediately after.
 
 Issue: Scenic/en-route links resolving to AllTrails then being stripped in audit.
 - Mitigation: AllTrails blocked upstream for those categories.
@@ -1663,6 +1680,99 @@ check, not just a second URL-shape check.
 	not disqualifying -- only a redirect landing somewhere that neither looks
 	nor reads as item-specific is. Wired into both leniency call sites in
 	`_retain_discovered_url` (search `_redirect_target_lacks_item_relevance`).
+
+Issue: An attraction whose only surviving candidate is a Google Maps **text
+query** is marked resolved by the direct batch.
+- Consequence: two harms at once. `_item_has_verified_url` refuses a text query
+	by design (a best guess, never confirmed to be about the right place), so
+	the item is deleted downstream; and "resolved" suppresses the paid per-item
+	search, which "fires only for items the direct batch already failed to
+	resolve" -- so the search that would have found the real page never runs.
+	Prague Castle, St. Vitus Cathedral, Balanced Rock, Navajo Loop Trail and
+	Queen's Garden Trail were all lost this way on 2026-08-29 while their
+	official pages ranked *second* in a plain search, behind the generic park
+	page the code correctly rejects.
+- Mitigation: refuse, at selection time, exactly what the verification gate
+	refuses (`_is_unverifiable_maps_query`). A **coordinate** Maps query still
+	counts, per the 2026-08-22 owner decision. A test asserts the two gates
+	agree on every URL class, since the defect was two different bars at the
+	two ends of the pipeline.
+- Note: `test-coverage.md` already described Maps links as usable "only after
+	direct-batch and ordinary web search paths are exhausted", so this restored
+	documented behaviour rather than changing policy. The equivalent rule
+	already existed and was tested for restaurants; only attractions lacked it.
+
+Issue: `audit_discovered_urls` re-runs `_retain_discovered_url` over a URL
+discovery already accepted, and can reach the opposite verdict.
+- Cause: the audit takes `trip` as its only input. Candidate rows are transient
+	to discovery and never persisted onto the item, so the audit cannot pass
+	`candidate=` or `allow_shallow_relevance=True`. `deep_check = not
+	allow_shallow_relevance` then silently reads that absence as "be stricter",
+	and the preservation branch gated on `isinstance(candidate, dict)` is
+	skipped entirely. The asymmetry is a parameter default, not a decision
+	anyone made.
+- Status: **not the cause of the Balanced Rock removals** -- checked directly
+	on 2026-08-29 against the live page, where every deep-check gate passes
+	(item tokens present, destination token present, not weak, not campground,
+	not under construction). Recorded here so the next investigation does not
+	re-chase it. The asymmetry is real and worth fixing on its own terms;
+	persisting discovery's evidence onto the item is the change that matches
+	the cause, and weakening the audit is not.
+
+Issue: A URL discarded by the audit left no trace in the item's disposition
+trail.
+- Cause: `_log_rejected_url` wrote a `logger.warning` and no decision event.
+- Consequence: Balanced Rock's trail showed general search recovering
+	`nps.gov/arch/planyourvisit/balancedrock.htm` and then simply stopped, while
+	the item was removed for having no verified URL. The one step that mattered
+	was the one step not recorded.
+- Mitigation: `_log_rejected_url` now also records
+	`audit_discarded_previously_accepted_url`.
+
+Issue: An en-route stop was resolved to a Places `place_id` using the leg's
+ARRIVAL destination as the qualifier.
+- Consequence: the query described a place the stop may be nowhere near.
+	"Cumberland Plateau Asheville, North Carolina" matched nothing — the
+	plateau is in Tennessee, 250 miles away — and because `waypoint_place_ids`
+	is all-or-nothing per leg, that one stop returned the whole Old Hickory ->
+	Asheville leg to coordinates. The same leg's "Blount Mansion Asheville,
+	North Carolina" and "Sunsphere Asheville, North Carolina" are Knoxville
+	places that resolved anyway, purely because their names are distinctive
+	enough to survive a misleading qualifier — silent near-misses, not successes.
+- Mitigation: `PlaceResolver.resolve` takes a location bias. A geocoded stop is
+	asked for by bare name with its own coordinate (50 km radius); a stop with
+	no geocode keeps the qualified name, which still beats an unqualified one.
+	The bias is part of the cache key, or two places sharing a name near
+	different coordinates collapse into whichever was asked for first.
+- Note: this is the same defect the waypoint code documents as "Mossy Cave
+	Capitol Reef National Park". `_maps_fallback_query_text` carries it by
+	design — it is right for an attraction, which IS at its destination — and
+	reusing it for en-route stops imported the flaw into a context where the
+	answer is checkable.
+
+Issue: One real place appeared under two names in the same itinerary.
+- "The Hermitage" (an en-route stop on one leg) and "Andrew Jackson's
+	Hermitage" (another leg) share `place_id ChIJf2rnpoJqZIgRQyx--6HBumM`,
+	while the same trip listed "The Hermitage Hotel" — a different place with
+	its own id, in downtown Nashville. A reader could not tell which "The
+	Hermitage" meant, and the shorter name is the one that collides.
+- Mitigation: `_unify_names_sharing_a_place_id` (main.py) runs before
+	assembly. A `place_id` is an identity claim, so items carrying the same one
+	are the same place and must read the same; the most specific name wins.
+	Names only — nothing is merged or removed, since a site legitimately
+	appears on more than one leg.
+- Found by opening both links in a browser, not by reading HTML. Both URLs
+	were correct: one resolved to "Andrew Jackson's Hermitage, 4580 Rachels
+	Ln" and the other to "The Hermitage Hotel, 231 6th Ave N". Only the
+	rendering showed that the names disagreed.
+- Limitation: this only unifies items the resolver gave ids to. Two items that
+	are the same place where one never resolved will still disagree, and
+	nothing detects that.
+
+Note: a Maps URL's `query=` text is built before name unification runs, so it
+can lag the card's name. `query_place_id` decides where the link goes, so the
+destination is correct regardless — verified in a browser against a stop whose
+query still read "Old Hickory, Tennessee" for a site in Hermitage, TN.
 
 ## Must-See Badge Policy
 The "Must-See" badge is a deterministic, render-time decision -- not the

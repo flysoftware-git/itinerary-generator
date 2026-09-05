@@ -17,7 +17,7 @@ The scheduler should treat the following as input contract:
 
 - `possible_daily_schedule` from AI (draft only; not authoritative).
 - `top_attractions` after normalization and de-duplication.
-- `getting_here` transfer metadata (`drive_time`, `en_route_stops`).
+- `getting_here` transfer metadata (`travel_time`, `en_route_stops`).
 - destination date span (for day count).
 - trip anchors (`departure`, `departure_datetime`, `return`, `return_datetime`).
 - lodging anchors (`lodging.location`, `lodging.checkin_time`).
@@ -58,7 +58,7 @@ Schedule text must remain consistent with published entities.
 ## Constraint Rules
 
 - Respect effective daily activity budget from destination override or global default.
-- Respect transfer friction from `drive_time` when choosing same-day activity density.
+- Respect transfer friction from `travel_time` when choosing same-day activity density.
 - Use deterministic fallbacks when AI output is sparse: preserve period coverage (Morning/Afternoon/Evening) without inventing contradictory logistics.
 
 ## Normalization Priorities

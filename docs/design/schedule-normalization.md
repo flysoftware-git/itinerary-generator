@@ -69,7 +69,7 @@ implementation pass, not a description of new code.
   there is no `arrival_datetime` (or duration) to convert one into the
   other.
 - No computed drive/flight duration for the origin leg. The live-route
-  estimator that computes every other leg's `drive_time`
+  estimator that computes every other leg's `travel_time`
   (`url_discovery.py:10415` `_update_route_distance_and_time`) is fed
   `origin_name`/`origin_lat`/`origin_lng` from `destinations[idx - 1]`
   (`url_discovery.py:1947-1953`); when `idx == 0` these are left empty, so
@@ -122,7 +122,7 @@ the owner — do not invent a shape silently.
   buffers" baked into generated text, never a numeric, configurable value.)
 - No computed drive time for the *departure leg itself* (last destination →
   trip return point / airport). The live-route estimator computes each
-  destination's *inbound* `drive_time`; there is no equivalent outbound
+  destination's *inbound* `travel_time`; there is no equivalent outbound
   computation for the trip's final leg.
 - **`trip.return_datetime`'s semantics are themselves undefined.** The
   schema description ("Optional return date/time anchor... used for route
@@ -184,7 +184,7 @@ walking to a car).
 
 **Inputs available today:** same as Case 1's `checkin_time`, plus — because
 this is *not* the trip's first destination — a genuinely computed inbound
-`drive_time` for the leg from the previous destination (subject to the
+`travel_time` for the leg from the previous destination (subject to the
 pipeline-ordering caveat below).
 
 **Current behavior:** `ai_content.py:1788-1815`. When `drive_minutes > 0`,
@@ -196,7 +196,7 @@ physically-grounded mechanism in the whole file.
 
 **Status: (a) implemented, for the "drive eats the budget" concept** — with
 one real caveat and one decorative gap:
-- **Caveat — pipeline ordering.** `getting_here.drive_time` at the point
+- **Caveat — pipeline ordering.** `getting_here.travel_time` at the point
   `_normalize_schedule` reads it is whatever the LLM itself put in its
   `getting_here` payload during content generation (Stage 3,
   `main.py:1929-1930`, `ai_gen.generate_all(trip)`), *not* the
@@ -204,12 +204,12 @@ one real caveat and one decorative gap:
   5b (`url_discoverer.discover_all(trip)`, `main.py:2001`), which calls
   `_update_route_distance_and_time` (`url_discovery.py:10415`) — after
   schedule normalization has already run and already consumed
-  `drive_time`. So despite the doc language above ("derived from the real
+  `travel_time`. So despite the doc language above ("derived from the real
   route"), the number actually driving this discount today is the LLM's own
   guess, not a verified one. This is a genuine sequencing gap worth fixing
   independent of anything else in this section — either normalize schedule
   after route verification, or re-run the discount pass once verified
-  `drive_time` lands.
+  `travel_time` lands.
 - **checkin_time is still decorative here too** — the discount is purely
   duration-based (subtract drive minutes from a budget), never compared
   against an actual checkin clock time to check whether the traveler could
@@ -251,7 +251,7 @@ ordering, `checkin_time` still decorative) — those remain open.
 **Inputs available today:** `next_destination` name only
 (`ai_content.py:1859`, `1864`) — a string, not a duration. The onward drive
 duration for this leg *does* eventually get computed (it's the *next*
-destination's inbound `getting_here.drive_time`), but it is never threaded
+destination's inbound `getting_here.travel_time`), but it is never threaded
 back into the current destination's schedule normalization call — and per
 the Case 3 caveat, wouldn't be verified yet even if it were, since it
 belongs to a not-yet-processed destination.
@@ -751,7 +751,7 @@ v2.1 time-anchor behavior:
 	1) destination `schedule_start_time`
 	2) trip `default_day_start_time`
 	3) fallback `10:00 AM`
-- For non-first destinations, when inbound `drive_time` is present, Morning is
+- For non-first destinations, when inbound `travel_time` is present, Morning is
 	allocated to transit with computed depart/arrival labels.
 
 v2.1 activity-budget behavior:
@@ -1125,7 +1125,7 @@ drive's `distance_or_duration` at the exact point it's repurposed into a
 route option, rewriting `"50 miles one-way"` → `"~50 mi total route"`. No
 comparison figure against a "direct route" distance (e.g. `"~50 mi vs ~60 mi
 via the direct interstate"`) is fabricated: `getting_there.distance_miles`/
-`drive_time` are declared in `destination_content.txt`'s schema but no code
+`travel_time` are declared in `destination_content.txt`'s schema but no code
 path anywhere in this codebase ever populates them for the departure leg
 (confirmed by grep -- `getting_here.distance_miles` is populated via
 Haversine estimation for the *arrival* leg, but no equivalent exists for

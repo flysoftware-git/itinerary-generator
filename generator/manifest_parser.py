@@ -75,6 +75,45 @@ TRANSPORTATION_ITEM_SCHEMA: dict[str, Any] = {
 }
 
 
+#: How the traveler covers the legs BETWEEN destinations. `auto` is today's
+#: behaviour, unchanged: every leg is a drive. Kept as an explicit enum member
+#: rather than only "omitted", so a manifest can state the assumption it is
+#: relying on. See docs/design/multimodal-routing.md 3.1.
+TRANSPORT_MODES: tuple[str, ...] = ("auto", "transit", "mixed", "bike", "hike")
+
+#: One authored leg between two adjacent destinations. `from`/`to` are
+#: destination `id`s, never display names -- the issue's free-text matching
+#: fails silently, and a silently-ignored leg ships a traveler an itinerary
+#: telling them to drive a leg they have no car for (multimodal-routing.md 3.2).
+LEG_ITEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["from", "to", "mode"],
+    "properties": {
+        "from": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]+$",
+            "description": "Destination `id` this leg departs from. An id, not a "
+                           "name: 'Zion NP' against a manifest saying 'Zion "
+                           "National Park' would match nothing and the leg would "
+                           "quietly stay `auto`.",
+        },
+        "to": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]+$",
+            "description": "Destination `id` this leg arrives at. Must be the "
+                           "next destination after `from` in itinerary order.",
+        },
+        "mode": {
+            "type": "string",
+            "enum": list(TRANSPORT_MODES),
+            "description": "Travel mode for this leg. Same values as "
+                           "`transport_mode`; naming the same leg in both places "
+                           "is allowed only when they agree.",
+        },
+    },
+    "additionalProperties": False,
+}
+
 MANIFEST_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["trip", "destinations"],
@@ -118,6 +157,31 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                             },
                         },
                     ],
+                },
+                "transport_mode": {
+                    "type": "string",
+                    "enum": list(TRANSPORT_MODES),
+                    "description": "Optional trip-wide travel assumption for "
+                                   "inter-destination legs. 'auto' (the default when "
+                                   "omitted) is current behaviour, unchanged: every leg "
+                                   "is a drive. 'transit' asks for scheduled public "
+                                   "transport instead, including the arrival-day "
+                                   "schedule. 'mixed' renders transit options alongside "
+                                   "the drive rather than in place of it. 'bike' and "
+                                   "'hike' are SELF-POWERED: nobody operates them, so "
+                                   "there is no timetable to suggest and no options card "
+                                   "-- they change the leg's duration, its map link and "
+                                   "how it is described. Overridable per destination.",
+                },
+                "trail_name": {
+                    "type": "string",
+                    "description": "Optional named trail this trip follows on foot or "
+                                   "by bike, e.g. 'Pacific Crest Trail'. Used to look up "
+                                   "the AllTrails page for each leg's section, so it "
+                                   "only has an effect on legs whose transport_mode is "
+                                   "bike or hike. The generator never invents this: "
+                                   "without it, a leg gets no trail link rather than a "
+                                   "guessed one.",
                 },
                 "transportation": {
                     "type": "array",
@@ -253,6 +317,15 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                     "additionalProperties": False,
                 },
             },
+        },
+        "legs": {
+            "type": "array",
+            "description": "Optional per-leg travel modes, addressed by destination "
+                           "id. An alternative to per-destination `transport_mode` for "
+                           "authors who think in journeys rather than in stops; both "
+                           "may be used, but not to disagree about one leg. See "
+                           "docs/design/multimodal-routing.md 3.2.",
+            "items": LEG_ITEM_SCHEMA,
         },
         "destinations": {
             "type": "array",
@@ -394,6 +467,46 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                        "behavior, unchanged. See docs/design/"
                                        "multi-site-destination-grouping.md.",
                     },
+                    "transport_mode": {
+                        "type": "string",
+                        "enum": list(TRANSPORT_MODES),
+                        "description": "Optional override for the leg ARRIVING at this "
+                                       "destination -- the journey from the previous stop "
+                                       "to this one. Attaches to the arriving destination "
+                                       "for the same reason en_route_seeds and "
+                                       "transportation do: the inbound leg belongs to the "
+                                       "place it delivers you to. Meaningless on a "
+                                       "group_with entry, which is a there-and-back day "
+                                       "trip rather than a relocation; set there it is "
+                                       "warned about and ignored.",
+                    },
+                    "trail_section": {
+                        "type": "string",
+                        "description": "Optional name of the trail section covering the leg "
+                                       "ARRIVING at this destination, written as the trail "
+                                       "catalogue names it -- e.g. 'Pacific Crest Trail "
+                                       "(PCT): Section B - Callahan's-Ashland to Fish Lake'. "
+                                       "Only used on bike/hike legs. Without it the lookup "
+                                       "has to compose a section name from the two stop "
+                                       "names, which no catalogue page is called, so it "
+                                       "matches nothing. Several legs may share one section: "
+                                       "guidebook sections are where the road crosses, "
+                                       "resupply stops are where you can buy food.",
+                    },
+                    "trail_url": {
+                        "type": "string",
+                        "description": "Optional URL for this leg's trail section, supplied "
+                                       "by the author. Used verbatim and skips discovery "
+                                       "entirely. design.md 1.4 bars the MODEL from "
+                                       "producing a URL; a human may, which is the same "
+                                       "footing planning_links has always stood on. Worth "
+                                       "supplying here because a trail catalogue's own "
+                                       "titles and slugs disagree -- AllTrails calls one "
+                                       "page 'Section B - Callahan's-Ashland to Fish Lake' "
+                                       "and slugs it 'pct-or-section-b-highway-5-to-"
+                                       "highway-140-fish-lake' -- so no search phrase "
+                                       "reliably resolves it.",
+                    },
                     "base_owned_categories": {
                         "type": "array",
                         "items": {"type": "string", "enum": sorted(VALID_BASE_OWNED_CATEGORIES)},
@@ -429,6 +542,9 @@ class ManifestParser:
         self._validate_en_route_exclude(data)
         self._validate_ids_unique(data)
         self._validate_group_with(data)
+        self._reject_legacy_transport_mode_key(data)
+        self._validate_legs(data)
+        self._warn_transport_mode_on_grouped(data)
         logger.info(
             "Manifest valid — %d destination(s): %s",
             len(data["destinations"]),
@@ -632,6 +748,122 @@ class ManifestParser:
                     "base destination."
                 )
             self._warn_if_group_dates_outside_base_range(dest, base)
+
+    #: The name GH #2's issue proposed for the per-destination mode, rejected
+    #: in favour of plain `transport_mode` (multimodal-routing.md 3.1). It has
+    #: to RAISE rather than be quietly accepted as an alias: destination items
+    #: allow unknown keys, so a manifest written to the issue's spelling
+    #: validates clean, resolves every leg to the trip-wide default, and ships
+    #: an itinerary telling the traveler to drive a leg they meant as a train.
+    #: That is the same silent-fallback failure the `legs:` id contract exists
+    #: to prevent, arriving through a different door. Found 2026-09-02 by the
+    #: acceptance manifest itself, which was written to the issue's names.
+    _REJECTED_TRANSPORT_MODE_KEYS = ("transport_mode_from_previous", "transport_mode_from")
+
+    def _reject_legacy_transport_mode_key(self, data: dict[str, Any]) -> None:
+        for dest in data.get("destinations", []) or []:
+            if not isinstance(dest, dict):
+                continue
+            for key in self._REJECTED_TRANSPORT_MODE_KEYS:
+                if key in dest:
+                    raise ValueError(
+                        f"Destination '{dest.get('id')}': '{key}' is not a manifest key. "
+                        f"Use 'transport_mode' -- it already means the leg ARRIVING at "
+                        f"this destination, matching en_route_seeds and transportation. "
+                        f"Renaming it here is required rather than assumed, because an "
+                        f"unrecognised key would otherwise be ignored and the leg would "
+                        f"silently stay '"
+                        + str((data.get("trip") or {}).get("transport_mode", "auto") or "auto")
+                        + "'."
+                    )
+
+    def _validate_legs(self, data: dict[str, Any]) -> None:
+        """Validate the optional `legs:` list (multimodal-routing.md 3.2).
+
+        Every failure here RAISES. The issue's original design matched
+        `from`/`to` as free text against destination names, which meant a
+        typo produced no leg, no warning and a build that succeeded --
+        discoverable only by remembering you had wanted a train there. A
+        build failure costs thirty seconds; a silent fallback ships a
+        traveler an itinerary telling them to drive a leg they have no car
+        for.
+
+        Naming the same leg in both `legs:` and the arriving destination's
+        `transport_mode` is allowed when the two AGREE, and is an error when
+        they disagree -- not last-wins, not most-specific-wins. This is the
+        drift bug class this project has hit repeatedly: one value restated
+        in two places, free to diverge. Silent precedence would mean an
+        author edits `transport_mode`, sees no change, and has no way to
+        find out why.
+        """
+        legs = data.get("legs") or []
+        if not legs:
+            return
+        destinations = [d for d in data.get("destinations", []) or [] if isinstance(d, dict)]
+        by_id = {d["id"]: d for d in destinations if "id" in d}
+        order = [d.get("id") for d in destinations]
+
+        seen: dict[tuple[str, str], int] = {}
+        for index, leg in enumerate(legs):
+            if not isinstance(leg, dict):
+                continue
+            origin = str(leg.get("from", "") or "").strip()
+            arrival = str(leg.get("to", "") or "").strip()
+            where = f"legs[{index}] ('{origin}' -> '{arrival}')"
+
+            for role, value in (("from", origin), ("to", arrival)):
+                if value not in by_id:
+                    raise ValueError(
+                        f"{where}: {role} '{value}' does not match any destination id. "
+                        "legs reference destination ids, not names — known ids: "
+                        + ", ".join(f"'{i}'" for i in order if i)
+                        + "."
+                    )
+            if origin == arrival:
+                raise ValueError(f"{where}: from and to are the same destination — not a leg.")
+
+            if order.index(arrival) - order.index(origin) != 1:
+                raise ValueError(
+                    f"{where}: '{origin}' and '{arrival}' are not adjacent in itinerary "
+                    "order, so the leg between them has no defined meaning. A leg joins a "
+                    "destination to the one immediately after it."
+                )
+
+            key = (origin, arrival)
+            if key in seen:
+                raise ValueError(
+                    f"{where}: duplicates legs[{seen[key]}] — the same leg is given two "
+                    "modes and there is no rule for choosing between them."
+                )
+            seen[key] = index
+
+            mode = str(leg.get("mode", "") or "").strip()
+            dest_mode = str(by_id[arrival].get("transport_mode", "") or "").strip()
+            if dest_mode and dest_mode != mode:
+                raise ValueError(
+                    f"{where}: mode '{mode}' disagrees with destination "
+                    f"'{arrival}'s own transport_mode '{dest_mode}'. Both describe the "
+                    f"same leg — the one arriving at '{arrival}' — so one of them is a "
+                    "mistake. Remove one, or make them agree."
+                )
+
+    def _warn_transport_mode_on_grouped(self, data: dict[str, Any]) -> None:
+        """`transport_mode` on a group_with entry is a category error.
+
+        A grouped entry is a there-and-back day trip from a shared base, not
+        an inbound relocation leg, so there is no arriving journey for a mode
+        to describe. Warn and ignore rather than raise, matching
+        `_warn_if_group_dates_outside_base_range` (multimodal-routing.md 4.4).
+        """
+        for dest in data.get("destinations", []) or []:
+            if not isinstance(dest, dict):
+                continue
+            if str(dest.get("group_with", "") or "").strip() and dest.get("transport_mode"):
+                logger.warning(
+                    "Destination '%s': transport_mode '%s' ignored — a group_with entry is "
+                    "a day trip from its base, not an arriving leg.",
+                    dest.get("id"), dest.get("transport_mode"),
+                )
 
     @staticmethod
     def _parse_lenient_date_range(dates: str) -> tuple[datetime, datetime] | None:

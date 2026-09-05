@@ -75,7 +75,7 @@ class _FakeLLMClient:
                     "what_to_pack": ["layers", "sun hat", "water bottle"],
                 },
                 "getting_here": {
-                    "drive_time": "2 hrs 15 min",
+                    "travel_time": "2 hrs 15 min",
                     "distance_miles": 95,
                     "route_summary": "Take I-15 north through the canyon corridor.",
                     "en_route_stops": [
@@ -260,7 +260,7 @@ class _FakeMultiDestLLMClient:
         "moab": {
             "destination_content": {
                 "expected_environment": {"summary": "Hot, dry desert days.", "temperature_high_f": 95, "temperature_low_f": 68, "what_to_pack": ["sun hat"]},
-                "getting_here": {"drive_time": "1 hr 50 min", "distance_miles": 108, "route_summary": "Take I-70 to US-191 south.", "en_route_stops": []},
+                "getting_here": {"travel_time": "1 hr 50 min", "distance_miles": 108, "route_summary": "Take I-70 to US-191 south.", "en_route_stops": []},
                 "top_attractions": [],
                 "possible_daily_schedule": ["Morning: Settle into lodging.", "Evening: Dinner in town."],
                 "dinner_recommendations": [
@@ -273,7 +273,7 @@ class _FakeMultiDestLLMClient:
         "arches": {
             "destination_content": {
                 "expected_environment": {"summary": "Hot, dry desert days.", "temperature_high_f": 96, "temperature_low_f": 66, "what_to_pack": ["sun hat"]},
-                "getting_here": {"drive_time": "10 min", "distance_miles": 5, "route_summary": "Short hop north on US-191.", "en_route_stops": []},
+                "getting_here": {"travel_time": "10 min", "distance_miles": 5, "route_summary": "Short hop north on US-191.", "en_route_stops": []},
                 "top_attractions": [
                     {"name": "Delicate Arch", "type": "hike", "difficulty": "Moderate", "duration": "2-3 hrs round-trip", "description": "Iconic freestanding arch reached via a slickrock trail."},
                 ],
@@ -290,7 +290,7 @@ class _FakeMultiDestLLMClient:
         "canyonlands": {
             "destination_content": {
                 "expected_environment": {"summary": "Hot, dry desert days.", "temperature_high_f": 94, "temperature_low_f": 64, "what_to_pack": ["sun hat"]},
-                "getting_here": {"drive_time": "40 min", "distance_miles": 32, "route_summary": "Head west on UT-313.", "en_route_stops": []},
+                "getting_here": {"travel_time": "40 min", "distance_miles": 32, "route_summary": "Head west on UT-313.", "en_route_stops": []},
                 "top_attractions": [
                     {"name": "Grand View Point", "type": "viewpoint", "difficulty": "Easy", "duration": "30 min", "description": "Sweeping overlook of the canyon confluence below."},
                 ],

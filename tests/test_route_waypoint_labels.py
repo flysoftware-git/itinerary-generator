@@ -1,0 +1,190 @@
+"""The route panel must name the stops the itinerary names.
+
+A coordinate waypoint resolves to the right point, but Google labels it by
+reverse geocoding: the St. George -> Zion route panel read "Millcreek 2nd post
+market, 5FGM+75" where the card said "Red Cliffs National Conservation Area
+Overlook". Six listed stops, six pins, no correspondence a reader could see --
+indistinguishable from the pins being wrong.
+
+A place_id is precise AND labelled. The resolver already produces them (107
+place_id links on the sw build) and stores each inside the item's maps_url, so
+reusing them costs no additional API call.
+"""
+
+import re
+import urllib.parse
+
+from generator.html_assembler import HTMLAssembler
+
+PID = "ChIJN1t_tDeuEmsRUsoyG83frY4"
+
+
+def _url(stops):
+    ai = {"getting_here": {"en_route_stops": stops, "drive_time": "2 hr", "distance_miles": 45}}
+    html = HTMLAssembler._build_getting_here(
+        HTMLAssembler.__new__(HTMLAssembler), ai,
+        {"name": "Zion National Park, Utah"}, "St. George, Utah",
+    )
+    m = re.search(r'href="(https://www\.google\.com/maps/dir/\?[^"]*)"', html)
+    return urllib.parse.parse_qs(urllib.parse.urlparse(m.group(1).replace("&amp;", "&")).query) if m else {}
+
+
+def _stop(name, pid=None, lat=None, lng=None):
+    s = {"name": name, "is_seed": True}
+    if pid:
+        s["maps_url"] = f"https://www.google.com/maps/place/?q=place_id:{pid}"
+    if lat is not None:
+        s["geocode_lat"], s["geocode_lng"] = lat, lng
+    return s
+
+
+class TestPlaceIdRecovery:
+    def test_an_id_is_recovered_from_a_resolver_link(self):
+        assert HTMLAssembler._place_id_from_maps_url(
+            f"https://www.google.com/maps/place/?q=place_id:{PID}") == PID
+
+    def test_a_coordinate_link_yields_nothing(self):
+        assert HTMLAssembler._place_id_from_maps_url(
+            "https://www.google.com/maps/search/?api=1&query=37.1,-113.5") == ""
+
+
+class TestWaypointLabelling:
+    def test_stops_with_ids_are_named_not_reverse_geocoded(self):
+        q = _url([_stop("Red Cliffs National Conservation Area Overlook", pid=PID)])
+        assert "Red Cliffs National Conservation Area Overlook" in q.get("waypoints", [""])[0]
+        assert PID in q.get("waypoint_place_ids", [""])[0]
+
+    def test_ids_are_all_or_nothing(self):
+        """A partial list would misalign labels against points.
+
+        waypoint_place_ids corresponds positionally to waypoints, so one stop
+        without an id has to send the whole leg back to coordinates rather than
+        pair the wrong id with the wrong place.
+        """
+        q = _url([
+            _stop("Has An Id", pid=PID),
+            _stop("No Id At All", lat=37.15, lng=-113.4),
+        ])
+        assert "waypoint_place_ids" not in q
+
+    def test_a_leg_with_no_ids_is_unchanged(self):
+        q = _url([_stop("Somewhere", lat=37.15, lng=-113.4)])
+        assert "waypoint_place_ids" not in q
+
+
+class TestPlaceIdField:
+    """Stops carry place_id as its own field, keeping their coordinate maps_url.
+
+    En-route stops take an unconditional coordinate maps_url from route
+    geocoding. That is the precise form and must stay -- the map badge uses it
+    -- so the place_id is stored separately rather than folded into it.
+    """
+
+    def test_the_field_is_preferred_over_parsing_maps_url(self):
+        q = _url([{
+            "name": "Red Cliffs National Conservation Area Overlook", "is_seed": True,
+            "place_id": PID,
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=37.2,-113.4",
+        }])
+        assert PID in q.get("waypoint_place_ids", [""])[0]
+        assert "Red Cliffs National Conservation Area Overlook" in q.get("waypoints", [""])[0]
+
+    def test_a_coordinate_maps_url_alone_still_yields_no_id(self):
+        q = _url([{
+            "name": "Somewhere", "is_seed": True,
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=37.2,-113.4",
+        }])
+        assert "waypoint_place_ids" not in q
+
+
+def test_attaching_a_place_id_leaves_maps_url_alone():
+    """The map badge depends on the coordinate; only the route label changes."""
+    from generator.url_discovery import URLDiscoverer
+
+    d = URLDiscoverer.__new__(URLDiscoverer)
+
+    class _Resolver:
+        enabled = True
+
+        def resolve(self, q, *, bias_lat=None, bias_lng=None, bias_radius_m=None):
+            return PID
+
+    d._place_resolver = _Resolver()
+    stop = {"name": "Red Cliffs Overlook",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=37.2,-113.4"}
+    d._attach_place_id(stop, "Red Cliffs Overlook", "St. George, Utah")
+    assert stop["place_id"] == PID
+    assert stop["maps_url"] == "https://www.google.com/maps/search/?api=1&query=37.2,-113.4"
+
+
+def test_no_resolver_is_a_no_op():
+    from generator.url_discovery import URLDiscoverer
+
+    d = URLDiscoverer.__new__(URLDiscoverer)
+    d._place_resolver = None
+    stop = {"name": "X"}
+    d._attach_place_id(stop, "X", "Y")
+    assert "place_id" not in stop
+
+
+class TestLocationBias:
+    """A stop resolves against its own coordinate, not its leg's destination.
+
+    _attach_place_id qualified the query with the arrival destination, so an
+    en-route stop was asked for by a place it may be nowhere near. "Cumberland
+    Plateau Asheville, North Carolina" found nothing -- the plateau is in
+    Tennessee, 250 miles away -- and the whole Asheville leg fell back to
+    coordinates because of that one stop. "Blount Mansion Asheville, North
+    Carolina" resolved only because the name survives a wrong qualifier.
+
+    This is the failure the waypoint code already documents as "Mossy Cave
+    Capitol Reef National Park".
+    """
+
+    def _discoverer(self, seen):
+        from generator.url_discovery import URLDiscoverer
+
+        d = URLDiscoverer.__new__(URLDiscoverer)
+
+        class _Resolver:
+            enabled = True
+
+            def resolve(self, q, *, bias_lat=None, bias_lng=None, bias_radius_m=None):
+                seen.append((q, bias_lat, bias_lng))
+                return PID
+
+        d._place_resolver = _Resolver()
+        return d
+
+    def test_a_geocoded_stop_is_asked_for_by_bare_name_plus_bias(self):
+        seen = []
+        stop = {"name": "Cumberland Plateau", "geocode_lat": 35.9442, "geocode_lng": -84.6816}
+        self._discoverer(seen)._attach_place_id(stop, "Cumberland Plateau", "Asheville, North Carolina")
+        query, lat, lng = seen[0]
+        assert query == "Cumberland Plateau"
+        assert "Asheville" not in query
+        assert (round(lat, 3), round(lng, 3)) == (35.944, -84.682)
+
+    def test_a_stop_without_a_geocode_keeps_the_qualified_name(self):
+        """Still better than an unqualified one when there is no coordinate."""
+        seen = []
+        stop = {"name": "Blount Mansion"}
+        self._discoverer(seen)._attach_place_id(stop, "Blount Mansion", "Asheville, North Carolina")
+        query, lat, lng = seen[0]
+        assert "Asheville" in query
+        assert lat is None and lng is None
+
+
+def test_the_bias_is_part_of_the_cache_key():
+    """Two places sharing a name must not collapse into one cached answer."""
+    from generator.place_resolver import PlaceResolver
+
+    # `enabled` is a property derived from api_key and the disabled reason.
+    r = PlaceResolver.__new__(PlaceResolver)
+    r.api_key = "test-key"
+    r._disabled_reason = ""
+    r._cache = {"Main Street@40.0,-80.0": "ID_EAST"}
+    r.stats = {"cache_hits": 0, "calls": 0, "resolved": 0, "no_match": 0, "refused": 0}
+    r.max_calls = 10
+    assert r.resolve("Main Street", bias_lat=40.0, bias_lng=-80.0) == "ID_EAST"
+    assert r.stats["cache_hits"] == 1

@@ -818,7 +818,7 @@ trip
 │   ├── lat, lng, lodging.lat/lng, nps_park_code       ← stage 2
 │   ├── ai_content                                     ← stage 3 (one merged call)
 │   │   ├── expected_environment { summary, temperature_high_f, temperature_low_f, what_to_pack[] }
-│   │   ├── getting_here { route_summary, drive_time, distance_miles, en_route_stops[] }
+│   │   ├── getting_here { route_summary, travel_time, distance_miles, en_route_stops[] }
 │   │   ├── getting_there { route_summary, route_options[] }   ← created in RECONCILE,
 │   │   │        last destination only; NOT produced by stage 3
 │   │   ├── top_attractions[]         { name, type, difficulty, duration, must_see,
@@ -1144,6 +1144,10 @@ Every note in [`docs/design/`](design/README.md), and where it connects to this 
 | [`multimodal-routing.md`](design/multimodal-routing.md) | transit-aware legs (GH #2, design only) | §1.4, §2.6 |
 | [`per-day-item-caps.md`](design/per-day-item-caps.md) | per-day item targets and trimming | §2.5 |
 | [`cost-accounting-and-reduction.md`](design/cost-accounting-and-reduction.md) | measuring run spend against the provider's bill; benchmarking procedure | §2.5 |
+| [`per-item-imagery.md`](design/per-item-imagery.md) | per-item images from free sources; why Places Photos cannot be used | §2.5 |
+| [`destination-type-coverage.md`](design/destination-type-coverage.md) | the 77% dining loss: why destination type was the wrong question | §2.5 |
+| [`european-content-sources.md`](design/european-content-sources.md) | Rick Steves vs Wikivoyage for European discovery | §2.5 |
+| [`places-for-restaurants.md`](design/places-for-restaurants.md) | Places API for restaurants: what it fixes, and the terms question | §2.5 |
 | [`building-attractions.md`](design/building-attractions.md) | generation, normalization, ordering | §2.5, §5.1, §6.3 |
 | [`url-discovery-and-audit.md`](design/url-discovery-and-audit.md) | discovery, scoring, filtering | §1.3, §1.4, §2.1, §7.2 |
 | [`fallback-curation-contract.md`](design/fallback-curation-contract.md) | harvest → qualify → curate → publish ownership | §1.4, §2.1, §3.2, §7.2, principle 2 |

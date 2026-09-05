@@ -18,7 +18,7 @@ def test_policy_multi_day_day2_plus_no_checkin_or_arrival_language() -> None:
         restaurants=[{"name": "Bryce Canyon Lodge"}],
         dates="June 1-3, 2026",
         attractions=[],
-        getting_here={"drive_time": "2 hours"},
+        getting_here={"travel_time": "2 hours"},
         previous_destination="Zion National Park",
         next_destination="Capitol Reef National Park",
     )
@@ -48,7 +48,7 @@ def test_policy_single_day_transfer_includes_one_arrival_logistics_block() -> No
         restaurants=[{"name": "Local Bistro"}],
         dates="October 17, 2026",
         attractions=[],
-        getting_here={"drive_time": "3 hours"},
+        getting_here={"travel_time": "3 hours"},
         previous_destination="Telluride",
         next_destination="",
     )
@@ -83,7 +83,7 @@ def test_policy_departure_day_reserves_return_blocks() -> None:
         restaurants=[{"name": "Local Bistro"}],
         dates="October 18-19, 2026",
         attractions=[],
-        getting_here={"drive_time": "1 hour"},
+        getting_here={"travel_time": "1 hour"},
         previous_destination="Pagosa Springs",
         next_destination="",
         trip_return="Las Vegas",

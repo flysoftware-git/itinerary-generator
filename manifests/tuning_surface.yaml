@@ -1,0 +1,109 @@
+# ============================================================
+# Tuning surface — the per-day knobs, and nothing else
+# ============================================================
+#
+# A COVERAGE FIXTURE with one job. A schema audit found twelve
+# manifest options that no manifest anywhere set, so they were
+# reachable only through unit tests -- nothing proved they
+# survived a real parse, or that a destination-level value
+# actually overrode its trip-level counterpart.
+#
+# Every option this file sets is here BECAUSE it was unused, not
+# because these values are good trip planning. Do not copy the
+# numbers into a real manifest; copy the shape.
+#
+# Two destinations on purpose: the per-day knobs need a trip-level
+# value and a destination-level override of the same key to prove
+# precedence, which takes exactly two stops -- one inheriting, one
+# overriding. Two stops is also the cheapest thing that runs here,
+# which matters because this fixture exists to be run repeatedly.
+#
+# Deliberately NOT set: `llm` and `llm_features`, which select
+# providers and cost real money in ways that belong in the
+# provider matrix rather than a fixture, and `environment`, which
+# the --environment CLI flag already covers on every run.
+# ============================================================
+
+trip:
+  title: "Tuning Surface"
+  subtitle: "A fixture for the per-day knobs — not a real trip"
+  theme_color: "#6B5B8A"          # muted violet, so its output is never mistaken for a real build
+
+  departure: "Denver International Airport"
+  departure_datetime: 2027-05-03 12:00
+  return: "Denver International Airport"
+  return_datetime: 2027-05-07 15:00
+
+  default_day_start_time: "9:00 AM"
+  default_daily_activity_hours: 5
+
+  # Trip-level per-day caps. Destination 1 inherits all four;
+  # destination 2 overrides all four, so a single run shows both
+  # the inherited and the overridden value.
+  attractions_per_day: 3
+  restaurants_per_day: 2
+  scenic_drives_per_day: 1
+  en_route_stops_per_day: 2
+
+  # Affects which roads and trailheads the pipeline is willing to
+  # propose. Never set in any manifest before this one.
+  has_high_clearance_vehicle: true
+
+  llm_provider: openai
+  llm_model: gpt-4o-mini
+
+destinations:
+
+  # ── INHERITS every trip-level knob ──────────────────────────
+  - id: estes_park
+    name: "Estes Park, Colorado"
+    dates: "May 3-5, 2027"
+
+    planning_links:
+      - label: "Visit Estes Park — official"
+        url: "https://www.visitestespark.com/"
+
+    lodging:
+      name: "The Stanley Hotel"
+      location: "333 E Wonderview Ave, Estes Park, CO 80517"
+      checkin_time: "4:00 PM"
+
+    seeds:
+      - "Rocky Mountain National Park"
+      - "Bear Lake"
+
+  # ── OVERRIDES every trip-level knob ─────────────────────────
+  # Values chosen to differ from the trip level in both directions
+  # so an override that silently failed to apply would be visible
+  # in the output rather than merely plausible.
+  - id: grand_lake
+    name: "Grand Lake, Colorado"
+    dates: "May 5-7, 2027"
+
+    # Destination-level overrides of the four trip-level caps.
+    attractions_per_day: 5
+    restaurants_per_day: 1
+    scenic_drives_per_day: 2
+    en_route_stops_per_day: 0
+
+    # The two destination-only knobs, which have no trip-level
+    # counterpart at all: a later start and a shorter day than
+    # default_day_start_time / default_daily_activity_hours give.
+    schedule_start_time: "10:30 AM"
+    daily_activity_hours: 3.5
+
+    planning_links:
+      - label: "Grand Lake Chamber of Commerce"
+        url: "https://www.grandlakechamber.com/"
+
+    lodging:
+      name: "Western Riviera Lakeside Lodging"
+      location: "419 Garfield St, Grand Lake, CO 80447"
+      checkin_time: "4:00 PM"
+
+    seeds:
+      - "Grand Lake Boardwalk"
+      - "Adams Falls"
+
+    en_route_seeds:
+      - "Trail Ridge Road"

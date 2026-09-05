@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from difflib import SequenceMatcher
 import logging
+from urllib.parse import quote
 from math import asin, cos, radians, sqrt
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,7 +18,8 @@ from typing import Any
 import requests
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient, LLMCircuitOpenError
-from generator.multi_site_grouping import group_base_id, is_grouped
+from generator.multi_site_grouping import group_base_id, is_grouped, is_park_like
+from generator.transit_routing import resolved_mode, suppresses_en_route_stops
 from generator.road_estimate import (
     ROAD_DISTANCE_FACTOR,
     drive_minutes,
@@ -55,7 +57,7 @@ def _estimate_haversine_route(
     """Estimate driving distance/time from straight-line (Haversine) coordinates.
 
     A real validation run (SW2026-dipstick68) showed the AI's own
-    `getting_here.distance_miles`/`drive_time` guess for a grouped day-trip
+    `getting_here.distance_miles`/`travel_time` guess for a grouped day-trip
     child (Arches National Park, based from Moab) come back as "212 mi" /
     "30 min" -- internally impossible (424 mph) and wildly wrong versus the
     real ~7-minute drive. This function recomputes those numbers from real
@@ -95,6 +97,83 @@ def _estimate_haversine_route(
     driving = straight * road_factor
     time_str = format_drive_time(drive_minutes(driving, avg_speed_mph=avg_speed_mph))
     return round(driving), time_str
+
+
+_EMPHASIS_MARKERS = ("***", "**", "__", "*", "_", "`")
+_WORDCHAR_RE = re.compile(r"\w")
+
+
+def _strip_paired_marker(text: str, marker: str) -> str:
+    """Remove one emphasis marker from `text`, but only where it PAIRS.
+
+    Splitting on the marker makes the pairing explicit: an odd number of
+    segments means every occurrence has a partner, so the markers are
+    formatting and can go. An even number means one is unmatched -- a name like
+    "M*A*S*H" keeps its asterisks rather than being silently rewritten.
+    """
+    if marker not in text:
+        return text
+    parts = text.split(marker)
+    if len(parts) % 2 == 0:                     # unmatched marker: leave alone
+        return text
+    # Refuse to join across word characters, so Rock_n_Roll survives _ stripping.
+    for i in range(1, len(parts) - 1, 2):
+        before = parts[i - 1][-1:] if parts[i - 1] else ""
+        after = parts[i + 1][:1] if parts[i + 1] else ""
+        if (before and _WORDCHAR_RE.match(before)) or (after and _WORDCHAR_RE.match(after)):
+            return text
+        if not parts[i].strip():                # "**" with nothing inside
+            return text
+    return "".join(parts)
+
+
+def strip_markdown_emphasis(value: Any) -> Any:
+    """Remove markdown emphasis markers from model-authored display text.
+
+    The content model returns names already formatted -- "**Flat Tire Diner**" --
+    and nothing stripped it, so published pages carried anchors whose visible
+    text was the asterisks. dipstick75 shipped 24 such pairs on 2026-08-18 and
+    passed its review; it is not subtle, and neither the review nor the
+    validator caught it.
+
+    Deliberately NOT fixed by rendering the markdown as <strong>. These are
+    names, not prose. The model should not be emphasising them at all, and
+    converting the markers would turn a formatting defect into a permanent
+    styling decision.
+
+    Conservative by design, because a name may legitimately contain these
+    characters ("Rock_n_Roll", "M*A*S*H"): only markers that PAIR are removed --
+    either wrapping the whole string, or as a bounded inline run at word
+    boundaries. An unmatched marker is left exactly as it is.
+
+    Applied recursively so one call at the payload boundary covers every
+    category, rather than one sanitiser per call site -- the mistake that took
+    five attempts to close the trails switch.
+    """
+    if isinstance(value, str):
+        out = value
+        for _ in range(4):                      # **_name_** needs more than one pass
+            before = out
+            for marker in _EMPHASIS_MARKERS:
+                out = _strip_paired_marker(out, marker)
+            if out == before:
+                break
+        return out
+    if isinstance(value, list):
+        return [strip_markdown_emphasis(v) for v in value]
+    if isinstance(value, dict):
+        return {k: strip_markdown_emphasis(v) for k, v in value.items()}
+    return value
+
+
+# A leg longer than this earns an explicit lunch-stop suggestion. Three
+# hours is the point at which "you will need to eat on the way" stops being
+# obvious-in-advance and starts being something an itinerary should say --
+# below it, a late start or an early arrival absorbs the meal. Overridable
+# via en_route_stops.lunch_stop_min_drive_minutes.
+DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES = 180
+
+_FOCUS_LOOKBACK_PERIODS = 6
 
 
 class AIContentGenerator:
@@ -207,6 +286,91 @@ class AIContentGenerator:
         return any(
             keyword in name for keyword in AIContentGenerator._EVENING_UNSUITABLE_VENUE_KEYWORDS
         )
+
+    @staticmethod
+    def _pick_lunch_stop(
+        getting_here: Any, threshold_minutes: int = DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
+    ) -> dict[str, Any] | None:
+        """The en-route stop to suggest a lunch break at, or None.
+
+        Fires only when the arriving leg is at least `threshold_minutes`, and
+        only ever returns a stop that ALREADY survived en-route discovery --
+        detour thresholds, route proximity and URL verification included. It
+        never names a place of its own, so it cannot introduce a stop the
+        rest of the pipeline has not verified. That also means it goes quiet
+        when en-route discovery is disabled, which is the honest outcome:
+        with no verified candidates there is nothing to recommend.
+
+        Preference order:
+          1. a POPULATED PLACE over a park, a region or a natural feature.
+             You cannot eat lunch on a plateau. A real run picked "Cumberland
+             Plateau" -- correct on geometry and provenance, useless as a
+             lunch stop -- over Oak Ridge, the one candidate on that leg with
+             restaurants in it. This outranks seeding: a seeded landform is
+             still not somewhere to eat, and the traveler seeding a park did
+             not thereby ask to have lunch in it.
+          2. a SEEDED stop (manifest `en_route_seeds`) -- an explicit human
+             intent outranks anything discovery proposed on its own,
+          3. otherwise the stop closest to the middle of the route.
+
+        Within a group, closest-to-halfway wins. A stop with no resolved
+        `route_progress_ratio` is skipped rather than treated as position
+        zero -- the same reasoning as _route_waypoint_sort_key.
+        """
+        if not isinstance(getting_here, dict):
+            return None
+        travel_minutes = AIContentGenerator._parse_duration_minutes(
+            str(getting_here.get("travel_time", "") or "")
+        )
+        if travel_minutes < max(0, int(threshold_minutes or 0)):
+            return None
+
+        best: tuple[int, float, dict[str, Any]] | None = None
+        for stop in (getting_here.get("en_route_stops", []) or []):
+            if not isinstance(stop, dict) or not str(stop.get("name", "") or "").strip():
+                continue
+            try:
+                ratio = float(stop.get("route_progress_ratio"))
+            except (TypeError, ValueError):
+                continue
+            if not (0.0 <= ratio <= 1.0):
+                continue
+            rank = (
+                0 if AIContentGenerator._is_populated_place(stop) else 1,
+                0 if stop.get("is_seed") else 1,
+                abs(ratio - 0.5),
+            )
+            if best is None or rank < best[0]:
+                best = (rank, stop)
+        return best[1] if best else None
+
+    # Words that mark a stop as a landform, a park or a region rather than a
+    # town. Reuses multi_site_grouping.is_park_like for the park half so the
+    # two do not drift, and adds the natural features that are not parks.
+    _NON_LUNCH_PLACE_KEYWORDS: tuple[str, ...] = (
+        "plateau", "mountain", "mountains", "falls", "lake", "river", "creek",
+        "gorge", "canyon", "valley", "forest", "wilderness", "range", "ridge trail",
+        "overlook", "scenic", "trail", "cave", "caverns", "springs area",
+    )
+
+    @staticmethod
+    def _is_populated_place(stop: Any) -> bool:
+        """True when a stop looks like a town rather than a landform.
+
+        A negative test on purpose: the vocabulary of landforms is small and
+        stable, while the set of town names is unbounded, so anything not
+        recognisably a feature is treated as a place. Being wrong that way
+        suggests lunch in a town that turns out to be tiny; being wrong the
+        other way suggests lunch on a mountainside.
+        """
+        if not isinstance(stop, dict):
+            return False
+        if is_park_like(stop):
+            return False
+        name = str(stop.get("name", "") or "").lower()
+        if not name.strip():
+            return False
+        return not any(word in name for word in AIContentGenerator._NON_LUNCH_PLACE_KEYWORDS)
 
     @staticmethod
     def _parse_duration_minutes(raw: str) -> int:
@@ -323,6 +487,21 @@ class AIContentGenerator:
         self._enable_url_candidate_experiment = bool(
             self._config.get("ai", {}).get("enable_url_candidate_experiment", False)
         )
+        # Minutes of driving above which the arrival note suggests a lunch
+        # stop. Lives under en_route_stops because the suggestion is drawn
+        # from that module's verified candidates and is silent without them.
+        try:
+            self._lunch_stop_min_drive_minutes = max(
+                0,
+                int(
+                    (self._config.get("en_route_stops", {}) or {}).get(
+                        "lunch_stop_min_drive_minutes", DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            self._lunch_stop_min_drive_minutes = DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
+
         ai_cfg = self._config.get("ai", {}) or {}
         try:
             self._max_concurrent_destinations = max(1, int(ai_cfg.get("max_concurrent_destinations", 4)))
@@ -688,8 +867,23 @@ class AIContentGenerator:
         Runs after all parallel stages (events, images, URL discovery) complete
         so that both what_to_know and cultural_events data are available.
         """
+        # Names arrive from TWO sources, not one. ai_content's payload is
+        # stripped in _normalize_destination_content, but url_discovery's
+        # direct-link batch harvests its own names afterwards and they carried
+        # markdown straight to the page -- 4 pairs still shipped in the
+        # 2026-08-25 rerun that was meant to prove the first fix.
+        #
+        # This is the only point downstream of EVERY name source, so it is the
+        # one that can actually guarantee the invariant. The earlier call is
+        # kept because it runs before discovery and improves name matching;
+        # this one is what makes the guarantee.
+        trip.update(strip_markdown_emphasis(trip))
+
         self._enforce_banned_marketing_language(trip)
+        self._clear_unanchored_first_leg(trip)
         self._override_grouped_child_distance_from_geocode(trip)
+        self._populate_departure_leg_distance(trip)
+        self._inject_lunch_stop_suggestions(trip)
         self._deduplicate_cross_section_tips(trip)
         self._deduplicate_cross_destination_what_to_know(trip)
         self._filter_oversized_scenic_drives(trip)
@@ -697,6 +891,7 @@ class AIContentGenerator:
         self._filter_drives_requiring_high_clearance_vehicle(trip)
         self._filter_attractions_beyond_traveler_limits(trip)
         self._deduplicate_cross_destination_scenic_drives(trip)
+        self._deduplicate_reordered_attraction_names(trip)
 
     # Exact vehicle_requirement values (prompts/scenic_drives.txt's fixed
     # classification vocabulary, ~line 59-68) that mean "needs a
@@ -819,6 +1014,58 @@ class AIContentGenerator:
                     removed, dest.get("name", ""),
                 )
             dest["scenic_drives"] = eligible
+
+    def _deduplicate_reordered_attraction_names(self, trip: dict[str, Any]) -> None:
+        """Drop an attraction that is an earlier one with the words rearranged.
+
+        The 2026-08-27 Europe run published albrechtsburg-meissen.de twice at
+        the same destination, once as "Albrechtsburg Castle (Meissen)" and once
+        as "Meissen Albrechtsburg Castle". Same castle, same link, two cards.
+
+        Exact-name dedup cannot see it and URL dedup only catches the case where
+        discovery happens to find the same page for both -- which is luck, not a
+        guarantee. Comparing the SET of significant words catches the
+        rearrangement itself, before either has a URL.
+
+        Deliberately conservative: sets must be equal, not overlapping. "Museum
+        Island" and "Island Museum Cafe" are different places, and an
+        overlap-based rule is what once matched Zion Lodge to Stargazing in
+        Zion.
+        """
+        import re as _re
+
+        stop_words = {"the", "a", "an", "of", "at", "in", "on", "and", "de", "la", "le", "el"}
+        for dest in trip.get("destinations", []) or []:
+            if not isinstance(dest, dict):
+                continue
+            ai = dest.get("ai_content")
+            if not isinstance(ai, dict):
+                continue
+            attractions = ai.get("top_attractions")
+            if not isinstance(attractions, list):
+                continue
+            seen: dict[frozenset[str], str] = {}
+            kept: list[Any] = []
+            for item in attractions:
+                if not isinstance(item, dict):
+                    kept.append(item)
+                    continue
+                name = str(item.get("name", "") or "")
+                words = {
+                    w for w in _re.split(r"[^a-z0-9]+", name.lower())
+                    if len(w) > 2 and w not in stop_words
+                }
+                key = frozenset(words)
+                if key and key in seen:
+                    logger.info(
+                        "Dropped '%s' at %s: same words as '%s' in a different order",
+                        name, dest.get("name", ""), seen[key],
+                    )
+                    continue
+                if key:
+                    seen[key] = name
+                kept.append(item)
+            ai["top_attractions"] = kept
 
     def _deduplicate_cross_destination_scenic_drives(self, trip: dict[str, Any]) -> None:
         """Keep duplicate scenic drives only under the most relevant destination.
@@ -1026,7 +1273,7 @@ class AIContentGenerator:
         No comparison figure (e.g. "~50 mi vs ~60 mi via the direct
         interstate") is fabricated here: nothing in this pipeline currently
         computes a real direct-route distance for this leg to compare
-        against (`getting_there.distance_miles`/`drive_time` are declared in
+        against (`getting_there.distance_miles`/`travel_time` are declared in
         the schema but no code path ever populates them for the departure
         leg) -- inventing a number would be worse than the vaguer label this
         produces. If a real comparison distance becomes available upstream
@@ -1313,6 +1560,7 @@ class AIContentGenerator:
             previous_destination=prev,
             next_destination=next_dest or "none",
             budget_guidance=self._build_budget_guidance(trip_meta),
+            arrival_mode_guidance=self._build_arrival_mode_guidance(dest),
             seeds="\n  ".join(f"- {s}" for s in seeds) if seeds else "  (none — generate full recommendations)",
         )
         what_to_know_prompt = self._render_prompt_template(
@@ -1325,6 +1573,7 @@ class AIContentGenerator:
             previous_destination=prev,
             next_destination=next_dest or "none",
             budget_guidance=self._build_budget_guidance(trip_meta),
+            arrival_mode_guidance=self._build_arrival_mode_guidance(dest),
         )
         # Folded in from what used to be a separate scenic-drives call/stage
         # (generate_scenic_drive_descriptions) -- combining all three into one
@@ -1439,6 +1688,68 @@ class AIContentGenerator:
 
         return "\n".join(lines)
 
+    def _build_arrival_mode_guidance(self, dest: dict[str, Any] | None) -> str:
+        """Tell the model how the traveller actually ARRIVES.
+
+        Without this the prompt asked for highways and parking unconditionally,
+        so an all-rail Europe itinerary got "Take the E19 from Antwerp", a
+        95-mile drive time, and a parking note -- for a booked 8-mile airport
+        train. The model was following instructions; the instructions assumed a
+        road trip.
+        """
+        mode = self._arrival_mode(dest)
+        if not mode:
+            # GH #2: a manifest can declare a transit leg without booking one.
+            # Silence here used to mean "assume a drive", which is right for a
+            # road trip and wrong for the leg the manifest just said is a
+            # train -- the model then invented highways and a drive time, and
+            # the drive time became the arrival-day scheduling input.
+            leg_mode = resolved_mode(dest)
+            if leg_mode in ("bike", "hike"):
+                verb = "cycling" if leg_mode == "bike" else "walking"
+                return (
+                    f"By {verb}, under the traveler's own power. Describe THAT "
+                    f"journey: the terrain and surface, roughly how much climbing, "
+                    f"where water and food are, and what the leg is like taken "
+                    f"slowly. Name no highways and give no driving directions. Do "
+                    f"name places worth stopping -- on a self-powered leg the stops "
+                    f"are the day rather than an interruption to it. Omit "
+                    f"travel_time and distance_miles entirely: a driving estimate is "
+                    f"a factual error here, and a real figure is supplied elsewhere."
+                )
+            if leg_mode == "transit":
+                return (
+                    "By scheduled public transport, not booked yet. Describe THAT "
+                    "journey: the kind of service, the stations or terminals, and "
+                    "what the leg is like. Name no highways, give no driving "
+                    "directions, and do not mention parking. Omit travel_time and "
+                    "distance_miles entirely -- a driving estimate for a train is a "
+                    "factual error, and a real figure is supplied elsewhere."
+                )
+            return (
+                "Not stated. Assume the traveler drives, and write the route "
+                "summary as a drive."
+            )
+        if mode not in self._NON_DRIVING_ARRIVAL_MODES:
+            return f"By {mode}. Write the route summary as a drive."
+
+        leg = ""
+        for candidate in ((dest or {}).get("transportation") or []):
+            if isinstance(candidate, dict) and str(candidate.get("type", "")).lower() == mode:
+                bits = [
+                    str(candidate.get("provider", "") or "").strip(),
+                    str(candidate.get("label", "") or "").strip(),
+                ]
+                leg = " — ".join(b for b in bits if b)
+                break
+        detail = f" Booked leg: {leg}." if leg else ""
+        return (
+            f"By {mode}, already booked.{detail} Describe THAT journey: operator, "
+            f"stations or terminals, and what the leg is like. Name no highways, "
+            f"give no driving directions, and do not mention parking. If you do "
+            f"not know the duration, omit travel_time rather than estimating a drive."
+        )
+
     def _build_budget_guidance(self, trip_meta: dict[str, Any]) -> str:
         budget = trip_meta.get("budget")
         if budget in (None, "", {}):
@@ -1470,6 +1781,11 @@ class AIContentGenerator:
         next_destination: str,
         group_day_trip_names: list[str] | None = None,
     ) -> dict[str, Any]:
+        # Strip model-authored markdown BEFORE anything downstream sees these
+        # names -- this runs ahead of URL discovery, so discovery matches on the
+        # real name rather than one wrapped in asterisks.
+        payload = strip_markdown_emphasis(payload)
+
         seed_names = [str(s or "").strip() for s in (dest.get("seeds", []) or []) if str(s or "").strip()]
         payload["expected_environment"] = self._normalize_environment(
             payload.get("expected_environment", {}),
@@ -1643,6 +1959,39 @@ class AIContentGenerator:
 
         return self._normalize_attractions(out)
 
+    #: Booked modes on which a traveller cannot make a roadside stop. "car" is
+    #: absent deliberately -- a rental car is exactly when en-route stops work.
+    _NON_DRIVING_ARRIVAL_MODES = frozenset({"train", "plane", "ship", "ferry", "bus", "shuttle"})
+
+    @classmethod
+    def _arrival_mode(cls, dest: dict[str, Any] | None) -> str:
+        """The booked mode of the leg ARRIVING at this destination, if stated."""
+        if not isinstance(dest, dict):
+            return ""
+        for leg in (dest.get("transportation") or []):
+            if isinstance(leg, dict):
+                mode = str(leg.get("type", "") or "").strip().lower()
+                if mode:
+                    return mode
+        return ""
+
+    @classmethod
+    def _arrival_is_not_self_driven(cls, dest: dict[str, Any] | None) -> bool:
+        """True when the arrival is stated not to be by road.
+
+        Two ways to state it: a booked leg whose type says so, or a manifest
+        `transport_mode: transit` on the leg (GH #2). `mixed` is deliberately
+        not included -- there the drive is still on the table, so its
+        roadside stops are still real.
+
+        Silence means unknown, and unknown keeps the existing behaviour: a
+        manifest that states no transportation is most likely a road trip,
+        which is what this generator was built for.
+        """
+        if suppresses_en_route_stops(dest):
+            return True
+        return cls._arrival_mode(dest) in cls._NON_DRIVING_ARRIVAL_MODES
+
     def _normalize_getting_here(
         self,
         getting_here: Any,
@@ -1655,6 +2004,39 @@ class AIContentGenerator:
         if not isinstance(getting_here, dict):
             return {}
         out = dict(getting_here)
+
+        # The one place `drive_time` is still tolerated. The prompt asks for
+        # `travel_time`, but a model asked for one key sometimes emits the
+        # other and prompts drift, so this boundary accepts either and emits
+        # the canonical name -- permanent defensive handling of model output,
+        # not a deprecation window (docs/design/multimodal-routing.md 4.1).
+        # From here on there is exactly one name: every internal reader sees
+        # `travel_time` only. Deliberately ahead of the not-self-driven early
+        # return below, so a booked rail leg is renamed too.
+        if "drive_time" in out:
+            legacy = out.pop("drive_time")
+            if not str(out.get("travel_time", "") or "").strip():
+                out["travel_time"] = legacy
+
+        # En-route stops are a ROAD-TRIP concept: pull off, look at something,
+        # drive on. On a booked train, ferry or flight the traveller cannot
+        # stop anywhere, so every such stop is noise at best and an invitation
+        # to miss a connection at worst.
+        #
+        # The 2026-08-27 five-city Europe run made this concrete: 14 of 41
+        # en-route stops were removed for lacking a verified URL, the worst
+        # category in the run, while every leg was rail. The generator was
+        # inventing roadside waypoints for journeys with no roadside.
+        if self._arrival_is_not_self_driven(dest):
+            if out.get("en_route_stops"):
+                logger.info(
+                    "En-route stops dropped for '%s': arrival is by %s, not by road",
+                    dest_name,
+                    self._arrival_mode(dest) or "public transport",
+                )
+            out["en_route_stops"] = []
+            return out
+
         normalized_stops: list[dict[str, Any]] = []
         for stop in out.get("en_route_stops", []) or []:
             if not isinstance(stop, dict):
@@ -1701,8 +2083,8 @@ class AIContentGenerator:
             en_route_stops_per_day=self._resolve_enroute_target(dest or {}, trip_meta or {}),
             protected_names=seed_names,
         )
-        if not out.get("route_summary") and out.get("drive_time"):
-            out["route_summary"] = f"Arrival leg into {dest_name} typically takes about {out.get('drive_time')}."
+        if not out.get("route_summary") and out.get("travel_time"):
+            out["route_summary"] = f"Arrival leg into {dest_name} typically takes about {out.get('travel_time')}."
         return out
 
     def _resolve_enroute_target(self, dest: dict[str, Any], trip_meta: dict[str, Any]) -> int:
@@ -1924,12 +2306,191 @@ class AIContentGenerator:
         selected.extend(remaining[: max(0, target - len(selected))])
         return selected
 
+    def _clear_unanchored_first_leg(self, trip: dict[str, Any]) -> None:
+        """Drop the first destination's arrival figures when nothing precedes it.
+
+        The prompt asks for `getting_here` unconditionally, so the first stop
+        gets a leg description whether or not there is a journey to describe.
+        With no `trip.departure` set there is no origin, and the model fills
+        the gap from the only thing in front of it -- the prompt's own
+        example values. The Japan acceptance run rendered Shinagawa as
+        "95 mi / 2 hrs 15 min / Drive from your previous stop", which are
+        verbatim the numbers in destination_content.txt, for a destination
+        that has no previous stop.
+
+        The arrival-side counterpart to _populate_departure_leg_distance,
+        which fills the departure leg's badges because they are computable.
+        These are not: nothing in the manifest says where the traveler
+        started, so the honest render is no badges at all. Set
+        `trip.departure` and this stops applying -- there is a real origin
+        then, and the leg is real with it.
+
+        Deliberately narrow: the figures and the leg prose only. En-route
+        stops are left alone -- url_discovery cannot harvest them without an
+        origin either, so in practice there are none, and silently deleting
+        content that a path not considered here did produce is a bigger risk
+        than an empty list is a win.
+        """
+        destinations = [d for d in (trip.get("destinations") or []) if isinstance(d, dict)]
+        if not destinations:
+            return
+        trip_meta = trip.get("trip", {}) if isinstance(trip.get("trip"), dict) else {}
+        if str(trip_meta.get("departure", "") or "").strip():
+            return
+
+        first = destinations[0]
+        ai_content = first.get("ai_content")
+        if not isinstance(ai_content, dict):
+            return
+        getting_here = ai_content.get("getting_here")
+        if not isinstance(getting_here, dict):
+            return
+
+        dropped = {
+            key: getting_here.get(key)
+            for key in ("distance_miles", "travel_time", "route_summary")
+            if getting_here.get(key)
+        }
+        if not dropped:
+            return
+        for key in dropped:
+            getting_here[key] = ""
+        logger.info(
+            "  First destination '%s' has no stated origin (trip.departure unset): "
+            "dropped invented arrival leg (%s)",
+            first.get("name", ""), ", ".join(sorted(dropped)),
+        )
+
+    def _populate_departure_leg_distance(self, trip: dict[str, Any]) -> None:
+        """Give the departure leg the distance/time the arriving legs have.
+
+        The Departure Route Options card has always been able to render
+        mileage and duration badges -- html_assembler gates them on
+        `getting_there.distance_miles` and `travel_time` -- but nothing ever
+        set those two keys. The only writer of that dict populates it when a
+        one-way scenic drive aligns with the return route, which is about
+        route OPTIONS and says nothing about the leg itself, so the badges
+        were unreachable and the card showed a bare label.
+
+        Computed from geometry rather than asked of the model: both endpoints
+        are known exactly (a geocoded destination and a geocoded return
+        gateway), which is the same condition under which
+        _override_grouped_child_distance_from_geocode recomputes rather than
+        trusts a guess.
+
+        A value already present is left alone -- if some future path does
+        supply a real routed distance, it beats a straight-line estimate.
+        """
+        destinations = trip.get("destinations", []) or []
+        if not destinations:
+            return
+        trip_meta = trip.get("trip", {}) if isinstance(trip.get("trip"), dict) else {}
+        if trip_meta.get("return_lat") is None or trip_meta.get("return_lng") is None:
+            return
+
+        last_dest = destinations[-1]
+        if not isinstance(last_dest, dict):
+            return
+
+        # The traveler departs from where they slept. When the final entry is
+        # a grouped day trip, that is its base -- the same correction
+        # html_assembler applies to this card's label.
+        origin = last_dest
+        if is_grouped(last_dest):
+            dest_by_id = {
+                d.get("id"): d for d in destinations
+                if isinstance(d, dict) and d.get("id")
+            }
+            base = dest_by_id.get(group_base_id(last_dest))
+            if isinstance(base, dict):
+                origin = base
+
+        ai_content = last_dest.get("ai_content")
+        if not isinstance(ai_content, dict):
+            return
+        getting_there = ai_content.get("getting_there")
+        if not isinstance(getting_there, dict):
+            getting_there = {}
+            ai_content["getting_there"] = getting_there
+        if str(getting_there.get("distance_miles", "") or "").strip() and                 str(getting_there.get("travel_time", "") or "").strip():
+            return
+
+        miles, time_str = _estimate_haversine_route(
+            origin.get("lat"), origin.get("lng"),
+            trip_meta.get("return_lat"), trip_meta.get("return_lng"),
+        )
+        if miles is None or time_str is None:
+            return
+        getting_there["distance_miles"] = miles
+        getting_there["travel_time"] = time_str
+        logger.info(
+            "  Departure leg from '%s' to '%s': %s mi / %s",
+            origin.get("name", ""), trip_meta.get("return", ""), miles, time_str,
+        )
+
+    def _inject_lunch_stop_suggestions(self, trip: dict[str, Any]) -> None:
+        """Add a lunch-stop line to the arrival note on long driving legs.
+
+        Runs here, in normalize_trip_content, rather than inside
+        _inject_travel_realism where the rest of the schedule text is built.
+        It has to: the two inputs it needs are not ready any earlier.
+
+          - `travel_time` is corrected by
+            _override_grouped_child_distance_from_geocode, which runs in
+            this same pass. Built earlier, this read the AI's uncorrected
+            guess -- and on the leg that motivated the feature that guess
+            was "1 hr 30 min" for 304 miles, so the threshold never fired.
+          - `route_progress_ratio` is set during URL discovery, which is one
+            of the parallel stages this pass runs after. Earlier, every stop
+            looks position-less and _pick_lunch_stop skips them all.
+        """
+        threshold = getattr(
+            self, "_lunch_stop_min_drive_minutes", DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
+        )
+        for dest in (trip.get("destinations", []) or []):
+            if not isinstance(dest, dict):
+                continue
+            ai_content = dest.get("ai_content")
+            if not isinstance(ai_content, dict):
+                continue
+            getting_here = ai_content.get("getting_here")
+            stop = self._pick_lunch_stop(getting_here, threshold)
+            if not stop:
+                continue
+            name = str(stop.get("name", "") or "").strip()
+            days = ai_content.get("possible_daily_schedule", []) or []
+            if not name or not days or not isinstance(days[0], dict):
+                continue
+            periods = days[0].get("periods", []) or []
+            if not periods or not isinstance(periods[0], dict):
+                continue
+            summary = str(periods[0].get("summary", "") or "")
+            if name.lower() in summary.lower():
+                continue
+            periods[0]["summary"] = (
+                f"{summary} Break for lunch around {name}, roughly the midpoint."
+            ).strip()
+            # Mark the stop itself, not just the schedule prose. Until now this
+            # only appended a sentence, so the picked stop rendered as an
+            # ordinary en-route card with no indication it was the lunch
+            # suggestion, and its map link pointed at the place rather than at
+            # somewhere to eat. Both are what the suggestion is FOR.
+            stop["is_lunch_stop"] = True
+            stop["lunch_maps_url"] = (
+                "https://www.google.com/maps/search/?api=1&query="
+                + quote(f"restaurants near {name}")
+            )
+            logger.info(
+                "  Lunch stop suggested for '%s': %s (%s)",
+                dest.get("name", ""), name, getting_here.get("travel_time", ""),
+            )
+
     def _override_grouped_child_distance_from_geocode(self, trip: dict[str, Any]) -> None:
         """Replace a grouped child's AI-guessed getting_here distance/time
         with a value computed from real geocoded coordinates.
 
         Real dipstick68 run: Arches National Park (a GH #68 grouped child,
-        `group_with: moab`) rendered distance_miles=212 / drive_time="30 min"
+        `group_with: moab`) rendered distance_miles=212 / travel_time="30 min"
         -- physically impossible (424 mph) and nowhere close to the real
         ~7-minute drive from its Moab base. The AI is asked to estimate
         these numbers itself (prompts/destination_content.txt) and can
@@ -1939,35 +2500,150 @@ class AIContentGenerator:
         a real, geocoded day-trip site, per the manifest's `group_with`),
         so recompute rather than trust the guess there.
 
-        Deliberately scoped to grouped children only, not every
-        destination's getting_here leg: the AI's distance estimate has
-        only been observed to be unreliable for this specific short
-        day-trip case so far. Whether the same unreliability holds for
-        ordinary multi-day-destination legs is an open question and a
-        candidate follow-up, not something to change on a single data
-        point.
+        That scoping used to be grouped-children-only, on the grounds that
+        the failure had only been observed for short day-trip legs and one
+        data point was not enough to widen it. A second observation has
+        since arrived from an ordinary leg: Old Hickory -> Asheville came
+        back as "304 mi" / "1 hr 30 min", an implied 203 mph. So ordinary
+        legs are now checked too -- but differently.
+
+        Grouped children are RECOMPUTED unconditionally: both endpoints are
+        known exactly (a geocoded base and a geocoded day-trip site), so a
+        straight-line estimate beats a guess every time.
+
+        Ordinary legs are only corrected when the stated pair is
+        INTERNALLY IMPOSSIBLE -- an implied average speed outside
+        _PLAUSIBLE_LEG_SPEED_MPH. Over a long leg on mountain roads a
+        haversine estimate is not obviously better than a good model
+        answer, so a plausible value is left alone; this catches the
+        arithmetic nonsense without overwriting sound data.
+
+        The origin of an ordinary leg is the previous NON-grouped
+        destination, not simply the previous list entry. A run of day trips
+        sits between two lodging stops, and treating the last day trip as
+        the origin measures a leg nobody drives.
         """
         destinations = trip.get("destinations", []) or []
         dest_by_id = {
             d.get("id"): d for d in destinations if isinstance(d, dict) and d.get("id")
         }
+        # The first stop's leg starts at the trip's departure gateway, not at
+        # another destination. Without this the first leg was skipped entirely
+        # for having no origin -- which is how "Nashville International Airport
+        # -> Old Hickory" shipped as 95 mi / 2 hrs 15 min for what is a 17-mile
+        # drive. Internally consistent at 42 mph, so no speed check could ever
+        # have caught it; only comparing against the real endpoints can.
+        trip_meta = trip.get("trip", {}) if isinstance(trip.get("trip"), dict) else {}
+        gateway = (
+            {"lat": trip_meta.get("departure_lat"), "lng": trip_meta.get("departure_lng")}
+            if trip_meta.get("departure_lat") is not None
+            else None
+        )
+
+        previous_lodging_stop: dict[str, Any] | None = gateway
         for dest in destinations:
-            if not isinstance(dest, dict) or not is_grouped(dest):
+            if not isinstance(dest, dict):
                 continue
-            base = dest_by_id.get(group_base_id(dest))
-            if not isinstance(base, dict):
+            grouped = is_grouped(dest)
+            origin = dest_by_id.get(group_base_id(dest)) if grouped else previous_lodging_stop
+            if not grouped:
+                # Recorded for the NEXT ordinary leg before any continue
+                # below, so a skipped destination still anchors the chain.
+                previous_lodging_stop = dest
+            if not isinstance(origin, dict):
                 continue
             ai_content = dest.get("ai_content")
             getting_here = ai_content.get("getting_here") if isinstance(ai_content, dict) else None
             if not isinstance(getting_here, dict):
                 continue
+            # Every figure below is road geometry -- a 1.30 road factor over a
+            # straight line at 60 mph. Correcting one invented drive into
+            # another is not an improvement on a leg that is not a drive, and
+            # this pass runs BEFORE the transit figures are applied, so
+            # without this it would be writing the value they then have to
+            # undo (multimodal-routing.md 4.1).
+            # bike and hike join transit here for the same reason: a 1.30 road
+            # factor at 60 mph describes none of them.
+            if resolved_mode(dest) in ("transit", "bike", "hike"):
+                continue
             miles, time_str = _estimate_haversine_route(
-                base.get("lat"), base.get("lng"), dest.get("lat"), dest.get("lng"),
+                origin.get("lat"), origin.get("lng"), dest.get("lat"), dest.get("lng"),
             )
             if miles is None or time_str is None:
                 continue
+            if not grouped and self._leg_speed_is_plausible(getting_here)                     and self._leg_distance_is_plausible(getting_here, miles):
+                continue
+            if not grouped:
+                logger.info(
+                    "  Correcting implausible leg for '%s': %s / %s -> %s mi / %s",
+                    dest.get("name", ""), getting_here.get("distance_miles", ""),
+                    getting_here.get("travel_time", ""), miles, time_str,
+                )
             getting_here["distance_miles"] = miles
-            getting_here["drive_time"] = time_str
+            getting_here["travel_time"] = time_str
+
+    # Implied average speed a stated distance/time pair must fall within to
+    # be believed. The floor catches a time so long it implies walking; the
+    # ceiling catches the real defect -- 203 mph on Old Hickory -> Asheville,
+    # 424 mph on the grouped case this check grew out of. Generous on both
+    # sides on purpose: this rejects the impossible, not the merely odd.
+    _PLAUSIBLE_LEG_SPEED_MPH: tuple[float, float] = (10.0, 85.0)
+
+    # How far a stated distance may sit from the geometry-derived estimate
+    # before it stops being believable. Deliberately loose: a straight-line
+    # estimate under-reads a winding mountain route, and over-reads nothing,
+    # so this must only catch gross error. The airport leg that motivated it
+    # was out by 5x.
+    _PLAUSIBLE_LEG_DISTANCE_FACTOR: float = 2.0
+
+    @classmethod
+    def _leg_distance_is_plausible(cls, getting_here: Any, estimated_miles: float) -> bool:
+        """True when a stated leg distance is close enough to the geometry.
+
+        A leg can be internally consistent and still wrong: 95 miles in 2 hrs
+        15 min is a perfectly ordinary 42 mph, and also nothing like the
+        17-mile drive it describes. Speed alone cannot see that; only the
+        endpoints can.
+
+        No stated distance means no opinion, not a failure.
+        """
+        if not isinstance(getting_here, dict):
+            return True
+        try:
+            stated = float(str(getting_here.get("distance_miles", "")).strip().split()[0])
+        except (TypeError, ValueError, IndexError):
+            return True
+        try:
+            estimate = float(estimated_miles)
+        except (TypeError, ValueError):
+            return True
+        if stated <= 0 or estimate <= 0:
+            return True
+        factor = cls._PLAUSIBLE_LEG_DISTANCE_FACTOR
+        return (estimate / factor) <= stated <= (estimate * factor)
+
+    @classmethod
+    def _leg_speed_is_plausible(cls, getting_here: Any) -> bool:
+        """True when a leg's stated distance and time imply a sane speed.
+
+        Returns True when either value is missing or unparseable: no opinion
+        is not the same as a failed check, and a leg with no stated distance
+        must not be silently overwritten on that basis alone.
+        """
+        if not isinstance(getting_here, dict):
+            return True
+        try:
+            miles = float(str(getting_here.get("distance_miles", "")).strip().split()[0])
+        except (TypeError, ValueError, IndexError):
+            return True
+        minutes = AIContentGenerator._parse_duration_minutes(
+            str(getting_here.get("travel_time", "") or "")
+        )
+        if miles <= 0 or minutes <= 0:
+            return True
+        mph = miles / (minutes / 60.0)
+        low, high = cls._PLAUSIBLE_LEG_SPEED_MPH
+        return low <= mph <= high
 
     def _normalize_environment(self, environment: Any, dates: str, dest: dict[str, Any]) -> Any:
         if not isinstance(environment, dict):
@@ -2397,9 +3073,15 @@ class AIContentGenerator:
         destination_daily_activity_hours: Any = None,
         restaurants: list[dict[str, Any]] | None = None,
         group_day_trip_names: list[str] | None = None,
+        lunch_stop_threshold_minutes: int | None = None,
     ) -> list[dict[str, Any]]:
         if not days:
             return days
+
+        if lunch_stop_threshold_minutes is None:
+            lunch_stop_threshold_minutes = getattr(
+                self, "_lunch_stop_min_drive_minutes", DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
+            )
 
         attractions = attractions or []
 
@@ -2610,7 +3292,11 @@ class AIContentGenerator:
             return (
                 f"Consider one or more of the following, within about {_format_duration_compact(total_minutes)}: "
                 + ", ".join(parts)
-                + ". Keep transfer/parking buffers between stops."
+                # "parking" assumed a car. On a rail itinerary the reader has
+                # none, and the advice is the same either way: leave slack
+                # between stops. Mode-neutral wording avoids threading the
+                # arrival mode into a day-plan sentence that does not need it.
+                + ". Leave buffer time between stops."
             )
 
         attraction_names: list[str] = []
@@ -2878,11 +3564,11 @@ class AIContentGenerator:
                     f"{arrival_phrase}, take a meal break and a short orientation stop; keep activity light after travel.",
                 )
 
-        drive_time = str(getting_here.get("drive_time", "") or "").strip()
-        drive_minutes = _parse_duration_minutes(drive_time)
+        travel_time = str(getting_here.get("travel_time", "") or "").strip()
+        travel_minutes = _parse_duration_minutes(travel_time)
         first = days[0]
         first_periods = first.get("periods", [])
-        if first_periods and not is_first_destination and (drive_time or previous_destination.lower() != "none"):
+        if first_periods and not is_first_destination and (travel_time or previous_destination.lower() != "none"):
             existing_morning_summary = ""
             for period in first_periods:
                 if str(period.get("period", "")).title() == "Morning":
@@ -2891,8 +3577,8 @@ class AIContentGenerator:
             morning_already_arrival_aware = bool(
                 re.search(r"\b(arrive|arrival|drive|driving|route|i-\d+|us-\d+)\b", existing_morning_summary, re.IGNORECASE)
             )
-            if drive_minutes > 0:
-                arrival_minutes = effective_start_minutes + drive_minutes
+            if travel_minutes > 0:
+                arrival_minutes = effective_start_minutes + travel_minutes
                 arrival_label = _format_minutes_as_time(arrival_minutes)
                 if not morning_already_arrival_aware:
                     _set_period_summary(
@@ -2952,7 +3638,7 @@ class AIContentGenerator:
                 # being free time on top of it, so it must be subtracted
                 # before deciding what else fits in the afternoon.
                 packed_afternoon = _build_multi_activity_afternoon_summary(
-                    max(0, effective_activity_budget_minutes - drive_minutes)
+                    max(0, effective_activity_budget_minutes - travel_minutes)
                 )
                 if packed_afternoon:
                     _set_period_summary(first, "Afternoon", packed_afternoon)
@@ -2964,6 +3650,7 @@ class AIContentGenerator:
                 arrival_note = f"Travel from {previous_destination}"
             if arrival_note:
                 first_periods[0]["summary"] = f"{arrival_note}. {existing}".strip()
+
 
         # Extend capacity-aware Afternoon packing beyond the single arrival-day
         # case above: any additional in-stay day (Day 2+) has the full activity
@@ -3192,6 +3879,30 @@ class AIContentGenerator:
         if days:
             for day_index, day in enumerate(days, start=1):
                 periods = day.get("periods", []) or []
+                # Lookback for _pick_non_repeating_focus, bounded by the pool.
+                # A window at least as long as the attraction list makes every
+                # candidate ineligible, and _pick_non_repeating_focus then
+                # falls back to base_focus -- which is the very repeat we are
+                # trying to avoid. Capping at len(attractions) - 1 guarantees
+                # at least one eligible candidate always remains, so a small
+                # pool keeps its existing adjacent-day rotation while a large
+                # one gets real cross-day memory.
+                #
+                # Was 2 periods, which
+                # is under one day: an attraction named in Day 3's Afternoon
+                # had already fallen out of the window by Day 4's Morning, so
+                # a stay repeated the Hermitage and Bledsoe Creek on
+                # consecutive days (real Old Hickory run, Dec 2026). 6 is the
+                # full window `recent_focuses` is already trimmed to below --
+                # two days of periods -- so this widens the memory rather
+                # than adding a new disqualifier. The two reverted attempts
+                # noted in _pick_non_repeating_focus both failed by making
+                # names INELIGIBLE; this keeps the existing preference-with-
+                # fallback, so a small attraction pool still degrades to
+                # repeating rather than to nothing.
+                _focus_lookback = min(
+                    _FOCUS_LOOKBACK_PERIODS, max(1, len(attraction_names) - 1)
+                )
                 dinner_name = restaurant_names[(day_index - 1) % len(restaurant_names)] if restaurant_names else ""
                 for period in periods:
                     label = str(period.get("period", "")).title()
@@ -3203,7 +3914,7 @@ class AIContentGenerator:
                         continue
 
                     if label == "Morning":
-                        focus = _pick_non_repeating_focus(day_index, offset=0, recent_focuses=recent_focuses[-2:])
+                        focus = _pick_non_repeating_focus(day_index, offset=0, recent_focuses=recent_focuses[-_focus_lookback:])
                         if focus:
                             updated = _replace_first_attraction_mention(summary, focus)
                             period["summary"] = updated
@@ -3215,7 +3926,7 @@ class AIContentGenerator:
                         if "consider one or more of the following" in low_summary:
                             _record_focus_mentions(summary, recent_focuses)
                             continue
-                        focus = _pick_non_repeating_focus(day_index, offset=1, recent_focuses=recent_focuses[-2:])
+                        focus = _pick_non_repeating_focus(day_index, offset=1, recent_focuses=recent_focuses[-_focus_lookback:])
                         if focus:
                             updated = _replace_first_attraction_mention(summary, focus)
                             period["summary"] = updated
@@ -3234,7 +3945,7 @@ class AIContentGenerator:
                         # non-repeating rotation here, offset past the
                         # Morning/Afternoon picks for the same day so all
                         # three periods prefer distinct attractions.
-                        focus = _pick_non_repeating_focus(day_index, offset=2, recent_focuses=recent_focuses[-2:])
+                        focus = _pick_non_repeating_focus(day_index, offset=2, recent_focuses=recent_focuses[-_focus_lookback:])
                         if focus:
                             updated = _replace_first_attraction_mention(summary, focus)
                             period["summary"] = updated
@@ -3340,28 +4051,16 @@ class AIContentGenerator:
         return days
 
     def _infer_day_count(self, dates: str) -> int:
-        text = (dates or "").replace("–", "-")
-        # "October 17-21, 2026" or "October 17, 2026"
-        m = re.search(r"[A-Za-z]+\s+(\d{1,2})(?:\s*-\s*(\d{1,2}))?(?:,\s*\d{4})?", text)
-        if m:
-            start = int(m.group(1))
-            end = int(m.group(2) or m.group(1))
-            if end >= start:
-                return max(1, min(5, end - start + 1))
-            return 1
-        # ISO range fallback: 2026-10-17 to 2026-10-21
-        iso = re.findall(r"(\d{4}-\d{2}-\d{2})", text)
-        if len(iso) >= 2:
-            try:
-                from datetime import datetime as _dt
-                d0 = _dt.strptime(iso[0], "%Y-%m-%d")
-                d1 = _dt.strptime(iso[1], "%Y-%m-%d")
-                if d1 >= d0:
-                    return max(1, min(5, (d1 - d0).days + 1))
-            except ValueError:
-                return 1
-        return 1
+        """Days at a destination, capped at 5 for the per-day target formulas.
 
+        Delegates to date_span.day_count. The regex previously inlined here
+        matched only "Month D-D" and returned 1 for "August 31 - September 1",
+        so Brussels rendered a single day of schedule for a two-day stay. The
+        identical regex also lived in url_discovery; see date_span's docstring.
+        """
+        from generator.date_span import day_count
+
+        return day_count(dates, maximum=5)
     def _expand_days(self, days: list[dict[str, Any]], day_count: int) -> list[dict[str, Any]]:
         if not days:
             return days
@@ -3505,9 +4204,34 @@ class AIContentGenerator:
     def _normalize_restaurants(self, restaurants: list[dict[str, Any]], budget: Any = None) -> list[dict[str, Any]]:
         normalized = []
         price_rank = {"$": 0, "$$": 1, "$$$": 2, "$$$$": 3}
-        budget_text = str(budget or "").lower()
-        low_budget = any(k in budget_text for k in ["budget", "cheap", "economy", "value", "frugal"])
-        high_budget = any(k in budget_text for k in ["luxury", "premium", "high", "splurge", "upscale"])
+        # Hyphens and spaces normalised out before matching. The manifest that
+        # exposed this said dining: "low-cost", which matched NONE of the
+        # original keywords, so the budget-aware sort never ran and the brief
+        # looked ignored end to end. Matching on a fixed word list is fragile
+        # by nature -- these are the phrasings a person actually writes.
+        budget_text = re.sub(r"[-_]+", " ", str(budget or "").lower())
+        low_budget = any(
+            k in budget_text
+            for k in [
+                "budget", "cheap", "economy", "economical", "value", "frugal",
+                "low cost", "lowcost", "inexpensive", "affordable", "modest",
+                "shoestring", "backpack",
+            ]
+        )
+        high_budget = any(
+            k in budget_text
+            for k in ["luxury", "premium", "high end", "splurge", "upscale", "fine dining"]
+        )
+        # "no fine dining" is a LOW-budget instruction; the substring made it read
+        # as a high-budget one.
+        if "no fine dining" in budget_text or "not fine dining" in budget_text:
+            high_budget = False
+            low_budget = True
+        if budget_text.strip():
+            logger.info(
+                "Restaurant budget guidance %r -> low=%s high=%s",
+                budget_text[:80], low_budget, high_budget,
+            )
 
         for restaurant in restaurants:
             item = dict(restaurant)
@@ -3589,6 +4313,78 @@ class AIContentGenerator:
         if parsed < 1:
             parsed = default_target
         return parsed
+
+    @classmethod
+    def select_diverse_restaurants(
+        cls, restaurants: list[dict[str, Any]], *, target: int
+    ) -> list[dict[str, Any]]:
+        """Trim a restaurant list to `target`, keeping range rather than just
+        the top-rated.
+
+        The per-day target (`restaurants_per_day * day_count`) was applied to
+        the AI-generated list only. With `restaurant_source: direct_link_batch`
+        the published list comes from the batch instead -- a flat
+        `restaurant_direct_batch_item_count` per destination, 20 regardless of
+        whether the stay is one night or four -- written straight to
+        dinner_recommendations after the cap had already run on a different
+        list. The cap was correct and simply did not govern.
+
+        It went unnoticed because the verified-link-or-seed policy was
+        discarding 60-77% of candidates, so the surviving count landed near the
+        target by accident. Once link discovery improved, a two-day stop at
+        Capitol Reef published 18 dinner recommendations.
+
+        Ranking by rating alone would answer that with eight variations on the
+        same expensive bistro, so selection runs in three passes: the best of
+        each distinct cuisine, then the best of each price level not yet
+        represented, then best-rated to fill. Diversity first, quality within
+        it.
+        """
+        if not isinstance(restaurants, list) or len(restaurants) <= max(1, int(target)):
+            return restaurants if isinstance(restaurants, list) else []
+
+        def rank(item: dict[str, Any]) -> tuple[float, int, str]:
+            rating = cls._coerce_float(item.get("rating"))
+            try:
+                votes = int(item.get("votes") or 0)
+            except (TypeError, ValueError):
+                votes = 0
+            return (-(rating if rating is not None else 0.0), -votes, str(item.get("name", "")).lower())
+
+        def bucket(item: dict[str, Any], field: str) -> str:
+            return re.sub(r"[^a-z0-9]+", " ", str(item.get(field, "") or "").lower()).strip()
+
+        ranked = sorted((r for r in restaurants if isinstance(r, dict)), key=rank)
+        chosen: list[dict[str, Any]] = []
+        taken: set[int] = set()
+
+        for field in ("cuisine", "price_range"):
+            seen: set[str] = set()
+            for i, item in enumerate(ranked):
+                if len(chosen) >= target:
+                    break
+                if i in taken:
+                    continue
+                key = bucket(item, field)
+                # A blank value is not a category -- it must not claim the slot
+                # that a real one would, or unlabelled entries crowd out range.
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                taken.add(i)
+                chosen.append(item)
+
+        for i, item in enumerate(ranked):
+            if len(chosen) >= target:
+                break
+            if i not in taken:
+                taken.add(i)
+                chosen.append(item)
+
+        # Restore the incoming order so the page is not silently re-sorted by
+        # rating as a side effect of trimming.
+        keep = {id(x) for x in chosen}
+        return [r for r in restaurants if isinstance(r, dict) and id(r) in keep]
 
     def _apply_manifest_restaurant_target(
         self,

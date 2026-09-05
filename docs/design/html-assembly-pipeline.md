@@ -93,7 +93,7 @@ artifacts before embedding.
 For the last destination only, assembly renders a dedicated `Getting There` card
 using `ai_content.getting_there` fields:
 - `route_summary`
-- `distance_miles` / `drive_time` (optional)
+- `distance_miles` / `travel_time` (optional)
 - `route_options` (optional departure-route items)
 
 This keeps return-route logistics distinct from in-stay attractions and schedule
@@ -134,8 +134,93 @@ PWA:
 - `manifest.webmanifest`
 - `sw.js`
 
+### The service worker cache name must change per build
+
+`sw.js`'s `activate` handler deletes every cache whose key is not the current
+one, so the cache name is the only thing that invalidates an installed shell.
+It was the literal `'roadtrip-shell-v2'` from the first PWA commit until
+2026-08-29 — a constant — so the old shell was never purged and **a republished
+site kept serving the previous build indefinitely**.
+
+The symptoms did not look like one bug, and were investigated separately:
+
+- seed badges ("Your Pick") on a trip whose seeds had been removed
+- a freshly pushed site that looked unpushed
+- fixes confirmed live over HTTP that appeared not to have landed in the browser
+
+In each case the server was correct and the browser was serving a cached shell.
+Verifying with `curl` against the published URL — bypassing the service worker
+entirely — is what separated the two.
+
+A test had been holding the bug in place. `test_cache_name_was_bumped` asserted
+the literal constant while its docstring described the intent ("an installed
+client holding the v1 shell must not keep serving it"). Bumping the value by
+hand once satisfied it permanently. A test that names the current value cannot
+distinguish *correct* from *unchanged*.
+
+Now keyed on the run id, falling back to a content hash of `index.html` when
+none is supplied, and sanitised because it is interpolated into a JS string
+literal. Note the fix only takes effect once the **new** `sw.js` reaches a
+client: an already-installed copy needs one hard reload or site-data clear.
+
 Report:
 - validation report JSON in output directory
+
+## Google Maps links: the scheme is load-bearing (2026-09-03)
+
+Every Maps link this pipeline emits must use the **keyless Maps URLs scheme**,
+which means `api=1` is mandatory:
+
+    /maps/search/?api=1&query=<text>&query_place_id=<id>     one place
+    /maps/dir/?api=1&origin=..&destination=..&waypoints=..   a route
+
+`place_resolver` previously emitted `/maps/place/?q=place_id:<id>`. That form
+has no `api=1`, is not part of the scheme, and Google routes it to a legacy
+handler that answers **"an API is required"**. 83 links on one Old Hickory
+build were built that way; the 53 on the same page that carried `api=1`
+worked, which is why it read as a map fault rather than a URL fault.
+
+The function's docstring claimed it "uses the documented Maps URLs scheme",
+and its tests asserted the exact string the function returned. Both agreed
+with the code; neither checked the claim. A test now asserts `api=1` is
+present rather than matching a literal.
+
+### Waypoint labelling: coordinate vs name vs place_id
+
+A route waypoint can be given three ways, and all three were tried:
+
+| form | resolves | labels |
+|---|---|---|
+| bare name | ambiguously — a Colorado route acquired a Washington pin | correctly |
+| coordinate | exactly | by reverse geocoding: "Millcreek 2nd post market, 5FGM+75" |
+| name + `waypoint_place_ids` | exactly | correctly |
+
+Only the third is both. `waypoint_place_ids` must correspond positionally to
+`waypoints`, so a leg is all-or-nothing: one stop without an id sends that
+whole leg back to coordinates rather than pairing the wrong id with the wrong
+place.
+
+A coordinate is still the right answer where no id exists — it is precise, and
+an unreadable label beats a wrong location.
+
+### One colour token for links
+
+Every in-content link resolves through `--link`, filled from the manifest's
+`theme_color`. Before that, three sources were live at once: the theme accent
+(attractions, events, drives), a fixed `--canyon` brown (restaurants, tips,
+lunch), and a hardcoded `#c0714a` (the route link) — so a single card could
+show three colours, and the mix shifted per trip because the accent does.
+
+Three anchors stay off the token deliberately: `.attr-external-link` (a
+designator, muted so it does not read as a control), `.badge-map` (a control
+with its own affordance), and `a[href]::after` (the print stylesheet's URL
+display).
+
+Note the failure mode when fixing this. The first attempt changed the seven
+`*-link` classes and its test asserted over that same list of seven, so
+anchors selected by descent — `.rest-name a`, `.lodging-val a`,
+`.links-list li a` — stayed brown and the test passed anyway. The test now
+walks every rule in the stylesheet that colours an anchor.
 
 ## Design Tradeoffs
 Pros:

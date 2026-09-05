@@ -35,6 +35,15 @@ DEFAULT_MAX_NO_URL_RESTAURANTS = 0
 DEFAULT_MAX_EMPTY_TEASER_RATIO = 0.15
 
 
+
+def _format_removal_ratio(removed: int, kept: int) -> str:
+    """Render "10 of 13 (77%)" -- the count alone does not say how bad it is."""
+    candidates = removed + kept
+    if candidates <= 0:
+        return str(removed)
+    return f"{removed} of {candidates} ({round(removed * 100 / candidates)}%)"
+
+
 class HTMLValidator:
     def __init__(self, config_path: str | Path = "config.yaml") -> None:
         import yaml
@@ -272,16 +281,28 @@ class HTMLValidator:
         removed_attractions = 0
         removed_restaurants = 0
         removed_stops = 0
+        # Denominators. A bare "10 removed" is not interpretable: 10 of 40 is
+        # noise, 10 of 13 means the section is gone. Counting what SURVIVED
+        # alongside what was dropped makes the warning comparable across
+        # destinations that differ wildly in how much they had to begin with --
+        # which is how a park-calibrated threshold went unnoticed until the
+        # first non-park run. See docs/design/destination-type-coverage.md.
+        kept_attractions = 0
+        kept_restaurants = 0
+        kept_stops = 0
         for dest in trip.get("destinations", []) or []:
             ai = dest.get("ai_content", {}) if isinstance(dest.get("ai_content"), dict) else {}
             for attr in ai.get("top_attractions", []) or []:
+                kept_attractions += 1
                 if not attr.get("is_seed") and not str(attr.get("url", "") or attr.get("maps_url", "") or "").strip():
                     no_url_attractions += 1
             for rest in ai.get("dinner_recommendations", []) or []:
+                kept_restaurants += 1
                 if not str(rest.get("url", "") or "").strip():
                     no_url_restaurants += 1
             getting_here = ai.get("getting_here", {}) if isinstance(ai.get("getting_here"), dict) else {}
             for stop in getting_here.get("en_route_stops", []) or []:
+                kept_stops += 1
                 if not stop.get("is_seed") and not str(stop.get("url", "") or "").strip():
                     no_url_stops += 1
             for decision in dest.get("_registry_decisions", []) or []:
@@ -313,20 +334,16 @@ class HTMLValidator:
                 f"En-route stops with no URL: {no_url_stops} "
                 f"(threshold: {self._max_no_url_en_route_stops})"
             )
-        if removed_attractions > self._max_no_url_attractions:
+        for label, removed, kept, threshold in (
+            ("Attractions", removed_attractions, kept_attractions, self._max_no_url_attractions),
+            ("Restaurants", removed_restaurants, kept_restaurants, self._max_no_url_restaurants),
+            ("En-route stops", removed_stops, kept_stops, self._max_no_url_en_route_stops),
+        ):
+            if removed <= threshold:
+                continue
             warnings.append(
-                f"Attractions removed for no verified URL: {removed_attractions} "
-                f"(threshold: {self._max_no_url_attractions})"
-            )
-        if removed_restaurants > self._max_no_url_restaurants:
-            warnings.append(
-                f"Restaurants removed for no verified URL: {removed_restaurants} "
-                f"(threshold: {self._max_no_url_restaurants})"
-            )
-        if removed_stops > self._max_no_url_en_route_stops:
-            warnings.append(
-                f"En-route stops removed for no verified URL: {removed_stops} "
-                f"(threshold: {self._max_no_url_en_route_stops})"
+                f"{label} removed for no verified URL: "
+                f"{_format_removal_ratio(removed, kept)} (threshold: {threshold})"
             )
 
     # ── Check 7: Duplicate URLs within a destination's top_attractions ──────

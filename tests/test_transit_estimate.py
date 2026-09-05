@@ -1,0 +1,209 @@
+"""Transit estimates replace fabricated driving figures on booked non-road legs.
+
+The Europe output claimed 95 mi and 2 hrs 15 min for the Brussels airport
+train, which is about 10 mi and half an hour. See
+docs/design/destination-type-coverage.md and cost-accounting-and-reduction.md
+section 6.4 for the terms trade-off accepted here.
+"""
+import pytest
+
+from generator.transit_estimate import TRANSIT_MODES, TransitEstimator, format_duration
+
+
+class TestDurationFormatting:
+    @pytest.mark.parametrize(
+        "minutes, expected",
+        [(136, "2 hrs 16 min"), (60, "1 hr"), (29, "29 min"), (125, "2 hrs 5 min"), (61, "1 hr 1 min")],
+    )
+    def test_matches_the_existing_travel_time_shape(self, minutes, expected):
+        assert format_duration(minutes) == expected
+
+    @pytest.mark.parametrize("minutes", [0, None, -5])
+    def test_no_duration_renders_empty_not_zero(self, minutes):
+        """An unavailable figure must be omitted, never shown as 0 min."""
+        assert format_duration(minutes) == ""
+
+
+class TestRouteParsing:
+    def test_parses_a_real_response_shape(self):
+        route = {"duration": "8182s", "distanceMeters": 213681}
+        out = TransitEstimator._parse_route(route)
+        assert out == {"minutes": 136, "miles": 133, "estimated": True}
+
+    @pytest.mark.parametrize(
+        "route",
+        [{}, {"duration": ""}, {"duration": "abc"}, {"duration": "0s"}, {"duration": "-1s"}],
+    )
+    def test_unusable_durations_return_none(self, route):
+        assert TransitEstimator._parse_route(route) is None
+
+    def test_missing_distance_still_yields_a_duration(self):
+        """Duration is the figure that was wrong; distance is a bonus."""
+        out = TransitEstimator._parse_route({"duration": "1800s"})
+        assert out["minutes"] == 30 and out["miles"] is None
+
+
+class TestNoKeyIsSafe:
+    def test_without_a_key_it_reports_unavailable_and_never_calls(self):
+        est = TransitEstimator(api_key="")
+        assert est.available is False
+        assert est.estimate("A", "B") is None
+        assert est.call_count == 0
+
+    @pytest.mark.parametrize("origin, destination", [("", "B"), ("A", ""), ("", "")])
+    def test_blank_endpoints_are_refused(self, origin, destination):
+        est = TransitEstimator(api_key="fake-key")
+        assert est.estimate(origin, destination) is None
+        assert est.call_count == 0
+
+
+def test_transit_modes_exclude_car():
+    """A car leg is exactly when the existing drive figures are correct."""
+    assert "car" not in TRANSIT_MODES
+    assert {"train", "bus", "ferry", "ship", "shuttle"} <= TRANSIT_MODES
+
+
+class TestMemoSurvivesAcrossPasses:
+    """The pipeline calls the estimator twice when the selective retry pass
+    fires. The memo is per-instance, so a fresh instance per pass meant every
+    leg was re-priced -- 8 billed calls for 4 legs on the 2026-09-02 Japan
+    run, all 8 returning nothing.
+    """
+
+    def _stubbed(self, monkeypatch, payload):
+        import json
+        import urllib.request
+
+        calls = []
+
+        class _Response:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+            def read(self_inner):
+                return json.dumps(payload).encode()
+
+        def _fake_urlopen(request, timeout=None):
+            calls.append(request)
+            return _Response()
+
+        monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+        monkeypatch.setattr(json, "load", lambda fh: payload)
+        return calls
+
+    def test_a_repeated_leg_is_answered_from_the_memo(self, monkeypatch):
+        calls = self._stubbed(monkeypatch, {"routes": [{"duration": "8182s", "distanceMeters": 213681}]})
+        est = TransitEstimator(api_key="fake-key")
+
+        first = est.estimate("Brussels", "Amsterdam")
+        second = est.estimate("Brussels", "Amsterdam")
+
+        assert first == second
+        assert len(calls) == 1
+        assert est.call_count == 1
+
+    def test_an_empty_answer_is_memoized_too(self, monkeypatch):
+        """The case that actually costs money: an uncovered corridor returns
+        200 with no routes, and rediscovering that on every pass is pure
+        spend. None must be cached as readily as a result."""
+        calls = self._stubbed(monkeypatch, {"routes": []})
+        est = TransitEstimator(api_key="fake-key")
+
+        assert est.estimate("Kyoto", "Kanazawa") is None
+        assert est.estimate("Kyoto", "Kanazawa") is None
+
+        assert len(calls) == 1
+        assert est.call_count == 1
+
+
+class TestTravelModes:
+    def test_transit_remains_the_default(self):
+        est = TransitEstimator(api_key="")
+        assert est.estimate("A", "B") is None  # no key, but the default stands
+
+    @pytest.mark.parametrize("mode", ["BICYCLE", "WALK", "TRANSIT", "bicycle", " walk "])
+    def test_valid_modes_are_accepted(self, mode, monkeypatch):
+        import json
+        import urllib.request
+
+        sent = []
+
+        class _Response:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+        def _fake_urlopen(request, timeout=None):
+            sent.append(json.loads(request.data.decode()))
+            return _Response()
+
+        monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+        monkeypatch.setattr(json, "load", lambda fh: {"routes": [{"duration": "600s"}]})
+
+        est = TransitEstimator(api_key="fake-key")
+        assert est.estimate("A", "B", travel_mode=mode)["minutes"] == 10
+        assert sent[0]["travelMode"] == mode.strip().upper()
+
+    @pytest.mark.parametrize("mode", ["DRIVE", "driving", "TELEPORT"])
+    def test_an_unknown_mode_raises_rather_than_defaulting(self, mode):
+        """Falling back to TRANSIT would price a bike ride as a bus and
+        nothing in the output would say so."""
+        est = TransitEstimator(api_key="fake-key")
+        with pytest.raises(ValueError):
+            est.estimate("A", "B", travel_mode=mode)
+
+    def test_a_departure_time_is_only_sent_for_transit(self, monkeypatch):
+        """A bike ride does not vary by timetable, and a past date would only
+        invite a rejection."""
+        import json
+        import urllib.request
+
+        sent = []
+
+        class _Response:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+        monkeypatch.setattr(
+            urllib.request, "urlopen",
+            lambda request, timeout=None: (sent.append(json.loads(request.data.decode())), _Response())[1],
+        )
+        monkeypatch.setattr(json, "load", lambda fh: {"routes": []})
+
+        est = TransitEstimator(api_key="fake-key")
+        est.estimate("A", "B", departure_iso="2026-10-14T09:00:00Z", travel_mode="TRANSIT")
+        est.estimate("A", "B", departure_iso="2026-10-14T09:00:00Z", travel_mode="BICYCLE")
+
+        assert "departureTime" in sent[0]
+        assert "departureTime" not in sent[1]
+
+    def test_the_memo_does_not_conflate_modes(self, monkeypatch):
+        """The same endpoints have a different answer by bike than by train.
+        A memo keyed without the mode would hand one leg the other's
+        duration."""
+        import json
+        import urllib.request
+
+        class _Response:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+        monkeypatch.setattr(urllib.request, "urlopen", lambda request, timeout=None: _Response())
+        monkeypatch.setattr(json, "load", lambda fh: {"routes": [{"duration": "600s"}]})
+
+        est = TransitEstimator(api_key="fake-key")
+        est.estimate("A", "B", travel_mode="TRANSIT")
+        est.estimate("A", "B", travel_mode="BICYCLE")
+
+        assert est.call_count == 2

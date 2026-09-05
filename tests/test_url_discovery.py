@@ -243,7 +243,7 @@ def test_discover_restaurants_skips_entirely_when_category_deferred_to_base():
     discoverer._multi_site_base_owned_categories = frozenset({"restaurant"})
 
     ai = {"dinner_recommendations": [{"name": "Arches Cafe"}]}
-    grouped_dest = {"id": "arches", "group_with": "moab"}
+    grouped_dest = {"id": "arches", "name": "Arches National Park", "group_with": "moab"}
 
     with patch.object(discoverer, "_search_first") as fake_search:
         discoverer._discover_restaurants(ai, dest_name="Arches National Park", dest=grouped_dest)
@@ -303,7 +303,7 @@ def test_discover_en_route_stops_skips_stops_but_still_updates_route_distance_wh
     discoverer._route_distance_live_fetch_enabled = False
 
     ai = {"getting_here": {"en_route_stops": [{"name": "Wilson Arch"}]}}
-    grouped_dest = {"id": "arches", "group_with": "moab"}
+    grouped_dest = {"id": "arches", "name": "Arches National Park", "group_with": "moab"}
 
     with patch.object(discoverer, "_search_first") as fake_search:
         discoverer._discover_en_route_stops(
@@ -533,6 +533,7 @@ def test_discover_scenic_drives_skips_and_clears_content_when_deferred():
 
     grouped_dest = {
         "id": "arches",
+        "name": "Arches National Park",
         "group_with": "moab",
         "scenic_drives": [{"title": "Arches Scenic Drive", "description": "AI-generated blurb."}],
     }
@@ -1163,14 +1164,17 @@ def test_discover_restaurants_direct_batch_preserves_existing_maps_url_without_r
         "getting_here": {"en_route_stops": []},
     }
 
+    # See the contract note on
+    # test_discover_restaurants_direct_batch_authoritative_does_not_fallback_to_search:
+    # the batch still wins, but its silence is no longer treated as an answer.
     with patch.object(discoverer, "_search_restaurant_from_direct_batch", return_value=None) as batch_search:
-        with patch.object(discoverer, "_search_first") as fallback_search:
+        with patch.object(discoverer, "_search_first", return_value=None) as fallback_search:
             discoverer._discover_restaurants(ai, dest_name="St. George, Utah")
 
     assert ai["dinner_recommendations"][0].get("url", "") == ""
     assert "maps_url" not in ai["dinner_recommendations"][0]
     batch_search.assert_called_once()
-    fallback_search.assert_not_called()
+    assert fallback_search.called
 
 
 def test_discover_restaurants_preserved_existing_url_still_gets_rating_and_cuisine_metadata() -> None:
@@ -3066,7 +3070,12 @@ def test_direct_batch_html_prompt_for_restaurants_requires_rating_and_price_indi
     system_prompt, user_prompt = prompt
     assert "rating" in system_prompt.lower()
     assert "price" in system_prompt.lower()
-    assert "4.3" in system_prompt
+    # A numeric rating floor must be present -- removing it entirely was a first
+    # attempt that went too far, and this assertion is what caught it. The VALUE
+    # is now budget-aware: 4.3 by default, relaxed to 4.0 on a low-cost brief,
+    # because 4.3 skews toward destination restaurants and a friterie locals
+    # rate 4.1 is exactly what such a brief wants. See _batch_rating_floor.
+    assert re.search(r"rated above \d\.\d", system_prompt), system_prompt
     assert "price indicator" in user_prompt.lower() or "price" in user_prompt.lower()
 
 
@@ -3383,18 +3392,31 @@ def test_discover_restaurants_direct_batch_authoritative_does_not_fallback_to_se
         ]
     }
 
+    # CONTRACT CHANGED 2026-08-27. This previously asserted that the search
+    # fallback must NEVER run in authoritative mode. That conflated two things:
+    # whose answer WINS (the batch, still true) and what happens when the batch
+    # has NO answer (previously: the item is dropped).
+    #
+    # The Brussels run measured the cost. Chicon Farsi, Thaiburi, Yummy Bowl,
+    # Pasta Divina and Rotisse were all dropped for "no verified URL", and all
+    # five have official sites a single Serper query finds. 77% of that
+    # destination's dining was lost to a fallback never attempted.
+    #
+    # The genuine safety property is unchanged and covered by
+    # test_search_restaurant_direct_batch_authoritative_rejects_raw_capture_without_item_match:
+    # the batch must not lend an UNMATCHED row to a different item. A fresh
+    # per-item search is a different operation and is still URL-validated.
     with patch.object(discoverer, "_resolve_ai_candidate_url", return_value=None), patch.object(
         discoverer,
         "_search_restaurant_from_direct_batch",
         return_value=None,
-    ), patch.object(
-        discoverer,
-        "_search_first",
-        side_effect=AssertionError("search fallback should not run in authoritative direct-batch mode"),
-    ):
+    ), patch.object(discoverer, "_search_first", return_value=None) as fallback_search:
         discoverer._discover_restaurants(ai, "Zion National Park", "October 18, 2026")
 
+    # Still no URL -- the fallback was tried and also came up empty.
     assert ai["dinner_recommendations"][0].get("url", "") == ""
+    # But it WAS tried, which is the change.
+    assert fallback_search.called, "an item the batch cannot place must still get one search"
 
 
 def test_search_restaurant_direct_batch_authoritative_rejects_raw_capture_without_item_match():
@@ -7283,10 +7305,15 @@ def test_get_restaurant_direct_batch_rows_persists_html_capture_artifacts(tmp_pa
     assert meta["kind"] == "restaurant"
     assert meta["row_count"] == 1
     assert meta["html_file"] == html_files[0].name
+    # The persisted query is asserted in full because it is the audit record of
+    # what was actually asked -- a capture whose query drifts from the prompt is
+    # worthless for diagnosing a bad harvest. The rating floor is now written as
+    # "rated above N" and N is budget-aware (4.3 default, 4.0 on a low-cost
+    # brief), so the phrasing changed with it. No budget is set on this fixture.
     assert meta["query"] == (
         "Generate a list of local restaurants near Moab (October 18, 2026) with clickable links to source material and corresponding Google Maps content. "
         "Include a rating, price indicator, and the cuisine or restaurant type for each item when available, using a clear numeric or price format, and a short descriptive note about the food, atmosphere, or signature dishes for each item when available. "
-        "Keep only highly rated items (>4.3), include cuisine variety, and keep only places likely open on the indicated dates. "
+        "Keep only items rated above 4.3, include cuisine variety, and keep only places likely open on the indicated dates. "
         "Include only suggestions with reliable clickable links."
     )
 
@@ -16138,7 +16165,7 @@ def test_audit_strips_non_alltrails_url_for_trail_like_attraction_but_assigns_ma
     assert trip["destinations"][0]["ai_content"]["top_attractions"] == []
 
 
-def test_audit_real_bryce_point_misclassified_viewpoint_gets_maps_fallback_not_stripped() -> None:
+def test_audit_real_bryce_point_misclassified_viewpoint_keeps_its_nps_page() -> None:
     """Regression using the real affected name from the SW2026-dipstick64 run:
     Bryce Canyon's "Bryce Point" is a viewpoint that _is_trail_like_attraction
     misclassifies as trail-like purely because its description mentions "a
@@ -16150,13 +16177,20 @@ def test_audit_real_bryce_point_misclassified_viewpoint_gets_maps_fallback_not_s
     fallback every other "no URL found" attraction gets instead of leaving no
     link at all.
 
-    Under the verified-link-or-seed policy (2026-08-17) a maps-search
-    fallback is explicitly not "verified", so this non-seed item is then
-    removed from top_attractions entirely -- a real nps.gov page existed but
-    the audit pass's own AllTrails-only rule for trail-like items discarded
-    it before the fallback was assigned, and the fallback itself doesn't earn
-    it a spot on the card list. This is a known, deliberate trade-off of the
-    2026-08-17 policy, not a bug in this pass.
+    That used to end with the item removed: the maps-search fallback is not
+    "verified" under the verified-link-or-seed policy (2026-08-17), so a real
+    nps.gov page existed and the card was dropped anyway. This test asserted
+    that outcome and called it a deliberate trade-off.
+
+    Owner rule (2026-08-29) changes it: when a trail-type target has both
+    available, prefer AllTrails if the title contains "trail", otherwise
+    prefer NPS. "Bryce Point" does not claim to be a trail, so its official
+    page now survives the audit. AllTrails-first still governs anything that
+    does -- it exists because non-AllTrails trail URLs were generated badly.
+
+    Same defect, same shape, found again on 2026-08-29 as Balanced Rock and
+    Upheaval Dome: a formation and a crater, both entity_class=trail, both
+    stripped of correct nps.gov pages.
     """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._url_validator = MagicMock()
@@ -16198,11 +16232,14 @@ def test_audit_real_bryce_point_misclassified_viewpoint_gets_maps_fallback_not_s
     # "Bryce Point" already shares a token ("Bryce") with the destination name,
     # so _maps_fallback_query_text uses the item name alone rather than
     # appending the destination again.
-    assert attraction.get("url") == "https://www.google.com/maps/search/?api=1&query=Bryce%20Point"
-    assert attraction.get("maps_url") == attraction.get("url")
-    assert attraction.get("url") != "https://www.nps.gov/brca/planyourvisit/brycepoint.htm"
-    # Policy (2026-08-17): non-seed, maps-fallback-only -- removed.
-    assert trip["destinations"][0]["ai_content"]["top_attractions"] == []
+    assert attraction.get("url") == "https://www.nps.gov/brca/planyourvisit/brycepoint.htm"
+    assert not attraction.get("url", "").startswith("https://www.google.com/maps/search/")
+    # It keeps a real verified URL now, so verified-link-or-seed keeps the
+    # card. Previously this asserted [] -- the item was dropped despite its
+    # official page having been found, because the audit had already replaced
+    # that page with a maps-search fallback that cannot satisfy the policy.
+    kept = trip["destinations"][0]["ai_content"]["top_attractions"]
+    assert [a["name"] for a in kept] == ["Bryce Point"]
 
 
 def test_semantic_scoring_prefers_cultural_domain_over_preserve_domain():
@@ -16572,7 +16609,7 @@ def test_update_route_distance_skips_live_fetch_when_disabled():
 
     discoverer._parse_route_info_from_maps_html.assert_not_called()
     assert getting_here.get("distance_miles")
-    assert getting_here.get("drive_time")
+    assert getting_here.get("travel_time")
 
 
 def test_update_route_distance_uses_live_fetch_when_enabled():
@@ -16595,7 +16632,7 @@ def test_update_route_distance_uses_live_fetch_when_enabled():
 
     discoverer._parse_route_info_from_maps_html.assert_called_once()
     assert getting_here.get("distance_miles") == "84"
-    assert getting_here.get("drive_time") == "1 hr 45 min"
+    assert getting_here.get("travel_time") == "1 hr 45 min"
 
 
 # --- dipstick55 Theme B/C regression: remembered-authoritative-URL cache must
@@ -17620,3 +17657,198 @@ class TestTrailsSwitchClosesThePrewarm:
             disc._prewarm_attraction_batch_with_itinerary_items(
                 ai=ai, dest_name="Zion National Park", dest_dates="", seed_names=None)
         trail.assert_called_once()
+
+
+# ── GH #2 Phase 1: the stage-3-to-stage-5b overwrite hazard ───────────────
+
+def test_route_distance_update_returns_early_on_a_transit_leg() -> None:
+    """multimodal-routing.md 4.1. `best_time` here is a scraped Google
+    DRIVING duration or a 60 mph Haversine estimate, and the overwrite fires
+    when `distance_miles` is empty -- which is exactly the state a transit leg
+    is supposed to be in. Without the guard a real rail duration set in stage
+    3 is silently replaced by a car estimate in stage 5b."""
+    from generator.url_discovery import URLDiscoverer
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    getting_here = {"travel_time": "3 hr 15 min", "distance_miles": ""}
+    ai = {"getting_here": getting_here}
+
+    discoverer._update_route_distance_and_time(
+        ai=ai,
+        getting_here=getting_here,
+        origin_name="Bryce Canyon",
+        dest_name="Capitol Reef",
+        origin_lat=37.6, origin_lng=-112.1,
+        dest_lat=38.2, dest_lng=-111.2,
+        dest={"name": "Capitol Reef", "_transport_mode": "transit"},
+    )
+
+    assert getting_here["travel_time"] == "3 hr 15 min"
+    assert getting_here["distance_miles"] == ""
+
+
+def test_route_distance_update_still_runs_on_a_driving_leg() -> None:
+    """The guard must not disarm the correction it was added beside."""
+    from generator.url_discovery import URLDiscoverer
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._route_distance_live_fetch_enabled = False
+    getting_here = {"travel_time": "", "distance_miles": ""}
+    ai = {"getting_here": getting_here}
+
+    discoverer._update_route_distance_and_time(
+        ai=ai,
+        getting_here=getting_here,
+        origin_name="Bryce Canyon",
+        dest_name="Capitol Reef",
+        origin_lat=37.6, origin_lng=-112.1,
+        dest_lat=38.2, dest_lng=-111.2,
+        dest={"name": "Capitol Reef"},
+    )
+
+    assert getting_here["travel_time"]
+    assert getting_here["distance_miles"]
+
+
+def test_en_route_discovery_skipped_on_a_transport_mode_transit_leg() -> None:
+    """There is no roadside to stop at on a train, and this path harvests its
+    own stops independently of ai_content's -- two sources, one rule."""
+    from generator.url_discovery import URLDiscoverer
+
+    assert URLDiscoverer._arrival_is_not_self_driven({"_transport_mode": "transit"}) is True
+    # `mixed` keeps them: the drive is still on the table there.
+    assert URLDiscoverer._arrival_is_not_self_driven({"_transport_mode": "mixed"}) is False
+    assert URLDiscoverer._arrival_is_not_self_driven({}) is False
+
+
+# ── GH #2: the leg's own trail, not the day loops near the town ───────────
+
+class TestLegTrailLink:
+    def _discoverer(self, found_url, disable_trails=True, disable_en_route=True):
+        from generator.url_discovery import URLDiscoverer
+
+        d = URLDiscoverer.__new__(URLDiscoverer)
+        d._disable_trails = disable_trails
+        d._disable_en_route = disable_en_route
+        d.calls = []
+
+        def _search(item_name, dest_name, dates="", *, allow_when_disabled=False,
+                    force_search=False):
+            d.calls.append((item_name, allow_when_disabled, force_search))
+            return found_url if allow_when_disabled or not d._disable_trails else None
+
+        d._search_alltrails_for_trail = _search
+        d._log_decision = lambda **kw: None
+        return d
+
+    def test_it_asks_for_the_named_trail_between_these_two_stops(self):
+        d = self._discoverer("https://www.alltrails.com/trail/us/washington/pct-h")
+        ai = {"getting_here": {}}
+        dest = {"name": "Trout Lake", "_transport_mode": "hike",
+                "_trail_name": "Pacific Crest Trail"}
+
+        d._discover_leg_trail_link(ai, dest, "Cascade Locks", "Trout Lake")
+
+        assert d.calls[0][0] == "Pacific Crest Trail Cascade Locks to Trout Lake"
+        assert ai["getting_here"]["trail_url"].endswith("pct-h")
+        assert ai["getting_here"]["trail_label"] == (
+            "Pacific Crest Trail: Cascade Locks to Trout Lake"
+        )
+
+    def test_it_runs_with_trail_links_switched_off(self):
+        """--trails governs trail links for attractions AT a destination --
+        on a thru-hike, day loops near the resupply town. The leg's own trail
+        is the opposite thing and is asked for by naming it in the manifest,
+        so tying them together meant the wanted one dragged in the unwanted."""
+        d = self._discoverer("https://www.alltrails.com/trail/x", disable_trails=True)
+        ai = {"getting_here": {}}
+        dest = {"name": "B", "_transport_mode": "hike", "_trail_name": "Pacific Crest Trail"}
+
+        d._discover_leg_trail_link(ai, dest, "A", "B")
+
+        assert d.calls[0][1] is True
+        # And past the direct-link batch, which is a per-destination harvest a
+        # leg's trail cannot be in by construction.
+        assert d.calls[0][2] is True
+        assert ai["getting_here"]["trail_url"]
+
+    def test_a_manifest_supplied_url_is_used_and_costs_no_search(self):
+        """The catalogue's own title and slug disagree -- AllTrails names one
+        page "Section B - Callahan's-Ashland to Fish Lake" and slugs it
+        "pct-or-section-b-highway-5-to-highway-140-fish-lake" -- so strict
+        matching rejects it under either phrasing. An authored URL ends that,
+        and design.md 1.4 bars the MODEL from producing a URL, not the human."""
+        d = self._discoverer("https://www.alltrails.com/trail/should-not-be-used")
+        ai = {"getting_here": {}}
+        dest = {
+            "name": "Fish Lake Resort", "_transport_mode": "hike",
+            "_trail_name": "Pacific Crest Trail",
+            "trail_section": "Pacific Crest Trail (PCT): Section B",
+            "trail_url": "https://www.alltrails.com/trail/us/oregon/pct-or-section-b",
+        }
+
+        d._discover_leg_trail_link(ai, dest, "Callahan's Lodge", "Fish Lake Resort")
+
+        assert ai["getting_here"]["trail_url"].endswith("pct-or-section-b")
+        assert ai["getting_here"]["trail_label"] == "Pacific Crest Trail (PCT): Section B"
+        assert d.calls == []
+
+    def test_an_authored_section_name_is_searched_when_no_url_is_given(self):
+        d = self._discoverer("https://www.alltrails.com/trail/x")
+        ai = {"getting_here": {}}
+        dest = {"name": "B", "_transport_mode": "hike", "_trail_name": "PCT",
+                "trail_section": "PCT: Section B"}
+
+        d._discover_leg_trail_link(ai, dest, "A", "B")
+
+        assert d.calls[0][0] == "PCT: Section B"
+
+    def test_the_first_leg_still_gets_its_authored_link(self):
+        """The first destination has no origin_name in the discovery pass even
+        when trip.departure gives it a real leg. That is only needed to
+        compose a section name, so requiring it dropped 1 of 15 links on a
+        manifest that named every section outright."""
+        d = self._discoverer(None)
+        ai = {"getting_here": {}}
+        dest = {"name": "Callahan's Lodge", "_transport_mode": "hike",
+                "_trail_name": "Pacific Crest Trail",
+                "trail_section": "PCT: Section R/A - Seiad Valley to Interstate 5",
+                "trail_url": "https://www.alltrails.com/trail/us/california/pct-section-r-a"}
+
+        d._discover_leg_trail_link(ai, dest, "", "Callahan's Lodge")
+
+        assert ai["getting_here"]["trail_url"].endswith("pct-section-r-a")
+
+    def test_no_trail_name_means_no_query(self):
+        """"A to B" alone matches whatever AllTrails has near either end."""
+        d = self._discoverer("https://www.alltrails.com/trail/x")
+        ai = {"getting_here": {}}
+
+        d._discover_leg_trail_link(ai, {"name": "B", "_transport_mode": "hike"}, "A", "B")
+
+        assert d.calls == []
+        assert "trail_url" not in ai["getting_here"]
+
+    def test_nothing_found_leaves_the_card_alone(self):
+        d = self._discoverer(None)
+        ai = {"getting_here": {}}
+        dest = {"name": "B", "_transport_mode": "hike", "_trail_name": "PCT"}
+
+        d._discover_leg_trail_link(ai, dest, "A", "B")
+
+        assert "trail_url" not in ai["getting_here"]
+
+
+def test_leg_trail_discovery_is_its_own_job_not_a_tail_of_en_route():
+    """It was a tail of _discover_en_route_stops for one release and never
+    ran once: en-route stops are off by default and that early return sits
+    above where the lookup had been appended."""
+    import inspect
+
+    from generator.url_discovery import URLDiscoverer
+
+    en_route_src = inspect.getsource(URLDiscoverer._discover_en_route_stops)
+    assert "_discover_leg_trail_link" not in en_route_src
+
+    dispatch = inspect.getsource(URLDiscoverer.discover_all)
+    assert "_discover_leg_trail_link" in dispatch

@@ -77,6 +77,22 @@ nps:
   endpoint: "https://developer.nps.gov/api/v1"
   image_count: 3
 
+# ── Google Maps Platform (optional) ───────────────────────────────────────────
+# Entirely optional. With no key the engine behaves exactly as before; with one,
+# the secondary map link on an item becomes a precise place_id link instead of a
+# text search that a common name can resolve elsewhere.
+#
+# Key read from env: GOOGLE_MAPS_PLATFORM_KEY (or GOOGLE_MAPS_API_KEY).
+# Requires "Places API (New)" — note that the Cloud console lists "Places API"
+# and "Places API (New)" as separate entries, and a key restricted to the former
+# returns 403 API_KEY_SERVICE_BLOCKED for every call made here.
+#
+# Only the place identifier is ever requested (field mask "places.id"), which is
+# the field Google permits storing indefinitely.
+places:
+  endpoint: "https://places.googleapis.com/v1/places:searchText"
+  max_calls_per_run: 400
+
 # ── Wikimedia Commons ─────────────────────────────────────────────────────────
 wikimedia:
   thumb_width: 960
@@ -219,6 +235,12 @@ restaurants:
 
 en_route_stops:
   enabled: false
+  # Minutes of driving on an arriving leg above which the itinerary suggests
+  # a lunch stop, named from this module's already-verified candidates (a
+  # seeded stop wins over a discovered one; otherwise closest to halfway).
+  # It never invents a place, so it stays silent when `enabled` is false --
+  # with no verified candidates there is nothing honest to recommend.
+  lunch_stop_min_drive_minutes: 180
 
 cultural_events:
   # OFF by default as of 2026-08-22. Measured across three cold-start runs:
@@ -248,6 +270,30 @@ cultural_events:
   # search call site picks its own. See generator/search_provider.py,
   # generator/claude_search.py, docs/design/search-provider-capability-probe.md.
   search_provider: "grok"
+
+# ── Transit routing (GH #2, Phase 1) ──────────────────────────────────
+transit_routing:
+  # The global kill switch. Left ON because the real gate is the manifest:
+  # a leg only costs a call when it says `transport_mode: transit`/`mixed`
+  # or a `legs:` entry names it, so a trip that never asks for transit never
+  # pays for it. Set false to force every leg back to `auto` regardless of
+  # what the manifest asks for.
+  enabled: true
+  # ai | google_directions.
+  #
+  # `ai` is Phase 1: corridor descriptions, duration ranges and a search
+  # phrase. It cannot know a departure time and does not claim to -- clock
+  # times and URLs are stripped from its output in code, not merely
+  # discouraged in the prompt.
+  #
+  # `google_directions` is Phase 2 and NOT IMPLEMENTED; selecting it raises
+  # rather than quietly falling back, because a silent fallback would report
+  # an AI guess under a name that reads as API-verified. The blocker is not
+  # cost: docs/design/multimodal-routing.md 6.4 records that Maps Platform
+  # terms appear incompatible with this product's publish-a-static-page
+  # model, so the open question is which source instead.
+  provider: "ai"
+
 
 # ── URL discovery ─────────────────────────────────────────────────────────────
 url_discovery:
@@ -407,7 +453,16 @@ url_discovery:
   # A 3-day destination may legitimately keep 15 attractions (5/day), so a
   # ceiling below ~12 starves the per-day cap rather than trimming waste.
   direct_link_batch_count: 12
-  restaurant_direct_batch_item_count: 8
+  # 8 -> 20 on 2026-08-28. Every gate downstream is now stricter than when 8
+  # was chosen: verified-link-or-seed, the budget cap, and the Places price
+  # check. Frankfurt asked for 8, had 7 rejected as too expensive and published
+  # ONE restaurant; Amsterdam also published one.
+  #
+  # The ask has to exceed the survivors, not match them. Output tokens are 8.6%
+  # of a run (see cost-accounting-and-reduction.md), so a bigger LIST is cheap;
+  # what was expensive was the per-item URL hunt, and that is already bounded
+  # by the per-day cap regardless of how many candidates arrive.
+  restaurant_direct_batch_item_count: 20
   en_route_direct_batch_item_count: 8
   restaurant_direct_batch_min_results: 4
   en_route_direct_batch_min_results: 3
@@ -500,6 +555,11 @@ url_discovery:
 # Overridable per-entry via the grouped entry's own base_owned_categories
 # field (an explicit empty list there opts that entry out entirely).
 multi_site_grouping:
+  # Which categories a grouped (`group_with`) entry defers to its base.
+  # Applies to PARK-LIKE grouped entries only: a park has no dining scene or
+  # events calendar of its own, so both belong to the town you sleep in. A
+  # city day trip defers nothing by default -- it is usually the larger place
+  # and owns both. A per-entry `base_owned_categories` overrides either way.
   base_owned_categories: ["restaurant", "cultural_events"]
 
 # ── Output validation ─────────────────────────────────────────────────────────

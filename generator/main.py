@@ -523,6 +523,7 @@ def _build_gate_a_metrics(
             "what_to_know:",
             "scenic_drives:",
             "url_candidates:",
+            "transit_routing:",   # GH #2 Phase 1, generated during stage 3
         )):
             ai_calls += 1
             ai_cost = round(ai_cost + cost, 6)
@@ -654,6 +655,108 @@ def _build_gate_a_metrics(
             "naive_image_provider_calls_per_destination": "unsplash + wikimedia (+nps when park code exists)",
         },
     }
+
+
+def _place_id_of(item: dict) -> str:
+    """The item's place_id, wherever it happens to be recorded."""
+    import re
+
+    direct = str(item.get("place_id", "") or "").strip()
+    if direct:
+        return direct
+    m = re.search(r"query_place_id=([A-Za-z0-9_\-]+)", str(item.get("maps_url", "") or ""))
+    return m.group(1) if m else ""
+
+
+def _unify_names_sharing_a_place_id(trip: dict) -> list[tuple[str, str]]:
+    """One place, one name.
+
+    The Old Hickory trip carried "The Hermitage" as an en-route stop on one
+    leg and "Andrew Jackson's Hermitage" on another. Both resolve to place_id
+    ChIJf2rnpoJqZIgRQyx--6HBumM -- the same historic site under two names --
+    while the same itinerary also lists "The Hermitage Hotel", a different
+    place in downtown Nashville. A reader seeing "The Hermitage" could not
+    tell which was meant, and the shorter name is the one that collides.
+
+    A place_id is an identity claim, so two items carrying the same one are
+    the same place and must read the same. The most specific name wins:
+    "Andrew Jackson's Hermitage" cannot be confused with a hotel, and "The
+    Hermitage" can.
+
+    Only names are touched. Nothing is merged or removed -- the same site
+    genuinely appears on two legs, and both cards should stay.
+    """
+    by_place: dict[str, list[dict]] = {}
+    for dest in trip.get("destinations", []) or []:
+        if not isinstance(dest, dict):
+            continue
+        ai = dest.get("ai_content")
+        if not isinstance(ai, dict):
+            continue
+        sections = [ai.get("top_attractions"), ai.get("dinner_recommendations")]
+        gh = ai.get("getting_here")
+        if isinstance(gh, dict):
+            sections.append(gh.get("en_route_stops"))
+        for section in sections:
+            for item in section or []:
+                if not isinstance(item, dict):
+                    continue
+                pid = _place_id_of(item)
+                if pid and str(item.get("name", "") or "").strip():
+                    by_place.setdefault(pid, []).append(item)
+
+    renamed: list[tuple[str, str]] = []
+    for items in by_place.values():
+        names = {str(i.get("name", "") or "").strip() for i in items}
+        if len(names) < 2:
+            continue
+        canonical = max(names, key=lambda n: (len(n), n))
+        for item in items:
+            current = str(item.get("name", "") or "").strip()
+            if current != canonical:
+                item["name"] = canonical
+                renamed.append((current, canonical))
+    return renamed
+
+
+def _enforce_restaurant_per_day_cap(trip: dict, ai_gen) -> dict[str, int]:
+    """Apply the per-day restaurant target to the FINAL list.
+
+    ai_content applies it to the AI-generated list, but with
+    `restaurant_source: direct_link_batch` the published list is the batch's --
+    a flat `restaurant_direct_batch_item_count` (20) per destination, written
+    to dinner_recommendations after that cap had run on a different list. So a
+    two-night stop published 18 dinner recommendations while the documented
+    target was 8.
+
+    Runs here, after discovery and the audit, because this is the first point
+    where the list is final regardless of which source produced it.
+    """
+    counts = {"destinations_trimmed": 0, "removed": 0}
+    trip_meta = trip.get("trip", {}) if isinstance(trip.get("trip"), dict) else {}
+    for dest in trip.get("destinations", []) or []:
+        if not isinstance(dest, dict):
+            continue
+        ai = dest.get("ai_content")
+        if not isinstance(ai, dict):
+            continue
+        restaurants = ai.get("dinner_recommendations")
+        if not isinstance(restaurants, list) or not restaurants:
+            continue
+        per_day = ai_gen._resolve_restaurant_target(dest, trip_meta)
+        day_count = max(1, ai_gen._infer_day_count(str(dest.get("dates", "") or "")))
+        target = max(1, int(per_day) * day_count)
+        if len(restaurants) <= target:
+            continue
+        kept = ai_gen.select_diverse_restaurants(restaurants, target=target)
+        counts["destinations_trimmed"] += 1
+        counts["removed"] += len(restaurants) - len(kept)
+        logger.info(
+            "  %s: %d dinner recommendations trimmed to %d (%d/day x %d days)",
+            dest.get("name", ""), len(restaurants), len(kept), per_day, day_count,
+        )
+        ai["dinner_recommendations"] = kept
+    return counts
 
 
 def _reconcile_trip_via_registry(trip: dict, *, return_registry: bool = False) -> dict | tuple[dict, dict[str, Any]]:
@@ -989,6 +1092,53 @@ def _build_destination_status_report(
             "urls": needs_urls_retry,
         }
 
+        # The gate counts these (see _collect_content_warnings) but nothing
+        # used to record WHICH items went, so "39 restaurants removed" could
+        # not be investigated after the fact -- diagnosing it needed a fresh
+        # paid run. The names are already on the decision records; they were
+        # simply being counted and dropped.
+        removed_items = []
+        for decision in dest.get("_registry_decisions", []) or []:
+            if not isinstance(decision, dict):
+                continue
+            reasons = decision.get("rejection_reasons", []) or []
+            if "no_verified_url_removed" not in reasons:
+                continue
+            trail = decision.get("candidate_trail", []) or []
+            removed_items.append({
+                "display_name": str(decision.get("display_name", "") or ""),
+                "entity_class": str(decision.get("entity_class", "") or ""),
+                "section_target": str(decision.get("section_target", "") or ""),
+                "rejection_reasons": list(reasons),
+                # what was actually tried for this item, and what refused it
+                "candidates_considered": int(decision.get("candidates_considered", 0) or 0),
+                "candidate_trail": trail if isinstance(trail, list) else [],
+            })
+        removed_items.sort(key=lambda r: (r["section_target"], r["display_name"]))
+
+        # Which code path put a URL on each en-route stop. The removal audit
+        # records why a link was REJECTED; nothing recorded why one was KEPT,
+        # so a wrong link that survives every gate is invisible. Five Asheville
+        # stops shared https://www.knoxvilletn.gov -- a city homepage standing
+        # in for a waterfall and a national park -- while _retain_discovered_url
+        # rejects that URL in isolation and the audit logged no rejection for
+        # them. Static reading could not reconcile that; this can.
+        en_route_url_sources = []
+        ai_block = dest.get("ai_content", {}) if isinstance(dest.get("ai_content"), dict) else {}
+        gh = ai_block.get("getting_here", {}) if isinstance(ai_block.get("getting_here"), dict) else {}
+        for stop in gh.get("en_route_stops", []) or []:
+            if not isinstance(stop, dict):
+                continue
+            url = str(stop.get("url", "") or "").strip()
+            if not url:
+                continue
+            en_route_url_sources.append({
+                "name": str(stop.get("name", "") or ""),
+                "url": url,
+                "assigned_by": str(stop.get("_url_assigned_by", "") or "(unstamped)"),
+                "is_seed": bool(stop.get("is_seed")),
+            })
+
         destination_status = "healthy"
         if quarantined_entity_ids or validation_counts["quarantined"] > 0:
             destination_status = "quarantined"
@@ -1036,6 +1186,9 @@ def _build_destination_status_report(
                         "disposition_thread_count": url_thread_count,
                         "disposition_event_count": url_event_count,
                         "en_route_reliability": en_route_reliability,
+                        "removed_no_verified_url_count": len(removed_items),
+                        "removed_no_verified_url": removed_items,
+                        "en_route_url_sources": en_route_url_sources,
                     },
                     "reconciliation": {
                         "status": "completed",
@@ -1145,6 +1298,46 @@ def _write_destination_status_markdown_report(output_dir: Path, status_report: d
                 )
             else:
                 lines.append(f"- {destination_name} ({destination_id}) — status={status}, terminal={terminal_state}")
+
+    # Removed items, listed by name. The counts alone sent one investigation
+    # down a wrong path (an empty search-provider balance looked like the
+    # cause of a high removal rate; it was not), so the names go in the
+    # summary a person actually reads, not only the JSON.
+    removal_rows = []
+    for row in destinations:
+        if not isinstance(row, dict):
+            continue
+        url_stage = row.get("stage_status", {}).get("url_discovery", {}) if isinstance(row.get("stage_status", {}), dict) else {}
+        removed = url_stage.get("removed_no_verified_url", []) if isinstance(url_stage.get("removed_no_verified_url", []), list) else []
+        if removed:
+            removal_rows.append((str(row.get("destination_name", "") or row.get("destination_id", "")), removed))
+
+    total_removed = sum(len(items) for _, items in removal_rows)
+    lines.append("")
+    lines.append(f"## Removed for No Verified URL ({total_removed})")
+    if not removal_rows:
+        lines.append("- None")
+    else:
+        for destination_name, items in removal_rows:
+            lines.append(f"- **{destination_name}** ({len(items)})")
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("display_name", "") or "(unnamed)")
+                section = str(item.get("section_target", "") or item.get("entity_class", "") or "?")
+                considered = int(item.get("candidates_considered", 0) or 0)
+                lines.append(f"  - {name} — {section} ({considered} candidate(s) considered)")
+                # The rejecting check, per URL. Without this the report says an
+                # item was dropped but not whether a URL was ever found for it,
+                # which is the difference between a discovery gap and a filter
+                # refusing a good link.
+                for event in (item.get("candidate_trail") or [])[:6]:
+                    if not isinstance(event, dict) or not event.get("url"):
+                        continue
+                    lines.append(f"    - {event.get('reason', '?')}: {event.get('url', '')}")
+                    detail = str(event.get("detail", "") or "")
+                    if "retention exit" in detail:
+                        lines.append(f"      {detail[detail.index('[retention exit'):]}")
 
     path = output_dir / "destination_status_report.md"
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
@@ -1261,6 +1454,17 @@ def _selective_retry_destinations(
     ]
     if not retry_destinations:
         return []
+
+    # A retry supersedes the first pass for these destinations, so its audit
+    # trail must replace the earlier one rather than stack on top of it.
+    # url_discovery appends to _registry_decisions and never resets it, so
+    # without this the removal records are written twice for exactly the
+    # destinations that were retried -- and the quality gate, which counts
+    # those records, reports roughly double. An Old Hickory run showed 37
+    # removals recorded for 20 distinct items; every duplicated destination
+    # was a retried one, and every non-retried destination was clean.
+    for dest in retry_destinations:
+        dest["_registry_decisions"] = []
 
     stage_scope = _retry_stage_scope_by_destination(status_report)
     default_scope = {"events": True, "images": True, "urls": True}
@@ -1531,6 +1735,69 @@ def _category_enabled(config_path: str, section: str, *, default: bool = False) 
         return default
 
 
+def _manifest_category_override(manifest_path: str | None, section: str) -> bool | None:
+    """A trip's own answer for one priced category, or None if it has none.
+
+    Read straight from the manifest file rather than the parsed trip, because
+    categories are resolved before Stage 1 parses it. Deliberately tolerant:
+    an unreadable or malformed manifest returns None (fall through to config)
+    rather than raising -- the parser reports those properly a moment later,
+    and this must not become a second, worse error path for the same problem.
+
+    Lives in the manifest so the choice is sticky per trip. A global config
+    flag meant enabling trails for the Southwest trip also bought them for
+    Europe, which asks for no hikes.
+    """
+    if not manifest_path:
+        return None
+    try:
+        import yaml
+
+        with open(manifest_path, encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    categories = data.get("categories")
+    if not isinstance(categories, dict):
+        trip_block = data.get("trip")
+        categories = trip_block.get("categories") if isinstance(trip_block, dict) else None
+    if not isinstance(categories, dict):
+        return None
+    value = categories.get(section)
+    if isinstance(value, dict):
+        value = value.get("enabled")
+    return bool(value) if isinstance(value, bool) else None
+
+
+def _resolve_category(
+    cli_choice: bool | None,
+    config_path: str,
+    section: str,
+    *,
+    default: bool = False,
+    manifest_path: str | None = None,
+) -> bool:
+    """Decide whether an optional category runs: CLI, then manifest, then config.
+
+    The CLI could previously only turn these OFF (--notrails, --skip-events),
+    so enabling one for a single run meant editing config.yaml and remembering
+    to put it back. That asymmetry made the priced categories awkward to test
+    precisely because they are the ones worth testing deliberately.
+
+    cli_choice is tri-state: None means "no flag given, ask the config", which
+    is why the paired --trails/--no-trails options default to None rather than
+    to False.
+    """
+    if cli_choice is not None:
+        return bool(cli_choice)
+    manifest_choice = _manifest_category_override(manifest_path, section)
+    if manifest_choice is not None:
+        return manifest_choice
+    return _category_enabled(config_path, section, default=default)
+
+
 def _cultural_events_enabled(config_path: str) -> bool:
     """Back-compat alias; see _category_enabled."""
     return _category_enabled(config_path, "cultural_events")
@@ -1594,12 +1861,29 @@ def _is_us_coordinates(lat: object, lng: object) -> bool:
     return False
 
 
-def _write_pwa_assets(output_dir: Path, trip: dict) -> None:
-        """Write manifest.webmanifest and sw.js next to generated index.html."""
+def _write_pwa_assets(output_dir: Path, trip: dict, build_id: str = "") -> None:
+        """Write manifest.webmanifest and sw.js next to generated index.html.
+
+        `build_id` becomes part of the service worker's cache name. It has to
+        change per build: the activate handler deletes every cache whose key is
+        not the current one, so a constant key means the old shell is never
+        purged and a republished site keeps serving the previous build
+        indefinitely. That is what it did -- the key was the literal
+        'roadtrip-shell-v2' from the first PWA commit onward, so browsers held
+        stale itineraries across every republish, and the symptoms read as
+        unrelated bugs: seed badges that were removed, pages that looked
+        unpushed, fixes that appeared not to have landed.
+        """
         trip_meta = trip.get("trip", {}) if isinstance(trip, dict) else {}
         title = str(trip_meta.get("title", "Road Trip Itinerary") or "Road Trip Itinerary").strip()
         subtitle = str(trip_meta.get("subtitle", "Interactive road trip itinerary") or "Interactive road trip itinerary").strip()
         theme_color = str(trip_meta.get("theme_color", "#C0623E") or "#C0623E").strip()
+        # The icons below are SVG data: URIs where "#" must stay percent-encoded
+        # as %23, so they take the bare hex. Both were hard-coded to the
+        # Southwest terracotta, which meant every installed itinerary -- Europe,
+        # Croatia, Japan -- got a terracotta home-screen icon whatever its
+        # manifest said. Same defect as the head metadata, one file over.
+        theme_hex = theme_color.lstrip("#") or "C0623E"
 
         # Image URLs the page will actually load. The HTML now points at the
         # SOURCE url rather than the local ./images cache (see
@@ -1625,20 +1909,28 @@ def _write_pwa_assets(output_dir: Path, trip: dict) -> None:
 
         icon_192 = (
                 "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E"
-                "%3Crect width='192' height='192' rx='36' fill='%23C0623E'/%3E"
+                f"%3Crect width='192' height='192' rx='36' fill='%23{theme_hex}'/%3E"
                 "%3Ctext x='50%25' y='54%25' font-size='110' text-anchor='middle' dominant-baseline='middle'%3E"
                 "%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E"
         )
         icon_512 = (
                 "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E"
-                "%3Crect width='512' height='512' rx='96' fill='%23C0623E'/%3E"
+                f"%3Crect width='512' height='512' rx='96' fill='%23{theme_hex}'/%3E"
                 "%3Ctext x='50%25' y='54%25' font-size='300' text-anchor='middle' dominant-baseline='middle'%3E"
                 "%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E"
         )
 
+        # An installed PWA shows short_name under the icon, and platforms
+        # truncate it hard -- iOS around 12 characters. title[:24] cut
+        # "Southwest Road Trip" nowhere useful and ignored the manifest's own
+        # short_name, so the field added to fix the HTML meta was honoured in
+        # one place and not the other.
+        short_name = str(trip_meta.get("short_name", "") or "").strip()
+        if not short_name:
+            short_name = title[:24]
         manifest = {
                 "name": title,
-                "short_name": title[:24] or "Road Trip",
+                "short_name": short_name or "Road Trip",
                 "description": subtitle,
                 "start_url": "./index.html",
                 "scope": "./",
@@ -1666,7 +1958,7 @@ def _write_pwa_assets(output_dir: Path, trip: dict) -> None:
                 encoding="utf-8",
         )
 
-        sw_js = """const CACHE = 'roadtrip-shell-v2';
+        sw_js = """const CACHE = 'roadtrip-shell-__BUILD_ID__';
 const SHELL = ['./', './index.html', './manifest.webmanifest'];
 const IMAGES = __IMAGE_URLS__;
 
@@ -1724,19 +2016,324 @@ self.addEventListener('fetch', (event) => {
             }
             return fetch(event.request)
                 .then((response) => {
-                    if (response && response.ok) {
+                    // Cross-origin images fetched without CORS come back opaque:
+                    // status 0 and ok === false. Testing response.ok alone would
+                    // cache nothing at runtime while still looking fine online,
+                    // so the failure would surface only offline.
+                    const storable =
+                        response && (response.ok || response.type === 'opaque');
+                    if (storable) {
                         const clone = response.clone();
                         caches.open(CACHE).then((cache) => cache.put(event.request, clone));
                     }
                     return response;
                 })
-                .catch(() => caches.match('./index.html'));
+                .catch(() => {
+                    // Only a page navigation should fall back to the shell.
+                    // Handing index.html to an <img> produces a broken image
+                    // instead of letting its onerror handler hide the tile.
+                    if (event.request.mode === 'navigate') {
+                        return caches.match('./index.html');
+                    }
+                    return Response.error();
+                });
         })
     );
 });
 """
         sw_js = sw_js.replace("__IMAGE_URLS__", images_json)
+        # Fall back to a content hash of the shell when no build id is given,
+        # so the key still changes when the page changes rather than silently
+        # reverting to the constant-key behaviour this replaced.
+        import hashlib
+        import re as _re_cache
+
+        cache_id = _re_cache.sub(r"[^A-Za-z0-9_.-]", "", str(build_id or "").strip())
+        if not cache_id:
+            index_html = output_dir / "index.html"
+            try:
+                payload = index_html.read_bytes()
+            except OSError:
+                payload = images_json.encode("utf-8")
+            cache_id = hashlib.sha256(payload).hexdigest()[:12]
+        sw_js = sw_js.replace("__BUILD_ID__", cache_id)
         (output_dir / "sw.js").write_text(sw_js, encoding="utf-8")
+
+
+def _transit_routing_enabled(config_path: str | Any) -> bool:
+    """`transit_routing.enabled`, the global kill switch above the manifest.
+
+    Fail-open to enabled: the per-leg gate is the manifest itself, so an
+    unreadable config should not silently drop a feature a trip asked for.
+    """
+    try:
+        import yaml
+
+        with open(str(config_path), "r", encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh) or {}
+        section = cfg.get("transit_routing") or {}
+        return bool(section.get("enabled", True))
+    except Exception:
+        return True
+
+
+def _apply_transit_routing(
+    trip: dict, *, config_path: str | Any = "config.yaml", llm_client: Any = None
+) -> int:
+    """Attach `getting_here.transit_options` to legs the manifest asked about.
+
+    Only legs whose resolved mode is `transit` or `mixed` and that carry no
+    booked arrival cost a call (transit_routing.should_generate_options), so
+    a manifest that never mentions transit never pays for this stage.
+
+    Returns the number of legs given options, for the run summary.
+    """
+    from generator import transit_routing
+    from generator.multi_site_grouping import is_grouped
+
+    if not _transit_routing_enabled(config_path):
+        logger.info("Transit routing skipped: transit_routing.enabled is false")
+        return 0
+
+    destinations = [d for d in (trip.get("destinations") or []) if isinstance(d, dict)]
+    trip_meta = trip.get("trip") if isinstance(trip.get("trip"), dict) else {}
+
+    wanted: list[tuple[dict, dict]] = []
+    previous: dict | None = None
+    for dest in destinations:
+        mode = transit_routing.resolved_mode(dest)
+        if previous is not None and transit_routing.should_generate_options(dest, mode):
+            wanted.append((previous, dest))
+        # The traveler leaves from where they slept, so a grouped day-trip
+        # entry is not the origin of the next leg -- the same correction the
+        # departure-leg label makes.
+        if not is_grouped(dest):
+            previous = dest
+    if not wanted:
+        return 0
+
+    try:
+        provider = transit_routing.build_transit_provider(config_path, llm_client=llm_client)
+    except NotImplementedError as exc:
+        logger.warning("Transit routing disabled for this run: %s", exc)
+        return 0
+
+    updated = 0
+    for origin, dest in wanted:
+        ai = dest.get("ai_content")
+        if not isinstance(ai, dict):
+            continue
+        getting_here = ai.get("getting_here")
+        if not isinstance(getting_here, dict):
+            getting_here = {}
+            ai["getting_here"] = getting_here
+        getting_here["transit_options"] = provider.generate_transit_options(
+            origin, dest, trip_meta
+        )
+        updated += 1
+
+    logger.info("Transit routing: %d leg(s) given options", updated)
+    return updated
+
+
+def _enforce_transit_leg_durations(trip: dict) -> int:
+    """Leave no driving figure standing on a leg that is not a drive.
+
+    Runs last, after the Routes API pass, and is the backstop for the case
+    that pass cannot serve: no API key, or a corridor Routes cannot price.
+    Preference order for a declared-transit leg:
+
+      1. a real Routes API estimate -- already applied, and left alone here;
+      2. the Phase 1 option's duration band, which is a band on purpose;
+      3. nothing.
+
+    Never a road-derived figure. `getting_here.travel_time` is not a badge:
+    the schedule normalizer derives the arrival clock time and the whole
+    arrival-day activity budget from it, so a car estimate left there
+    produces a page showing a 3h15 bus in one card and scheduling a 2h drive
+    in the next -- the exact internal contradiction the dipstick69 guard was
+    written to prevent (multimodal-routing.md 1.2).
+
+    Clearing rather than guessing costs the schedule its travel subtraction
+    for that day. That is the honest trade: an unstated arrival time is a
+    gap, an invented one is a wrong answer the reader cannot see is wrong.
+
+    Returns the number of legs whose figures were corrected.
+    """
+    from generator.transit_routing import option_duration, resolved_mode
+
+    corrected = 0
+    for dest in (trip.get("destinations") or []):
+        if not isinstance(dest, dict):
+            continue
+        leg_mode = resolved_mode(dest)
+        if leg_mode not in ("transit", "bike", "hike"):
+            continue
+        ai = dest.get("ai_content")
+        if not isinstance(ai, dict):
+            continue
+        getting_here = ai.get("getting_here")
+        if not isinstance(getting_here, dict):
+            continue
+        if getting_here.get("duration_is_estimate"):
+            continue  # a real Routes figure; nothing to correct
+
+        stale_time = str(getting_here.get("travel_time", "") or "").strip()
+        stale_miles = str(getting_here.get("distance_miles", "") or "").strip()
+        band = option_duration(getting_here.get("transit_options"))
+
+        # A self-powered leg has no options card to fall back on -- nobody
+        # operates it, so Phase 1 never generated one -- which leaves the
+        # Routes figure or nothing, and `band` is always empty for it. That is
+        # the honest pair: a cyclist told "2 hrs 15 min" because a car does it
+        # in that time is worse served than one told nothing.
+        if band:
+            getting_here["travel_time"] = band
+            getting_here["duration_is_estimate"] = True
+        elif stale_time:
+            getting_here["travel_time"] = ""
+        # Road miles are meaningless on a rail leg, and on a bike or foot leg
+        # the only mileage left at this point is a guess -- a real one would
+        # have come from Routes above and taken the early return with it. An
+        # empty value is what the badge row was restructured to survive.
+        if stale_miles:
+            getting_here["distance_miles"] = ""
+        getting_here["travel_mode"] = leg_mode
+
+        if stale_time or stale_miles:
+            corrected += 1
+            logger.info(
+                "%s leg '%s': replaced road figures (%s / %s) with %s",
+                leg_mode.title(), dest.get("name", ""),
+                stale_miles or "no distance", stale_time or "no time",
+                f"the suggested band '{band}'" if band else "no duration",
+            )
+    return corrected
+
+
+def _apply_transit_estimates(
+    trip: dict, *, departure_hint: str = "", estimator: Any = None
+) -> int:
+    """Replace invented drive figures with real transit estimates.
+
+    Only touches destinations whose manifest states a public-transport arrival.
+    A leg with no estimate available keeps whatever it had rather than being
+    zeroed -- and a leg that was suppressed upstream simply has nothing to fill.
+
+    Pass `estimator` to share one across a run. This function is called twice
+    when the selective retry pass fires, and TransitEstimator's memo lives on
+    the instance -- so constructing a fresh one here meant the second pass
+    re-asked the Routes API every leg the first pass had already priced. On the
+    2026-09-02 Japan run that was 8 billed calls for 4 legs, all 8 returning
+    nothing, because the corridor has no coverage and the memo that recorded
+    that fact was thrown away in between. The memo stores None as readily as a
+    result, so a shared instance makes an uncovered corridor free the second
+    time round rather than merely as cheap.
+
+    Returns the number of legs updated, for the run summary.
+    """
+    from generator.transit_estimate import TRANSIT_MODES, TransitEstimator, format_duration
+    from generator.transit_routing import (
+        ROUTES_TRAVEL_MODE_BY_LEG_MODE,
+        format_self_powered_duration,
+        resolved_mode,
+    )
+
+    if estimator is None:
+        estimator = TransitEstimator()
+    calls_before = estimator.call_count
+    if not estimator.available:
+        logger.info(
+            "Transit estimates skipped: GOOGLE_MAPS_PLATFORM_KEY not set. "
+            "Rail legs will show no duration rather than a driving figure."
+        )
+        return 0
+
+    destinations = trip.get("destinations", []) or []
+    trip_meta = trip.get("trip") if isinstance(trip.get("trip"), dict) else {}
+    updated = 0
+    previous_name = str(departure_hint or "").strip()
+
+    for dest in destinations:
+        if not isinstance(dest, dict):
+            continue
+        name = str(dest.get("name", "") or "").strip()
+        mode = ""
+        for leg in (dest.get("transportation") or []):
+            if isinstance(leg, dict):
+                mode = str(leg.get("type", "") or "").strip().lower()
+                if mode:
+                    break
+
+        # Two ways a leg qualifies: a booking that names a transit type, or a
+        # manifest that declares the leg transit without one (GH #2). The
+        # second is why this gate widened -- a declared-but-unbooked leg had
+        # no source of a real duration at all, so it kept whatever the model
+        # guessed, which was a drive.
+        declared_transit = resolved_mode(dest) == "transit"
+        # bike and hike are priced here too, by BICYCLE/WALK rather than
+        # TRANSIT. They have exactly the problem transit had -- no honest
+        # source for a duration, so the model's driving guess survived -- and
+        # a better answer available than transit ever had: cycling and walking
+        # durations are facts about roads and gradients rather than about
+        # whose timetable Google licenses, so the API knows them on corridors
+        # where TRANSIT returns nothing.
+        routes_travel_mode = ROUTES_TRAVEL_MODE_BY_LEG_MODE.get(resolved_mode(dest))
+        qualifies = mode in TRANSIT_MODES or declared_transit or bool(routes_travel_mode)
+        if qualifies and previous_name and name:
+            estimate = estimator.estimate(
+                previous_name, name, travel_mode=routes_travel_mode or "TRANSIT"
+            )
+            if estimate:
+                ai = dest.get("ai_content")
+                if isinstance(ai, dict):
+                    getting_here = ai.get("getting_here")
+                    if not isinstance(getting_here, dict):
+                        getting_here = {}
+                        ai["getting_here"] = getting_here
+                    # Google's WALK/BICYCLE duration is continuous travel time,
+                    # so a multi-day leg comes back as "45 hrs 55 min" -- true,
+                    # unusable, and precise enough to look plannable. Divided
+                    # by the day the manifest says this traveler puts in, it
+                    # becomes the figure they actually want.
+                    if routes_travel_mode:
+                        getting_here["travel_time"] = format_self_powered_duration(
+                            estimate["minutes"],
+                            hours_per_day=trip_meta.get("default_daily_activity_hours"),
+                        )
+                    else:
+                        getting_here["travel_time"] = format_duration(estimate["minutes"])
+                    if estimate.get("miles"):
+                        getting_here["distance_miles"] = estimate["miles"]
+                    # Consumed by the renderer so the figure reads as an
+                    # approximation; transit times move with the timetable.
+                    getting_here["duration_is_estimate"] = True
+                    getting_here["travel_mode"] = (
+                        resolved_mode(dest) if routes_travel_mode else (mode or "transit")
+                    )
+                    updated += 1
+                    logger.info(
+                        "Transit estimate %s -> %s: %s, %s mi",
+                        previous_name, name,
+                        getting_here["travel_time"], estimate.get("miles"),
+                    )
+        if name:
+            previous_name = name
+
+    # Calls made by THIS pass, not by the shared instance's lifetime -- a
+    # second pass that answered entirely from the memo should say it made no
+    # calls, which is the whole point of sharing the instance.
+    calls_this_pass = estimator.call_count - calls_before
+    if calls_this_pass:
+        logger.info(
+            "Transit estimates: %d leg(s) updated from %d Routes API call(s)",
+            updated, calls_this_pass,
+        )
+    elif updated:
+        logger.info(
+            "Transit estimates: %d leg(s) updated from cache (no Routes API calls)", updated
+        )
+    return updated
 
 
 def _setup_logging(verbose: bool, log_level: str) -> str:
@@ -1854,6 +2451,30 @@ def _write_development_build_info(output_dir: Path, build_info: dict[str, Any]) 
 @click.option("--skip-url-discovery", is_flag=True, help="Skip URL discovery")
 @click.option("--notrails", "no_trails", is_flag=True, help="Disable trail link discovery and omit trail links")
 @click.option(
+    "--trails/--no-trails",
+    "trails",
+    default=None,
+    help="Force trail discovery on/off this run, overriding trails.enabled",
+)
+@click.option(
+    "--events/--no-events",
+    "events",
+    default=None,
+    help="Force cultural events on/off this run, overriding cultural_events.enabled",
+)
+@click.option(
+    "--en-route/--no-en-route",
+    "en_route",
+    default=None,
+    help="Force en-route stops on/off this run, overriding en_route_stops.enabled",
+)
+@click.option(
+    "--restaurants/--no-restaurants",
+    "restaurants",
+    default=None,
+    help="Force restaurants on/off this run, overriding restaurants.enabled",
+)
+@click.option(
     "--alltrails-source",
     type=click.Choice(["direct-link-batch", "search"], case_sensitive=False),
     default=None,
@@ -1911,6 +2532,10 @@ def main(
     skip_events: bool,
     skip_url_discovery: bool,
     no_trails: bool,
+    trails: bool | None,
+    events: bool | None,
+    en_route: bool | None,
+    restaurants: bool | None,
     alltrails_source: str | None,
     attraction_source: str | None,
     restaurant_source: str | None,
@@ -2013,6 +2638,10 @@ def main(
             "skip_events": bool(skip_events),
             "skip_url_discovery": bool(skip_url_discovery),
             "no_trails": bool(no_trails),
+            "trails": trails,
+            "events": events,
+            "en_route": en_route,
+            "restaurants": restaurants,
             "alltrails_source": str(alltrails_source or ""),
             "attraction_source": str(attraction_source or ""),
             "restaurant_source": str(restaurant_source or ""),
@@ -2097,20 +2726,38 @@ def main(
     #
     # --skip-events still forces off; this only changes what happens when the
     # flag is absent. Set cultural_events.enabled: true to restore.
-    if not skip_events and not _category_enabled(config_path, "cultural_events"):
+    # --skip-events and --notrails are the original one-way switches and still
+    # force OFF. The paired --events/--no-events style flags added alongside
+    # them can force either direction; absent both, config decides.
+    if not skip_events and not _resolve_category(events, config_path, "cultural_events", manifest_path=manifest):
         skip_events = True
-        logger.info("Cultural events disabled by config (cultural_events.enabled is not true)")
-    if not no_trails and not _category_enabled(config_path, "trails"):
+        logger.info("Cultural events disabled (flag or cultural_events.enabled)")
+    elif events is True:
+        logger.info("Cultural events enabled by --events, overriding config")
+
+    if not no_trails and not _resolve_category(trails, config_path, "trails", manifest_path=manifest):
         no_trails = True
-        logger.info("Trail discovery disabled by config (trails.enabled is not true)")
-    disable_en_route = not _category_enabled(config_path, "en_route_stops")
+        logger.info("Trail discovery disabled (flag or trails.enabled)")
+    elif trails is True:
+        logger.info("Trail discovery enabled by --trails, overriding config")
+
+    disable_en_route = not _resolve_category(en_route, config_path, "en_route_stops", manifest_path=manifest)
     # Restaurants default ON: unlike the other three this is arguably core
     # itinerary content, so the switch exists without changing behaviour.
-    disable_restaurants = not _category_enabled(config_path, "restaurants", default=True)
-    if disable_restaurants:
-        logger.info("Restaurants disabled by config (restaurants.enabled is false)")
-    if disable_en_route:
-        logger.info("En-route stops disabled by config (en_route_stops.enabled is not true)")
+    disable_restaurants = not _resolve_category(
+        restaurants, config_path, "restaurants", default=True, manifest_path=manifest
+    )
+    # Say WHICH input decided, not just the outcome -- a message reading
+    # "disabled by config" after the user passed --no-restaurants sends them
+    # to edit a file that had nothing to do with it.
+    for _label, _off, _choice in (
+        ("Restaurants", disable_restaurants, restaurants),
+        ("En-route stops", disable_en_route, en_route),
+    ):
+        if _off:
+            logger.info("%s disabled by %s", _label, "flag" if _choice is False else "config")
+        elif _choice is True:
+            logger.info("%s enabled by flag, overriding config", _label)
 
     click.echo(f"🗺  Itinerary Generator")
     click.echo(f"   Manifest : {manifest}")
@@ -2152,6 +2799,14 @@ def main(
         click.echo(f"  ERROR: {exc}", err=True)
         _finalize_run("input_error", 1, str(exc))
         sys.exit(1)
+    # Resolve every leg's travel mode once, here, and stamp it on the
+    # arriving destination. Both ai_content and url_discovery act on the
+    # answer but see only a destination, never the trip-wide default or the
+    # `legs:` list; two independent resolutions would be free to drift.
+    from generator.transit_routing import stamp_resolved_modes
+
+    stamp_resolved_modes(trip)
+
     stripped_seed_count = _strip_destination_seeds(trip) if noseed else 0
     if noseed:
         click.echo(f"   Seeds    : disabled for this run ({stripped_seed_count} seed(s) ignored)")
@@ -2305,14 +2960,29 @@ def main(
     # Optional departure/return geocoding for full-route maps and first-card routing context.
     departure_name = trip.get("trip", {}).get("departure")
     return_name = trip.get("trip", {}).get("return")
-    if departure_name:
-        dlat, dlng = geo._geocode(departure_name)
-        trip["trip"]["departure_lat"] = dlat
-        trip["trip"]["departure_lng"] = dlng
-    if return_name:
-        rlat, rlng = geo._geocode(return_name)
-        trip["trip"]["return_lat"] = rlat
-        trip["trip"]["return_lng"] = rlng
+    # These are OPTIONAL enrichment -- they refine the full-route map and the
+    # first card's routing context. An unresolvable name used to raise straight
+    # out of Stage 2 with a traceback and no output at all, which is a hard
+    # failure for a soft feature: "Brussels Airport (BRU), Zaventem" geocodes
+    # fine without the parenthetical, and a manifest typo should not cost the
+    # whole run. Lodging already degrades this way a few lines above; these two
+    # did not.
+    for _key, _name in (("departure", departure_name), ("return", return_name)):
+        if not _name:
+            continue
+        try:
+            _lat, _lng = geo._geocode(_name)
+        except Exception as exc:
+            logger.warning(
+                "%s geocode skipped for '%s': %s. The full-route map will omit "
+                "this endpoint; the itinerary is unaffected.",
+                _key.capitalize(),
+                _name,
+                exc,
+            )
+            continue
+        trip["trip"][f"{_key}_lat"] = _lat
+        trip["trip"][f"{_key}_lng"] = _lng
     # NPS resolution is independent — run in parallel
     def _resolve_nps(dest: dict) -> None:
         if not _is_us_coordinates(dest.get("lat"), dest.get("lng")):
@@ -2396,6 +3066,16 @@ def main(
                 dest["ai_content"]["possible_daily_schedule"] = []
 
     click.echo(f"  ✓ AI content generated for {len(trip['destinations'])} destination(s)")
+
+    # Runs inside stage 3 and not later: url_discovery (stage 5b) reads the
+    # resolved leg mode to decide whether to hunt for roadside stops, and a
+    # transit leg that gains its options after that has already paid for
+    # discovery it did not want.
+    _transit_legs = _apply_transit_routing(
+        trip, config_path=config_path, llm_client=llm_client
+    )
+    if _transit_legs:
+        click.echo(f"  ✓ Transit options generated for {_transit_legs} leg(s)")
     stage_timings["stage_3_ai_generation"] = _elapsed_seconds(stage_3_started)
 
     # ── Stages 4 + 5a + 5b: run concurrently (all independent of each other) ─
@@ -2484,6 +3164,17 @@ def main(
     # Post-parallel content normalization: cross-section and cross-destination dedup.
     stage_reconcile_started = perf_counter()
     ai_gen.normalize_trip_content(trip)
+    # Built once and reused by the retry pass below, so a leg priced here is
+    # not re-priced there. See _apply_transit_estimates.
+    from generator.transit_estimate import TransitEstimator as _TransitEstimator
+
+    transit_estimator = _TransitEstimator()
+    _apply_transit_estimates(
+        trip,
+        departure_hint=str((trip.get("trip") or {}).get("departure", "") or ""),
+        estimator=transit_estimator,
+    )
+    _enforce_transit_leg_durations(trip)
     click.echo("  ✓ Content normalized")
     trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
     click.echo("  ✓ Entity registry reconciled")
@@ -2557,6 +3248,12 @@ def main(
             + ", ".join(retried_destination_ids)
         )
         ai_gen.normalize_trip_content(trip)
+        _apply_transit_estimates(
+            trip,
+            departure_hint=str((trip.get("trip") or {}).get("departure", "") or ""),
+            estimator=transit_estimator,
+        )
+        _enforce_transit_leg_durations(trip)
         trip, registry = _reconcile_trip_via_registry(trip, return_registry=True)
         destination_status_report = _build_destination_status_report(
             trip=trip,
@@ -2637,6 +3334,26 @@ def main(
 
     # ── Stage 6: Assemble HTML ───────────────────────────────────────────────
     stage_6_started = perf_counter()
+    # After reconciliation, not before. reconcile_trip_from_registry rebuilds
+    # ai["dinner_recommendations"] from the registry
+    # (entity_registry.py: ai["dinner_recommendations"] = _payloads(...)), so a
+    # trim applied earlier is simply overwritten by the pre-trim snapshot. The
+    # first attempt at this ran before reconciliation and silently did nothing:
+    # the sw run still published 19 at Capitol Reef and 20 at Santa Fe, with no
+    # "cap applied" line because the trim had been undone rather than skipped.
+    _renamed = _unify_names_sharing_a_place_id(trip)
+    if _renamed:
+        for was, now in _renamed:
+            logger.info("  Renamed %r -> %r (same place_id)", was, now)
+        click.echo(f"  ✓ Names unified for {len(_renamed)} item(s) sharing a place")
+
+    _restaurant_cap = _enforce_restaurant_per_day_cap(trip, ai_gen)
+    if _restaurant_cap["removed"]:
+        click.echo(
+            f"  ✓ Restaurant per-day cap applied: {_restaurant_cap['removed']} trimmed "
+            f"across {_restaurant_cap['destinations_trimmed']} destination(s)"
+        )
+
     click.echo("Stage 6/6 — Assembling HTML…")
     from generator.html_assembler import HTMLAssembler
     trip["_meta"] = {
@@ -2658,6 +3375,26 @@ def main(
 
     output_file.write_text(html, encoding="utf-8")
     click.echo(f"  ✓ index.html written ({output_file.stat().st_size:,} bytes)")
+
+    # A second, script-free copy for emailing. Gmail rejected index.html as a
+    # virus: nothing malicious is in it, but three remote <script src> loads in
+    # an HTML attachment is the shape generic heuristics score as
+    # Trojan:HTML/Phish. index.html stays as it is -- this is the copy for the
+    # one job it cannot do.
+    try:
+        from generator.email_safe import make_email_safe
+
+        email_html, email_stats = make_email_safe(output_file.read_text(encoding="utf-8"))
+        email_file = output_file.parent / "index-email.html"
+        email_file.write_text(email_html, encoding="utf-8")
+        click.echo(
+            f"  ✓ index-email.html written ({email_file.stat().st_size:,} bytes) — "
+            f"{email_stats['scripts_removed']} script tag(s) removed, "
+            f"map {'replaced with a link' if email_stats['map_replaced'] else 'not present'}"
+        )
+    except Exception as exc:
+        # Never fail a run over the secondary artifact.
+        logger.warning("Mail-safe copy not written: %s", exc)
 
     current_output_urls = _read_output_urls(output_file)
     parity_summary = _latest_direct_batch_parity_summary(output_dir=output_dir)
@@ -2694,7 +3431,7 @@ def main(
     click.echo(f"  ✓ URL diff report: {url_diff_report_path}")
     click.echo(f"  ✓ URL diff summary: {url_diff_markdown_path}")
 
-    _write_pwa_assets(output_dir, trip)
+    _write_pwa_assets(output_dir, trip, build_id=run_id)
     click.echo("  ✓ PWA assets written (manifest.webmanifest, sw.js)")
 
     # ── Validate ─────────────────────────────────────────────────────────────

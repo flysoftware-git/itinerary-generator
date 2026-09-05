@@ -28,7 +28,12 @@ from urllib.parse import quote
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient
 from generator.search_provider import build_search_client
-from generator.multi_site_grouping import DEFAULT_BASE_OWNED_CATEGORIES, category_deferred_to_base
+from generator.multi_site_grouping import (
+    DEFAULT_BASE_OWNED_CATEGORIES,
+    category_deferred_to_base,
+    group_base_id,
+    is_grouped,
+)
 
 logger = logging.getLogger(__name__)
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -133,6 +138,30 @@ class CulturalEventsDiscoverer:
 
     def discover(self, trip: dict[str, Any]) -> None:
         destinations = trip.get("destinations", [])
+        dest_by_id = {
+            d.get("id"): d for d in destinations
+            if isinstance(d, dict) and d.get("id")
+        }
+
+        def _attendable_window(dest: dict[str, Any]) -> str:
+            """The dates an event must fall within to be worth listing.
+
+            For an ordinary stop that is its own date range. For a GROUPED
+            day trip it is the BASE's range, not the single day the day trip
+            is assigned -- the traveler is in the area all week, and that one
+            date is a modelling convenience, not a constraint on when they
+            can drive twenty minutes into town.
+
+            A real run made the cost of getting this wrong plain: Nashville
+            in December, dated as a one-day trip from a week-long base, had
+            two of its three discovered events filtered out for falling on
+            days either side of that single date, and rendered as "no events
+            confidently verified" for a city at Christmas.
+            """
+            base = dest_by_id.get(group_base_id(dest)) if is_grouped(dest) else None
+            if isinstance(base, dict) and str(base.get("dates", "") or ""):
+                return str(base["dates"])
+            return str(dest.get("dates", "") or "")
 
         def _one(dest: dict) -> None:
             # GH #68 multi-site grouping §5: a grouped entry can defer
@@ -155,7 +184,7 @@ class CulturalEventsDiscoverer:
                 return
             try:
                 logger.info("Discovering cultural events for '%s'…", dest["name"])
-                result = self._discover_for_dest(dest)
+                result = self._discover_for_dest(dest, window_dates=_attendable_window(dest))
                 dest["cultural_events"] = result
                 logger.info("  → Cultural events for '%s': has_events=%s, count=%d",
                            dest["name"], result.get("has_events", False), len(result.get("events", [])))
@@ -172,11 +201,39 @@ class CulturalEventsDiscoverer:
             for f in as_completed(futures):
                 f.result()
 
-    def _discover_for_dest(self, dest: dict[str, Any]) -> dict[str, Any]:
+    def _discover_for_dest(self, dest: dict[str, Any], window_dates: str = "") -> dict[str, Any]:
         try:
             raw_results = self._grok_search(dest["name"], dest["dates"])
             dest_type = self._classify_destination(dest["name"])
+
+            # A destination reporting no events is indistinguishable, from the
+            # outside, between "the search found nothing", "the search found
+            # listing pages and synthesis correctly refused them", and "real
+            # events were found and dropped later". Brussels reported zero and
+            # two plausible causes were fixed before either was checked against
+            # what the search actually returned -- neither moved the result.
+            # Log the inputs so the next diagnosis starts from data.
+            logger.info(
+                "Event search for '%s' (type=%s) returned %d raw result(s)",
+                dest["name"], dest_type, len(raw_results or []),
+            )
+            for _r in (raw_results or [])[:8]:
+                logger.info(
+                    "    raw: %s | %s",
+                    str(_r.get("name", ""))[:90],
+                    str(_r.get("url", ""))[:80],
+                )
+
             result = self._synthesize(dest["name"], dest["dates"], dest_type, raw_results)
+
+            if isinstance(result, dict):
+                _events = result.get("events") or []
+                logger.info(
+                    "    synthesis: has_events=%s, %d event(s) before verification/date filtering",
+                    result.get("has_events"), len(_events),
+                )
+                for _e in _events[:6]:
+                    logger.info("      event: %s", str(_e.get("name", _e))[:90])
             
             # Ensure result is a dict with expected structure
             if not isinstance(result, dict):
@@ -186,8 +243,16 @@ class CulturalEventsDiscoverer:
             # Verify any event URLs that came back
             result = self._verify_event_urls(result, dest["name"])
 
-            result = self._drop_events_before_arrival(result, dest.get("dates", ""))
-            result = self._sanitize_local_tip_by_itinerary_days(result, dest.get("dates", ""))
+            _before = len((result.get("events") or [])) if isinstance(result, dict) else 0
+            _window = window_dates or dest.get("dates", "")
+            result = self._drop_events_before_arrival(result, _window)
+            _after = len((result.get("events") or [])) if isinstance(result, dict) else 0
+            if _before != _after:
+                logger.info(
+                    "    date filter dropped %d of %d event(s) as falling outside the stay (%s)",
+                    _before - _after, _before, _window,
+                )
+            result = self._sanitize_local_tip_by_itinerary_days(result, _window)
             result = self._verify_local_tip_url(result, dest["name"])
             return result
         except Exception as e:
@@ -238,7 +303,20 @@ class CulturalEventsDiscoverer:
                         event.pop("url", None)
 
             if not event.get("url"):
-                fallback = self._event_maps_fallback_url(event, dest_name)
+                # The venue, never the show. A performance is not a place, so
+                # "Little Big Town: The Christmas Shows Nashville" as a Maps
+                # query returns whatever Google can make of a concert name --
+                # reported after that exact event linked to a map instead of
+                # to anything about the show. A venue is a real place worth a
+                # pin; a show name is not. With no venue there is nothing
+                # honest to map, so the event keeps no link and the card still
+                # carries its name, date and admission.
+                venue_name = str(event.get("venue", "") or "").strip()
+                has_name = bool(str(event.get("name", "") or "").strip())
+                fallback = (
+                    self._event_maps_fallback_url({"name": venue_name}, dest_name)
+                    if venue_name and has_name else ""
+                )
                 if fallback:
                     event["url"] = fallback
 
@@ -255,6 +333,10 @@ class CulturalEventsDiscoverer:
         or never-found event URL previously left the event with no link at
         all instead of at least a map lookup.
         """
+        # Maps a PLACE name. Shared with the local-tip path (see line ~410),
+        # where the name genuinely is a place ("the Bluebird Cafe"), so this
+        # must stay name-based. The event path passes a venue rather than a
+        # show name -- see _verify_event_urls.
         name = str(event.get("name", "") or "").strip()
         if not name:
             return ""
@@ -342,7 +424,7 @@ class CulturalEventsDiscoverer:
         return result
 
     def _grok_search(self, destination: str, dates: str) -> list[dict[str, Any]]:
-        month = dates.split()[0] if dates else "October"
+        month = self._months_in_range(dates)
         # Collapsed from 3 separate live-search queries (festivals / cultural
         # events+concerts / general "events near") to 1 combined query.
         # Each query is now a full real search call (post the /v1/responses
@@ -352,6 +434,27 @@ class CulturalEventsDiscoverer:
         query = f"{destination} festivals events concerts {month} 2026"
         return self._search.search(query, count=20)[:20]
 
+    _MONTH_NAMES = (
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    )
+
+    @classmethod
+    def _months_in_range(cls, dates: str) -> str:
+        """Every month the stay touches, not just the first word of the string.
+
+        `dates.split()[0]` took the first token, so "August 31 - September 1"
+        searched AUGUST for a visit that is almost entirely September. Those
+        results were then dropped by _drop_events_before_arrival for falling
+        before the arrival date, and the destination reported no events at all.
+        A stay spanning a month boundary is normal, not an edge case.
+        """
+        text = str(dates or "")
+        found = [m for m in cls._MONTH_NAMES if m.lower() in text.lower()]
+        if not found:
+            return "October"
+        return " ".join(found)
+
     def _classify_destination(self, name: str) -> str:
         lower = name.lower()
         if any(k in lower for k in ("national park", "national monument", "canyon", "reef")):
@@ -360,14 +463,40 @@ class CulturalEventsDiscoverer:
             return "resort_town"
         if any(k in lower for k in ("santa fe", "albuquerque", "denver", "phoenix")):
             return "city"
-        return "small_town"
+        # Everything unmatched used to fall through to "small_town", which the
+        # prompt treats as near-evidence of no events ("ALL national_park and
+        # most small_town destinations"). That made every destination outside a
+        # four-city US allowlist self-fulfilling: Brussels, Amsterdam, Berlin
+        # and Prague all classified as small towns and all reported no events.
+        #
+        # "unknown" is the honest answer. Guessing "city" instead would just
+        # invert the bias, and there is no population data here to do better.
+        return "unknown"
 
     def _sanitize_local_tip_by_itinerary_days(self, result: dict[str, Any], dates: str) -> dict[str, Any]:
-        if not isinstance(result, dict) or result.get("has_events"):
+        """Drop a local tip that points at days or dates outside the stay.
+
+        This used to return early whenever `has_events` was true, on the
+        assumption that a destination with real events did not need its tip
+        checked. The tip is rendered either way, so that assumption just
+        meant the check never ran for the destinations most likely to have
+        one -- the Dec 5-6 craft show recommended for a Dec 13-16 stay
+        reached output through exactly this gap.
+        """
+        if not isinstance(result, dict):
             return result
 
         tip = str(result.get("local_tip", "") or "").strip()
         if not tip:
+            return result
+
+        # Explicit dates first. Weekday matching alone cannot see
+        # "December 5-6, 2026" -- it contains no weekday word at all, so
+        # `mentioned_days` comes back empty and the tip sails through.
+        if self._tip_mentions_date_outside_stay(tip, dates):
+            result.pop("local_tip", None)
+            result.pop("local_tip_name", None)
+            result.pop("local_tip_url", None)
             return result
 
         mentioned_days = self._extract_mentioned_weekdays(tip)
@@ -388,6 +517,44 @@ class CulturalEventsDiscoverer:
             result.pop("local_tip_name", None)
             result.pop("local_tip_url", None)
         return result
+
+    def _tip_mentions_date_outside_stay(self, tip: str, dates: str) -> bool:
+        """True when the tip names a calendar date the traveler is not there for.
+
+        Only fires on dates it can actually parse against a parseable stay
+        range; an unparseable tip or an unparseable range means no opinion,
+        and the tip is left alone rather than dropped on a guess. A tip
+        naming several dates is dropped if ANY of them falls outside -- a
+        recommendation the reader cannot act on is the whole problem,
+        whether or not it is bundled with one they can.
+        """
+        stay = self._parse_date_range(dates)
+        if not stay or not tip:
+            return False
+        stay_start, stay_end = stay
+
+        for m in re.finditer(
+            r"([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*-\s*(\d{1,2})(?:st|nd|rd|th)?)?(?:,?\s*(\d{4}))?",
+            tip,
+        ):
+            month = self._MONTH_NAME_TO_NUMBER.get(m.group(1).lower())
+            if not month:
+                continue
+            year = int(m.group(4)) if m.group(4) else stay_start.year
+            for day_group in (m.group(2), m.group(3)):
+                if not day_group:
+                    continue
+                try:
+                    when = datetime(year, month, int(day_group))
+                except ValueError:
+                    continue
+                if not (stay_start.date() <= when.date() <= stay_end.date()):
+                    logger.info(
+                        "  Dropping local tip: names %s, outside the %s - %s stay",
+                        when.date(), stay_start.date(), stay_end.date(),
+                    )
+                    return True
+        return False
 
     def _extract_mentioned_weekdays(self, text: str) -> set[str]:
         day_tokens = {
@@ -479,7 +646,13 @@ class CulturalEventsDiscoverer:
     }
 
     def _drop_events_before_arrival(self, result: dict[str, Any], dates: str) -> dict[str, Any]:
-        """Filter out events dated entirely before the destination's arrival date.
+        """Filter out events dated entirely outside the destination's stay.
+
+        Name kept for the before-arrival case it started as; it now guards
+        both ends. The after-departure half was missing, and an event starting after the
+        traveler has gone is exactly as useless as one that ended before they
+        landed. A real run for a Dec 13-16 Asheville stay surfaced a Dec 5-6
+        craft show, which this now drops.
 
         The synthesis prompt deliberately allows the LLM to surface events
         "within 7 days" of the travel dates for search-recall purposes, but a
@@ -502,10 +675,30 @@ class CulturalEventsDiscoverer:
         for event in result["events"]:
             event_date_text = str(event.get("dates_in_range", "") or event.get("date", "") or "")
             event_start = self._parse_event_start_date(event_date_text, fallback_year=dest_start.year)
+            event_end = self._parse_event_end_date(event_date_text, fallback_year=dest_start.year)
+            # A run that started before arrival but is still going is
+            # attendable, and is often the single best listing a December
+            # stay has (a Christmas programme opening in November and
+            # running to January). Comparing starts alone dropped exactly
+            # those. Only reject when the run has demonstrably FINISHED
+            # before arrival; with no parseable end, fall back to the start.
+            if event_end is not None and event_end.date() >= dest_start.date():
+                kept.append(event)
+                continue
             if event_start is not None and event_start.date() < dest_start.date():
                 logger.info(
                     "  Dropping cultural event before arrival: '%s' (%s) precedes destination start %s",
                     event.get("name", ""), event_date_text, dest_start.date(),
+                )
+                continue
+            # An event whose START is after the traveler leaves cannot be
+            # attended. Deliberately compares the start, not the end: a run
+            # that begins during the stay and continues past it (a Christmas
+            # programme running into January) is attendable and must be kept.
+            if event_start is not None and event_start.date() > _dest_end.date():
+                logger.info(
+                    "  Dropping cultural event after departure: '%s' (%s) follows destination end %s",
+                    event.get("name", ""), event_date_text, _dest_end.date(),
                 )
                 continue
             kept.append(event)
@@ -514,6 +707,35 @@ class CulturalEventsDiscoverer:
         if not kept:
             result["has_events"] = False
         return result
+
+    def _parse_event_end_date(self, date_text: str, fallback_year: int) -> datetime | None:
+        """The LAST date named in an event's date text, when there is one.
+
+        Deliberately separate from _parse_event_start_date rather than a
+        change to it: that function is relied on elsewhere and by tests, and
+        the two questions ("when does this open" / "is it over yet") have
+        different right answers for a multi-month run. Returns None when the
+        text names only one date, or names none it can parse -- callers treat
+        that as "no opinion" rather than as an expired event.
+        """
+        text = (date_text or "").replace("–", "-").strip()
+        if not text:
+            return None
+        found: list[datetime] = []
+        for m in re.finditer(
+            r"([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4}))?", text
+        ):
+            month = self._MONTH_NAME_TO_NUMBER.get(m.group(1).lower())
+            if not month:
+                continue
+            year = int(m.group(3)) if m.group(3) else fallback_year
+            try:
+                found.append(datetime(year, month, int(m.group(2))))
+            except ValueError:
+                continue
+        if len(found) < 2:
+            return None
+        return max(found)
 
     def _parse_event_start_date(self, date_text: str, fallback_year: int) -> datetime | None:
         text = (date_text or "").replace("–", "-").strip()

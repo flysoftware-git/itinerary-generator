@@ -21,6 +21,10 @@ This directory captures behavior-oriented design notes for major pipeline compon
 - `multimodal-routing.md`: GH #2 design for transit-aware legs; phased AI-only then Google Directions, and why Phase 1 must not emit clock times.
 - `per-day-item-caps.md`: how per-day item targets bound attraction, restaurant, en-route and scenic-drive counts.
 - `cost-accounting-and-reduction.md`: how run spend is measured against the provider's own bill, what the 2026-08-21 reconciliation overturned, and a repeatable benchmarking procedure.
+- `per-item-imagery.md`: per-item images from free sources (Wikimedia 89%, NPS 32%), why Google Places Photos cannot be used, and two defects the probe exposed.
+- `destination-type-coverage.md`: a 77% dining loss chased across three destination types before the cause turned out to be six pipeline defects, none of them about the destination. Kept for §5: how a measurable wrong question outlasted a cheap right one.
+- `european-content-sources.md`: why Rick Steves is the wrong source for the dining gap, and what Wikivoyage offers instead (25 named Brussels eateries with explicit budget tiers, CC BY-SA).
+- `places-for-restaurants.md`: Places Text Search closes every restaurant defect at the source (20 candidates vs 1, authoritative prices, official sites); the obstacle is the caching terms, not cost.
 - `live-fetch-and-execution-time-reduction.md`: risk-tiered assessment of reducing live HTTP fetching during URL discovery/audit, plus broader architecture levers (AI-generation concurrency, per-domain block-cooldown, retry gating) to cut manifest execution time.
 - `banned-marketing-language-enforcement.md`: deterministic code-level enforcement of the system prompt's banned-cliché list, closing the gap where that instruction alone was routinely violated with zero downstream checking.
 - `search-provider-capability-probe.md`: root cause and fix for Grok search never actually being invoked, the cross-provider (Grok/Claude/OpenAI/Gemini) citation-fidelity probe that followed, Claude's addition as a second working search/harvest provider, and the resulting Grok-batch/Claude-non-batch production split.

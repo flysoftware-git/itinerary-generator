@@ -337,7 +337,13 @@ def test_image_gallery_uses_unified_tile_structure() -> None:
 
     assert '<div class="image-tile photo-item">' in html
     assert '<div class="caption photo-caption">Photo One</div>' in html
-    assert 'onerror="this.style.display=\'none\';"' in html
+    # A broken image still hides itself, but via one delegated listener rather
+    # than an inline onerror attribute per image. Mail scanners flag a dozen
+    # `onerror=` attributes beside remote <script src> loads as
+    # Trojan:HTML/Phish, which made the itinerary unattachable to an email.
+    assert 'onerror=' not in html
+    assert 'class="hide-on-error"' in html
+    assert "addEventListener('error'" in html
     assert "<p class=\"photo-caption\">" not in html
 
 
@@ -498,7 +504,11 @@ def test_build_getting_here_uses_destination_name_not_lodging_for_route_target()
 
     assert "origin=Harry%20Reid%20International%20Airport%2C%20Las%20Vegas%2C%20NV" in html
     assert "destination=Riverbend%20Retreat" in html
-    assert "waypoints=Scenic%20Overlook" in html
+    # "Scenic Overlook" with no geocode is exactly the ambiguous case now left
+    # off the route line rather than guessed at -- a bare name of that
+    # generality resolves anywhere. This test's subject is the origin and
+    # destination asserted above; this records the safer waypoint contract.
+    assert "waypoints=Scenic%20Overlook" not in html
     assert 'class="gmaps-link"' in html
     assert 'target="_blank"' in html
 
@@ -2247,7 +2257,7 @@ def test_build_events_local_tip_renders_anchor_around_named_place() -> None:
 
     assert (
         '<a href="https://www.google.com/maps/search/?api=1&amp;query=Moab%20Farmers%20Market" '
-        'target="_blank" rel="noopener">Moab Farmers Market</a>' in html
+        'class="tip-link" target="_blank" rel="noopener">Moab Farmers Market</a>' in html
     )
     assert "Check out " in html
     assert "on Thursday evenings for fresh produce." in html
@@ -2268,7 +2278,10 @@ def test_build_events_local_tip_appends_link_when_name_not_verbatim_in_text() ->
 
     html = assembler._build_events(events, "Moab")
 
-    assert '<a href="https://moabfarmersmarket.org/" target="_blank" rel="noopener">Moab Farmers Market</a>' in html
+    # class="tip-link" is load-bearing: the page loads Tailwind, whose Preflight
+    # sets a{color:inherit;text-decoration:inherit}, and the template has no base
+    # anchor rule -- so an unclassed tip link is invisible as a link.
+    assert '<a href="https://moabfarmersmarket.org/" class="tip-link" target="_blank" rel="noopener">Moab Farmers Market</a>' in html
     assert "Head downtown Thursday evenings for fresh local produce." in html
 
 
@@ -2867,7 +2880,7 @@ def test_build_getting_here_omits_route_stop_when_no_usable_url_exists() -> None
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "El Rito",
@@ -2896,7 +2909,7 @@ def test_build_getting_here_renders_en_route_stop_maps_search_fallback_link() ->
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "Snow Canyon",
@@ -2931,7 +2944,7 @@ def test_build_getting_here_non_seed_stop_with_no_url_is_absent() -> None:
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "Adobe Plaza",
@@ -2959,7 +2972,7 @@ def test_build_getting_here_seed_stop_with_no_url_renders_caution_badge() -> Non
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "Adobe Plaza",
@@ -2983,7 +2996,7 @@ def test_build_getting_here_maps_fallback_does_not_append_map_suffix() -> None:
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "El Rito",
@@ -3008,7 +3021,7 @@ def test_build_getting_here_falls_back_to_maps_url_when_canonical_missing() -> N
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "El Rito",
@@ -3035,7 +3048,7 @@ def test_build_getting_here_renders_detour_and_practical_note() -> None:
         "getting_here": {
             "route_summary": "Drive with one worthwhile stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             "en_route_stops": [
                 {
                     "name": "Wilson Arch",
@@ -3052,7 +3065,9 @@ def test_build_getting_here_renders_detour_and_practical_note() -> None:
 
     html = assembler._build_getting_here(ai, dest, previous_name="Capitol Reef National Park")
 
-    assert "3 mi detour" in html
+    # "round trip", not "detour": both the geometry floor and the estimate in
+    # url_discovery are 2x the perpendicular offset, and the card never said so.
+    assert "3 mi round trip" in html
     assert "8 min" in html
     assert "Pullout is on the right when driving north." in html
 
@@ -3066,7 +3081,7 @@ def test_build_getting_here_extracts_rating_from_stop_description_into_badge() -
         "getting_here": {
             "route_summary": "Drive with one worthwhile stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             "en_route_stops": [
                 {
                     "name": "Wilson Arch",
@@ -3092,7 +3107,7 @@ def test_build_getting_here_prefers_structured_rating_field_over_text_extraction
         "getting_here": {
             "route_summary": "Drive with one worthwhile stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             "en_route_stops": [
                 {
                     "name": "Wilson Arch",
@@ -3332,7 +3347,7 @@ def test_build_getting_here_renders_discovered_maps_search_url_as_primary() -> N
         "getting_here": {
             "route_summary": "Drive with one worthwhile stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             "en_route_stops": [
                 {
                     "name": "Wilson Arch",
@@ -3357,7 +3372,7 @@ def test_build_getting_here_renders_en_route_stop_maps_fallback_link() -> None:
         "getting_here": {
             "route_summary": "Drive with one questionable stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             "en_route_stops": [
                 {
                     "name": "Harrisburg Homestead Ruins",
@@ -3382,7 +3397,7 @@ def test_build_getting_here_rewrites_en_route_directions_link_to_stop_location()
         "getting_here": {
             "route_summary": "Drive with one route-linked stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             "en_route_stops": [
                 {
                     "name": "Red Cliffs Desert Reserve",
@@ -3406,7 +3421,7 @@ def test_build_getting_here_does_not_duplicate_stop_note_when_same_as_descriptio
         "getting_here": {
             "route_summary": "Drive with one worthwhile stop.",
             "distance_miles": "120",
-            "drive_time": "2h 30m",
+            "travel_time": "2h 30m",
             # is_seed=True: no url on this fixture; seeding keeps it visible
             # under the verified-link-or-seed policy (2026-08-17) so this test
             # can verify note/description dedup, which is what it's actually
@@ -3715,7 +3730,7 @@ def test_build_getting_here_renders_day_trip_badge_for_grouped_entry() -> None:
     ai = {
         "getting_here": {
             "distance_miles": "5",
-            "drive_time": "15 min",
+            "travel_time": "15 min",
             "en_route_stops": [],
         }
     }
@@ -3727,7 +3742,7 @@ def test_build_getting_here_renders_day_trip_badge_for_grouped_entry() -> None:
 
 def test_build_getting_here_no_day_trip_badge_for_ungrouped_entry() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
-    ai = {"getting_here": {"distance_miles": "120", "drive_time": "2h 30m", "en_route_stops": []}}
+    ai = {"getting_here": {"distance_miles": "120", "travel_time": "2h 30m", "en_route_stops": []}}
     dest = {"id": "moab", "name": "Moab"}
 
     html = assembler._build_getting_here(ai, dest, previous_name="Zion National Park")
@@ -3775,7 +3790,7 @@ def test_build_getting_here_renders_en_route_pointer_when_deferred_and_empty() -
     dest_by_id = {d["id"]: d for d in destinations}
     arches = dict(dest_by_id["arches"])
     arches["base_owned_categories"] = ["en_route_stop"]
-    ai = {"getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []}}
+    ai = {"getting_here": {"distance_miles": "5", "travel_time": "15 min", "en_route_stops": []}}
 
     html = assembler._build_getting_here(ai, arches, previous_name="Moab", dest_by_id=dest_by_id)
 
@@ -3817,7 +3832,7 @@ def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_cluster
                         {"name": "Delicate Arch", "type": "hike", "description": "Iconic hike.", "url": "https://www.nps.gov/arch/delicate"},
                     ],
                     "dinner_recommendations": [],
-                    "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "5", "travel_time": "15 min", "en_route_stops": []},
                 },
                 "scenic_drives": [],
                 "images": [],
@@ -3834,7 +3849,7 @@ def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_cluster
                         {"name": "Grand View Point", "type": "viewpoint", "description": "Sweeping canyon views.", "url": "https://www.nps.gov/cany/grandview"},
                     ],
                     "dinner_recommendations": [],
-                    "getting_here": {"distance_miles": "32", "drive_time": "40 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "32", "travel_time": "40 min", "en_route_stops": []},
                 },
                 "scenic_drives": [],
                 "images": [],
@@ -3924,7 +3939,7 @@ def test_assemble_grouped_child_getting_here_uses_base_not_preceding_sibling() -
                         {"name": "Delicate Arch", "type": "hike", "description": "Iconic hike.", "url": "https://www.nps.gov/arch/delicate"},
                     ],
                     "dinner_recommendations": [],
-                    "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "5", "travel_time": "15 min", "en_route_stops": []},
                 },
                 "scenic_drives": [],
                 "images": [],
@@ -3941,7 +3956,7 @@ def test_assemble_grouped_child_getting_here_uses_base_not_preceding_sibling() -
                         {"name": "Grand View Point", "type": "viewpoint", "description": "Sweeping canyon views.", "url": "https://www.nps.gov/cany/grandview"},
                     ],
                     "dinner_recommendations": [],
-                    "getting_here": {"distance_miles": "32", "drive_time": "40 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "32", "travel_time": "40 min", "en_route_stops": []},
                 },
                 "scenic_drives": [],
                 "images": [],
@@ -4006,7 +4021,7 @@ def test_assemble_moab_group_suppresses_schedule_card_for_grouped_children() -> 
                     "possible_daily_schedule": [
                         {"day_label": "Day 1", "periods": [{"period": "morning", "summary": "Hike to Delicate Arch."}]},
                     ],
-                    "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "5", "travel_time": "15 min", "en_route_stops": []},
                 },
                 "scenic_drives": [],
                 "images": [],
@@ -4062,7 +4077,7 @@ def test_assemble_moab_group_dedupes_base_attractions_against_grouped_child() ->
                         {"name": "Delicate Arch", "type": "hike", "description": "Arches own coverage of the arch.", "url": "https://www.nps.gov/arch/delicate"},
                     ],
                     "dinner_recommendations": [],
-                    "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "5", "travel_time": "15 min", "en_route_stops": []},
                 },
                 "scenic_drives": [],
                 "images": [],
@@ -4118,7 +4133,7 @@ def test_assemble_departure_card_renders_on_base_when_last_destination_is_groupe
                 "ai_content": {
                     "top_attractions": [],
                     "dinner_recommendations": [],
-                    "getting_here": {"distance_miles": "32", "drive_time": "40 min", "en_route_stops": []},
+                    "getting_here": {"distance_miles": "32", "travel_time": "40 min", "en_route_stops": []},
                     "getting_there": {"route_summary": "Head toward Grand Junction for departure.", "route_options": []},
                 },
                 "scenic_drives": [],
@@ -4150,7 +4165,7 @@ def test_build_group_child_card_omits_schedule_and_renders_nested_div() -> None:
     arches["ai_content"] = {
         "top_attractions": [{"name": "Delicate Arch", "type": "hike", "description": "Iconic hike.", "url": "https://www.nps.gov/arch/delicate"}],
         "possible_daily_schedule": [{"day_label": "Day 1", "periods": [{"period": "morning", "summary": "Should never render."}]}],
-        "getting_here": {"distance_miles": "5", "drive_time": "15 min", "en_route_stops": []},
+        "getting_here": {"distance_miles": "5", "travel_time": "15 min", "en_route_stops": []},
     }
 
     html = assembler._build_group_child_card(arches, {}, "Moab", "Moab Springs Ranch, Moab, UT", "Arches National Park", dest_by_id)
@@ -4608,7 +4623,7 @@ def test_build_getting_here_renders_maps_corner_link_when_distinct_from_primary_
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "El Rito",
@@ -4638,7 +4653,7 @@ def test_build_getting_here_omits_maps_corner_link_when_redundant_with_primary_u
         "getting_here": {
             "route_summary": "Drive to Santa Fe.",
             "distance_miles": "60",
-            "drive_time": "1h 15m",
+            "travel_time": "1h 15m",
             "en_route_stops": [
                 {
                     "name": "El Rito",
@@ -5125,6 +5140,349 @@ def test_template_has_exactly_one_route_map_link_slot() -> None:
     assert template.count("<!--ROUTE_MAP_LINK-->") == 1
     assert template.count('class="route-overview-head"') == 1
 
+
+def test_previous_lodging_stop_skips_day_trips() -> None:
+    """Real December itinerary: the final leg was labelled "Leiper's Fork ->
+    Asheville" because the day trip was simply the last entry in the list,
+    while the prose beneath it correctly read "Drive from Old Hickory". The
+    traveler drives on from the base they slept at."""
+    from generator.html_assembler import HTMLAssembler
+
+    destinations = [
+        {"id": "oldhickory", "name": "Old Hickory, Tennessee"},
+        {"id": "nashville", "name": "Nashville, Tennessee", "group_with": "oldhickory"},
+        {"id": "leipers_fork", "name": "Leiper's Fork, Tennessee", "group_with": "oldhickory"},
+        {"id": "asheville", "name": "Asheville, North Carolina"},
+    ]
+
+    previous = HTMLAssembler._previous_lodging_stop(destinations, 3)
+
+    assert previous is not None
+    assert previous["name"] == "Old Hickory, Tennessee"
+
+
+def test_previous_lodging_stop_is_none_for_the_first_stop() -> None:
+    """No earlier lodging stop means the leg starts at the departure gateway."""
+    from generator.html_assembler import HTMLAssembler
+
+    destinations = [{"id": "oldhickory", "name": "Old Hickory, Tennessee"}]
+
+    assert HTMLAssembler._previous_lodging_stop(destinations, 0) is None
+
+
+def test_previous_lodging_stop_returns_the_immediate_predecessor_when_ungrouped() -> None:
+    from generator.html_assembler import HTMLAssembler
+
+    destinations = [
+        {"id": "moab", "name": "Moab, Utah"},
+        {"id": "telluride", "name": "Telluride, Colorado"},
+    ]
+
+    assert HTMLAssembler._previous_lodging_stop(destinations, 1)["name"] == "Moab, Utah"
+
+
+# ── GH #2 Phase 1: transit options rendering ──────────────────────────────
+
+def _transit_ai(transit_options, **getting_here):
+    gh = {"route_summary": "By rail.", "travel_time": "3 hours"}
+    gh.update(getting_here)
+    gh["transit_options"] = transit_options
+    return {"getting_here": gh}
+
+
+_FORMAT_A = {
+    "has_transit": True,
+    "source": "ai",
+    "confidence": "unverified",
+    "options": [
+        {
+            "mode": "bus",
+            "label": "Regional bus via Panguitch",
+            "duration": "3-4 hours",
+            "transfers": 1,
+            "notes": "Runs daily in peak season.",
+            "booking_hint": "Search 'Bryce to Capitol Reef bus' for schedules.",
+        }
+    ],
+    "fallback": "Driving remains the most reliable option on this corridor.",
+}
+
+_FORMAT_B = {
+    "has_transit": False,
+    "honest_assessment": "No scheduled public transit connects Bryce Canyon to Capitol Reef.",
+    "local_tip": "Springdale outfitters run point-to-point shuttles on request.",
+}
+
+
+def test_transit_card_renders_format_a_options() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_getting_here(
+        _transit_ai(_FORMAT_A), {"name": "Capitol Reef"}, previous_name="Bryce Canyon"
+    )
+    assert "PUBLIC TRANSPORT OPTIONS" in html
+    assert "Regional bus via Panguitch" in html
+    assert "3-4 hours" in html
+    assert "1 transfer" in html
+    assert "Runs daily in peak season." in html
+    assert "Driving remains the most reliable option" in html
+
+
+def test_transit_card_renders_format_b_honest_assessment() -> None:
+    """The honest negative is a product surface, not an empty card."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_getting_here(
+        _transit_ai(_FORMAT_B), {"name": "Capitol Reef"}, previous_name="Bryce Canyon"
+    )
+    assert "No scheduled public transit connects" in html
+    assert "point-to-point shuttles" in html
+    assert "PUBLIC TRANSPORT OPTIONS" not in html
+
+
+def test_unverified_badge_shown_unless_api_verified() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_getting_here(
+        _transit_ai(_FORMAT_A), {"name": "Capitol Reef"}, previous_name="Bryce Canyon"
+    )
+    assert "Unverified" in html
+    assert "AI-suggested and unverified" in html
+
+    verified = dict(_FORMAT_A, confidence="api_verified", source="google_directions")
+    html = assembler._build_getting_here(
+        _transit_ai(verified), {"name": "Capitol Reef"}, previous_name="Bryce Canyon"
+    )
+    assert "Unverified" not in html
+    assert "AI-suggested and unverified" not in html
+
+
+def test_duration_badge_survives_an_empty_distance() -> None:
+    """The rendering trap in multimodal-routing.md 4.2: the badge row used to
+    be gated on distance AND duration, so a transit leg with no road mileage
+    silently lost the one figure it does have."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_getting_here(
+        _transit_ai(_FORMAT_A, distance_miles=""),
+        {"name": "Capitol Reef"},
+        previous_name="Bryce Canyon",
+    )
+    assert "badge-time" in html
+    assert "3 hours" in html
+    assert "badge-distance" not in html
+
+
+def test_transfer_badge_substitutes_for_distance_on_a_transit_leg() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    html = assembler._build_getting_here(
+        _transit_ai(_FORMAT_A, distance_miles=""),
+        {"name": "Capitol Reef"},
+        previous_name="Bryce Canyon",
+    )
+    assert "badge-transfers" in html
+
+
+def test_distance_badge_still_renders_without_a_duration() -> None:
+    """The same gate, the other way round."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {"distance_miles": "212", "travel_time": ""}}
+    html = assembler._build_getting_here(ai, {"name": "Moab"}, previous_name="Bryce Canyon")
+    assert "212 mi" in html
+    assert "badge-time" not in html
+
+
+def test_every_transit_prose_field_is_escaped() -> None:
+    """design.md 4.5 item 11 records route_summary being interpolated raw one
+    function away from an identical escaped line. Do not extend that."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    hostile = "<script>alert('x')</script>"
+    payload = {
+        "has_transit": True,
+        "confidence": "unverified",
+        "options": [{
+            "mode": "bus",
+            "label": hostile,
+            "duration": hostile,
+            "notes": hostile,
+            "booking_hint": hostile,
+        }],
+        "fallback": hostile,
+    }
+    html = assembler._build_getting_here(
+        _transit_ai(payload), {"name": "Capitol Reef"}, previous_name="Bryce Canyon"
+    )
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+    html_b = assembler._build_getting_here(
+        _transit_ai({"has_transit": False, "honest_assessment": hostile, "local_tip": hostile}),
+        {"name": "Capitol Reef"},
+        previous_name="Bryce Canyon",
+    )
+    assert "<script>" not in html_b
+
+
+def test_a_leg_with_no_transit_options_renders_exactly_as_before() -> None:
+    """The default path must be untouched: no transit markup at all."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {"route_summary": "US-89 to UT-12.", "distance_miles": "95",
+                           "travel_time": "2 hrs 15 min"}}
+    html = assembler._build_getting_here(ai, {"name": "Bryce"}, previous_name="Zion")
+    assert "transit-options" not in html
+    assert "Unverified" not in html
+    assert "95 mi" in html and "2 hrs 15 min" in html
+
+
+def test_transit_leg_maps_url_is_transit_mode_without_waypoints() -> None:
+    """multimodal-routing.md 4.3: an early return past the waypoint block.
+    Transit mode rejects waypoints outright -- Google returns 'could not
+    calculate transit directions' and the link is dead."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest = {"name": "Capitol Reef", "_transport_mode": "transit"}
+    stops = [{"name": "Escalante", "geocode_lat": 37.7, "geocode_lng": -111.6}]
+
+    url = assembler._build_route_gmaps_url("Bryce Canyon", dest, stops)
+
+    assert "travelmode=transit" in url
+    assert "waypoints=" not in url
+    assert "destination=Capitol%20Reef" in url
+
+
+def test_mixed_leg_keeps_driving_directions_and_its_waypoints() -> None:
+    """Under `mixed` the drive is still the primary answer, so its roadside
+    stops are still real."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest = {"name": "Capitol Reef", "_transport_mode": "mixed"}
+    stops = [{"name": "Escalante", "geocode_lat": 37.7, "geocode_lng": -111.6}]
+
+    url = assembler._build_route_gmaps_url("Bryce Canyon", dest, stops)
+
+    assert "travelmode=driving" in url
+    assert "waypoints=" in url
+
+
+# ── GH #2: self-powered legs ───────────────────────────────────────────────
+
+@pytest.mark.parametrize("mode, travelmode", [("bike", "bicycling"), ("hike", "walking")])
+def test_self_powered_legs_get_their_own_maps_travelmode(mode, travelmode) -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest = {"name": "Capitol Reef", "_transport_mode": mode}
+
+    url = assembler._build_route_gmaps_url("Bryce Canyon", dest, [])
+
+    assert f"travelmode={travelmode}" in url
+
+
+@pytest.mark.parametrize("mode", ["bike", "hike"])
+def test_self_powered_legs_keep_their_waypoints(mode) -> None:
+    """Transit returns early past the waypoint block because Google rejects
+    waypoints there. Bicycling and walking accept them, and a self-powered
+    leg is where they matter most -- the stops are the itinerary."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest = {"name": "Capitol Reef", "_transport_mode": mode}
+    stops = [{"name": "Escalante", "geocode_lat": 37.7, "geocode_lng": -111.6}]
+
+    url = assembler._build_route_gmaps_url("Bryce Canyon", dest, stops)
+
+    assert "waypoints=" in url
+
+
+def test_transit_still_drops_its_waypoints() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    dest = {"name": "Capitol Reef", "_transport_mode": "transit"}
+    stops = [{"name": "Escalante", "geocode_lat": 37.7, "geocode_lng": -111.6}]
+
+    url = assembler._build_route_gmaps_url("Bryce Canyon", dest, stops)
+
+    assert "waypoints=" not in url
+
+
+@pytest.mark.parametrize("mode, word", [("bike", "Riding"), ("hike", "Walking")])
+def test_the_card_heading_matches_the_mode(mode, word) -> None:
+    """A leg the traveler pedals should not sit under a car icon."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {"route_summary": "Gravel and climbing.", "travel_time": "5 hours"}}
+
+    html = assembler._build_getting_here(
+        ai, {"name": "Capitol Reef", "_transport_mode": mode}, previous_name="Bryce"
+    )
+
+    assert word in html
+    assert "Getting Here" not in html
+
+
+def test_a_driving_leg_keeps_the_car_heading() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {"route_summary": "US-89.", "travel_time": "2 hrs", "distance_miles": "95"}}
+
+    html = assembler._build_getting_here(ai, {"name": "Bryce"}, previous_name="Zion")
+
+    assert "Getting Here" in html
+
+
+@pytest.mark.parametrize("mode, travelmode", [
+    ("hike", "walking"), ("bike", "bicycling"), ("transit", "transit"), ("auto", "driving"),
+])
+def test_the_getting_here_link_matches_the_card_it_sits_in(mode, travelmode) -> None:
+    """Through _build_getting_here, not through the URL helper in isolation.
+
+    The helper builds its link from a synthetic route_destination dict, so a
+    field it consults but that dict omits produces a card whose heading and
+    whose link disagree. That happened once for booked transportation (11 of
+    12 links on an all-rail itinerary opened car directions) and again for
+    the resolved leg mode -- a PCT run rendered "Walking Here" above driving
+    directions. Testing the helper alone cannot see either."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {"route_summary": "The leg.", "travel_time": "5 hrs"}}
+    dest = {"name": "Trout Lake", "_transport_mode": mode}
+
+    html = assembler._build_getting_here(ai, dest, previous_name="Cascade Locks")
+
+    assert f"travelmode={travelmode}" in html
+
+
+def test_the_leg_trail_link_renders_when_discovery_found_one() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {
+        "route_summary": "Gravel and climbing.",
+        "travel_time": "about 6 days",
+        "trail_url": "https://www.alltrails.com/trail/us/washington/pct-section-h",
+        "trail_label": "Pacific Crest Trail: Cascade Locks to Trout Lake",
+    }}
+
+    html = assembler._build_getting_here(
+        ai, {"name": "Trout Lake", "_transport_mode": "hike"}, previous_name="Cascade Locks"
+    )
+
+    assert "alltrails.com/trail/us/washington/pct-section-h" in html
+    assert "Cascade Locks to Trout Lake" in html
+    assert "about 6 days" in html
+
+
+def test_no_trail_link_row_without_a_url() -> None:
+    """No link, no row -- the model is never asked for one, so an absent URL
+    means discovery found nothing rather than that something went missing."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {"route_summary": "The leg.", "travel_time": "about 6 days",
+                           "trail_label": "Pacific Crest Trail: A to B"}}
+
+    html = assembler._build_getting_here(
+        ai, {"name": "B", "_transport_mode": "hike"}, previous_name="A"
+    )
+
+    assert "leg-trail-link" not in html
+
+
+def test_the_trail_label_is_escaped() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {
+        "travel_time": "about 6 days",
+        "trail_url": "https://www.alltrails.com/trail/x",
+        "trail_label": "<script>alert('x')</script>",
+    }}
+
+    html = assembler._build_getting_here(
+        ai, {"name": "B", "_transport_mode": "hike"}, previous_name="A"
+    )
+
+    assert "<script>" not in html
 
 # ── Footer: provenance vs support routing (SS8.2, SS8.3) ─────────────────────
 

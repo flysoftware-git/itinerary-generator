@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 import generator.main as main_mod
 
 
@@ -1783,7 +1785,15 @@ class TestOptionalCategorySwitches:
     schedule, lodging and drives are unaffected by all three.
     """
 
-    def test_all_three_are_off_in_the_shipped_config(self):
+    def test_shipped_config_matches_the_intended_switch_state(self):
+        """Guards against a priced category being switched on by accident.
+
+        All three stay off globally. Trails were wanted back for the
+        Southwest trip (2026-08-29) but that answer belongs in its manifest,
+        not here -- flipping the global switch would also have bought trails
+        for Europe, whose manifest asks for no hikes. See
+        TestPerTripCategorySwitches.
+        """
         from generator.main import _category_enabled
         for section in ("trails", "en_route_stops", "cultural_events"):
             assert _category_enabled("config.yaml", section) is False, section
@@ -1838,3 +1848,532 @@ class TestEnRouteStopsCanBeSwitchedOffEntirely:
         with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
             disc = URLDiscoverer(config_path="config.yaml", llm_client=mock_llm, disable_en_route=False)
         assert disc._disable_en_route is False
+
+
+class TestPerTripCategorySwitches:
+    """A priced category can be answered by the trip, not just globally.
+
+    A single config flag meant enabling trails for the Southwest trip also
+    bought them for Europe, whose manifest asks for no hikes. Precedence is
+    CLI, then manifest, then config: the run-specific answer wins, the trip's
+    own answer is sticky across runs, and config remains the default.
+    """
+
+    def _manifest(self, tmp_path, body):
+        p = tmp_path / "m.yaml"
+        p.write_text(body, encoding="utf-8")
+        return str(p)
+
+    def test_manifest_can_enable_a_category_config_leaves_off(self, tmp_path):
+        from generator.main import _resolve_category
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("trails:\n  enabled: false\n", encoding="utf-8")
+        m = self._manifest(tmp_path, "categories:\n  trails: true\n")
+        assert _resolve_category(None, str(cfg), "trails", manifest_path=m) is True
+
+    def test_manifest_can_disable_a_category_config_leaves_on(self, tmp_path):
+        from generator.main import _resolve_category
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("trails:\n  enabled: true\n", encoding="utf-8")
+        m = self._manifest(tmp_path, "categories:\n  trails: false\n")
+        assert _resolve_category(None, str(cfg), "trails", manifest_path=m) is False
+
+    def test_cli_still_beats_the_manifest(self, tmp_path):
+        from generator.main import _resolve_category
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("trails:\n  enabled: false\n", encoding="utf-8")
+        m = self._manifest(tmp_path, "categories:\n  trails: true\n")
+        assert _resolve_category(False, str(cfg), "trails", manifest_path=m) is False
+
+    def test_silent_manifest_falls_through_to_config(self, tmp_path):
+        from generator.main import _resolve_category
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("trails:\n  enabled: true\n", encoding="utf-8")
+        m = self._manifest(tmp_path, "trip:\n  title: No categories here\n")
+        assert _resolve_category(None, str(cfg), "trails", manifest_path=m) is True
+
+    def test_nested_under_trip_is_accepted(self, tmp_path):
+        from generator.main import _resolve_category
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("trails:\n  enabled: false\n", encoding="utf-8")
+        m = self._manifest(tmp_path, "trip:\n  categories:\n    trails: true\n")
+        assert _resolve_category(None, str(cfg), "trails", manifest_path=m) is True
+
+    def test_enabled_subkey_form_is_accepted(self, tmp_path):
+        from generator.main import _resolve_category
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("trails:\n  enabled: false\n", encoding="utf-8")
+        m = self._manifest(tmp_path, "categories:\n  trails:\n    enabled: true\n")
+        assert _resolve_category(None, str(cfg), "trails", manifest_path=m) is True
+
+    def test_unreadable_manifest_does_not_raise(self, tmp_path):
+        from generator.main import _manifest_category_override
+        assert _manifest_category_override(str(tmp_path / "missing.yaml"), "trails") is None
+
+    def test_malformed_manifest_does_not_raise(self, tmp_path):
+        from generator.main import _manifest_category_override
+        m = self._manifest(tmp_path, "categories: [this, is, not, a, mapping\n")
+        assert _manifest_category_override(m, "trails") is None
+
+    def test_non_boolean_value_is_ignored(self, tmp_path):
+        from generator.main import _manifest_category_override
+        m = self._manifest(tmp_path, "categories:\n  trails: maybe\n")
+        assert _manifest_category_override(m, "trails") is None
+
+
+# ── GH #2 Phase 1: transit options in the pipeline ────────────────────────
+
+def test_generated_transit_options_are_not_redacted() -> None:
+    """Asserted explicitly so a later reader does not "fix" the asymmetry
+    with booked legs. A booked leg carries a record locator that is enough to
+    change someone else's reservation; a generated option is a guess about a
+    bus, with no personal data in it at all."""
+    import generator.main as main_mod
+
+    trip = {
+        "trip": {},
+        "destinations": [{
+            "id": "bryce",
+            "name": "Bryce Canyon",
+            "planning_links": [{"label": "Plans", "url": "https://example.com"}],
+            "transportation": [{"type": "train", "confirmation_number": "XR7Q2M"}],
+            "ai_content": {"getting_here": {"transit_options": {
+                "has_transit": True,
+                "options": [{"label": "Regional bus via Panguitch"}],
+            }}},
+        }],
+    }
+
+    main_mod._apply_privacy_redaction(trip)
+
+    gh = trip["destinations"][0]["ai_content"]["getting_here"]
+    assert gh["transit_options"]["options"][0]["label"] == "Regional bus via Panguitch"
+    # The booked leg beside it still goes.
+    assert trip["destinations"][0]["transportation"] == []
+
+
+def test_transit_routing_spend_is_attributed_to_a_stage() -> None:
+    """design.md 4.4 records two incidents of spend silently excluded from
+    stage attribution because its operation prefix matched no branch."""
+    import generator.main as main_mod
+
+    metrics = main_mod._build_gate_a_metrics(
+        trip={"trip": {}, "destinations": [{"id": "zion", "name": "Zion"}]},
+        usage_summary={"records": [
+            {"operation": "transit_routing:Bryce Canyon", "estimated_cost_usd": 0.12},
+        ], "total_estimated_cost_usd": 0.12},
+        stage_timings={"stage_3_ai_generation": 60.0, "stage_4_5_parallel": 60.0},
+        skip_events=True,
+        skip_images=True,
+        skip_url_discovery=True,
+        image_counter_delta={},
+        url_validator_counter_delta={},
+    )
+
+    assert metrics["stage_cost_usd"]["stage_3_ai_generation"] == 0.12
+
+
+def test_transit_routing_only_pays_for_legs_the_manifest_asked_about() -> None:
+    import generator.main as main_mod
+    from generator.transit_routing import stamp_resolved_modes
+
+    calls = []
+
+    class _Provider:
+        def generate_transit_options(self, origin, dest, trip_meta):
+            calls.append((origin.get("id"), dest.get("id")))
+            return {"has_transit": False, "honest_assessment": "None."}
+
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"id": "zion", "name": "Zion", "ai_content": {}},
+            {"id": "bryce", "name": "Bryce", "transport_mode": "transit", "ai_content": {}},
+            {"id": "moab", "name": "Moab", "ai_content": {}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+
+    import generator.transit_routing as tr
+    original = tr.build_transit_provider
+    tr.build_transit_provider = lambda *a, **k: _Provider()
+    try:
+        updated = main_mod._apply_transit_routing(trip)
+    finally:
+        tr.build_transit_provider = original
+
+    assert updated == 1
+    assert calls == [("zion", "bryce")]
+    assert "transit_options" in trip["destinations"][1]["ai_content"]["getting_here"]
+    assert "getting_here" not in trip["destinations"][2].get("ai_content", {})
+
+
+def test_a_booked_leg_costs_no_transit_call() -> None:
+    """multimodal-routing.md 4.6: the cheapest branch in the design."""
+    import generator.main as main_mod
+    import generator.transit_routing as tr
+    from generator.transit_routing import stamp_resolved_modes
+
+    calls = []
+
+    class _Provider:
+        def generate_transit_options(self, origin, dest, trip_meta):
+            calls.append(dest.get("id"))
+            return {}
+
+    trip = {
+        "trip": {"transport_mode": "transit"},
+        "destinations": [
+            {"id": "tokyo", "name": "Tokyo", "ai_content": {}},
+            {"id": "kyoto", "name": "Kyoto", "ai_content": {},
+             "transportation": [{"type": "train", "confirmation_number": "XR7Q2M"}]},
+        ],
+    }
+    stamp_resolved_modes(trip)
+
+    original = tr.build_transit_provider
+    tr.build_transit_provider = lambda *a, **k: _Provider()
+    try:
+        assert main_mod._apply_transit_routing(trip) == 0
+    finally:
+        tr.build_transit_provider = original
+    assert calls == []
+
+
+def test_transit_routing_kill_switch_skips_the_stage(tmp_path) -> None:
+    import generator.main as main_mod
+    from generator.transit_routing import stamp_resolved_modes
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("transit_routing:\n  enabled: false\n", encoding="utf-8")
+    trip = {
+        "trip": {"transport_mode": "transit"},
+        "destinations": [
+            {"id": "a", "name": "A", "ai_content": {}},
+            {"id": "b", "name": "B", "ai_content": {}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+
+    assert main_mod._apply_transit_routing(trip, config_path=str(cfg)) == 0
+
+
+# ── GH #2: no driving figure survives on a leg that is not a drive ────────
+
+def _transit_trip(travel_time="2 hrs 15 min", distance="95", transit_options=None,
+                  duration_is_estimate=False):
+    from generator.transit_routing import stamp_resolved_modes
+
+    gh = {"travel_time": travel_time, "distance_miles": distance,
+          "route_summary": "US-89 to UT-12."}
+    if transit_options is not None:
+        gh["transit_options"] = transit_options
+    if duration_is_estimate:
+        gh["duration_is_estimate"] = True
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"id": "bryce", "name": "Bryce Canyon", "ai_content": {}},
+            {"id": "capitol_reef", "name": "Capitol Reef", "transport_mode": "transit",
+             "ai_content": {"getting_here": gh}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    return trip
+
+
+_BAND = {
+    "has_transit": True,
+    "confidence": "unverified",
+    "options": [{"label": "Regional bus via Panguitch", "duration": "3-4 hours", "transfers": 1}],
+}
+
+
+def test_transit_leg_takes_its_duration_from_the_suggested_band() -> None:
+    """The card and the schedule must agree. Left alone, this leg showed a
+    3-4 hour bus in one card and scheduled a 2h15 drive in the next."""
+    import generator.main as main_mod
+
+    trip = _transit_trip(transit_options=_BAND)
+    assert main_mod._enforce_transit_leg_durations(trip) == 1
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "3-4 hours"
+    assert gh["distance_miles"] == ""
+    assert gh["duration_is_estimate"] is True
+    assert gh["travel_mode"] == "transit"
+
+
+def test_the_schedule_reads_the_band_the_card_shows() -> None:
+    """The point of the whole fix: one number, both places. The normalizer's
+    existing range handling takes the midpoint of 3-4 hours."""
+    import generator.main as main_mod
+    from generator.ai_content import AIContentGenerator
+
+    trip = _transit_trip(transit_options=_BAND)
+    main_mod._enforce_transit_leg_durations(trip)
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+
+    assert AIContentGenerator._parse_duration_minutes(gh["travel_time"]) == 210
+
+
+def test_a_transit_leg_with_no_band_is_left_blank_not_guessed() -> None:
+    """An unstated arrival is a gap; an invented one is a wrong answer the
+    reader cannot see is wrong."""
+    import generator.main as main_mod
+
+    trip = _transit_trip(transit_options={"has_transit": False, "honest_assessment": "None."})
+    assert main_mod._enforce_transit_leg_durations(trip) == 1
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == ""
+    assert gh["distance_miles"] == ""
+
+
+def test_a_real_routes_estimate_outranks_the_band() -> None:
+    """A priced figure from the Routes API beats a model's guess at a range,
+    and must not be overwritten by it."""
+    import generator.main as main_mod
+
+    trip = _transit_trip(travel_time="2 hrs 16 min", distance="187",
+                         transit_options=_BAND, duration_is_estimate=True)
+    assert main_mod._enforce_transit_leg_durations(trip) == 0
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "2 hrs 16 min"
+    assert gh["distance_miles"] == "187"
+
+
+def test_a_driving_leg_is_untouched() -> None:
+    import generator.main as main_mod
+    from generator.transit_routing import stamp_resolved_modes
+
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"id": "zion", "name": "Zion", "ai_content": {}},
+            {"id": "bryce", "name": "Bryce", "ai_content": {"getting_here": {
+                "travel_time": "2 hrs 15 min", "distance_miles": "95"}}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    assert main_mod._enforce_transit_leg_durations(trip) == 0
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "2 hrs 15 min"
+    assert gh["distance_miles"] == "95"
+
+
+def test_a_mixed_leg_keeps_its_car_estimate() -> None:
+    """Under `mixed` the drive is still the answer and the transit options
+    sit beside it -- so the drive figures stay."""
+    import generator.main as main_mod
+    from generator.transit_routing import stamp_resolved_modes
+
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"id": "zion", "name": "Zion", "ai_content": {}},
+            {"id": "bryce", "name": "Bryce", "transport_mode": "mixed",
+             "ai_content": {"getting_here": {
+                 "travel_time": "2 hrs 15 min", "distance_miles": "95",
+                 "transit_options": _BAND}}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    assert main_mod._enforce_transit_leg_durations(trip) == 0
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "2 hrs 15 min"
+    assert gh["distance_miles"] == "95"
+
+
+# ── GH #2: the retry pass must not re-price legs the first pass priced ────
+
+class _CountingEstimator:
+    """Mimics TransitEstimator's memo, which is the thing under test."""
+
+    available = True
+
+    def __init__(self, result=None):
+        self.result = result
+        self.call_count = 0
+        self.modes_seen = []
+        self._memo = {}
+
+    def estimate(self, origin, destination, *, departure_iso="", travel_mode="TRANSIT"):
+        # Mode is part of the real memo key: the same endpoints have a
+        # different answer by bike than by train.
+        key = (origin, destination, departure_iso, travel_mode)
+        self.modes_seen.append(travel_mode)
+        if key in self._memo:
+            return self._memo[key]
+        self.call_count += 1
+        self._memo[key] = self.result
+        return self.result
+
+
+def _two_transit_legs():
+    from generator.transit_routing import stamp_resolved_modes
+
+    trip = {
+        "trip": {"transport_mode": "transit"},
+        "destinations": [
+            {"id": "kyoto", "name": "Kyoto", "ai_content": {"getting_here": {}}},
+            {"id": "kanazawa", "name": "Kanazawa", "ai_content": {"getting_here": {}}},
+            {"id": "tokyo", "name": "Tokyo", "ai_content": {"getting_here": {}}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    return trip
+
+
+def test_a_shared_estimator_prices_each_leg_once_across_both_passes():
+    """main calls _apply_transit_estimates a second time after a selective
+    retry. With a fresh estimator per pass that doubled the Routes API bill;
+    the Japan run made 8 calls for 4 legs, every one of them empty."""
+    import generator.main as main_mod
+
+    trip = _two_transit_legs()
+    estimator = _CountingEstimator(result={"minutes": 136, "miles": 133, "estimated": True})
+
+    main_mod._apply_transit_estimates(trip, estimator=estimator)
+    after_first = estimator.call_count
+    main_mod._apply_transit_estimates(trip, estimator=estimator)
+
+    assert after_first == 2          # kyoto->kanazawa, kanazawa->tokyo
+    assert estimator.call_count == 2  # and not 4
+
+
+def test_an_uncovered_corridor_is_only_discovered_once():
+    """The expensive case: every call returns nothing, so without the shared
+    memo the run pays twice to learn the same negative."""
+    import generator.main as main_mod
+
+    trip = _two_transit_legs()
+    estimator = _CountingEstimator(result=None)
+
+    main_mod._apply_transit_estimates(trip, estimator=estimator)
+    main_mod._apply_transit_estimates(trip, estimator=estimator)
+
+    assert estimator.call_count == 2
+
+
+def test_without_a_shared_estimator_it_still_builds_its_own():
+    """Callers that pass nothing keep working -- the parameter is an
+    optimisation, not a new requirement."""
+    import generator.main as main_mod
+
+    trip = _two_transit_legs()
+    # No GOOGLE_MAPS_PLATFORM_KEY in the test environment, so this takes the
+    # unavailable path and returns 0 rather than reaching the network.
+    assert main_mod._apply_transit_estimates(trip) == 0
+
+
+# ── GH #2: self-powered legs are priced, never guessed ────────────────────
+
+def _self_powered_trip(mode, travel_time="2 hrs 15 min", distance="95"):
+    from generator.transit_routing import stamp_resolved_modes
+
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"id": "zion", "name": "Zion", "ai_content": {}},
+            {"id": "bryce", "name": "Bryce", "transport_mode": mode,
+             "ai_content": {"getting_here": {
+                 "travel_time": travel_time, "distance_miles": distance}}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    return trip
+
+
+@pytest.mark.parametrize("mode, expected", [("bike", "BICYCLE"), ("hike", "WALK")])
+def test_a_self_powered_leg_is_priced_by_its_own_travel_mode(mode, expected):
+    import generator.main as main_mod
+
+    trip = _self_powered_trip(mode)
+    estimator = _CountingEstimator(result={"minutes": 300, "miles": 62, "estimated": True})
+
+    assert main_mod._apply_transit_estimates(trip, estimator=estimator) == 1
+    assert estimator.modes_seen == [expected]
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "5 hrs"
+    assert gh["distance_miles"] == 62
+    assert gh["travel_mode"] == mode
+
+
+@pytest.mark.parametrize("mode", ["bike", "hike"])
+def test_an_unpriced_self_powered_leg_is_blank_not_a_drive(mode):
+    """No options card exists for a leg nobody operates, so the Routes figure
+    is the only honest source. Without it, nothing."""
+    import generator.main as main_mod
+
+    trip = _self_powered_trip(mode)
+    assert main_mod._enforce_transit_leg_durations(trip) == 1
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == ""
+    assert gh["distance_miles"] == ""
+    assert gh["travel_mode"] == mode
+
+
+@pytest.mark.parametrize("mode", ["bike", "hike"])
+def test_a_priced_self_powered_leg_is_left_alone(mode):
+    import generator.main as main_mod
+
+    trip = _self_powered_trip(mode, travel_time="5 hrs", distance="62")
+    trip["destinations"][1]["ai_content"]["getting_here"]["duration_is_estimate"] = True
+
+    assert main_mod._enforce_transit_leg_durations(trip) == 0
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "5 hrs"
+    assert gh["distance_miles"] == "62"
+
+
+def test_a_multi_day_walk_is_scheduled_in_days_not_walking_hours():
+    """The PCT run's headline defect: Google's continuous WALK duration
+    rendered as the leg duration for a leg spanning a week."""
+    import generator.main as main_mod
+    from generator.transit_routing import stamp_resolved_modes
+
+    trip = {
+        "trip": {"transport_mode": "hike", "default_daily_activity_hours": 8,
+                 "departure": "Cascade Locks, Oregon"},
+        "destinations": [
+            {"id": "cascade_locks", "name": "Cascade Locks", "ai_content": {}},
+            {"id": "trout_lake", "name": "Trout Lake", "ai_content": {}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    estimator = _CountingEstimator(result={"minutes": 2755, "miles": 123, "estimated": True})
+
+    main_mod._apply_transit_estimates(
+        trip, departure_hint="Cascade Locks, Oregon", estimator=estimator
+    )
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "about 6 days"
+    assert "hrs" not in gh["travel_time"]
+
+
+def test_a_transit_leg_still_reads_in_hours():
+    """Only the self-powered modes convert. A train really does take 2 hrs
+    16 min, and rendering that as a fraction of a day would be absurd."""
+    import generator.main as main_mod
+    from generator.transit_routing import stamp_resolved_modes
+
+    trip = {
+        "trip": {"transport_mode": "transit", "default_daily_activity_hours": 8,
+                 "departure": "Tokyo"},
+        "destinations": [
+            {"id": "tokyo", "name": "Tokyo", "ai_content": {}},
+            {"id": "kyoto", "name": "Kyoto", "ai_content": {}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    estimator = _CountingEstimator(result={"minutes": 136, "miles": 133, "estimated": True})
+
+    main_mod._apply_transit_estimates(trip, departure_hint="Tokyo", estimator=estimator)
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "2 hrs 16 min"

@@ -78,7 +78,7 @@ def test_discover_still_runs_for_group_base_itself() -> None:
 
     calls: list[str] = []
 
-    def _fake(dest):
+    def _fake(dest, window_dates=""):
         calls.append(dest["name"])
         return {"has_events": False, "honest_assessment": "No ticketed events were confidently verified."}
 
@@ -104,7 +104,7 @@ def test_discover_runs_for_grouped_child_when_cultural_events_not_deferred() -> 
 
     calls: list[str] = []
 
-    def _fake(dest):
+    def _fake(dest, window_dates=""):
         calls.append(dest["name"])
         return {"has_events": False, "honest_assessment": "ok"}
 
@@ -363,7 +363,7 @@ def test_verify_event_urls_assigns_maps_fallback_when_no_url_present() -> None:
     verified = d._verify_event_urls(result, "Moab")
 
     assert verified["events"][0]["url"] == (
-        "https://www.google.com/maps/search/?api=1&query=Canyonlands%20Ultra%20Moab"
+        "https://www.google.com/maps/search/?api=1&query=Moab"
     )
 
 
@@ -385,7 +385,7 @@ def test_verify_event_urls_fallback_omits_redundant_destination_scope() -> None:
     verified = d._verify_event_urls(result, "Moab")
 
     assert verified["events"][0]["url"] == (
-        "https://www.google.com/maps/search/?api=1&query=Moab%20Music%20Festival"
+        "https://www.google.com/maps/search/?api=1&query=Moab"
     )
 
 
@@ -603,3 +603,183 @@ class TestCulturalEventsModelIsPinned:
              patch.object(CulturalEventsDiscoverer, "_load_multi_site_grouping_config", lambda *a, **k: None):
             CulturalEventsDiscoverer(str(cfg), llm_client=llm)
         assert grok.call_args.kwargs["model"] is None
+
+
+def test_drop_events_before_arrival_removes_event_after_departure() -> None:
+    """Real Old Hickory/Asheville run (Dec 13-16, 2026 stay): the filter only
+    ever looked backwards, so an event starting after the traveler flies home
+    passed straight through. Unattendable in exactly the same way as one that
+    ended before they landed."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {"name": "Winter Lights", "dates_in_range": "December 14, 2026"},
+            {"name": "New Year Gala", "dates_in_range": "December 31, 2026"},
+        ],
+    }
+
+    filtered = d._drop_events_before_arrival(result, "December 13-16, 2026")
+
+    assert [e["name"] for e in filtered["events"]] == ["Winter Lights"]
+
+
+def test_drop_events_before_arrival_keeps_run_spanning_the_stay() -> None:
+    """A programme that opened before arrival but is still running during the
+    stay is attendable, and is often the best listing a December trip has.
+    Comparing start dates alone dropped Christmas at Biltmore (Nov 7 - Jan 10)
+    from a Dec 13-16 Asheville stay."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [
+            {"name": "Christmas at Biltmore", "dates_in_range": "November 7, 2026 - January 10, 2027"},
+        ],
+    }
+
+    filtered = d._drop_events_before_arrival(result, "December 13-16, 2026")
+
+    assert [e["name"] for e in filtered["events"]] == ["Christmas at Biltmore"]
+
+
+def test_sanitize_local_tip_drops_explicit_date_outside_stay() -> None:
+    """The tip sanitizer only matched weekday NAMES, so "December 5-6, 2026"
+    -- which contains no weekday word -- sailed through and was recommended
+    to a traveler arriving on the 13th."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "local_tip": "Check out The Big Crafty, taking place on December 5-6, 2026.",
+        "local_tip_name": "The Big Crafty",
+        "local_tip_url": "https://example.com/",
+    }
+
+    sanitized = d._sanitize_local_tip_by_itinerary_days(result, "December 13-16, 2026")
+
+    assert "local_tip" not in sanitized
+    assert "local_tip_name" not in sanitized
+    assert "local_tip_url" not in sanitized
+
+
+def test_sanitize_local_tip_runs_even_when_events_were_found() -> None:
+    """The sanitizer used to return early whenever has_events was true, which
+    skipped the check for precisely the destinations most likely to carry a
+    tip. The tip renders either way."""
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [{"name": "Something Real", "dates_in_range": "December 14, 2026"}],
+        "local_tip": "Do not miss the market on December 3, 2026.",
+    }
+
+    sanitized = d._sanitize_local_tip_by_itinerary_days(result, "December 13-16, 2026")
+
+    assert "local_tip" not in sanitized
+
+
+def test_sanitize_local_tip_keeps_date_inside_stay() -> None:
+    d = _discoverer()
+    result = {"has_events": True, "local_tip": "Winter Lights opens December 14, 2026."}
+
+    sanitized = d._sanitize_local_tip_by_itinerary_days(result, "December 13-16, 2026")
+
+    assert sanitized["local_tip"] == "Winter Lights opens December 14, 2026."
+
+
+def test_grouped_day_trip_uses_the_base_stay_as_its_event_window() -> None:
+    """A day trip's single date is a modelling convenience, not a limit on
+    when the traveler can drive into town. Nashville dated December 8, from a
+    base staying December 6-13, must keep an event on the 10th."""
+    d = _discoverer()
+    d._multi_site_base_owned_categories = frozenset({"restaurant", "cultural_events"})
+    captured: dict[str, str] = {}
+
+    def _fake(dest, window_dates=""):
+        captured[dest["name"]] = window_dates
+        return {"has_events": False}
+
+    d._discover_for_dest = _fake
+    trip = {
+        "destinations": [
+            {"id": "oldhickory", "name": "Old Hickory", "dates": "December 6-13, 2026"},
+            {
+                "id": "nashville", "name": "Nashville", "dates": "December 8, 2026",
+                "group_with": "oldhickory", "base_owned_categories": [],
+            },
+        ]
+    }
+
+    d.discover(trip)
+
+    assert captured["Nashville"] == "December 6-13, 2026"
+    assert captured["Old Hickory"] == "December 6-13, 2026"
+
+
+def test_ungrouped_destination_keeps_its_own_event_window() -> None:
+    d = _discoverer()
+    d._multi_site_base_owned_categories = frozenset({"restaurant", "cultural_events"})
+    captured: dict[str, str] = {}
+
+    def _fake(dest, window_dates=""):
+        captured[dest["name"]] = window_dates
+        return {"has_events": False}
+
+    d._discover_for_dest = _fake
+    d.discover({"destinations": [{"id": "asheville", "name": "Asheville", "dates": "December 13-16, 2026"}]})
+
+    assert captured["Asheville"] == "December 13-16, 2026"
+
+
+def test_event_fallback_maps_the_venue_not_the_show() -> None:
+    """A performance is not a place.
+
+    Reported against "Little Big Town: The Christmas Shows" under Nashville,
+    whose link opened a Google Maps search for the show's title. Maps can find
+    the Ryman; it cannot find a concert. The fallback exists so an event
+    without a verified URL still has somewhere to go, and the venue is the
+    only thing on an event that is actually a location.
+    """
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [{
+            "name": "Little Big Town: The Christmas Shows",
+            "venue": "Ryman Auditorium",
+            "dates_in_range": "December 12, 2026",
+        }],
+    }
+
+    url = d._verify_event_urls(result, "Nashville")["events"][0]["url"]
+
+    assert "Ryman%20Auditorium" in url
+    assert "Little%20Big%20Town" not in url
+    assert "Christmas" not in url
+
+
+def test_event_without_a_venue_gets_no_link_rather_than_a_wrong_one() -> None:
+    """Nothing honest to map, so nothing is linked.
+
+    The card still carries the show's name, dates and admission -- a link to
+    an unrelated map is worse than no link.
+    """
+    d = _discoverer()
+    result = {
+        "has_events": True,
+        "events": [{"name": "A Show With No Venue", "dates_in_range": "December 12, 2026"}],
+    }
+
+    assert "url" not in d._verify_event_urls(result, "Nashville")["events"][0]
+
+
+def test_local_tips_still_map_their_own_name() -> None:
+    """The event fix must not narrow the shared helper.
+
+    _event_maps_fallback_url is reused for local tips, where the name IS the
+    place ("the Bluebird Cafe"). Scoping the venue rule to the event call site
+    rather than the helper is what keeps this working -- the first attempt
+    changed the helper and broke four local-tip tests.
+    """
+    from generator.cultural_events import CulturalEventsDiscoverer
+
+    url = CulturalEventsDiscoverer._event_maps_fallback_url({"name": "Bluebird Cafe"}, "Nashville")
+    assert "Bluebird%20Cafe" in url

@@ -690,6 +690,282 @@ def test_transportation_type_enum_accepts_carried_travel() -> None:
             jsonschema.validate({"type": rejected}, TRANSPORTATION_ITEM_SCHEMA)
 
 
+def _manifest_yaml(*, trip_extra: str = "", zion_extra: str = "", bryce_extra: str = "",
+                   legs: str = "") -> str:
+    """Two adjacent destinations, the smallest shape that has a leg at all."""
+    return f"""
+trip:
+  title: "Test"
+  subtitle: "Test"
+  theme_color: "#123456"
+{trip_extra}destinations:
+  - id: zion
+    name: "Zion National Park"
+    dates: "Jan 1-3, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+{zion_extra}  - id: bryce_canyon
+    name: "Bryce Canyon National Park"
+    dates: "Jan 3-5, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+{bryce_extra}{legs}"""
+
+
+def _write(tmp_path, content: str):
+    f = tmp_path / "manifest.yaml"
+    f.write_text(content, encoding="utf-8")
+    return f
+
+
+@pytest.mark.parametrize("mode", ["auto", "transit", "mixed"])
+def test_transport_mode_accepted_at_both_levels(tmp_path, mode):
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        trip_extra=f"  transport_mode: {mode}\n",
+        bryce_extra=f"    transport_mode: {mode}\n",
+    ))
+    data = parser.load(str(f))
+    assert data["trip"]["transport_mode"] == mode
+    assert data["destinations"][1]["transport_mode"] == mode
+
+
+def test_transport_mode_unknown_value_fails_naming_the_destination(tmp_path):
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(bryce_extra="    transport_mode: teleport\n"))
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(f))
+    message = str(exc_info.value)
+    assert "bryce_canyon" in message
+
+
+def test_omitting_transport_mode_leaves_the_manifest_untouched(tmp_path):
+    """The default must be indistinguishable from today's behaviour, not
+    'auto' quietly written in."""
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml())
+    data = parser.load(str(f))
+    assert "transport_mode" not in data["trip"]
+    assert all("transport_mode" not in d for d in data["destinations"])
+
+
+def test_legs_accepted_when_referencing_adjacent_ids(tmp_path):
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        legs="legs:\n  - from: zion\n    to: bryce_canyon\n    mode: transit\n"
+    ))
+    data = parser.load(str(f))
+    assert data["legs"][0]["mode"] == "transit"
+
+
+@pytest.mark.parametrize("bad_from,bad_to,expected", [
+    ("zion_np", "bryce_canyon", "zion_np"),
+    ("zion", "bryce", "bryce"),
+])
+def test_legs_unknown_id_raises_naming_the_leg(tmp_path, bad_from, bad_to, expected):
+    """The typo case, and the whole reason for the id contract: free-text
+    matching would leave the leg silently `auto`."""
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        legs=f"legs:\n  - from: {bad_from}\n    to: {bad_to}\n    mode: transit\n"
+    ))
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(f))
+    message = str(exc_info.value)
+    assert expected in message
+    assert "does not match any destination id" in message
+
+
+def test_legs_display_names_fail_loudly_rather_than_matching_nothing(tmp_path):
+    """'Zion NP' against 'Zion National Park' is exactly the silent-fallback
+    the id contract exists to prevent. It must not parse."""
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        legs='legs:\n  - from: "Zion NP"\n    to: "Bryce Canyon NP"\n    mode: transit\n'
+    ))
+    with pytest.raises(ValueError):
+        parser.load(str(f))
+
+
+def test_legs_self_reference_raises(tmp_path):
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        legs="legs:\n  - from: zion\n    to: zion\n    mode: transit\n"
+    ))
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(f))
+    assert "not a leg" in str(exc_info.value)
+
+
+def test_legs_non_adjacent_pair_raises(tmp_path):
+    parser = ManifestParser()
+    content = _manifest_yaml() + """  - id: moab
+    name: "Moab"
+    dates: "Jan 5-7, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+legs:
+  - from: zion
+    to: moab
+    mode: transit
+"""
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(_write(tmp_path, content)))
+    message = str(exc_info.value)
+    assert "not adjacent" in message
+    assert "zion" in message and "moab" in message
+
+
+def test_legs_backwards_pair_raises(tmp_path):
+    """Adjacency is directional: the leg runs the way the traveler does."""
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        legs="legs:\n  - from: bryce_canyon\n    to: zion\n    mode: transit\n"
+    ))
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(f))
+    assert "not adjacent" in str(exc_info.value)
+
+
+def test_legs_duplicate_leg_raises(tmp_path):
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        legs="legs:\n  - from: zion\n    to: bryce_canyon\n    mode: transit\n"
+             "  - from: zion\n    to: bryce_canyon\n    mode: mixed\n"
+    ))
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(f))
+    message = str(exc_info.value)
+    assert "duplicates" in message
+    assert "legs[0]" in message
+
+
+def test_legs_agreeing_with_destination_transport_mode_parses_clean(tmp_path):
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        bryce_extra="    transport_mode: transit\n",
+        legs="legs:\n  - from: zion\n    to: bryce_canyon\n    mode: transit\n",
+    ))
+    data = parser.load(str(f))
+    assert data["legs"][0]["mode"] == "transit"
+    assert data["destinations"][1]["transport_mode"] == "transit"
+
+
+def test_legs_disagreeing_with_destination_transport_mode_raises_naming_both(tmp_path):
+    """Agreement is fine, disagreement raises -- not last-wins. Silent
+    precedence would mean an author edits transport_mode, sees no change,
+    and has no way to discover why."""
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        bryce_extra="    transport_mode: mixed\n",
+        legs="legs:\n  - from: zion\n    to: bryce_canyon\n    mode: transit\n",
+    ))
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(f))
+    message = str(exc_info.value)
+    assert "transit" in message
+    assert "mixed" in message
+    assert "bryce_canyon" in message
+
+
+def test_legs_rejects_unknown_key(tmp_path):
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        legs="legs:\n  - from: zion\n    to: bryce_canyon\n    mode: transit\n"
+             "    depart: '09:00'\n"
+    ))
+    with pytest.raises(ValueError):
+        parser.load(str(f))
+
+
+def test_transport_mode_on_grouped_entry_warns_and_is_ignored(tmp_path, caplog):
+    """A group_with entry is a there-and-back day trip, not an arriving leg,
+    so a mode on it describes nothing. Warn rather than raise -- the same
+    posture as grouped dates outside the base's range."""
+    import logging
+
+    parser = ManifestParser()
+    content = _manifest_yaml() + """  - id: arches
+    name: "Arches National Park"
+    dates: "Jan 3-4, 2026"
+    group_with: bryce_canyon
+    transport_mode: transit
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+"""
+    with caplog.at_level(logging.WARNING):
+        data = parser.load(str(_write(tmp_path, content)))
+    assert data["destinations"][2]["transport_mode"] == "transit"
+    assert any("'arches'" in r.getMessage() for r in caplog.records)
+
+
+def test_the_issues_rejected_key_name_raises_rather_than_being_ignored(tmp_path):
+    """`transport_mode_from_previous` is the name GH #2's issue proposed and
+    the design rejected. Destination items allow unknown keys, so accepting
+    it silently means a manifest written to the issue's spelling validates
+    clean, resolves every leg to the trip-wide default, and ships an
+    itinerary telling the traveler to drive a leg they meant as a train.
+
+    Not hypothetical: the Japan acceptance manifest was written that way.
+    """
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        trip_extra="  transport_mode: mixed\n",
+        bryce_extra="    transport_mode_from_previous: transit\n",
+    ))
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(f))
+    message = str(exc_info.value)
+    assert "transport_mode_from_previous" in message
+    assert "bryce_canyon" in message
+    # Names the right key, and what would have happened instead.
+    assert "'transport_mode'" in message
+    assert "mixed" in message
+
+
+def test_the_correct_key_still_parses(tmp_path):
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(bryce_extra="    transport_mode: transit\n"))
+    data = parser.load(str(f))
+    assert data["destinations"][1]["transport_mode"] == "transit"
+
+
+@pytest.mark.parametrize("mode", ["bike", "hike"])
+def test_self_powered_modes_are_accepted_at_both_levels(tmp_path, mode):
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        trip_extra=f"  transport_mode: {mode}\n",
+        bryce_extra=f"    transport_mode: {mode}\n",
+    ))
+    data = parser.load(str(f))
+    assert data["trip"]["transport_mode"] == mode
+    assert data["destinations"][1]["transport_mode"] == mode
+
+
+@pytest.mark.parametrize("mode", ["bike", "hike"])
+def test_legs_accept_the_self_powered_modes_too(tmp_path, mode):
+    """`legs:` and `transport_mode` share one enum; a mode accepted by one
+    and rejected by the other would be a trap."""
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(
+        legs=f"legs:\n  - from: zion\n    to: bryce_canyon\n    mode: {mode}\n"
+    ))
+    assert parser.load(str(f))["legs"][0]["mode"] == mode
+
+
+def test_a_near_miss_spelling_is_still_rejected(tmp_path):
+    """Widening the enum must not widen it to anything plausible-looking."""
+    parser = ManifestParser()
+    f = _write(tmp_path, _manifest_yaml(bryce_extra="    transport_mode: biking\n"))
+    with pytest.raises(ValueError) as exc_info:
+        parser.load(str(f))
+    assert "bryce_canyon" in str(exc_info.value)
+
+
 def test_manifest_environment_matches_the_cli_choice() -> None:
     """One setting, three entry points, one set of values.
 

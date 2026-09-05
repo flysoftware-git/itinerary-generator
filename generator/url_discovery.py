@@ -37,11 +37,13 @@ import threading
 from threading import Lock
 from typing import Any
 from generator.llm_client import MultiLLMClient
+from generator.transit_routing import suppresses_en_route_stops
 from generator.road_estimate import (
     ROAD_DISTANCE_FACTOR,
     drive_minutes,
     format_drive_time,
 )
+from generator.place_resolver import PlaceResolutionRefused, PlaceResolver
 from generator.multi_site_grouping import DEFAULT_BASE_OWNED_CATEGORIES, category_deferred_to_base
 from generator.search_provider import build_search_client
 from generator.url_validator import URLValidator
@@ -184,6 +186,11 @@ GENERIC_LISTING_TITLE_PATTERNS = tuple(
 SAFE_FALLBACK_URL_PREFIXES = (
     "https://www.google.com/maps/search/",
     "https://www.google.com/maps/dir/",
+    # A place_id link (generator/place_resolver.py) belongs here for the same
+    # reason as the two above and more strongly: it names one specific place
+    # rather than describing it in words, so it always resolves and spending an
+    # HTTP validation request on it is pure waste.
+    "https://www.google.com/maps/place/",
     "https://www.google.com/search",
 )
 POSITIVE_DOMAIN_HINTS = (
@@ -416,9 +423,56 @@ DEFAULT_RESTAURANT_SOURCE = "direct_link_batch"
 DEFAULT_EN_ROUTE_SOURCE = "search"
 # "search" = today's paid per-item fallback. "geocode_maps" replaces it
 # with a free geocode-backed coordinate Maps link. See _search_first.
+#: Word-boundary "trail"/"trails". Built with chr(92) because writing the
+#: escape inline through a patch script silently produced a backspace
+#: character instead, giving a pattern that matched nothing -- including
+#: real trails -- while reading correctly in the source.
+TRAIL_NAME_PATTERN = chr(92) + "btrails?" + chr(92) + "b"
+
+#: Which check in _retain_discovered_url refused a URL. The function has 30
+#: rejection exits and recorded none of them, so every conclusion about why
+#: a link was dropped had to be inferred from outside -- three separate
+#: fixes for Upheaval Dome each targeted a gate that turned out not to be
+#: the one firing. Labels are the guarding condition, captured from source.
+_RETENTION_EXIT_LABELS = {
+    1: 'if not url',
+    2: 'if self._is_url_domain_denied(url)',
+    3: 'if self._is_obviously_generic_url(lower)',
+    4: "if self._is_alltrails_trail_url(url) and bool(getattr(self, '_disable_trails', False))",
+    5: 'if not allow_alltrails and self._is_alltrails_trail_url(url)',
+    6: 'if self._has_unescaped_whitespace(url)',
+    7: 'if self._is_incomplete_google_maps_place_url(url)',
+    8: 'if self._looks_synthetic_google_maps_place_url(url)',
+    9: 'if not ok or not page_html',
+    10: 'if max(page_overlap, label_overlap) < required_overlap',
+    11: 'if anchor_overlap < 1',
+    12: "if leniency_policy_class in leniency_blocked_classes and leniency_policy_mode == 'enforce'",
+    13: 'if not ok and self._is_definitively_dead_status(fetch_status) and (not self._is_bot_block_false_negative_dead_status(url',
+    14: 'if redirect_target',
+    15: 'if self._is_google_maps_candidate_url(url)',
+    16: 'if self._is_generic_restaurant_landing_url(url, item_name, dest_name, item_tokens=_rest_tokens)',
+    17: 'if not self._looks_like_item_specific_homepage(url, item_name)',
+    18: "if slug in getattr(self, '_alltrails_slug_denylist', frozenset())",
+    19: 'if item_tokens and (not any((t in wiki_slug for t in item_tokens)))',
+    20: 'if distinctive_item_tokens and (not any((t in wiki_slug for t in distinctive_item_tokens)))',
+    21: 'if self._is_generic_geographic_url_for_category(url, item_name)',
+    22: 'if self._is_category_offer_listing_url(url)',
+    23: "if kind == 'scenic drive' and (not self._is_route_specific_scenic_drive_url(url))",
+    24: 'if not self._alltrails_url_meets_seed_relaxed_standard(url, item_name)',
+    25: 'if not self._meets_alltrails_publish_confidence(url, item_name, dest_name)',
+    26: 'if not self._passes_alltrails_post_search_filters(url, item_name, dest_name)',
+    27: 'if not ok and self._is_definitively_dead_status(status) and (not self._is_bot_block_false_negative_dead_status(url, stat',
+    28: 'if redirect_target',
+    29: 'if not self._is_relevant_result(url, item_name, dest_name, candidate=candidate, deep_check=deep_check, item_description=',
+    30: "if allow_google_maps_search and policy_class in {'google_maps_search', 'google_maps_dir'}",
+}
+
 DEFAULT_FALLBACK_MODE = "search"
 DEFAULT_DIRECT_LINK_BATCH_COUNT = 20
 DEFAULT_DIRECT_BATCH_AUTHORITATIVE = True
+# An item the authoritative batch cannot place still gets one per-item search.
+# See _item_fallback_when_batch_silent_enabled.
+DEFAULT_ITEM_FALLBACK_WHEN_BATCH_SILENT = True
 DEFAULT_RESTAURANT_DIRECT_BATCH_ITEM_COUNT = 4
 DEFAULT_EN_ROUTE_DIRECT_BATCH_ITEM_COUNT = 4
 DEFAULT_ATTRACTION_DIRECT_BATCH_ITEMS_PER_DAY = 3
@@ -885,6 +939,10 @@ class URLDiscoverer:
         self._domain_blocked_until_ts: dict[str, float] = {}
         self._domain_block_cooldown_seconds: float = float(DEFAULT_DOMAIN_BLOCK_COOLDOWN_SECONDS)
         self._route_distance_live_fetch_enabled: bool = DEFAULT_ROUTE_DISTANCE_LIVE_FETCH_ENABLED
+        # Optional. Inert unless a Google Maps Platform key is configured, in
+        # which case secondary map links become place_id links instead of
+        # text searches. See generator/place_resolver.py.
+        self._place_resolver = PlaceResolver()
         self._search_failure_ts: dict[str, float] = {}
         self._search_failure_cooldown_seconds: float = float(DEFAULT_SEARCH_FAILURE_COOLDOWN_SECONDS)
         self._search_results_cache: dict[str, list[dict[str, Any]]] = {}
@@ -1808,13 +1866,13 @@ class URLDiscoverer:
                 getattr(self, "_persistent_entry_ts", {}).get((section_name, entry_key), now)
             )
 
-        for key, results in self._search_results_cache.items():
+        for key, results in list(self._search_results_cache.items()):
             payload["search_results"][key] = {
                 "ts": _entry_ts("search_results", key),
                 "results": [dict(item) for item in results if isinstance(item, dict)],
             }
 
-        for key, result in self._verify_url_cache.items():
+        for key, result in list(self._verify_url_cache.items()):
             if not isinstance(result, tuple) or len(result) != 2:
                 continue
             payload["verify_results"][key] = {
@@ -1823,7 +1881,7 @@ class URLDiscoverer:
                 "status": result[1],
             }
 
-        for key, result in self._page_text_cache.items():
+        for key, result in list(self._page_text_cache.items()):
             if not isinstance(result, tuple) or len(result) != 3:
                 continue
             final_url = str(getattr(self, "_fetch_final_url_cache", {}).get(key, "") or "")
@@ -1835,7 +1893,7 @@ class URLDiscoverer:
                 "final_url": final_url,
             }
 
-        for key, result in self._en_route_stop_geocode_cache.items():
+        for key, result in list(self._en_route_stop_geocode_cache.items()):
             # Only persist confirmed coordinates -- a "no result" (None) is often
             # a transient Nominatim rate-limit/timeout outcome, not a durable
             # "this place doesn't exist" answer, so it must not be frozen in.
@@ -1847,7 +1905,7 @@ class URLDiscoverer:
                 "lng": result[1],
             }
 
-        for key, result in self._alltrails_fetch_cache.items():
+        for key, result in list(self._alltrails_fetch_cache.items()):
             # Only persist successful fetches -- caching a transient DataDome
             # block (401/403) would freeze that block state in across runs.
             if not isinstance(result, tuple) or len(result) != 3 or not result[0]:
@@ -1859,7 +1917,7 @@ class URLDiscoverer:
                 "text": str(result[2] or "")[: int(DEFAULT_PERSISTENT_PAGE_TEXT_MAX_CHARS)],
             }
 
-        for key, result in self._wayback_fetch_cache.items():
+        for key, result in list(self._wayback_fetch_cache.items()):
             # Only persist successful fetches -- a "no snapshot"/fetch-failure
             # result could be a transient archive.org hiccup rather than a
             # durable "this trail was never archived" answer, and freezing
@@ -1874,8 +1932,8 @@ class URLDiscoverer:
                 "text": str(result[2] or "")[: int(DEFAULT_PERSISTENT_PAGE_TEXT_MAX_CHARS)],
             }
 
-        for section_name, attr_name in harvest_cache_by_section.items():
-            for key, rows in getattr(self, attr_name).items():
+        for section_name, attr_name in list(harvest_cache_by_section.items()):
+            for key, rows in list(getattr(self, attr_name).items()):
                 if not isinstance(rows, list) or not rows:
                     # Never freeze in an empty harvest as a durable negative
                     # result -- an empty batch is often a transient upstream
@@ -2221,6 +2279,25 @@ class URLDiscoverer:
         )
 
     def discover_all(self, trip: dict[str, Any]) -> None:
+        # The batch harvest builds its own restaurant list, so ai_content's
+        # budget filter never sees those items. A "low-cost" Europe itinerary
+        # published 15 restaurants at $$$$ -- Rutz, Tim Raue, Horvath, Ciel
+        # Bleu -- because the filter ran upstream of the source that supplied
+        # them. Fifth time a rule has been applied to one of two sources.
+        self._trip_budget = ((trip or {}).get("trip") or {}).get("budget")
+
+        # Places as a filter over our own candidates. Never a source, and no
+        # field it returns is published -- see places_filter's module docstring.
+        try:
+            from generator.places_filter import PlacesBudgetFilter
+
+            self._places_filter = PlacesBudgetFilter()
+            if self._places_filter.available:
+                logger.info("Places budget filter active")
+        except Exception as exc:
+            logger.warning("Places budget filter unavailable: %s", exc)
+            self._places_filter = None
+
         destinations = trip.get("destinations", [])
 
         def _discover_one(dest: dict) -> None:
@@ -2247,6 +2324,19 @@ class URLDiscoverer:
                         dest,
                     ),
                     inner.submit(self._discover_scenic_drives, dest, name, nps_code),
+                    # Its own job rather than a tail of en-route discovery.
+                    # It was the latter for one release and never ran once:
+                    # en-route stops are a priced enrichment that is off by
+                    # default, and that early return sits well above where
+                    # the trail lookup had been appended. A leg's trail is
+                    # not an en-route stop and must not share its switch.
+                    inner.submit(
+                        self._discover_leg_trail_link,
+                        ai,
+                        dest,
+                        origin_name,
+                        name,
+                    ),
                 ]
                 for f in as_completed(futs):
                     f.result()
@@ -2450,18 +2540,95 @@ class URLDiscoverer:
         if not query_text:
             return
         fallback_url = f"https://www.google.com/maps/search/?api=1&query={quote(query_text)}"
+
+        # A place_id link names one specific place; the search URL above only
+        # describes it in words, and a common name can resolve elsewhere. Use
+        # the precise form when a key is configured, and keep the search URL
+        # when it is not -- which is the unconfigured default, so output is
+        # unchanged for anyone without a key.
+        #
+        # A refusal disables the resolver loudly for the rest of the run rather
+        # than aborting it: this is a *secondary* link on an item that already
+        # has a good primary one, so a broken key must be impossible to miss
+        # but must not cost the customer their guide.
+        resolver = getattr(self, "_place_resolver", None)
+        link_kind = "maps_search"
+        if resolver is not None and resolver.enabled:
+            try:
+                precise_url = resolver.maps_url_for(query_text)
+            except PlaceResolutionRefused as exc:
+                resolver.disable(str(exc))
+            else:
+                if precise_url:
+                    fallback_url = precise_url
+                    link_kind = "maps_place_id"
+
         item["maps_url"] = fallback_url
         self._log_decision(
             kind=kind,
             dest_name=dest_name,
             item_name=item_name,
-            reason="secondary_maps_link_attached",
+            reason=f"secondary_maps_link_attached:{link_kind}",
             message=(
                 "attached name+destination Google Maps search link alongside "
                 "distinct primary source URL, for the map-icon badge"
             ),
             url=fallback_url,
         )
+
+    def _attach_place_id(self, item: dict[str, Any], item_name: str, dest_name: str) -> None:
+        """Record a `place_id` on an item, without touching its maps_url.
+
+        En-route stops take an unconditional coordinate maps_url from route
+        geocoding, which is the precise form and stays. But a coordinate is
+        labelled by Google's reverse geocoder, so a route panel reads
+        "Millcreek 2nd post market, 5FGM+75" where the card says "Red Cliffs
+        National Conservation Area Overlook" -- right pins, unreadable list.
+
+        A place_id is precise AND carries the real name, so the route URL can
+        pass `waypoint_place_ids` alongside readable waypoint names. Stored as
+        its own field rather than folded into maps_url so the map badge keeps
+        the coordinate it already had.
+
+        Resolution is cached per query within a run and bounded by the
+        resolver's own per-run call cap, so a repeated stop costs nothing and
+        a runaway is impossible. A refusal disables the resolver for the rest
+        of the run, exactly as _attach_secondary_maps_link does: this is an
+        enhancement to a link the item already has, so a broken key must be
+        loud but must not cost the customer their guide.
+        """
+        if not item_name or item.get("place_id"):
+            return
+        resolver = getattr(self, "_place_resolver", None)
+        if resolver is None or not resolver.enabled:
+            return
+        # A geocode is better evidence of where a stop is than the name of the
+        # destination its leg happens to end at. "Cumberland Plateau Asheville,
+        # North Carolina" resolved to nothing -- the plateau is in Tennessee,
+        # 250 miles away -- and "Blount Mansion Asheville, North Carolina"
+        # resolved only because the name survives a wrong qualifier. Both are
+        # the failure the waypoint code already documents as "Mossy Cave
+        # Capitol Reef National Park".
+        #
+        # With a coordinate, ask for the bare name and let the bias say where.
+        # Without one, fall back to the qualified name, which is still better
+        # than an unqualified one.
+        lat, lng = item.get("geocode_lat"), item.get("geocode_lng")
+        has_geocode = isinstance(lat, (int, float)) and isinstance(lng, (int, float))
+        query = item_name if has_geocode else self._maps_fallback_query_text(item_name, dest_name)
+        if not query:
+            return
+        try:
+            place_id = resolver.resolve(
+                query,
+                bias_lat=float(lat) if has_geocode else None,
+                bias_lng=float(lng) if has_geocode else None,
+            )
+        except PlaceResolutionRefused as exc:
+            resolver.disable(str(exc))
+            return
+        if place_id:
+            item["place_id"] = place_id
 
     def audit_discovered_urls(self, trip: dict[str, Any]) -> None:
         """Strip low-confidence discovered URLs before HTML assembly.
@@ -2522,6 +2689,28 @@ class URLDiscoverer:
                             message=f"replacing {url or '(none)'} with already-harvested {batch_trail_url}",
                         )
                         url = batch_trail_url
+                        # This URL is introduced BY the audit, so discovery
+                        # never recorded retention evidence for it -- and the
+                        # retention check a few lines below then judges it with
+                        # no context and can discard it. The audit was
+                        # replacing a link with a better one it had already
+                        # bought, then rejecting its own replacement.
+                        #
+                        # Upheaval Dome, sw 2026-08-30: the trail batch had
+                        # alltrails.com/trail/us/utah/upheaval-dome-via-crater-
+                        # view-trail, the audit preferred it over an unrelated
+                        # nps.gov photography-permit page, then discarded it and
+                        # removed the item for having no verified URL.
+                        #
+                        # The trail batch already vetted this link when it
+                        # harvested it, so the audit should not re-derive deep
+                        # relevance blind. Recorded as shallow-relevance
+                        # evidence rather than trusted outright: the AllTrails
+                        # slug/confidence gates still apply.
+                        self._remember_retention_evidence(
+                            attr_name, batch_trail_url,
+                            candidate=None, allow_shallow_relevance=True,
+                        )
                 direct_batch_authoritative_url = self._is_remembered_direct_batch_authoritative_url(url, attr_name)
                 maps_url = str(attr.get("maps_url", "") or "").strip()
                 if not maps_url and self._classify_url_policy_class(url) in {"google_maps_search", "google_maps_dir"}:
@@ -2668,6 +2857,27 @@ class URLDiscoverer:
                             rendered_url=url if is_seed else "",
                             rejection_reason="" if is_seed else "url_rejected",
                         )
+                    elif not self._title_claims_a_trail(attr_name):
+                        # Trail-like by description but not by name: keep the
+                        # official (e.g. nps.gov) page. AllTrails-first applies
+                        # to things that call themselves trails; Balanced Rock
+                        # and Upheaval Dome are a rock formation and a crater,
+                        # classed trail_like and stripped of correct nps.gov
+                        # pages purely for not being alltrails.com.
+                        self._log_decision(
+                            kind="attraction",
+                            dest_name=dest_name,
+                            item_name=attr_name,
+                            reason="official_url_kept_for_non_trail_named_item",
+                            message=(
+                                "trail-like item whose name does not claim a trail; "
+                                "keeping the official non-AllTrails link"
+                            ),
+                            url=url,
+                        )
+                        if maps_url:
+                            attr["maps_url"] = maps_url
+                        self._annotate_registry_url_decision(attr, rendered_url=url)
                     else:
                         self._log_rejected_url("attraction", dest_name, attr_name, url)
                         attr.pop("url", None)
@@ -2715,6 +2925,7 @@ class URLDiscoverer:
                     ):
                         eligible_attractions.append(attr)
                     continue
+                evidence = self._recall_retention_evidence(attr_name, url)
                 cleaned = self._retain_discovered_url(
                     url,
                     attr_name,
@@ -2723,6 +2934,8 @@ class URLDiscoverer:
                     kind="attraction",
                     is_seed=is_seed,
                     item_description=str(attr.get("description", "") or ""),
+                    candidate=evidence.get("candidate"),
+                    allow_shallow_relevance=bool(evidence.get("allow_shallow_relevance")),
                 )
                 if cleaned != url:
                     self._log_rejected_url("attraction", dest_name, attr_name, url)
@@ -2808,6 +3021,10 @@ class URLDiscoverer:
                             message="no website found; resolved to a coordinate Maps link via free geocode",
                             url=geo_url,
                         )
+                for field in ("url", "maps_url"):
+                    existing = str(attr.get(field, "") or "")
+                    if existing:
+                        attr[field] = self.requalify_maps_query_url(existing, attr_name, dest_name)
                 if self._keep_item_if_verified_or_seed(
                     dest, attr, attr_name,
                     is_seed=is_seed,
@@ -2916,6 +3133,7 @@ class URLDiscoverer:
                     self._log_rejected_url("en-route stop", dest_name, stop_name, url)
                     if cleaned:
                         stop["url"] = cleaned
+                        stop["_url_assigned_by"] = "audit_retention_cleaned"
                         if maps_url:
                             stop["maps_url"] = maps_url
                         self._annotate_registry_url_decision(stop, rendered_url=cleaned)
@@ -2926,6 +3144,16 @@ class URLDiscoverer:
                         else:
                             stop.pop("maps_url", None)
                         self._annotate_registry_url_decision(stop, rendered_url="", rejection_reason="url_rejected")
+                # A place_id lets the route URL name this stop instead of
+                # letting Google reverse-geocode its coordinate into whatever
+                # business is nearest. Does not replace maps_url.
+                self._attach_place_id(stop, stop_name, dest_name)
+                # Final values for this stop: make any bare Maps text query
+                # name its destination before it reaches the page.
+                for field in ("url", "maps_url"):
+                    existing = str(stop.get(field, "") or "")
+                    if existing:
+                        stop[field] = self.requalify_maps_query_url(existing, stop_name, dest_name)
                 if self._keep_item_if_verified_or_seed(
                     dest, stop, stop_name,
                     is_seed=stop_is_seed,
@@ -3161,18 +3389,37 @@ class URLDiscoverer:
         is_seed: bool = False,
         item_description: str = "",
     ) -> str:
+        # Remember the context this call had, so the audit pass can judge the
+        # same URL on the same evidence. audit_discovered_urls takes `trip` as
+        # its only input -- candidate rows are transient to discovery and were
+        # never persisted -- so it could not pass `candidate` or
+        # `allow_shallow_relevance`, and `deep_check = not
+        # allow_shallow_relevance` silently read that absence as "be stricter".
+        # Discovery and audit then reached opposite verdicts on one link:
+        # Upheaval Dome's alltrails.com/trail/us/utah/upheaval-dome-via-crater-
+        # view-trail was accepted during discovery and discarded during audit,
+        # leaving the item with no URL at all.
+        self._remember_retention_evidence(
+            item_name, url, candidate=candidate,
+            allow_shallow_relevance=allow_shallow_relevance,
+        )
+        # Cleared per call. _last_retention_rejection is instance state, so a
+        # value left by a previous call would be attached to a later discard
+        # that had nothing to do with it -- the first run reported exit 1
+        # ("if not url") for items that plainly had URLs.
+        self._last_retention_rejection = None
         if not url:
-            return ""
+            return self._reject_retention(1)
         if self._is_url_domain_denied(url):
             logger.info("URL domain denylist hit for %s '%s': %s", kind, item_name, url)
-            return ""
+            return self._reject_retention(2)
         lower = url.lower()
         allowlisted_urls = getattr(self, "_url_policy_allowlisted_urls", set())
         if url in allowlisted_urls:
             return url
         is_safe_fallback = any(lower.startswith(prefix) for prefix in SAFE_FALLBACK_URL_PREFIXES)
         if self._is_obviously_generic_url(lower):
-            return ""
+            return self._reject_retention(3)
         # The trails switch, enforced at the single chokepoint every candidate
         # URL passes through. Guarding call sites one at a time failed four
         # times: three search entry points, then the direct batch, and the
@@ -3181,15 +3428,15 @@ class URLDiscoverer:
         # hunt passes allow_alltrails=True and nothing downstream reconciled
         # that with the category being off.
         if self._is_alltrails_trail_url(url) and bool(getattr(self, "_disable_trails", False)):
-            return ""
+            return self._reject_retention(4)
         if not allow_alltrails and self._is_alltrails_trail_url(url):
-            return ""
+            return self._reject_retention(5)
         if self._has_unescaped_whitespace(url):
             logger.info("URL rejected due to unescaped whitespace for %s '%s': %s", kind, item_name, url)
-            return ""
+            return self._reject_retention(6)
         if self._is_incomplete_google_maps_place_url(url):
             logger.info("URL rejected incomplete google maps place link for %s '%s': %s", kind, item_name, url)
-            return ""
+            return self._reject_retention(7)
         if self._is_deterministic_google_maps_place_url(url) and kind in {"attraction", "en-route stop", "en_route_stop"}:
             if self._looks_synthetic_google_maps_place_url(url):
                 logger.info(
@@ -3198,7 +3445,7 @@ class URLDiscoverer:
                     item_name,
                     url,
                 )
-                return ""
+                return self._reject_retention(8)
             # Require substantial entity-token overlap for deterministic place pages.
             item_tokens = self._significant_tokens(item_name)
             if item_tokens:
@@ -3210,7 +3457,7 @@ class URLDiscoverer:
                         item_name,
                         url,
                     )
-                    return ""
+                    return self._reject_retention(9)
                 lower_html = page_html.lower()
                 parsed = urlparse(url)
                 place_label = ""
@@ -3228,7 +3475,7 @@ class URLDiscoverer:
                         "Maps place URL rejected: weak entity token overlap for %s '%s': %s",
                         kind, item_name, url,
                     )
-                    return ""
+                    return self._reject_retention(10)
                 generic_entity_tokens = {
                     "historic",
                     "district",
@@ -3257,7 +3504,7 @@ class URLDiscoverer:
                             item_name,
                             url,
                         )
-                        return ""
+                        return self._reject_retention(11)
         if self._direct_batch_is_authoritative() and self._is_remembered_direct_batch_authoritative_url(url, item_name):
             logger.info(
                 "Remembered authoritative direct-batch URL preserved for %s '%s' (%s): %s",
@@ -3309,7 +3556,7 @@ class URLDiscoverer:
                         dest_name or "unknown destination",
                         url,
                     )
-                    return ""
+                    return self._reject_retention(12)
                 # This leniency still must not publish a URL that is definitively
                 # dead (404/410, or a DNS/connection failure meaning the host
                 # doesn't exist at all). Relevance leniency is not a liveness
@@ -3329,7 +3576,7 @@ class URLDiscoverer:
                         url,
                         fetch_status,
                     )
-                    return ""
+                    return self._reject_retention(13)
                 redirect_target = self._redirect_target_lacks_item_relevance(
                     url, item_name, dest_name, self._significant_tokens(item_name), kind, fetch_text
                 )
@@ -3342,7 +3589,7 @@ class URLDiscoverer:
                         url,
                         redirect_target,
                     )
-                    return ""
+                    return self._reject_retention(14)
                 logger.info(
                     "Item-matched authoritative direct-batch URL preserved for %s '%s' (%s): %s",
                     kind,
@@ -3360,7 +3607,7 @@ class URLDiscoverer:
                     item_name,
                     url,
                 )
-                return ""
+                return self._reject_retention(15)
             _rest_tokens = self._restaurant_significant_tokens(item_name)
             if self._looks_like_item_specific_homepage(url, item_name, item_tokens=_rest_tokens):
                 return url
@@ -3371,7 +3618,7 @@ class URLDiscoverer:
                     item_name,
                     url,
                 )
-                return ""
+                return self._reject_retention(16)
         if kind in {"generic", "attraction", "en-route stop", "en_route_stop", "getting_there route option"}:
             if self._is_generic_section_landing_page(url):
                 if not self._looks_like_item_specific_homepage(url, item_name):
@@ -3381,14 +3628,14 @@ class URLDiscoverer:
                         item_name,
                         url,
                     )
-                    return ""
+                    return self._reject_retention(17)
                 # Falls through to the relevance gate so page text can confirm the entity.
         # AllTrails slug denylist: fast-reject known-invalid slugs before any fetch.
         if self._is_alltrails_trail_url(url):
             slug = urlparse(url).path.rsplit("/", 1)[-1].lower()
             if slug in getattr(self, "_alltrails_slug_denylist", frozenset()):
                 logger.info("AllTrails slug denylist hit for %s '%s': %s", kind, item_name, url)
-                return ""
+                return self._reject_retention(18)
         # Wikipedia entity-path check: wiki page name is deterministic in the URL.
         # Reject when no item token appears in the wiki slug (catches wrong-entity links).
         if not is_safe_fallback and "wikipedia.org/wiki/" in lower:
@@ -3399,7 +3646,7 @@ class URLDiscoverer:
                     "Wikipedia entity-path mismatch for %s '%s': %s",
                     kind, item_name, url,
                 )
-                return ""
+                return self._reject_retention(19)
             generic_wiki_tokens = {
                 "historic",
                 "district",
@@ -3423,7 +3670,7 @@ class URLDiscoverer:
                     "Wikipedia entity-path generic-only overlap rejected for %s '%s': %s",
                     kind, item_name, url,
                 )
-                return ""
+                return self._reject_retention(20)
         if kind in {"generic", "attraction"} and self._is_category_style_activity(item_name):
             if self._is_generic_geographic_url_for_category(url, item_name):
                 logger.info(
@@ -3432,7 +3679,7 @@ class URLDiscoverer:
                     item_name,
                     url,
                 )
-                return ""
+                return self._reject_retention(21)
             if self._is_category_offer_listing_url(url):
                 logger.info(
                     "Category-style activity rejected offer/listing URL for %s '%s': %s",
@@ -3440,10 +3687,10 @@ class URLDiscoverer:
                     item_name,
                     url,
                 )
-                return ""
+                return self._reject_retention(22)
         if kind == "scenic drive" and not self._is_route_specific_scenic_drive_url(url):
             logger.info("Scenic-drive URL rejected (non-route target) for '%s': %s", item_name, url)
-            return ""
+            return self._reject_retention(23)
         if allow_alltrails and self._is_alltrails_trail_url(url):
             if is_seed:
                 # Seeds were attached via the relaxed seed standard (see
@@ -3454,12 +3701,12 @@ class URLDiscoverer:
                 # non-seed-aware gate here would silently undo the seed
                 # exemption and discard a correct, explicitly-requested link.
                 if not self._alltrails_url_meets_seed_relaxed_standard(url, item_name):
-                    return ""
+                    return self._reject_retention(24)
             else:
                 if not self._meets_alltrails_publish_confidence(url, item_name, dest_name):
-                    return ""
+                    return self._reject_retention(25)
                 if not self._passes_alltrails_post_search_filters(url, item_name, dest_name):
-                    return ""
+                    return self._reject_retention(26)
         if not is_safe_fallback:
             # Keep the direct-batch fail-closed rule narrow: only reject a curated
             # row when the URL is explicitly dead (404/410). Generic landing pages
@@ -3484,7 +3731,7 @@ class URLDiscoverer:
                         dest_name or "unknown destination",
                         url,
                     )
-                    return ""
+                    return self._reject_retention(27)
                 item_tokens = self._significant_tokens(item_name)
                 # En-route stops sit along the route, not inside the
                 # destination itself, so the deep relevance gate's
@@ -3518,7 +3765,7 @@ class URLDiscoverer:
                             url,
                             redirect_target,
                         )
-                        return ""
+                        return self._reject_retention(28)
                     logger.info(
                         "Preserved direct-batch %s %s '%s' (%s): %s",
                         "row-matched en-route stop" if is_multi_token_en_route_stop else "single-token item",
@@ -3534,7 +3781,7 @@ class URLDiscoverer:
                 url, item_name, dest_name, candidate=candidate, deep_check=deep_check,
                 item_description=item_description,
             ):
-                return ""
+                return self._reject_retention(29)
 
         policy_class = self._classify_url_policy_class(url)
         blocked_classes = getattr(self, "_url_policy_blocked_classes", set(DEFAULT_URL_POLICY_BLOCKED_CLASSES))
@@ -3619,7 +3866,7 @@ class URLDiscoverer:
                     dest_name or "unknown destination",
                     url,
                 )
-                return ""
+                return self._reject_retention(30)
         if blocked and policy_mode == "monitor":
             logger.info(
                 "URL policy monitor hit [%s] for %s '%s' (%s): %s",
@@ -4293,7 +4540,89 @@ class URLDiscoverer:
         return any(marker in path_and_query for marker in route_markers)
 
     @staticmethod
-    def _log_rejected_url(kind: str, dest_name: str, item_name: str, url: str) -> None:
+    def _title_claims_a_trail(item_name: str) -> bool:
+        """True when the item's own name says it is a trail.
+
+        The AllTrails-first rule for trail-like items exists because
+        non-AllTrails trail URLs were being generated badly (owner decision).
+        It keyed on `trail_like`, which is inferred from the description, so a
+        rock formation whose blurb mentions a short walk was held to it too --
+        and its correct nps.gov page was stripped for not being AllTrails.
+
+        Owner rule, 2026-08-29: when a trail-type target has both available,
+        prefer AllTrails if the title contains "trail", otherwise prefer NPS.
+        The name is the item's own claim about what it is; the description is
+        someone describing how to reach it.
+
+        Matched on a word boundary rather than as a substring. Read literally
+        the rule sends "Trailview Overlook" to AllTrails, which is an overlook
+        that happens to start with those five letters -- the intent is an item
+        that calls itself a trail. "Trails" plural is accepted.
+        """
+        return bool(re.search(TRAIL_NAME_PATTERN, str(item_name or "").lower()))
+
+    @staticmethod
+    def _retention_evidence_key(item_name: str, url: str) -> tuple[str, str]:
+        # Punctuation removed rather than collapsed to a space, so "Queen's
+        # Garden Trail" and "Queens Garden Trail" key alike. Both stages pass
+        # the same attr["name"] today, but a key that depends on that staying
+        # true is a silent miss rather than a visible failure.
+        return (
+            re.sub(r"[^a-z0-9]+", "", str(item_name or "").lower()),
+            str(url or "").strip(),
+        )
+
+    def _remember_retention_evidence(
+        self, item_name: str, url: str, *,
+        candidate: dict[str, Any] | None, allow_shallow_relevance: bool,
+    ) -> None:
+        """Record the context a retention call was made with.
+
+        Only recorded when there is something to recall -- a bare call adds
+        nothing and must not overwrite a richer earlier one for the same
+        (item, url).
+        """
+        if candidate is None and not allow_shallow_relevance:
+            return
+        if not hasattr(self, "_retention_evidence"):
+            self._retention_evidence: dict[tuple[str, str], dict[str, Any]] = {}
+        self._retention_evidence[self._retention_evidence_key(item_name, url)] = {
+            "candidate": candidate,
+            "allow_shallow_relevance": bool(allow_shallow_relevance),
+        }
+
+    def _recall_retention_evidence(self, item_name: str, url: str) -> dict[str, Any]:
+        """The context discovery had for this (item, url), or empty."""
+        store = getattr(self, "_retention_evidence", None) or {}
+        return store.get(self._retention_evidence_key(item_name, url), {})
+
+    def _reject_retention(self, exit_id: int) -> str:
+        """Record which retention check refused, then return the empty string.
+
+        Every rejection exit in _retain_discovered_url routes through here, so
+        the branch that fired is recoverable instead of being inferred.
+        """
+        self._last_retention_rejection = (
+            exit_id,
+            _RETENTION_EXIT_LABELS.get(exit_id, "unknown"),
+        )
+        return ""
+
+    def _log_rejected_url(self, kind: str, dest_name: str, item_name: str, url: str) -> None:
+        """Log a URL thrown away after it had already been accepted.
+
+        This is the audit pass re-running _retain_discovered_url over a url
+        discovery had assigned, with different arguments -- no candidate row,
+        no shallow-relevance allowance -- so the two stages can and do reach
+        opposite verdicts on the same link.
+
+        It wrote only a logger.warning, never a disposition event, so the
+        discard was absent from the item's trail. Balanced Rock's record
+        showed general search recovering
+        nps.gov/arch/planyourvisit/balancedrock.htm and then simply stopped,
+        with the item removed for having no verified URL and nothing saying
+        what took it away.
+        """
         lower_url = (url or "").lower()
         expected_policy_rejection = (
             "alltrails.com" in lower_url
@@ -4307,6 +4636,18 @@ class URLDiscoverer:
             item_name or "unknown",
             dest_name or "unknown destination",
             url or "(empty)",
+        )
+        self._log_decision(
+            kind=kind,
+            dest_name=dest_name,
+            item_name=item_name,
+            reason="audit_discarded_previously_accepted_url",
+            message=(
+                "url accepted during discovery was rejected by the audit pass"
+                f" [retention exit {getattr(self, '_last_retention_rejection', None) or 'not recorded'}]"
+            ),
+            url=url,
+            level=logging.DEBUG,
         )
 
     @staticmethod
@@ -4330,8 +4671,74 @@ class URLDiscoverer:
             registry_meta["rejection_reasons"] = existing
         item["_registry"] = registry_meta
 
-    @staticmethod
+    def _removal_trail(self, *, kind: str, dest_name: str, item_name: str) -> list[dict[str, Any]]:
+        """The URLs this item was offered, and which check refused each one.
+
+        The disposition thread already holds this; it was summarised into
+        per-destination reason totals and otherwise dropped. Totals cannot
+        answer "why was Prague Castle removed" -- a destination showing
+        `url_collision_rejected: 6` does not say which six items, so the
+        question could only be guessed at. Attached to the removal record so
+        it survives into the status report.
+        """
+        threads = getattr(self, "_decision_threads_by_destination", {}) or {}
+        by_trace = threads.get(str(dest_name or "").strip() or "unknown", {})
+        # Gather every thread for this item, not just this kind. _trace_id keys
+        # on kind|destination|item, so events logged as kind="search" or
+        # "audit" for the same item live in separate threads -- and those are
+        # exactly the later stages that can clear a url the batch had assigned.
+        # Filtering to one kind made the trail stop at the last attraction-kind
+        # event: Balanced Rock showed its real page being recovered and then
+        # nothing, with the item removed and no record of what discarded it.
+        wanted_item = str(item_name or "").strip().lower()
+        events: list[dict] = []
+        for thread in by_trace.values():
+            for event in thread or []:
+                if not isinstance(event, dict):
+                    continue
+                if str(event.get("item", "") or "").strip().lower() == wanted_item:
+                    events.append(event)
+        events.sort(key=lambda e: int(e.get("seq", 0) or 0))
+        trace_id = self._trace_id(kind=kind, dest_name=dest_name, item_name=item_name)
+        trail = []
+        # A retry re-runs discovery against the same disposition threads, which
+        # accumulate rather than reset, so a retried destination logs each
+        # candidate once per pass. Clearing _registry_decisions before a retry
+        # fixed the removal COUNTS; this is the same defect one structure over,
+        # and it inflated candidates_considered instead. Measured on a Europe
+        # run: Brussels, the only retried destination, carried 65 duplicated
+        # events out of 131 while every other destination carried none.
+        #
+        # Deduped on (reason, url): the question this answers is "which URLs
+        # were tried and what refused them", and an identical pair repeated is
+        # the same answer, not a second one.
+        seen_events: set[tuple[str, str]] = set()
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            signature = (str(event.get("reason", "") or ""), str(event.get("url", "") or ""))
+            if signature in seen_events:
+                continue
+            seen_events.add(signature)
+            # Keys are reason/source/url as written by
+            # _record_disposition_thread_event. Reading the _log_decision
+            # parameter names (reason_code/rendered_url) instead silently
+            # yields empty strings, which reports every item as "0 candidates
+            # considered" -- a plausible-looking finding rather than an error.
+            trail.append({
+                "reason": str(event.get("reason", "") or ""),
+                "url": str(event.get("url", "") or ""),
+                "source": str(event.get("source", "") or ""),
+                "stage": str(event.get("kind", "") or ""),
+                # The event carries a message and the extraction was dropping
+                # it, so the retention-exit label added to diagnose Upheaval
+                # Dome never reached the report it was written for.
+                "detail": str(event.get("message", "") or "")[:200],
+            })
+        return trail
+
     def _record_registry_entity_removal(
+        self,
         dest: dict[str, Any],
         *,
         section_target: str,
@@ -4339,8 +4746,11 @@ class URLDiscoverer:
         display_name: str,
         rejection_reason: str,
         description: str = "",
+        kind: str = "",
+        dest_name: str = "",
     ) -> None:
         decisions = dest.get("_registry_decisions", []) if isinstance(dest.get("_registry_decisions", []), list) else []
+        trail = self._removal_trail(kind=kind, dest_name=dest_name, item_name=display_name) if kind else []
         decisions.append({
             "entity_class": entity_class,
             "display_name": display_name,
@@ -4350,6 +4760,9 @@ class URLDiscoverer:
             "rejection_reasons": [rejection_reason],
             "rendered_url": "",
             "metadata": {"removed": True},
+            # every URL considered for this item, and the check that refused it
+            "candidate_trail": trail,
+            "candidates_considered": sum(1 for e in trail if e.get("url")),
         })
         dest["_registry_decisions"] = decisions
 
@@ -4386,6 +4799,33 @@ class URLDiscoverer:
         if URLDiscoverer._is_coordinate_maps_query_url(url):
             return True
         return URLDiscoverer._classify_url_policy_class(url) not in {
+            "google_maps_search",
+            "google_maps_dir",
+        }
+
+    @staticmethod
+    def _is_unverifiable_maps_query(url: str) -> bool:
+        """A Maps link that _item_has_verified_url will refuse.
+
+        Exactly the inverse of that gate's Maps handling, deliberately: a text
+        query ("?query=Balanced+Rock") is a best guess, a coordinate query
+        ("?query=38.7,-109.5") names a point on the earth. Accepting the first
+        as an item's url guarantees the item is deleted downstream -- and, worse,
+        marks it resolved, so the per-item search that would have found its real
+        page never runs.
+
+        Measured on the 2026-08-29 runs: Prague Castle, St. Vitus Cathedral,
+        Balanced Rock, Navajo Loop Trail and Queen's Garden Trail were all lost
+        this way, with their official pages ranking second in a plain search.
+        test-coverage.md already documents Maps links as usable "only after
+        direct-batch and ordinary web search paths are exhausted"; this restores
+        that, rather than changing it.
+        """
+        if not URLDiscoverer._is_google_maps_candidate_url(url):
+            return False
+        if URLDiscoverer._is_coordinate_maps_query_url(url):
+            return False
+        return URLDiscoverer._classify_url_policy_class(url) in {
             "google_maps_search",
             "google_maps_dir",
         }
@@ -4590,6 +5030,8 @@ class URLDiscoverer:
             display_name=item_name,
             description=str(item.get("description", "") or ""),
             rejection_reason="no_verified_url_removed",
+            kind=kind,
+            dest_name=dest_name,
         )
         return False
 
@@ -5439,6 +5881,45 @@ class URLDiscoverer:
         return bool(getattr(self, "_direct_batch_authoritative", DEFAULT_DIRECT_BATCH_AUTHORITATIVE))
 
     @staticmethod
+    def _collision_key(url: str) -> str:
+        """Normalised form for "is this the same page as that one".
+
+        Scheme, www., trailing slash and query/fragment are dropped: an
+        aggregator will happily serve the same restaurant page under http and
+        https, with and without www, and with tracking parameters attached.
+        Comparing raw strings would let the same page through twice.
+        """
+        candidate = str(url or "").strip().lower()
+        if not candidate:
+            return ""
+        candidate = candidate.split("#", 1)[0].split("?", 1)[0]
+        for prefix in ("https://", "http://"):
+            if candidate.startswith(prefix):
+                candidate = candidate[len(prefix):]
+                break
+        if candidate.startswith("www."):
+            candidate = candidate[4:]
+        return candidate.rstrip("/")
+
+    @classmethod
+    def _url_already_claimed(cls, url: str, claimed: set[str]) -> bool:
+        key = cls._collision_key(url)
+        return bool(key) and key in claimed
+
+    def _item_fallback_when_batch_silent_enabled(self) -> bool:
+        """Whether an item the authoritative batch could not place may still be
+        searched for individually.
+
+        Separate from _direct_batch_is_authoritative on purpose: authority is
+        about whose answer wins, this is about what to do when there is no
+        answer at all. Conflating the two turned "the batch is the source of
+        truth" into "items the batch misses do not exist".
+        """
+        return bool(
+            getattr(self, "_item_fallback_when_batch_silent", DEFAULT_ITEM_FALLBACK_WHEN_BATCH_SILENT)
+        )
+
+    @staticmethod
     def _normalize_direct_batch_authoritative_url(url: str | None) -> str:
         candidate = str(url or "").strip()
         if not candidate:
@@ -5712,13 +6193,71 @@ class URLDiscoverer:
             "Return item-specific links only and avoid generic destination landing pages."
         )
 
-    @staticmethod
-    def _restaurant_direct_batch_query(dest_name: str, dates: str = "") -> str:
+    def _batch_rating_floor(self) -> str:
+        """Minimum rating to request, relaxed on a low-cost brief.
+
+        4.3 is a high bar, and it interacts badly with a budget: a friterie or
+        imbiss that locals rate 4.1 is exactly what "low-cost, no fine dining"
+        wants, while 4.3-and-above skews toward destination restaurants.
+        Removing the floor entirely was the first attempt and went too far --
+        it is a genuine quality gate, and a test rightly held it in place.
+
+        Lowering it rather than dropping it widens the cheap pool without
+        admitting badly-reviewed places.
+        """
+        budget_text = re.sub(r"[-_]+", " ", str(getattr(self, "_trip_budget", "") or "").lower())
+        low = any(
+            k in budget_text
+            for k in ("budget", "cheap", "economy", "value", "frugal", "low cost",
+                      "inexpensive", "affordable", "modest", "shoestring", "no fine dining")
+        )
+        return "4.0" if low else "4.3"
+
+    def _batch_price_clause(self) -> str:
+        """The budget instruction, shared by BOTH restaurant prompts.
+
+        There are two: a system prompt that sets the output contract and the
+        item count, and a user prompt naming the destination. The budget
+        wording was added to the user prompt only, so the system prompt went on
+        saying "Keep only highly rated items (>4.3)" -- a rating floor with no
+        price guidance, which is exactly what selects for fine dining. Half the
+        instruction was arguing with the other half.
+        """
+        budget_text = re.sub(r"[-_]+", " ", str(getattr(self, "_trip_budget", "") or "").lower())
+        if any(
+            k in budget_text
+            for k in ("budget", "cheap", "economy", "value", "frugal", "low cost",
+                      "inexpensive", "affordable", "modest", "shoestring", "no fine dining")
+        ):
+            return (
+                "PRICE IS THE PRIMARY FILTER. Return everyday, inexpensive places at the "
+                "$ and $$ price levels: friteries, imbiss and street-food counters, market "
+                "halls, bakeries and sandwich shops, neighbourhood taverns and family "
+                "trattorias, student and worker canteens. At least half the list must be $. "
+                "EXCLUDE fine dining, tasting menus, Michelin-starred and hotel restaurants "
+                "entirely -- they are wrong for this trip no matter how well reviewed. "
+            )
+        if any(k in budget_text for k in ("luxury", "premium", "splurge", "upscale", "high end")):
+            return "Favour upscale places, $$$ and $$$$ price levels. "
+        return ""
+
+    def _restaurant_direct_batch_query(self, dest_name: str, dates: str = "") -> str:
         date_clause = f" ({dates})" if str(dates or "").strip() else ""
+        # The budget belongs in the REQUEST. Asking for "highly rated (>4.3)"
+        # with no price guidance selects for fine dining, which is how a
+        # low-cost brief produced Ciel Bleu, De Kas, Yamazato and RIJKS at
+        # Amsterdam. Filtering afterwards could only make the section smaller,
+        # never cheaper -- Amsterdam ended with two restaurants, one of them
+        # $$$$, because there were no inexpensive candidates to keep.
+        price_clause = self._batch_price_clause()
         return (
             "Generate a list of local restaurants "
             f"for {dest_name}{date_clause} with clickable links to source material and corresponding Google Maps content. "
-            "Keep only highly rated items (>4.3), include cuisine variety, and keep only places likely open on the indicated dates. "
+            f"{price_clause}"
+            "For EVERY item state the price level as exactly one of $, $$, $$$ or $$$$, "
+            "and state the cuisine as a food style (Thai, Vietnamese, bakery, brewpub) -- "
+            "never a city or district name. "
+            "Keep only well-reviewed items, include cuisine variety, and keep only places likely open on the indicated dates. "
             "Include only suggestions with reliable clickable links."
         )
 
@@ -6130,7 +6669,8 @@ class URLDiscoverer:
                 "and <a href=\"https://www.google.com/maps/search/?api=1&query=Restaurant+Name+Address+City+State\">Maps</a> as an address-qualified Google Maps search link. "
                 "Include the restaurant's rating as a clear numeric value like '4.7/5' or '4.7 stars', a price indicator like '$$', '$$$', or 'moderate', and the cuisine or restaurant type (e.g. 'Italian', 'New American', 'Poke') when available, "
                 "then a short descriptive note (8-15 words) about the food, atmosphere, or signature dishes -- real prose that adds detail beyond the cuisine or price, when available. "
-                "Keep only highly rated items (>4.3), include cuisine variety, "
+                f"{self._batch_price_clause()}"
+                f"Keep only items rated above {self._batch_rating_floor()}, include cuisine variety, "
                 "and keep only likely-open, high-confidence options. "
                 "Avoid generic destination listing pages."
             )
@@ -6140,7 +6680,8 @@ class URLDiscoverer:
                 "with clickable links to source material and corresponding Google Maps content. "
                 "Include a rating, price indicator, and the cuisine or restaurant type for each item when available, using a clear numeric or price format, "
                 "and a short descriptive note about the food, atmosphere, or signature dishes for each item when available. "
-                "Keep only highly rated items (>4.3), include cuisine variety, "
+                f"{self._batch_price_clause()}"
+                f"Keep only items rated above {self._batch_rating_floor()}, include cuisine variety, "
                 "and keep only places likely open on the indicated dates. "
                 "Include only suggestions with reliable clickable links."
             )
@@ -6329,7 +6870,8 @@ class URLDiscoverer:
                 "and <a href=\"https://www.google.com/maps/search/?api=1&query=Restaurant+Name+Address+City+State\">Maps</a> as an address-qualified Google Maps search link. "
                 "Include the restaurant's rating as a clear numeric value like '4.7/5' or '4.7 stars', a price indicator like '$$', '$$$', or 'moderate', and the cuisine or restaurant type (e.g. 'Italian', 'New American', 'Poke') when available, "
                 "then a short descriptive note (8-15 words) about the food, atmosphere, or signature dishes -- real prose that adds detail beyond the cuisine or price, when available. "
-                "Keep only highly rated items (>4.3), include cuisine variety, "
+                f"{self._batch_price_clause()}"
+                f"Keep only items rated above {self._batch_rating_floor()}, include cuisine variety, "
                 "and keep only likely-open, high-confidence options. "
                 "Avoid generic destination listing pages."
             )
@@ -6339,7 +6881,8 @@ class URLDiscoverer:
                 + "\nInclude clickable links to source material and corresponding Google Maps content. "
                 "Include a rating, price indicator, and the cuisine or restaurant type for each item when available, using a clear numeric or price format, "
                 "and a short descriptive note about the food, atmosphere, or signature dishes for each item when available. "
-                "Keep only highly rated items (>4.3), include cuisine variety, "
+                f"{self._batch_price_clause()}"
+                f"Keep only items rated above {self._batch_rating_floor()}, include cuisine variety, "
                 "and keep only places likely open on the indicated dates. "
                 "Include only suggestions with reliable clickable links."
             )
@@ -6647,6 +7190,46 @@ class URLDiscoverer:
             return True, []
         return False, []
 
+    def _batch_query_fingerprint(self, kind: str) -> str:
+        """Short digest of the inputs that change what the batch is ASKED for.
+
+        Only the budget varies per run today, so that is what is hashed. If the
+        query text itself gains more variables, hash the rendered query instead
+        -- the point is that two different asks must not share a cache entry.
+        """
+        import hashlib
+
+        # Only the restaurant query varies with the budget today. Attractions
+        # and en-route stops take no run-varying input, so their keys keep the
+        # original shape and nothing needlessly re-fetches.
+        #
+        # This is narrow on purpose, and the narrowness is the weakness: a
+        # future edit to the ATTRACTION prompt would be just as invisible as
+        # the restaurant one was. The durable fix is to fingerprint the
+        # rendered query for every kind, which means the query builders need a
+        # uniform signature first.
+        if str(kind or "").strip().lower() != "restaurant":
+            return ""
+        # Hash the QUERY, not the budget. Hashing the budget meant rewording the
+        # prompt -- naming friteries and imbiss instead of "$ and $$ price
+        # levels" -- produced an identical fingerprint and hit the same cached
+        # rows, so the sharper ask never ran and Brussels came back unchanged.
+        # Exactly the failure this fingerprint was added to prevent, one level
+        # further in.
+        try:
+            # The item count shapes the SYSTEM prompt, which this does not
+            # render, so it is folded in explicitly. Raising 8 -> 20 changed
+            # nothing on the next run because the key never noticed. Third time
+            # a change to the ask has been invisible here, and each time the
+            # missing input was one I had not thought of.
+            count = getattr(self, "_restaurant_direct_batch_item_count", "")
+            rendered = f"{count}|{self._restaurant_direct_batch_query('__fingerprint__', '')}"
+        except Exception:
+            rendered = str(getattr(self, "_trip_budget", "") or "")
+        if not rendered.strip():
+            return ""
+        return hashlib.sha1(rendered.encode("utf-8")).hexdigest()[:8]
+
     def _get_direct_batch_html_rows_for_destination(
         self,
         *,
@@ -6664,7 +7247,15 @@ class URLDiscoverer:
             self._direct_batch_html_key_locks = {}
         if not hasattr(self, "_direct_batch_html_failure_ts"):
             self._direct_batch_html_failure_ts = {}
-        key = self._batch_cache_key(destination, f"{dates}|html|{kind}")
+        # The QUERY must be part of the key. It was not, so changing the batch
+        # prompt to ask for inexpensive restaurants changed nothing: Berlin and
+        # Frankfurt were served the previous fine-dining rows straight from
+        # .cache/url_discovery and the fix looked like it had failed. Any prompt
+        # change was invisible until someone cleared the cache by hand, which
+        # is a poor property for a component whose prompt is still being tuned.
+        fingerprint = self._batch_query_fingerprint(kind)
+        suffix = f"|{fingerprint}" if fingerprint else ""
+        key = self._batch_cache_key(destination, f"{dates}|html|{kind}{suffix}")
         if not key:
             return []
 
@@ -7695,6 +8286,23 @@ class URLDiscoverer:
                         strongest_candidates,
                         key=lambda entry: (entry[1], entry[2], entry[3], entry[4], entry[5]),
                     )[6]
+            if selected and self._is_unverifiable_maps_query(selected):
+                # Do not let a text-query Maps link stand as the attraction's
+                # url: it cannot satisfy _item_has_verified_url, so returning
+                # it resolves the item into deletion and suppresses the search
+                # that would have found a real page. Fall through instead.
+                self._log_decision(
+                    kind="attraction",
+                    dest_name=dest_name,
+                    item_name=item_name,
+                    reason="direct_batch_maps_query_not_accepted_as_url",
+                    message=(
+                        "maps text query declined as the item url; continuing to "
+                        "search rather than resolving to an unverifiable link"
+                    ),
+                    url=selected,
+                )
+                selected = ""
             if selected:
                 self._remember_direct_batch_authoritative_url(selected, item_name)
                 self._log_decision(
@@ -8372,12 +8980,35 @@ class URLDiscoverer:
         )
         return None
 
-    def _search_alltrails_for_trail(self, item_name: str, dest_name: str, dates: str = "") -> str | None:
-        """Exhaust high-signal AllTrails queries before non-AllTrails fallback."""
-        if bool(getattr(self, "_disable_trails", False)):
+    def _search_alltrails_for_trail(
+        self,
+        item_name: str,
+        dest_name: str,
+        dates: str = "",
+        *,
+        allow_when_disabled: bool = False,
+        force_search: bool = False,
+    ) -> str | None:
+        """Exhaust high-signal AllTrails queries before non-AllTrails fallback.
+
+        `allow_when_disabled` is for the per-leg trail link, which the
+        manifest asks for by naming a trail rather than by the --trails
+        switch. See _discover_leg_trail_link.
+
+        `force_search` skips the direct-link batch. That batch is a
+        per-destination harvest of trails NEAR one stop, so a leg's trail
+        cannot be in it by construction -- and in authoritative mode its
+        no-match returns None before the search variants are ever tried,
+        which is how the first PCT run asked for "Pacific Crest Trail
+        Callahan's Lodge to Fish Lake Resort" and got nothing.
+        """
+        if bool(getattr(self, "_disable_trails", False)) and not allow_when_disabled:
             return None
 
-        source_mode = str(getattr(self, "_alltrails_source", "search") or "search")
+        source_mode = (
+            "search" if force_search
+            else str(getattr(self, "_alltrails_source", "search") or "search")
+        )
         if source_mode == "direct_link_batch":
             selected = self._search_alltrails_for_trail_from_direct_batch(item_name, dest_name, dates)
             if selected:
@@ -8948,6 +9579,22 @@ class URLDiscoverer:
             restaurants = self._prioritize_direct_batch_restaurants(restaurants, dest_name, dest_dates, lodging_location=lodging_location)
             ai["dinner_recommendations"] = restaurants
 
+        # One URL, one restaurant. The per-item fallback introduced 2026-08-27
+        # published restaurantguru.com/9-Et-Voisins-Brussels under BOTH
+        # "9 et Voisins" and "Brasserie Signature" -- a search for a name the
+        # batch could not place will happily return a nearby restaurant's page,
+        # and nothing downstream compared one item's URL against another's.
+        #
+        # This is the risk the authoritative-batch design was guarding against.
+        # Re-opening the fallback was right, but it has to carry the guard the
+        # batch was providing implicitly.
+        # Claimed AS items are processed, never pre-seeded. Seeding from the
+        # URLs already attached made each restaurant collide with its own link
+        # the moment it was examined -- the guard rejected exactly the items it
+        # was supposed to leave alone. First item to claim a URL keeps it;
+        # later items asking for the same one are refused.
+        claimed_restaurant_urls: set[str] = set()
+
         for rest in restaurants:
             rest_name = rest.get("name", "")
             restaurant_variants = _build_restaurant_query_variants(rest_name, dest_name)
@@ -8973,9 +9620,23 @@ class URLDiscoverer:
                         preserved_existing = ""
                     if self._direct_batch_is_authoritative() and self._is_google_maps_candidate_url(preserved_existing):
                         preserved_existing = ""
+                    if preserved_existing and self._url_already_claimed(
+                        preserved_existing, claimed_restaurant_urls
+                    ):
+                        self._log_decision(
+                            kind="restaurant",
+                            dest_name=dest_name,
+                            item_name=rest_name,
+                            reason="url_collision_rejected",
+                            message="pre-attached URL already published under another restaurant at this destination",
+                            url=preserved_existing,
+                        )
+                        preserved_existing = ""
+                        rest["url"] = ""
                     if preserved_existing:
                         rest["url"] = preserved_existing
                         rest.pop("maps_url", None)
+                        claimed_restaurant_urls.add(self._collision_key(preserved_existing))
                         # This shortcut (URL already attached before this loop
                         # ran) otherwise skips the row-metadata merge the
                         # fresh-lookup branch below does, silently leaving
@@ -9002,8 +9663,28 @@ class URLDiscoverer:
                         continue
                 batch_url = self._search_restaurant_from_direct_batch(rest_name, dest_name, str(dest_dates or ""), lodging_location=lodging_location)
                 if batch_url:
+                    if self._url_already_claimed(batch_url, claimed_restaurant_urls):
+                        # The batch matched this item to a row already used for a
+                        # different restaurant. Brussels published
+                        # restaurantguru.com/9-Et-Voisins-Brussels under both
+                        # "9 et Voisins" and "Brasserie Signature" in every run
+                        # since the first -- a reader clicking the second gets
+                        # the first. The batch is authoritative about which URL
+                        # is right, not about giving the same one to two items.
+                        self._log_decision(
+                            kind="restaurant",
+                            dest_name=dest_name,
+                            item_name=rest_name,
+                            reason="url_collision_rejected",
+                            message="direct-batch URL already published under another restaurant at this destination",
+                            url=batch_url,
+                        )
+                        rest["url"] = ""
+                        rest.pop("maps_url", None)
+                        continue
                     rest["url"] = batch_url
                     rest.pop("maps_url", None)
+                    claimed_restaurant_urls.add(self._collision_key(batch_url))
                     rest.update(
                         self._direct_batch_row_quality_metadata_for_url(
                             self._get_restaurant_direct_batch_rows_for_destination(
@@ -9022,16 +9703,40 @@ class URLDiscoverer:
                     )
                     continue
                 if self._direct_batch_is_authoritative():
+                    # The batch being authoritative means it WINS where it has an
+                    # answer -- not that its silence is an answer. Dropping the
+                    # item here skipped the per-item search below entirely, and
+                    # the 2026-08-27 Brussels run showed what that costs: Chicon
+                    # Farsi, Thaiburi, Yummy Bowl, Pasta Divina and Rotisse were
+                    # all removed for "no verified URL", and all five have
+                    # official sites that a single Serper query finds
+                    # (chiconfarsi.com, thaiburi.eu, eatyummybowl.com,
+                    # pastadivina.be, rotisse.be). The batch had offered a
+                    # generic TripAdvisor city landing page for each, which was
+                    # correctly rejected -- and then nothing else was tried.
+                    #
+                    # 77% of that destination's dining was lost to a fallback
+                    # that was never attempted, at ~$0.001 a query.
+                    if not self._item_fallback_when_batch_silent_enabled():
+                        rest["url"] = ""
+                        rest.pop("maps_url", None)
+                        self._log_decision(
+                            kind="restaurant",
+                            dest_name=dest_name,
+                            item_name=rest_name,
+                            reason="direct_batch_source_locked_no_match",
+                            message="restaurant link omitted; authoritative direct-link batch had no usable result",
+                        )
+                        continue
                     rest["url"] = ""
                     rest.pop("maps_url", None)
                     self._log_decision(
                         kind="restaurant",
                         dest_name=dest_name,
                         item_name=rest_name,
-                        reason="direct_batch_source_locked_no_match",
-                        message="restaurant link omitted; authoritative direct-link batch had no usable result",
+                        reason="direct_batch_silent_falling_back_to_item_search",
+                        message="authoritative direct-link batch had no usable result; trying per-item search",
                     )
-                    continue
 
             ai_candidate_url = self._resolve_ai_candidate_url(
                 item=rest,
@@ -9042,9 +9747,22 @@ class URLDiscoverer:
                 kind="restaurant",
                 normalize_restaurant=True,
             )
+            if ai_candidate_url and self._url_already_claimed(
+                ai_candidate_url, claimed_restaurant_urls
+            ):
+                self._log_decision(
+                    kind="restaurant",
+                    dest_name=dest_name,
+                    item_name=rest_name,
+                    reason="url_collision_rejected",
+                    message="candidate already published under another restaurant at this destination",
+                    url=ai_candidate_url,
+                )
+                ai_candidate_url = ""
             if ai_candidate_url:
                 rest["url"] = ai_candidate_url
                 rest.pop("maps_url", None)
+                claimed_restaurant_urls.add(self._collision_key(ai_candidate_url))
                 self._log_decision(
                     kind="restaurant",
                     dest_name=dest_name,
@@ -9073,8 +9791,20 @@ class URLDiscoverer:
                     max_attempts=int(getattr(self, "_max_restaurant_query_attempts", 3) or 3),
                 )
             url = self._normalize_restaurant_url(url)
+            if url and self._url_already_claimed(url, claimed_restaurant_urls):
+                self._log_decision(
+                    kind="restaurant",
+                    dest_name=dest_name,
+                    item_name=rest_name,
+                    reason="url_collision_rejected",
+                    message="search result already published under another restaurant at this destination",
+                    url=url,
+                )
+                url = ""
             rest["url"] = url or ""
             rest.pop("maps_url", None)
+            if url:
+                claimed_restaurant_urls.add(self._collision_key(url))
             if url:
                 # Populate missing metadata from the search snippet before trying page fetch.
                 winner = getattr(self, "_search_winner_snippets", {}).get(url, {})
@@ -9106,8 +9836,95 @@ class URLDiscoverer:
         # Enrich any restaurant that has a valid URL but missing metadata.
         for rest in restaurants:
             self._maybe_upgrade_tripadvisor_restaurant_link(rest, dest_name)
+            self._strip_place_name_cuisine(rest, dest_name)
             self._enrich_restaurant_metadata_from_url(rest)
             self._backfill_restaurant_metadata_from_available_text(rest)
+
+        # Apply the budget cap AGAIN, now that prices are known. The first pass
+        # runs before this enrichment, so it judged items whose price_range was
+        # still empty and let them through as on-tier. That is how Frankfurt
+        # kept The Legacy Bar & Grill at $$$$ on a "No fine dining" itinerary:
+        # at cap time it had no price at all.
+        #
+        # Running it twice rather than moving it: the first pass still earns its
+        # place by trimming the list before the expensive per-item URL work.
+        priced = self._apply_budget_cap_to_restaurants(restaurants, dest_name)
+        if len(priced) != len(restaurants):
+            ai["dinner_recommendations"] = priced
+
+    # Third-party pages that stand in for a restaurant's own site. TripAdvisor
+    # was the only one checked until 2026-08-27, when re-opening the per-item
+    # fallback started returning food blogs and AI travel sites instead:
+    # champagne-tastes.com for Rotisse (rotisse.be exists), mindtrip.ai for
+    # Thaiburi (thaiburi.eu exists), restaurantguru, wanderlog, inyourpocket.
+    # All verified and resolvable, all worse than the restaurant's own page.
+    _THIRD_PARTY_RESTAURANT_HOSTS = (
+        "tripadvisor.", "yelp.", "restaurantguru.", "wanderlog.", "mindtrip.",
+        "inyourpocket.", "thefork.", "opentable.", "zomato.", "foursquare.",
+        "trip.com", "timeout.", "eater.",
+    )
+
+    @staticmethod
+    def _domain_matches_item_name(url: str, item_name: str) -> bool:
+        """Does the URL's domain look like it BELONGS to this item?
+
+        The discriminator a host list cannot express. "rotisse.be" contains
+        "rotisse"; "champagne-tastes.com" does not, and no amount of
+        enumerating blog hosts would have told them apart -- the 2026-08-27
+        upgrade accepted champagne-tastes.com as Rotisse's official site, and
+        tipsfromawaitress.be as Yummy Bowl's, because both cleared a
+        not-on-the-list test.
+
+        Punctuation and spacing are collapsed on both sides, so "Chicon Farsi"
+        matches chiconfarsi.com and "Yummy Bowl" matches eatyummybowl.com.
+        Containment, not overlap: token intersection is what once matched
+        *Zion Lodge* to *Stargazing in Zion*.
+
+        Short names are refused rather than guessed at -- a three-character
+        name would match almost any domain by accident.
+        """
+        host = str(url or "").strip().lower()
+        for prefix in ("https://", "http://"):
+            if host.startswith(prefix):
+                host = host[len(prefix):]
+                break
+        host = host.split("/", 1)[0]
+        if host.startswith("www."):
+            host = host[4:]
+        host_key = re.sub(r"[^a-z0-9]", "", host)
+        if not host_key:
+            return False
+
+        raw_name = str(item_name or "").lower()
+        name_key = re.sub(r"[^a-z0-9]", "", raw_name)
+        if len(name_key) < 5:
+            return False
+        if name_key in host_key:
+            return True
+
+        # Real domains abbreviate. "Benja Thai & Sushi" registers
+        # benjathaistgeorge.com -- it drops a word and adds the town, so whole
+        # name containment rejects a genuine official site. Fall back to the
+        # first distinctive token, which is what a restaurant actually builds
+        # its domain around.
+        tokens = [tok for tok in re.split(r"[^a-z0-9]+", raw_name) if len(tok) >= 4]
+        if not tokens:
+            return False
+        return tokens[0] in host_key
+
+    @classmethod
+    def _is_third_party_restaurant_page(cls, url: str) -> bool:
+        """True for a page ABOUT the restaurant rather than the restaurant's own.
+
+        Deliberately a host list rather than a heuristic. "Looks like a blog" is
+        not decidable from a URL, and guessing wrong would discard a legitimate
+        official site -- the expensive direction of the error, since the whole
+        point is to end up with better links, not fewer.
+        """
+        lower = str(url or "").strip().lower()
+        if not lower:
+            return False
+        return any(marker in lower for marker in cls._THIRD_PARTY_RESTAURANT_HOSTS)
 
     def _maybe_upgrade_tripadvisor_restaurant_link(self, rest: dict[str, Any], dest_name: str) -> None:
         """TripAdvisor should be the exception, not the default, for a named
@@ -9127,7 +9944,7 @@ class URLDiscoverer:
         ):
             return
         url = str(rest.get("url", "") or "").strip()
-        if "tripadvisor." not in url.lower():
+        if not self._is_third_party_restaurant_page(url):
             return
         rest_name = str(rest.get("name", "") or "").strip()
         if not rest_name:
@@ -9146,16 +9963,28 @@ class URLDiscoverer:
         if not candidate:
             return
         lower_candidate = candidate.lower()
-        aggregator_markers = (
-            "tripadvisor.",
-            "yelp.",
+        aggregator_markers = self._THIRD_PARTY_RESTAURANT_HOSTS + (
             "facebook.",
             "instagram.",
-            "opentable.",
             "google.com/maps",
             "google.com/search",
         )
         if any(marker in lower_candidate for marker in aggregator_markers):
+            return
+        # An "upgrade" must actually be the restaurant's own site. Without this
+        # the search's first non-listed result wins, which is how a food blog
+        # replaced a TripAdvisor page and was logged as an upgrade. Keeping the
+        # existing link is the better failure: it is at least ABOUT the right
+        # restaurant.
+        if not self._domain_matches_item_name(candidate, rest_name):
+            self._log_decision(
+                kind="restaurant",
+                dest_name=dest_name,
+                item_name=rest_name,
+                reason="official_site_upgrade_rejected_name_mismatch",
+                message="candidate domain does not correspond to the restaurant name; keeping existing link",
+                url=candidate,
+            )
             return
         cleaned = self._retain_discovered_url(
             candidate,
@@ -9274,6 +10103,84 @@ class URLDiscoverer:
             rest["cuisine"] = str(inferred.get("cuisine") or "").strip()
         if needs_price and inferred.get("price_range"):
             rest["price_range"] = str(inferred.get("price_range") or "").strip()
+
+    #: Cuisine values that are really a place, not a food style. The harvest
+    #: returned cuisine="Frankfurt" for THE ROOF and African Queen, which reads
+    #: as a cuisine badge saying the name of the city the reader is already in.
+    #: Place-type nouns. "Wenceslas Square" cleared every other check -- two
+    #: alphabetic words, no digits, no street suffix -- so a landmark name still
+    #: reached the badge. "market" is deliberately absent: a market hall is a
+    #: real dining category on a low-cost brief.
+    _CUISINE_PLACE_STOPWORDS = (
+        "district", "quarter", "centre", "center", "old town", "square",
+        "bridge", "castle", "cathedral", "station", "tower", "palace",
+    )
+
+    #: Street-type words in the languages this generator has produced output for.
+    #: "Pflugstrasse 11" and "Mehringdamm 32" both reached a cuisine badge.
+    _CUISINE_STREET_WORDS = (
+        "strasse", "straße", "str.", "damm", "platz", "gasse", "allee", "weg",
+        "street", "road", "avenue", "lane", "boulevard", "plein", "straat",
+        "rue ", "namesti", "náměstí",
+    )
+
+    #: Fragments that mean a scrape leaked into the field rather than a cuisine.
+    _CUISINE_SCRAPE_MARKERS = ("photo", "review", "menu", "price", "…", "...", "|", "http")
+
+    @classmethod
+    def _is_plausible_cuisine(cls, value: str, dest_name: str = "") -> bool:
+        """Does this read as a FOOD STYLE, rather than whatever text was nearby?
+
+        Inverted from the earlier version, which blocklisted place names and so
+        cleared cuisine="Frankfurt" while passing "Pflugstrasse 11",
+        "Mehringdamm 32" and "Photos & ..." straight to the badge. Screening
+        against a list of things a cuisine is not requires knowing them all in
+        advance; this asks what a cuisine looks like instead.
+
+        A cuisine is a short alphabetic phrase: "Thai", "Modern European",
+        "Vietnamese". It carries no digits, no street-type word, no punctuation
+        from a scraped page, and is not the name of the place the reader is in.
+        """
+        text = str(value or "").strip()
+        if not text or len(text) > 28:
+            return False
+        lowered = text.lower()
+
+        if any(ch.isdigit() for ch in text):
+            return False                      # addresses, "4.5/5", "Top 10"
+        if any(marker in lowered for marker in cls._CUISINE_SCRAPE_MARKERS):
+            return False
+        if any(word in lowered for word in cls._CUISINE_STREET_WORDS):
+            return False
+        if len(text.split()) > 3:
+            return False                      # a phrase this long is prose
+        if not re.fullmatch(r"[A-Za-zÀ-ÿ\s&'/-]+", text):
+            return False
+
+        dest_tokens = {
+            tok for tok in re.split(r"[^a-z]+", str(dest_name or "").lower()) if len(tok) > 3
+        }
+        if lowered in dest_tokens:
+            return False                      # cuisine="Frankfurt" in Frankfurt
+        if any(word in lowered for word in cls._CUISINE_PLACE_STOPWORDS):
+            return False
+        return True
+
+    @classmethod
+    def _strip_place_name_cuisine(cls, rest: dict[str, Any], dest_name: str) -> None:
+        """Blank a cuisine field that is not plausibly a cuisine.
+
+        Cleared rather than corrected: an empty badge is honest, whereas
+        guessing a cuisine from the name would invent a fact about the
+        restaurant. _backfill_restaurant_metadata_from_available_text may still
+        infer one legitimately from the page text afterwards.
+        """
+        if not isinstance(rest, dict):
+            return
+        cuisine = str(rest.get("cuisine", "") or "").strip()
+        if cuisine and not cls._is_plausible_cuisine(cuisine, dest_name):
+            logger.info("Cleared implausible cuisine %r for %r", cuisine[:40], rest.get("name", ""))
+            rest["cuisine"] = ""
 
     @staticmethod
     def _extract_restaurant_meta_from_html(html: str) -> dict[str, str]:
@@ -9778,32 +10685,157 @@ class URLDiscoverer:
             fallback_description="Locally surfaced dinner option.",
             dest_name=dest_name,
         )
-        return self._backfill_restaurant_metadata_from_existing(merged, restaurants)
+        merged = self._backfill_restaurant_metadata_from_existing(merged, restaurants)
+        return self._apply_budget_cap_to_restaurants(merged, dest_name)
+
+    #: Below this a destination's dining section stops being useful. The cap
+    #: will admit off-tier options to reach it rather than publish a near-empty
+    #: list -- correctly-priced and absent is not better than present and one
+    #: tier high.
+    _MIN_RESTAURANTS_PER_DESTINATION = 5
+
+    #: On an explicit low-cost brief, off-tier options are admitted only to keep
+    #: a destination from rendering almost nothing. Two is the point at which a
+    #: dining section stops looking broken; anything above that should be filled
+    #: with places that actually match the brief, or not at all.
+    _LOW_BUDGET_BACKFILL_FLOOR = 2
+
+    def _apply_budget_cap_to_restaurants(
+        self, restaurants: list[dict[str, Any]], dest_name: str
+    ) -> list[dict[str, Any]]:
+        """Re-apply the trip's budget preference after the batch merge.
+
+        Mirrors AIContentGenerator._normalize_restaurants: at most one splurge
+        on a low-budget trip, at most one casual on a high-budget one. Applied
+        again here because the batch supplies items that never passed through
+        the first filter.
+        """
+        budget_text = re.sub(r"[-_]+", " ", str(getattr(self, "_trip_budget", "") or "").lower())
+        if not budget_text.strip():
+            return restaurants
+        low = any(
+            k in budget_text
+            for k in ("budget", "cheap", "economy", "economical", "value", "frugal",
+                      "low cost", "lowcost", "inexpensive", "affordable", "modest",
+                      "shoestring", "backpack")
+        )
+        high = any(
+            k in budget_text
+            for k in ("luxury", "premium", "high end", "splurge", "upscale", "fine dining")
+        )
+        if "no fine dining" in budget_text or "not fine dining" in budget_text:
+            high, low = False, True
+        if not (low or high):
+            return restaurants
+
+        off_tier = {"$$$", "$$$$"} if low else {"$", "$$"}
+        # Keeping the FIRST off-tier item and dropping the rest produced the
+        # worst of both outcomes on 2026-08-27: Amsterdam ended with two
+        # restaurants, one of them $$$$, and Frankfurt with a single $$$$.
+        # The list arrives expensive-first, so "first" meant "most expensive",
+        # and dropping six of eight left almost nothing on the page.
+        #
+        # Instead: keep every on-tier item, then backfill from the off-tier
+        # ones CHEAPEST-first until the destination has a usable number. A
+        # thin section of correctly-priced places is not better than a
+        # reasonable section that leans the right way.
+        # Consult Places where our own price is missing or looks wrong for the
+        # brief. Used as a FILTER only -- the verdict decides whether an item
+        # survives, and no Places field is published. See
+        # docs/design/places-for-restaurants.md for why that boundary matters.
+        #
+        # Spent narrowly: one call per ambiguous item, not per restaurant. The
+        # destination-wide sweep is too coarse to help -- a 40-place window
+        # missed Horvath, Comme Chez Soi and Madami alike -- but a targeted
+        # lookup answered 11 of 12 correctly, rejecting every Michelin entry.
+        places = getattr(self, "_places_filter", None)
+        if low and places is not None and places.available:
+            rescued, rejected = [], []
+            for item in restaurants:
+                tier = str((item or {}).get("price_range", "") or (item or {}).get("price", "") or "").strip()
+                if tier in ("$", "$$"):
+                    continue                      # already on-brief; do not spend a call
+                name = str((item or {}).get("name", "") or "").strip()
+                if not name:
+                    continue
+                verdict = places.verdict_precise(name, dest_name)
+                if verdict == "too_expensive":
+                    item["_places_reject"] = True
+                    rejected.append(name)
+                elif verdict == "confirmed_affordable":
+                    # Keep it even though our own price said otherwise, or said
+                    # nothing. Places is the better authority on price.
+                    item["_places_affordable"] = True
+                    rescued.append(name)
+            if rejected:
+                logger.info(
+                    "Places rejected %d too-expensive restaurant(s) at %s: %s",
+                    len(rejected), dest_name, ", ".join(r[:26] for r in rejected[:6]),
+                )
+            if rescued:
+                logger.info(
+                    "Places confirmed %d affordable restaurant(s) at %s: %s",
+                    len(rescued), dest_name, ", ".join(r[:26] for r in rescued[:6]),
+                )
+            restaurants = [i for i in restaurants if not (i or {}).get("_places_reject")]
+
+        rank = {"$": 0, "$$": 1, "$$$": 2, "$$$$": 3}
+        def _tier(item: Any) -> str:
+            return str((item or {}).get("price_range", "") or (item or {}).get("price", "") or "").strip()
+
+        def _on_brief(item: Any) -> bool:
+            # A Places-confirmed item is on-brief whatever our own price label
+            # says, which is the point of asking: our label was frequently
+            # absent, and absent items were bypassing this cap entirely.
+            return bool((item or {}).get("_places_affordable")) or _tier(item) not in off_tier
+
+        on_tier = [i for i in restaurants if _on_brief(i)]
+        off = [i for i in restaurants if not _on_brief(i)]
+        off.sort(key=lambda i: rank.get(_tier(i), 99), reverse=not low)
+        # The top tier is never a valid backfill for a low-cost brief. Filling
+        # a shortfall admitted Comme Chez Soi (2 Michelin stars) to Brussels and
+        # De Silveren Spiegel to Amsterdam on a manifest that says "No fine
+        # dining". A shorter section is the correct answer; $$$ can still fill.
+        if low:
+            off = [i for i in off if _tier(i) != "$$$$"]
+
+        # Backfill ONLY to cover a shortfall. An earlier version always kept one
+        # off-tier item, mirroring the "span two price tiers" rule -- but that
+        # rule exists for variety on an unstated budget, and a brief saying "No
+        # fine dining" has stated one. With enough correctly-priced options,
+        # nothing off-tier is admitted.
+        # Backfill to a MINIMUM, not to a comfortable count. Filling toward five
+        # published three Michelin restaurants for Berlin -- Horvath, Nobelhart &
+        # Schmutzig, Cookies Cream -- on a "No fine dining" brief, because $$$
+        # was allowed to make up the numbers.
+        #
+        # The instruction to exclude fine dining is in the batch prompt and is
+        # not reliably honoured, so the cap is the only enforceable control. It
+        # now admits off-tier options only to avoid a near-empty section, which
+        # is a genuinely worse outcome than a short one.
+        floor = self._MIN_RESTAURANTS_PER_DESTINATION if not low else self._LOW_BUDGET_BACKFILL_FLOOR
+        shortfall = max(0, floor - len(on_tier))
+        keep_off = off[:shortfall] if off else []
+        dropped = [str((i or {}).get("name", "") or "") for i in off[len(keep_off):]]
+
+        kept = [i for i in restaurants if i in on_tier or i in keep_off]
+        if dropped:
+            logger.info(
+                "Budget cap dropped %d off-tier restaurant(s) at %s: %s",
+                len(dropped), dest_name, ", ".join(d[:28] for d in dropped[:6]),
+            )
+        return kept
 
     @staticmethod
     def _infer_destination_day_count(dates: str) -> int:
-        """Best-effort day count from a manifest date-range string, e.g.
-        'October 19-21, 2026' -> 3, 'October 17, 2026' -> 1."""
-        text = str(dates or "").replace("–", "-").replace("—", "-")
-        m = re.search(r"[A-Za-z]+\s+(\d{1,2})(?:\s*-\s*(\d{1,2}))?(?:,\s*\d{4})?", text)
-        if m:
-            start = int(m.group(1))
-            end = int(m.group(2) or m.group(1))
-            if end >= start:
-                return max(1, end - start + 1)
-            return 1
-        iso = re.findall(r"(\d{4}-\d{2}-\d{2})", text)
-        if len(iso) >= 2:
-            try:
-                from datetime import datetime as _dt
-                d0 = _dt.strptime(iso[0], "%Y-%m-%d")
-                d1 = _dt.strptime(iso[1], "%Y-%m-%d")
-                if d1 >= d0:
-                    return max(1, (d1 - d0).days + 1)
-            except ValueError:
-                return 1
-        return 1
+        """Days at a destination, uncapped, for batch sizing.
 
+        Delegates to date_span.day_count. See that module for why the regex
+        this replaced returned 1 for a stay spanning a month boundary.
+        """
+        from generator.date_span import day_count
+
+        return day_count(dates)
     def _prioritize_direct_batch_attractions(
         self,
         attractions: list[dict[str, Any]],
@@ -10707,6 +11739,24 @@ class URLDiscoverer:
         # implied speed as a final pass; if it's still unrealistic, neither
         # individual number can be trusted, so replace both with the
         # geometry-grounded estimate rather than patching just one.
+        # Both checks above only ever RAISE a value: they floor an under-stated
+        # detour and never question an over-stated one. So a stop sitting on
+        # the route keeps whatever the model wrote about it, and the card reads
+        # "46.0 mi detour" for somewhere you drive straight past. Reported on
+        # the Capitol Reef -> Moab leg (San Rafael Swell, John Wesley Powell
+        # Museum -- both on I-70) and again for Mancos State Park Entrance.
+        #
+        # The geometry gives an upper bound as well as a lower one. A detour
+        # cannot sensibly cost several times the round trip its own offset
+        # implies, so a text figure far above that is not a better estimate
+        # than the geometry -- it is a worse one. Tolerance is deliberately
+        # loose (3x plus a 5-mile allowance) because real roads bend, and the
+        # aim is to catch the absurd rather than to second-guess the plausible.
+        if final_miles is not None and estimate_miles is not None:
+            ceiling_miles = max(estimate_miles * 3.0, estimate_miles + 5.0)
+            if final_miles > ceiling_miles:
+                final_miles, final_minutes = estimate_miles, estimate_minutes
+                overridden = True
         if final_miles and final_minutes:
             implied_mph = final_miles / (final_minutes / 60.0)
             if implied_mph > MAX_PLAUSIBLE_EN_ROUTE_DETOUR_MPH:
@@ -10795,6 +11845,123 @@ class URLDiscoverer:
             )
         return result
 
+    #: Kept in step with AIContentGenerator._NON_DRIVING_ARRIVAL_MODES.
+    #: Duplicated rather than imported: url_discovery importing ai_content
+    #: would be circular, and a shared constants module for one frozenset is
+    #: not worth the indirection.
+    _NON_DRIVING_ARRIVAL_MODES = frozenset({"train", "plane", "ship", "ferry", "bus", "shuttle"})
+
+    @classmethod
+    def _arrival_is_not_self_driven(cls, dest: dict[str, Any] | None) -> bool:
+        if not isinstance(dest, dict):
+            return False
+        # GH #2: a manifest can say the leg is transit without any booking.
+        # `mixed` is excluded on purpose -- see AIContentGenerator's copy.
+        if suppresses_en_route_stops(dest):
+            return True
+        for leg in (dest.get("transportation") or []):
+            if isinstance(leg, dict):
+                mode = str(leg.get("type", "") or "").strip().lower()
+                if mode:
+                    return mode in cls._NON_DRIVING_ARRIVAL_MODES
+        return False
+
+    def _discover_leg_trail_link(
+        self, ai: dict[str, Any], dest: dict[str, Any] | None, origin_name: str, dest_name: str
+    ) -> None:
+        """Attach the AllTrails page for THIS leg's section of a named trail.
+
+        Only where the manifest has said enough to ask: a `bike`/`hike` leg
+        and a `trip.trail_name`. Without the name there is no query worth
+        making -- "Cascade Locks to Trout Lake" alone matches whatever
+        AllTrails has near either end, which on a thru-hike is a day loop.
+
+        Goes through _search_alltrails_for_trail rather than around it, so the
+        publish-confidence gate, the slug denylist and the post-search filters
+        all apply. Those exist because AllTrails matching fails in specific
+        documented ways, and a leg link is no more trustworthy than an
+        attraction link.
+        """
+        from generator.transit_routing import TRAIL_NAME_KEY
+
+        trail_name = str((dest or {}).get(TRAIL_NAME_KEY, "") or "").strip()
+        if not trail_name or not dest_name:
+            return
+        # origin_name is only needed to COMPOSE a section name. The first
+        # destination has none here even when trip.departure gives it a real
+        # leg, so requiring it dropped the first leg's link on a manifest that
+        # named its section outright -- 14 of 15 rendered.
+        authored = (dest or {}).get("trail_url") or (dest or {}).get("trail_section")
+        if not origin_name and not authored:
+            return
+        getting_here = ai.get("getting_here")
+        if not isinstance(getting_here, dict):
+            return
+
+        # A manifest-supplied section name is the whole difference between a
+        # query that can match and one that cannot. Composing
+        # "<trail> <stop> to <stop>" names a page no catalogue has: AllTrails
+        # names its PCT pages by guidebook section, so the name-matching gate
+        # rejected every composed candidate on the first 15-leg run. The
+        # composed form is kept only as a last resort, and is expected to
+        # fail on any trail sectioned the way this one is.
+        authored_section = str((dest or {}).get("trail_section", "") or "").strip()
+        section = authored_section or f"{trail_name} {origin_name} to {dest_name}"
+
+        # An authored URL ends the guessing. It costs no search, cannot be
+        # mismatched, and is the same footing planning_links has always stood
+        # on: design.md 1.4 bars the MODEL from producing a URL, not the
+        # human. Worth having because a catalogue's titles and slugs
+        # disagree -- AllTrails' own title for Section B names Callahan's and
+        # Ashland while its slug names Highway 5 and Highway 140, so strict
+        # matching rejects the page under either phrasing.
+        authored_url = str((dest or {}).get("trail_url", "") or "").strip()
+        if authored_url:
+            getting_here["trail_url"] = authored_url
+            getting_here["trail_label"] = authored_section or (
+                f"{trail_name}: {origin_name} to {dest_name}"
+            )
+            self._log_decision(
+                kind="leg_trail",
+                dest_name=dest_name,
+                item_name=section,
+                reason="manifest_supplied",
+                message="leg trail link taken from the manifest",
+                url=authored_url,
+            )
+            return
+        # Deliberately past the --trails switch. That switch governs trail
+        # links for ATTRACTIONS AT a destination -- a priced enrichment, off
+        # by default, and on a thru-hike mostly day loops near the resupply
+        # town. This is the opposite thing: the trail the traveler is
+        # actually on, between two stops, asked for by name in the manifest.
+        # Tying them together meant turning the wanted one on dragged the
+        # unwanted one with it.
+        url = self._search_alltrails_for_trail(
+            section, dest_name, allow_when_disabled=True, force_search=True
+        )
+        if not url:
+            self._log_decision(
+                kind="leg_trail",
+                dest_name=dest_name,
+                item_name=section,
+                reason="no_trail_link_found",
+                message="no AllTrails page matched this leg's section",
+            )
+            return
+        getting_here["trail_url"] = url
+        getting_here["trail_label"] = authored_section or (
+            f"{trail_name}: {origin_name} to {dest_name}"
+        )
+        self._log_decision(
+            kind="leg_trail",
+            dest_name=dest_name,
+            item_name=section,
+            reason="discovery_completed",
+            message="leg trail link",
+            url=url,
+        )
+
     def _discover_en_route_stops(
         self,
         ai: dict[str, Any],
@@ -10821,6 +11988,20 @@ class URLDiscoverer:
         # they moved to Maps links, and remain a priced enrichment rather
         # than part of the core itinerary.
         if getattr(self, "_disable_en_route", False):
+            getting_here["en_route_stops"] = []
+            ai["getting_here"] = getting_here
+            return
+
+        # A booked train, ferry or flight has no roadside to stop at.
+        # ai_content clears stops for the same reason, but THIS path harvests
+        # its own independently, so clearing there alone left Brussels with a
+        # 25km detour to Mechelen on a rail itinerary. Two sources, one rule --
+        # the same mistake the trails switch took five attempts to close.
+        if self._arrival_is_not_self_driven(dest):
+            if getting_here.get("en_route_stops"):
+                logger.info(
+                    "En-route discovery skipped for '%s': arrival is not by road", dest_name
+                )
             getting_here["en_route_stops"] = []
             ai["getting_here"] = getting_here
             return
@@ -11066,6 +12247,16 @@ class URLDiscoverer:
                     )
 
         resolved_stops: list[dict[str, Any]] = []
+        # Two en-route stops must not publish the same link. Each assignment
+        # path validates its own choice and none of them looked at what the
+        # others had already claimed, so a plausible page could stand in for
+        # several different places at once: five Asheville-leg stops shared
+        # https://www.knoxvilletn.gov -- a city homepage for a waterfall and a
+        # national park -- and Lebanon and Franklin each had a pair sharing one
+        # URL across the direct_batch_existing_preserved and discovery_selected
+        # paths. Nothing was wrong with either claim alone; only the pair was.
+        # Restaurants have had this guard (claimed_restaurant_urls) all along.
+        claimed_en_route_urls: set[str] = set()
         for stop in stops:
             stop_name = stop.get("name", "")
             geocoded_lat = stop.get("geocode_lat")
@@ -11120,8 +12311,22 @@ class URLDiscoverer:
                         # lines below, now applied uniformly here too.
                         allow_google_maps_search=True,
                     )
+                    if cleaned_existing and self._url_already_claimed(
+                        cleaned_existing, claimed_en_route_urls
+                    ):
+                        self._log_decision(
+                            kind="en_route_stop",
+                            dest_name=dest_name,
+                            item_name=stop_name,
+                            reason="en_route_url_collision_rejected",
+                            message="another en-route stop already claimed this link",
+                            url=cleaned_existing,
+                        )
+                        cleaned_existing = ""
                     if cleaned_existing:
+                        claimed_en_route_urls.add(self._collision_key(cleaned_existing))
                         stop["url"] = cleaned_existing
+                        stop["_url_assigned_by"] = "direct_batch_existing_preserved"
                         self._log_decision(
                             kind="en_route_stop",
                             dest_name=dest_name,
@@ -11149,6 +12354,7 @@ class URLDiscoverer:
                 if not url and self._direct_batch_is_authoritative():
                     if fallback_url:
                         stop["url"] = fallback_url
+                        stop["_url_assigned_by"] = "fallback_after_existing_rejected"
                         self._log_decision(
                             kind="en_route_stop",
                             dest_name=dest_name,
@@ -11190,12 +12396,25 @@ class URLDiscoverer:
                     dest_name=dest_name,
                     allow_alltrails=False,
                 )
+            if url and self._url_already_claimed(url, claimed_en_route_urls):
+                self._log_decision(
+                    kind="en_route_stop",
+                    dest_name=dest_name,
+                    item_name=stop_name,
+                    reason="en_route_url_collision_rejected",
+                    message="another en-route stop already claimed this link",
+                    url=url,
+                )
+                url = None
             if url:
+                claimed_en_route_urls.add(self._collision_key(url))
                 stop["url"] = url
+                stop["_url_assigned_by"] = "discovery_selected"
                 resolved_stops.append(stop)
             else:
                 if fallback_url:
                     stop["url"] = fallback_url
+                    stop["_url_assigned_by"] = "fallback_no_url_found"
                     self._log_decision(
                         kind="en_route_stop",
                         dest_name=dest_name,
@@ -11237,10 +12456,12 @@ class URLDiscoverer:
                     geocoded_lng = stop.get("geocode_lng")
                     if isinstance(geocoded_lat, (int, float)) and isinstance(geocoded_lng, (int, float)):
                         stop["url"] = f"https://www.google.com/maps/search/?api=1&query={geocoded_lat},{geocoded_lng}"
+                        stop["_url_assigned_by"] = "geocode_coordinate"
                     else:
                         q = self._en_route_maps_fallback_query_text(sn, origin_name, dest_name)
                         if q:
                             stop["url"] = f"https://www.google.com/maps/search/?api=1&query={quote(q)}"
+                            stop["_url_assigned_by"] = "maps_query_rebuilt"
                         logger.warning("  En-route safety fallback assigned url for '%s'", sn)
 
         # Derive distance/time from the actual route rather than AI-generated estimates.
@@ -11253,6 +12474,7 @@ class URLDiscoverer:
             origin_lng=origin_lng,
             dest_lat=dest_lat,
             dest_lng=dest_lng,
+            dest=dest,
         )
 
         getting_there = ai.get("getting_there", {}) if isinstance(ai.get("getting_there", {}), dict) else {}
@@ -12538,6 +13760,14 @@ class URLDiscoverer:
         text = f"{title} {snippet}".lower()
 
         score = 0
+        # A domain that IS the item outranks a page merely about it. Without
+        # this the ranking treated champagne-tastes.com/rotisse and rotisse.be
+        # as equivalent -- both mention "rotisse", one in the path and one in
+        # the domain -- and whichever the provider returned first won. Applied
+        # as a strong bonus rather than a filter so it steers the choice when
+        # an official site is present and changes nothing when none is.
+        if self._domain_matches_item_name(url, item_name):
+            score += 25
         item_tokens = self._significant_tokens(item_name)
         dest_tokens = self._significant_tokens(dest_name)
 
@@ -14077,8 +15307,26 @@ class URLDiscoverer:
         origin_lng: Any,
         dest_lat: Any,
         dest_lng: Any,
+        dest: dict[str, Any] | None = None,
     ) -> None:
-        """Overwrite AI-generated distance/time with values derived from the real route."""
+        """Overwrite AI-generated distance/time with values derived from the real route.
+
+        Not on a transit leg. `best_time` below is a scraped Google DRIVING
+        duration or a 60 mph Haversine estimate, and the overwrite condition
+        fires when `distance_miles` is empty -- which is exactly the state a
+        transit leg is supposed to be in, road miles being meaningless there.
+        Without this return a real 3h15 rail duration is silently replaced by
+        a car estimate two stages later (multimodal-routing.md 4.1).
+
+        Belt and braces: the only caller reaches this after an early return
+        that already covers booked non-road arrivals. That return is about
+        en-route stops and could move; this one is about the number.
+        """
+        if suppresses_en_route_stops(dest):
+            logger.info(
+                "  Route distance/time left alone for '%s': transit leg, not a drive", dest_name
+            )
+            return
         fetched_miles: float | None = None
         fetched_time: str | None = None
         if bool(
@@ -14108,7 +15356,7 @@ class URLDiscoverer:
             return
 
         current_miles_raw = str(getting_here.get("distance_miles", "") or "").strip()
-        current_time_raw = str(getting_here.get("drive_time", "") or "").strip()
+        current_time_raw = str(getting_here.get("travel_time", "") or "").strip()
 
         try:
             current_miles = float(re.sub(r"[^\d.]", "", current_miles_raw)) if current_miles_raw else None
@@ -14122,9 +15370,9 @@ class URLDiscoverer:
                 ai["getting_here"] = getting_here
                 logger.info("  Route distance updated to %d mi (was '%s')", int(round(best_miles)), current_miles_raw)
         if best_time and (not current_time_raw or not current_miles):
-            getting_here["drive_time"] = best_time
+            getting_here["travel_time"] = best_time
             ai["getting_here"] = getting_here
-            logger.info("  Route drive_time updated to '%s' (was '%s')", best_time, current_time_raw)
+            logger.info("  Route travel_time updated to '%s' (was '%s')", best_time, current_time_raw)
 
     def _parse_route_info_from_maps_html(self, route_url: str) -> tuple[float | None, str | None]:
         """Fetch Google Maps directions HTML and extract distance (miles) and duration."""
@@ -14622,6 +15870,46 @@ class URLDiscoverer:
         if not name_tokens or not dest_tokens:
             return False
         return bool(name_tokens & dest_tokens)
+
+    @classmethod
+    def requalify_maps_query_url(cls, url: str, item_name: str, dest_name: str) -> str:
+        """Rebuild a Maps text-query link so its query names the destination.
+
+        Every builder in this file qualifies through _maps_fallback_query_text,
+        yet the sw run published
+
+            https://www.google.com/maps/search/?api=1&query=Rico%20Historic%20District
+
+        for a stop on the Telluride -> Pagosa Springs leg, and carried the same
+        bare text as a waypoint in that leg's route URL. A bare place name is
+        ambiguous to Google: "Rico Historic District" is not unique, and an
+        unqualified waypoint is how a Colorado route acquires a pin in
+        Washington.
+
+        Applied where the value is final rather than at each builder. One
+        call site passes an empty dest_name and reading did not find it; this
+        makes the output correct regardless of which, and is a no-op for a
+        query that already names the destination.
+
+        Coordinate queries are left exactly as they are -- they are the
+        precise form, and rewriting one into a name search is the downgrade
+        the 2026-08-22 run was caught doing.
+        """
+        raw = str(url or "").strip()
+        if not raw or "google.com/maps/search/" not in raw:
+            return raw
+        if cls._is_coordinate_maps_query_url(raw):
+            return raw
+        match = re.search(r"([?&])query=([^&]*)", raw)
+        if not match:
+            return raw
+        current = unquote(match.group(2)).replace("+", " ").strip()
+        if not current:
+            return raw
+        wanted = cls._maps_fallback_query_text(item_name or current, dest_name)
+        if not wanted or wanted.strip().lower() == current.lower():
+            return raw
+        return raw[:match.start(2)] + quote(wanted) + raw[match.end(2):]
 
     @classmethod
     def _maps_fallback_query_text(cls, item_name: str, dest_name: str) -> str:

@@ -1,0 +1,242 @@
+# Pacific Crest Trail — Oregon/California border to Canada, northbound.
+#
+# 961 trail miles over 86 days: 81 walking days averaging 11.9 miles, plus 5
+# zero days at the resupply stops that are worth one. The 12-mile pace is the
+# fixed input; everything else is derived from it.
+#
+# Every leg here is `hike`, so the generator prices durations through Routes
+# with travelMode WALK rather than inventing a drive time, the map links open
+# walking directions, and no public-transport options are generated for legs
+# nobody operates.
+#
+# THE STOPS ARE NOT THE TRIP. The schema caps destinations at 15, and this
+# route has exactly 15 natural resupply points, so each destination is a town
+# or lodge and each LEG is 3-9 days of walking between them. That inverts the
+# generator's usual shape, where a leg is a few hours inside one day -- see
+# docs/design/multimodal-routing.md 9, which flags multi-day legs as an
+# unresolved scheduling shape. Expect the per-destination day schedules to
+# describe the stop, not the walk to it.
+#
+# Mile markers are approximate planning figures. The PCT datum shifts a little
+# each year as reroutes land; check the current year's against FarOut or the
+# PCTA water report before mailing a single resupply box.
+
+trip:
+  title: Pacific Crest Trail — Oregon and Washington
+  subtitle: Border to border, northbound, summer 2026
+  theme_color: "#2F5D3A"
+
+  # Every inter-destination leg is walked. Set once here rather than repeated
+  # on all 15 destinations; a single stop can still override it.
+  transport_mode: hike
+
+  # Names the trail so each leg can be linked to its own AllTrails section.
+  # The section itself is named per destination below as `trail_section`,
+  # because AllTrails names its PCT pages by GUIDEBOOK SECTION and nothing is
+  # called "Pacific Crest Trail Cascade Locks to Trout Lake". Composing that
+  # from the two stop names matched nothing on a full 15-leg run.
+  #
+  # Sections and resupply stops do not line up, and are not meant to: a
+  # section ends where a road crosses, a stop is where you can buy food. Three
+  # legs here share Section F and two share Section H.
+  # Only consulted on bike/hike legs, and never invented: without this, a leg
+  # gets no trail link rather than a guessed one. Needs trail discovery on
+  # (`--trails`, or trails.enabled in config.yaml) -- it is off by default as
+  # a cost measure, which on a hiking trip is the wrong default.
+  trail_name: Pacific Crest Trail
+
+  # Seiad Valley is the last California town before the state line and the
+  # usual staging point for a border start. The first leg therefore covers the
+  # final ~37 California miles up to the border, then the 27 Oregon miles to
+  # Callahan's. Set this to a trailhead you are actually starting from if you
+  # are being shuttled to the line itself.
+  departure: Seiad Valley, California
+  departure_datetime: "2026-06-25"
+
+  return: Vancouver, British Columbia
+  return_datetime: "2026-09-20"
+
+  # A 12-mile day is a walking day, not a driving one. Left generous so the
+  # schedule does not try to stack a town's chores on top of a full march.
+  default_daily_activity_hours: 8
+  default_day_start_time: "6:30 AM"
+
+destinations:
+  - id: callahans
+    # Nominatim resolves the lodge on its own but not with "Ashland"
+    # inserted -- the extra locality breaks the match rather than
+    # narrowing it. Same for Mazama Village and Timberline below.
+    name: Callahan's Lodge, Oregon
+    dates: Jun 27, 2026
+    # ~27 mi from the state line. First Oregon resupply, half a mile off trail
+    # at Highway 99.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section R/A - Seiad Valley to Interstate 5
+    trail_url: https://www.alltrails.com/trail/us/california/pacific-crest-trail-pct-section-r-a-seiad-valley-to-interstate-5
+    planning_links:
+      - label: PCTA Trail Conditions
+        url: https://www.pcta.org/discover-the-trail/trail-conditions/
+
+  - id: fish_lake
+    name: Fish Lake Resort, Oregon
+    dates: Jul 2, 2026
+    # ~54 mi. Small resort on Highway 140 with a hiker box and a cafe.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section B - Callahan's-Ashland to Fish Lake
+    trail_url: https://www.alltrails.com/trail/us/oregon/pct-or-section-b-highway-5-to-highway-140-fish-lake
+    planning_links:
+      - label: PCTA Trail Conditions
+        url: https://www.pcta.org/discover-the-trail/trail-conditions/
+
+  - id: mazama_village
+    name: Mazama Village, Oregon
+    dates: Jul 7-8, 2026
+    # ~56 mi. Zero day. The Rim Alternate is the scenic line; the official PCT
+    # stays low, dry and viewless past the caldera.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section C - Fish Lake to Cascade Crest
+    trail_url: https://www.alltrails.com/trail/us/oregon/pacific-crest-trail-pct-section-c-fish-lake-to-cascade-crest
+    planning_links:
+      - label: PCTA Trail Conditions
+        url: https://www.pcta.org/discover-the-trail/trail-conditions/
+
+  - id: shelter_cove
+    name: Shelter Cove Resort, Oregon
+    dates: Jul 15, 2026
+    # ~79 mi, the longest Oregon carry. Odell Lake.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section D - Cascade Crest - Willamette Pass
+    trail_url: https://www.alltrails.com/trail/us/oregon/pacific-crest-trail-pct-section-d-cascade-crest-willamette-pass
+    planning_links:
+      - label: PCTA Trail Conditions
+        url: https://www.pcta.org/discover-the-trail/trail-conditions/
+
+  - id: elk_lake
+    name: Elk Lake Resort, Oregon
+    dates: Jul 19, 2026
+    # ~45 mi. Three Sisters Wilderness. The Obsidian Limited Entry Area needs
+    # its own permit on top of the long-distance one.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section E - Willamette Pass - McKenzie Pass
+    trail_url: https://www.alltrails.com/trail/us/oregon/pacific-crest-trail-pct-section-e-willamette-pass-mckenzie-pass
+    planning_links:
+      - label: PCTA Permits
+        url: https://www.pcta.org/discover-the-trail/permits/
+
+  - id: big_lake
+    name: Big Lake Youth Camp, Oregon
+    dates: Jul 22, 2026
+    # ~41 mi. Hosts hikers by long tradition. Mount Washington and the lava
+    # fields north of here are slow going underfoot.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section F - McKenzie Pass to Barlow Pass
+    trail_url: https://www.alltrails.com/trail/us/oregon/pacific-crest-trail-pct-section-f-mckenzie-pass-to-barlow-pass
+    planning_links:
+      - label: PCTA Trail Conditions
+        url: https://www.pcta.org/discover-the-trail/trail-conditions/
+
+  - id: olallie_lake
+    name: Olallie Lake Resort, Oregon
+    dates: Jul 26, 2026
+    # ~52 mi. Resupply box service has lapsed in some years -- confirm before
+    # relying on it, and carry through if you cannot.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section F - McKenzie Pass to Barlow Pass
+    trail_url: https://www.alltrails.com/trail/us/oregon/pacific-crest-trail-pct-section-f-mckenzie-pass-to-barlow-pass
+    planning_links:
+      - label: PCTA Trail Conditions
+        url: https://www.pcta.org/discover-the-trail/trail-conditions/
+
+  - id: timberline
+    name: Timberline Lodge, Oregon
+    dates: Jul 30-31, 2026
+    # ~51 mi. Zero day. The breakfast buffet is a thru-hiker institution.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section F - McKenzie Pass to Barlow Pass
+    trail_url: https://www.alltrails.com/trail/us/oregon/pacific-crest-trail-pct-section-f-mckenzie-pass-to-barlow-pass
+    planning_links:
+      - label: PCTA Trail Conditions
+        url: https://www.pcta.org/discover-the-trail/trail-conditions/
+
+  - id: cascade_locks
+    name: Cascade Locks, Oregon
+    dates: Aug 4-5, 2026
+    # ~50 mi. Zero day. Bridge of the Gods, the Columbia River, the
+    # Oregon/Washington line and the lowest point on the whole trail.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section G - Mount Hood to Columbia River
+    trail_url: https://www.alltrails.com/trail/us/oregon/pct-or-section-g-timberline-lodge-to-cascade-locks-bridge-of-the-gods
+    planning_links:
+      - label: PCTA Trail Conditions
+        url: https://www.pcta.org/discover-the-trail/trail-conditions/
+
+  - id: trout_lake
+    name: Trout Lake, Washington
+    dates: Aug 12, 2026
+    # ~82 mi. Mount Adams behind you; Goat Rocks ahead, the most exposed ridge
+    # walking on the trail and the section most often closed by weather.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section H - Bridge of the Gods - White Pass
+    trail_url: https://www.alltrails.com/trail/us/washington/pacific-crest-trail-pct-section-h-bridge-of-the-gods-white-pass
+    planning_links:
+      - label: PCTA Trail Conditions
+        url: https://www.pcta.org/discover-the-trail/trail-conditions/
+
+  - id: white_pass
+    name: White Pass, Washington
+    dates: Aug 18, 2026
+    # ~66 mi. Kracker Barrel store at the highway. Rainier fills the skyline.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section H - Bridge of the Gods - White Pass
+    trail_url: https://www.alltrails.com/trail/us/washington/pacific-crest-trail-pct-section-h-bridge-of-the-gods-white-pass
+    planning_links:
+      - label: PCTA Trail Conditions
+        url: https://www.pcta.org/discover-the-trail/trail-conditions/
+
+  - id: snoqualmie_pass
+    name: Snoqualmie Pass, Washington
+    dates: Aug 26-27, 2026
+    # ~98 mi, the longest carry of the whole section. Zero day earned.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section I - White Pass to Snoqualmie Pass
+    trail_url: https://www.alltrails.com/trail/us/washington/pct-wa-section-i-highway-12-to-snoqualmie-pass
+    planning_links:
+      - label: PCTA Trail Conditions
+        url: https://www.pcta.org/discover-the-trail/trail-conditions/
+
+  - id: stevens_pass
+    name: Stevens Pass, Washington
+    dates: Sep 2, 2026
+    # ~71 mi through the Alpine Lakes Wilderness. Ski area at the highway;
+    # most hikers hitch down to Skykomish or Leavenworth to resupply properly.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section J - Snoqualmie Pass to Stevens Pass
+    trail_url: https://www.alltrails.com/trail/us/washington/pacific-crest-trail-pct-section-j-snoqualmie-pass-to-stevens-pass
+    planning_links:
+      - label: PCTA Trail Conditions
+        url: https://www.pcta.org/discover-the-trail/trail-conditions/
+
+  - id: stehekin
+    name: Stehekin, Washington
+    dates: Sep 11-12, 2026
+    # ~105 mi, the longest leg of the trip. Zero day. Reachable only by trail,
+    # boat or floatplane, and the bakery is why everyone stops.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section K - Stevens Pass to Rainy Pass
+    trail_url: https://www.alltrails.com/trail/us/washington/pacific-crest-trail-pct-section-k-stevens-pass-to-rainy-pass
+    planning_links:
+      - label: PCTA Trail Conditions
+        url: https://www.pcta.org/discover-the-trail/trail-conditions/
+
+  - id: manning_park
+    name: Manning Park, British Columbia
+    dates: Sep 19, 2026
+    # ~84 mi. Monument 78 at the border, then 8 miles north to Highway 3.
+    # Entering Canada on foot here requires a Canada PCT Entry Permit applied
+    # for in advance -- there is no port of entry at the monument.
+    trail_section: >-
+      Pacific Crest Trail (PCT): Section L - Rainy Pass to Manning Park
+    trail_url: https://www.alltrails.com/trail/us/washington/pacific-crest-trail-pct-section-l-rainy-pass-to-manning-park
+    planning_links:
+      - label: PCTA Permits
+        url: https://www.pcta.org/discover-the-trail/permits/

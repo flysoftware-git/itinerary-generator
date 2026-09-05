@@ -91,6 +91,10 @@ class SerperSearch:
         self._lock = threading.Lock()
         self._failures: list[float] = []
         self._circuit_open_until: float = 0.0
+        #: Set once the API reports the account is out of credits. Distinct
+        #: from the circuit breaker: the breaker is for transient trouble and
+        #: reopens after a cooldown, this does not get better on its own.
+        self._quota_exhausted: bool = False
         self._threshold = max(1, int(os.environ.get(
             "SERPER_CIRCUIT_BREAKER_THRESHOLD", str(_DEFAULT_CIRCUIT_BREAKER_THRESHOLD))))
         self._window = float(os.environ.get(
@@ -104,6 +108,25 @@ class SerperSearch:
                 "Set it in the env file, or set url_discovery.nonbatch_search_provider "
                 "back to grok."
             )
+
+    @staticmethod
+    def _is_quota_error(status_code: int, body: str) -> bool:
+        """Quota exhaustion, as opposed to a malformed request.
+
+        Keyed on the body text because Serper reuses HTTP 400 for both. 402
+        and 429 are treated as quota by status alone, being the conventional
+        codes, in case that ever changes.
+        """
+        if status_code in (402, 429):
+            return True
+        lowered = (body or "").lower()
+        return "credit" in lowered or "quota" in lowered
+
+    @property
+    def quota_exhausted(self) -> bool:
+        """True once the provider has reported an exhausted balance."""
+        with self._lock:
+            return self._quota_exhausted
 
     # ---- circuit breaker (mirrors GrokSearch) --------------------------------
 
@@ -181,7 +204,33 @@ class SerperSearch:
         self._record_usage(queries=1)
 
         if resp.status_code >= 400:
-            logger.warning("Serper returned HTTP %s for %r", resp.status_code, text[:60])
+            # The body is the only place the reason appears. Serper reports an
+            # exhausted balance as HTTP 400 -- the same status as a malformed
+            # query -- so dropping the body makes "we are out of credits" read
+            # as "that query was bad", and the run then reports the resulting
+            # empty results as "no verified URL found" for every item.
+            detail = (resp.text or "").strip()[:200]
+            if self._is_quota_error(resp.status_code, detail):
+                first = False
+                with self._lock:
+                    if not self._quota_exhausted:
+                        self._quota_exhausted = True
+                        first = True
+                if first:
+                    logger.error(
+                        "Serper is out of credits (HTTP %s: %s). Every remaining "
+                        "per-item search returns nothing, and items without a URL "
+                        "are dropped by the verified-link-or-seed policy -- so this "
+                        "run's output will be thinner than the source data. Top up "
+                        "the Serper balance, or set "
+                        "url_discovery.nonbatch_search_provider back to grok.",
+                        resp.status_code, detail,
+                    )
+            else:
+                logger.warning(
+                    "Serper returned HTTP %s for %r: %s",
+                    resp.status_code, text[:60], detail,
+                )
             self._record_failure()
             return []
 

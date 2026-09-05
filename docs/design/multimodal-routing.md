@@ -119,6 +119,21 @@ outside the registry, which is the right default (§7 non-goals).
 
 ### 2.1 Phase 1 — AI-only, and what it honestly cannot do
 
+**LANDED 2026-08-30**, as specified below. `generator/transit_routing.py` holds the
+normalizer, the leg-mode resolution and the `ai | google_directions` factory;
+`prompts/transit_options.txt` asks for Shape B; `config.yaml`'s `transit_routing` block
+carries the kill switch and the provider key. Options are generated at the end of stage 3
+(`main._apply_transit_routing`) and render in `_build_getting_here` behind an
+`⚠ Unverified` badge and the §4.5 disclaimer. Selecting `google_directions` raises rather
+than falling back, so nothing can report an AI guess under a name that reads as verified.
+
+Not done, and each needs a live run rather than more code: whether the model's claims are
+true, real per-run cost against §6, and whether the transit card and the day schedule agree
+on the page. `travelmode=transit` in the public Maps URL scheme was already live-verified
+before this work (the waypoint-rejection note in `_build_route_gmaps_url`), which is why
+§4.3's early return could be written as a certainty rather than an experiment.
+
+
 The issue accepts that "this information initially may not be reliable." That is the right
 instinct but understates the problem, so state it plainly:
 
@@ -182,7 +197,19 @@ order-of-magnitude signal, a search phrase, and — most valuably — a defensib
 
 **What Phase 1 cannot deliver, and must not appear to:** departure times, arrival times,
 service frequency, seasonal windows stated as fact, operator names presented as verified,
-fares, or booking links. The issue lists "scheduled departures", "service availability",
+~~fares,~~ or booking links.
+
+> **Fares: reversed by owner call 2026-09-02, as a band.** The objection was
+> that "a fare quoted at build time is wrong by the time it is read" (§7.2) — which is an
+> argument against a *quote*, and would have excluded duration too had duration been emitted
+> as a single figure. It is not; it is a band, and so is `fare`. A range in local currency is
+> the same class of claim as "3-4 hours": an order of magnitude a traveler budgets with,
+> under the same `⚠ Unverified` badge, that nobody can hold the page to. Enforced the same
+> way as everything else here rather than asked for: a `fare` with no digit in it is dropped,
+> because "varies by season" and "cheap" are what a model writes when it does not know and
+> both read as information once they are in a badge. The prompt also asks that a leg commonly
+> covered by a rail pass or travelcard say so in `notes` — for many travelers that is the
+> real answer and the fare is moot. The issue lists "scheduled departures", "service availability",
 "seasonal variations" and "ticketing URLs" as goals. Phase 1 addresses none of them
 honestly. It addresses *shape*. Say so in the UI (§4.5) rather than hoping the reader
 infers it.
@@ -233,11 +260,34 @@ corridors?* — for a few cents. And unlike its predecessor, **commit it**: `des
 item 14 notes that `scripts/probe_multi_provider_search_2026.py`, cited as re-runnable by
 two design notes, is not in the repository.
 
+**Written, committed and run, 2026-09-02: `scripts/probe_transit_coverage.py`.** First
+result, against the acceptance manifest: **0 of 4 Japan legs answered**, with and without a
+pinned departure time, while the control corridor (Brussels -> Amsterdam) answered in 220
+minutes. So the key works and the coverage does not — Japanese rail is not in the feed set
+this API routes on. The probe justified itself on its first run, which is the whole argument
+of this section.
+
 ---
 
 ## 3. Manifest schema changes
 
 ### 3.1 `transport_mode`
+
+> **Extended 2026-09-03 (owner call): `bike` and `hike` join the enum.** They are leg
+> modes, but they are not transit, and the distinction is what makes them cheap: nobody
+> operates them, so there is no timetable to guess at, no operator to name wrongly, no fare
+> and no transfers. §2.1's entire apparatus — Format A/B, the strip, the `⚠ Unverified`
+> badge — exists because a model cannot know a departure time; on a bike there is no
+> departure time to know, so none of it runs and a self-powered leg costs zero provider
+> calls. What they do change: the Maps link (`bicycling`/`walking`, and unlike transit they
+> **keep** their waypoints, since the scheme accepts them and on a two-day ride the stops
+> are the itinerary), the card heading, what the model is told to describe, and the
+> duration — priced through Routes with `travelMode` `BICYCLE`/`WALK`. That last is a
+> better bet than TRANSIT ever was: a cycling duration is a fact about roads and gradients
+> rather than about whose timetable Google licenses, so §2.2's probe result does not apply
+> to it. En-route stops are kept, and are stronger here than anywhere else in this note —
+> a cyclist stops more often than a driver, not less.
+
 
 Two additions to `MANIFEST_SCHEMA`, both optional, both defaulting to today's behaviour:
 
@@ -393,6 +443,12 @@ confidence as a property of the path a fact travelled).
 
 ### 4.1 Scheduling: rename to `travel_time` first, then guard the overwrite
 
+**LANDED 2026-08-30.** `getting_here.travel_time` (and `getting_there.travel_time`) is the
+canonical field. `_normalize_getting_here` accepts either key from the model and emits the
+canonical one; every internal reader now reads `travel_time` only. Full suite green,
+unchanged at 1865 tests. The byte-identical-output check in the table below is the one part
+not done — it needs a live run.
+
 **Decided 2026-08-21 (open question 4): rename now, as its own change, before the routing
 work.** This section previously recommended reusing `drive_time` and renaming later. That
 recommendation was explicitly conditional on transit being an occasional variation. The
@@ -453,6 +509,18 @@ if best_time and (not current_time_raw or not current_miles):
 transit leg set `drive_time = "3 hr 15 min"` and left `distance_miles` empty (as it should
 — §4.2), then `current_miles` is falsy, the condition is **true**, and a real transit
 duration is silently replaced by a car estimate two stages later.
+
+**A second reader of the same hazard, found 2026-08-30 and fixed.** Guarding
+`_update_route_distance_and_time` closes the stage-5b path, but two stage-3 paths write the
+same field from road geometry: `_override_grouped_child_distance_from_geocode`'s
+implausible-leg correction, and the model itself, which was never told the leg was transit
+because `_build_arrival_mode_guidance` keyed on a BOOKED leg. A declared-but-unbooked
+transit leg therefore kept a drive estimate and scheduled from it. All three now key on the
+resolved mode, and `main._enforce_transit_leg_durations` is the backstop: on a declared
+transit leg, `travel_time` is a Routes API figure, else the Phase 1 duration band, else
+empty -- never a road-derived one. Clearing costs that day its travel subtraction, which is
+the honest trade: an unstated arrival is a gap, an invented one is a wrong answer the reader
+cannot see is wrong.
 
 `_update_route_distance_and_time` must **return early** for any leg whose `transport_mode`
 resolves to `transit`. Add a regression test running the full Stage 3 → Stage 5b ordering;
@@ -739,8 +807,10 @@ identically. If they behave the same, one is dead config. Proposed split in open
 - **No intra-destination transit** — local buses, park shuttles, gondolas. Shuttle
   requirements already surface through `expected_environment` and attraction
   `practical_note`s.
-- **No booking, fares, seat availability, or real-time status.** The output is a static file
-  with no server; a fare quoted at build time is wrong by the time it is read.
+- **No booking, seat availability, or real-time status.** The output is a static file
+  with no server. ~~Fares~~ — **reversed 2026-09-02, see §2.1**: a fare *quote* is what this
+  ruled out, and a band is not a quote. Booking, seat availability and real-time status stay
+  out, for the reason that still holds: they are only true at the instant they are read.
 - **No replacement of `scenic_drives` or `has_high_clearance_vehicle`** (§4.4).
 - **No change to booked legs** — `TRANSPORTATION_ITEM_SCHEMA`, `reservation_ingest` and the
   transportation pills are untouched (§3.3).
@@ -788,7 +858,15 @@ identically. If they behave the same, one is dead config. Proposed split in open
    takes a train to Moab may still rent a jeep there. `has_high_clearance_vehicle` remains
    the orthogonal flag, and scenic drives are destination content, not leg content.
 8. ~~**Which corridor is the acceptance case?**~~ **RESOLVED 2026-08-21: `Japan_manifest.yaml`,
-   confirmed suitable.** This is acceptance testing — which real corridor proves the feature
+   confirmed suitable** — **for Phase 1 only. Corrected 2026-09-02.** The reasoning below is
+   about the world, not about the API: Japan's legs are indeed all rail-served, and Google
+   Routes returns nothing for every one of them (§2.2's probe, run against this manifest).
+   Japan proves the AI path and can never prove the API-backed one, so Phase 2 needs a
+   different acceptance corridor — Europe, where the same probe answers. Two further findings
+   from that run, both now fixed: the manifest was written to the issue's rejected
+   `transport_mode_from_previous` spelling, which unknown-key tolerance would have swallowed
+   silently (the parser now raises), and the headline badge rendered "0 transfers" beside an
+   option card reading "Direct" for the same leg. This is acceptance testing — which real corridor proves the feature
    end to end. Bryce → Capitol Reef has no transit at all, so it exercises only the
    honest-negative path (Format B); shipping on that alone would mean never having run the
    success path. Japan's four legs are all rail-served with strong feed coverage:

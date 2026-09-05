@@ -154,6 +154,10 @@ python -m generator.main [OPTIONS]
   --skip-events            Skip cultural events discovery
   --skip-url-discovery     Skip URL discovery (AI content only)
   --notrails               Disable trail link discovery and omit trail links
+  --trails / --no-trails   Force trails on/off, overriding trails.enabled
+  --events / --no-events   Force cultural events on/off
+  --en-route / --no-en-route       Force en-route stops on/off
+  --restaurants / --no-restaurants Force restaurants on/off
   --alltrails-source [direct-link-batch|search|apify-single-call]
                            AllTrails source for trail-like attractions (default: direct-link-batch)
   --attraction-source [search|direct-link-batch]
@@ -185,6 +189,10 @@ python -m generator.main --manifest trip.yaml --skip-images --skip-events
 
 # Disable trail links entirely
 python -m generator.main --manifest trip.yaml --notrails
+
+# Optional categories default OFF in config.yaml because they are the priced
+# ones. Turn them on for a single run without editing config:
+python -m generator.main --manifest manifests/alpine_grouped.yaml     --trails --events --en-route --first-destination
 
 # Use one Apify call per destination for trail-like link sourcing
 python -m generator.main --manifest trip.yaml --alltrails-source apify-single-call
@@ -284,7 +292,7 @@ Test fixtures in `tests/fixtures/` include sample manifests, AI outputs, Bing re
 
 ## Template Integrity
 
-The v2.5 HTML template (`templates/v2.5_template.html`) is frozen and checksum-verified on every run. The SHA-256 hash is stored in `templates/checksums.txt`. A mismatch causes an immediate hard failure — the template may not be modified without regenerating the checksum.
+The HTML template (`templates/v2.5_template.html`) is frozen and checksum-verified on every run. The filename names the 2.5 *family* and does not change on a revision; the exact version is `generator.__template_version__`, recorded against its checksum in `templates/template_versions.json`, and a template edit that does not move it fails the test suite. The SHA-256 hash is stored in `templates/checksums.txt`. A mismatch causes an immediate hard failure — the template may not be modified without regenerating the checksum.
 
 To update the template checksum after an intentional template change:
 

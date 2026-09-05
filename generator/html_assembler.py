@@ -21,6 +21,7 @@ import re
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
+from generator.transit_routing import RESOLVED_MODE_KEY, resolved_mode
 from generator.multi_site_grouping import (
     DEFAULT_BASE_OWNED_CATEGORIES,
     category_deferred_to_base,
@@ -71,6 +72,23 @@ def _verify_checksum(template_text: str) -> None:
         )
 
 
+#: Google Maps travelmode values for the self-powered leg modes. Kept apart
+#: from HTMLAssembler._MAPS_TRAVELMODE_BY_ARRIVAL, which is keyed by BOOKED leg
+#: type: nobody books a bike ride, so the two never overlap and merging them
+#: would blur what each is answering.
+_MAPS_TRAVELMODE_BY_LEG_MODE: dict[str, str] = {
+    "bike": "bicycling",
+    "hike": "walking",
+}
+
+#: Header icon and label per leg mode, so the card does not say "Getting Here"
+#: under a car icon for a leg the traveler walks.
+_GETTING_HERE_HEADING_BY_LEG_MODE: dict[str, str] = {
+    "bike": "\U0001f6b4 Riding Here",
+    "hike": "\U0001f97e Walking Here",
+}
+
+
 class HTMLAssembler:
     def __init__(self, config_path: Path | str = "config.yaml") -> None:
         import yaml
@@ -111,7 +129,36 @@ class HTMLAssembler:
         # ── Trip-level substitutions ─────────────────────────────────────────
         meta = trip["trip"]
         html = html.replace("<!--TRIP_TITLE-->", meta["title"])
-        html = html.replace("<!--THEME_COLOR-->", meta.get("theme_color", "#C0623E"))
+        theme_color = str(meta.get("theme_color", "#C0623E") or "#C0623E").strip()
+        html = html.replace("<!--THEME_COLOR-->", theme_color)
+        # The favicon and PWA icons are SVG data: URIs, where the leading
+        # "#" must stay percent-encoded as %23 -- so they take the bare hex.
+        html = html.replace("<!--THEME_COLOR_HEX-->", theme_color.lstrip("#"))
+
+        # ── Head metadata ────────────────────────────────────────────────────
+        # The <head> carried four hard-coded Southwest strings -- the <title>,
+        # both PWA app names and the description -- so every itinerary this
+        # generator has ever produced announced itself as "Southwest Road Trip"
+        # in the browser tab, the home-screen icon label and every search or
+        # link preview, whatever the manifest said. The BODY was correct
+        # throughout, which is why it survived: nobody reads the head.
+        #
+        # Same failure as the theme colour a few lines above, and the same
+        # cause: a value that belonged to the first trip was left inline
+        # instead of parameterised, and the second trip inherited it.
+        trip_title = str(meta.get("title", "") or "").strip() or "Trip Itinerary"
+        html = html.replace(
+            "<!--DOCUMENT_TITLE-->", html_escape.escape(f"{trip_title} — Full")
+        )
+        # iOS truncates a home-screen label at roughly 12 characters, so a long
+        # title is cut mid-word there. Prefer an explicit short_name when the
+        # manifest gives one.
+        short_name = str(meta.get("short_name", "") or "").strip() or trip_title
+        html = html.replace("<!--APP_SHORT_NAME-->", html_escape.escape(short_name, quote=True))
+        html = html.replace(
+            "<!--TRIP_DESCRIPTION-->",
+            html_escape.escape(self._build_trip_description(trip), quote=True),
+        )
 
         # ── Google Maps overview link ────────────────────────────────────────
         gmaps_url = self._build_google_maps_url(trip["destinations"], meta)
@@ -182,8 +229,24 @@ class HTMLAssembler:
         departure_name = meta.get("departure", "")
 
         def _previous_context(index: int) -> tuple[str, str]:
-            if index > 0:
-                return destinations[index - 1]["name"], self._destination_route_target(destinations[index - 1])
+            """Where the leg arriving at destinations[index] starts from.
+
+            Walks back past grouped day trips to the previous LODGING stop.
+            The previous list entry is not the answer: a run of day trips
+            sits between two lodging stops, and the traveler drives to the
+            next stop from the base they slept at, not from wherever they
+            spent the last afternoon.
+
+            A real December itinerary labelled its final leg "Leiper's Fork,
+            Tennessee -> Asheville, North Carolina" while the prose beneath
+            it read "Drive from Old Hickory, TN" -- the day trip was simply
+            the last entry in the list. The same confusion had already been
+            fixed on the content side (ai_content's leg distance
+            correction); this is its rendering counterpart.
+            """
+            candidate = self._previous_lodging_stop(destinations, index)
+            if candidate is not None:
+                return candidate["name"], self._destination_route_target(candidate)
             return departure_name, str(departure_name or "").strip()
 
         for index, dest in enumerate(destinations):
@@ -307,15 +370,116 @@ class HTMLAssembler:
         if not ret and waypoints:
             waypoints = waypoints[:-1]
 
+        # DRIVING, always, and this one is deliberate. Google Maps cannot
+        # compute transit directions with waypoints, so making this link follow
+        # the trip's rail mode meant dropping them -- and a "Full Route Map"
+        # that shows only Brussels Airport to Frankfurt is not the full route.
+        # Trading a broken link for a working link to the wrong thing is not an
+        # improvement.
+        #
+        # This link answers "what shape is the trip", which needs every stop in
+        # order. Driving is the only mode that renders that. Per-leg links in
+        # Getting Here still use the booked mode and give real transit
+        # directions, which is where a traveller looks for times and platforms.
+        travelmode = "driving"
         params = [
             "api=1",
             f"origin={quote(origin)}",
             f"destination={quote(destination)}",
-            "travelmode=driving",
+            f"travelmode={travelmode}",
         ]
+        # Google Maps cannot compute TRANSIT directions with waypoints: the URL
+        # returns "Sorry, we could not calculate transit directions" and offers
+        # a driving fallback. Verified in a browser 2026-08-27 -- the same route
+        # without waypoints resolves fine (ICE 11, 2h57 Brussels to Frankfurt).
+        # A multi-city rail trip is several journeys, not one routable chain.
+        # Drop a trailing waypoint that repeats the destination. With an
+        # explicit trip `return`, the last stop was passed as both, so Google
+        # plotted Frankfurt twice and drew a zero-length final leg.
+        if waypoints and waypoints[-1].strip().lower() == destination.strip().lower():
+            waypoints = waypoints[:-1]
         if waypoints:
             params.append("waypoints=" + quote("|".join(waypoints), safe="|"))
         return "https://www.google.com/maps/dir/?" + "&".join(params)
+
+    #: Google Maps travelmode values, keyed by the manifest's booked leg type.
+    _MAPS_TRAVELMODE_BY_ARRIVAL = {
+        "train": "transit",
+        "bus": "transit",
+        "shuttle": "transit",
+        "ferry": "transit",
+        "ship": "transit",
+        "plane": "transit",
+        "car": "driving",
+    }
+
+    @staticmethod
+    def _booked_arrival_mode(dest: dict[str, Any] | None) -> str:
+        if not isinstance(dest, dict):
+            return ""
+        for leg in (dest.get("transportation") or []):
+            if isinstance(leg, dict):
+                mode = str(leg.get("type", "") or "").strip().lower()
+                if mode:
+                    return mode
+        return ""
+
+    @classmethod
+    def _return_leg_transportation(
+        cls, dest: dict[str, Any] | None, dest_by_id: dict[str, dict[str, Any]] | None
+    ) -> list[dict[str, Any]]:
+        """A synthetic transportation list for the RETURN leg.
+
+        The return has no destination record of its own, so its travel mode has
+        to be inferred. Uses the mode shared by every stated leg of the trip;
+        falls back to this destination's own leg; otherwise empty, which the
+        link builder reads as driving.
+        """
+        mode = cls._trip_wide_arrival_mode(list((dest_by_id or {}).values()))
+        if not mode:
+            mode = cls._booked_arrival_mode(dest)
+        return [{"type": mode}] if mode else []
+
+    @classmethod
+    def _trip_wide_arrival_mode(cls, destinations: Any) -> str:
+        """The single booked mode shared by every stated leg, else "".
+
+        Used for the return leg, which has no destination record of its own.
+        """
+        modes = set()
+        for dest in (destinations or []):
+            if not isinstance(dest, dict):
+                continue
+            for leg in (dest.get("transportation") or []):
+                if isinstance(leg, dict):
+                    mode = str(leg.get("type", "") or "").strip().lower()
+                    if mode:
+                        modes.add(mode)
+        return next(iter(modes)) if len(modes) == 1 else ""
+
+    @classmethod
+    def _maps_travelmode_for_trip(cls, trip: dict[str, Any] | None) -> str:
+        """travelmode for the route links, from what the manifest actually books.
+
+        Hardcoded "driving" opened car directions for an itinerary whose every
+        leg was a booked train -- the link contradicted the page it sat on.
+        A trip is treated as transit when EVERY stated leg is non-driving;
+        anything mixed or unstated stays driving, which is this generator's
+        original and still most common case.
+        """
+        modes = []
+        for dest in ((trip or {}).get("destinations") or []):
+            if not isinstance(dest, dict):
+                continue
+            for leg in (dest.get("transportation") or []):
+                if isinstance(leg, dict):
+                    mode = str(leg.get("type", "") or "").strip().lower()
+                    if mode:
+                        modes.append(mode)
+        if not modes:
+            return "driving"
+        resolved = {cls._MAPS_TRAVELMODE_BY_ARRIVAL.get(m, "driving") for m in modes}
+        return "transit" if resolved == {"transit"} else "driving"
 
     def _build_map_markers(self, destinations: list[dict[str, Any]], trip_meta: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """Build Leaflet stops array in {c:[lat,lng], mo, dy, name} format."""
@@ -817,7 +981,7 @@ class HTMLAssembler:
         return_name = str((trip_meta or {}).get("return", "") or "").strip()
         route_summary = str(getting_there.get("route_summary", "") or "").strip()
         distance = str(getting_there.get("distance_miles", "") or "").strip()
-        drive_time = str(getting_there.get("drive_time", "") or "").strip()
+        travel_time = str(getting_there.get("travel_time", "") or "").strip()
         route_options = getting_there.get("route_options", []) or []
         return_date_label, return_time_label = self._format_trip_datetime_label(
             str((trip_meta or {}).get("return_datetime", "") or "")
@@ -859,7 +1023,14 @@ class HTMLAssembler:
         # diverge from the rendered "DEPARTURE ROUTE OPTIONS" cards.
         gmaps_url = ""
         if return_name:
-            pseudo_dest = {"name": return_name}
+            # Same reasoning as the per-destination links: the return leg of an
+            # all-rail trip should not open driving directions.
+            pseudo_dest = {
+                "name": return_name,
+                # dest_by_id is the only view of the whole trip available here;
+                # fall back to THIS destination's leg when it is absent.
+                "transportation": self._return_leg_transportation(dest, dest_by_id),
+            }
             gmaps_url = self._build_route_gmaps_url("", pseudo_dest, route_options)
 
         html = '<div class="card getting-here-card getting-here-subcard departure-route-card">\n'
@@ -869,17 +1040,11 @@ class HTMLAssembler:
             html += f'    <a href="{gmaps_url}" target="_blank" rel="noopener" class="gmaps-link">Open in Google Maps →</a>\n'
         html += '  </div>\n'
 
-        if distance and drive_time:
-            html += '  <div class="route-headline-row">\n'
-            if route_label:
-                html += f'    <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
-            html += '    <div class="route-badges route-badges-inline">\n'
-            html += f'      <span class="badge badge-distance">{distance} mi</span>\n'
-            html += f'      <span class="badge badge-time">{drive_time}</span>\n'
-            html += '    </div>\n'
-            html += '  </div>\n'
-        elif route_label:
-            html += f'  <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
+        # Independent badges, same reasoning as the arrival side: this pair
+        # gate dropped the duration whenever the distance was missing.
+        html += self._build_route_badges_row(
+            route_label=route_label, distance=distance, travel_time=travel_time,
+        )
 
         if route_summary:
             html += f'  <p class="route-summary">{html_escape.escape(route_summary)}</p>\n'
@@ -1001,13 +1166,69 @@ class HTMLAssembler:
             html += '  <div class="image-tile photo-item">\n'
             html += (
                 f'    <img src="{file_url}" alt="{dest_escaped}" '
-                f'onerror="this.style.display=\'none\';" loading="lazy" />\n'
+                f'class="hide-on-error" loading="lazy" />\n'
             )
             html += f'    <div class="caption photo-caption">{caption}</div>\n'
             html += '  </div>\n'
         
         html += '</div>\n'
+        html += self._image_error_handler_script()
         return html
+
+    @staticmethod
+    def _image_error_handler_script() -> str:
+        """One capture-phase listener, replacing every inline onerror attribute.
+
+        Reported 2026-08-27: attaching index.html to an email trips a virus
+        scanner. Nothing malicious is present -- no eval, no base64 payload, no
+        iframe -- but the file carried a dozen `onerror=` attributes alongside
+        three remote <script src> loads, which together are the shape generic
+        mail heuristics score as Trojan:HTML/Phish. `onerror` on an <img> is the
+        most common XSS vector in the wild, so scanners weight it heavily.
+
+        Behaviour is identical. Error events do not bubble, which is why this
+        registers with capture:true -- and why an inline attribute was the
+        original solution.
+        """
+        return (
+            "<script>\n"
+            "document.addEventListener('error', function (e) {\n"
+            "  var el = e.target;\n"
+            "  if (el && el.tagName === 'IMG' &&\n"
+            "      String(el.className).indexOf('hide-on-error') >= 0) {\n"
+            "    el.style.display = 'none';\n"
+            "  }\n"
+            "}, true);\n"
+            "</script>\n"
+        )
+
+    @staticmethod
+    def _build_trip_description(trip: dict[str, Any]) -> str:
+        """"Europe Exploration — Brussels, Amsterdam, Berlin, Prague, Frankfurt".
+
+        The city alone, not "Brussels, Belgium": a meta description is truncated
+        around 155 characters by most search engines and link previews, and
+        repeating the country for every stop spends that budget on nothing. The
+        manifest's own `subtitle` is preferred when present, since it is the
+        author's one-line summary and better than anything derived.
+        """
+        meta = trip.get("trip", {}) if isinstance(trip, dict) else {}
+        title = str(meta.get("title", "") or "").strip() or "Trip Itinerary"
+
+        subtitle = str(meta.get("subtitle", "") or "").strip()
+        if subtitle:
+            return f"{title} — {subtitle}"
+
+        names = []
+        for dest in (trip.get("destinations") or []):
+            if not isinstance(dest, dict):
+                continue
+            name = str(dest.get("name", "") or "").strip()
+            if name:
+                names.append(name.split(",")[0].strip())
+        if not names:
+            return title
+        return f"{title} — {', '.join(names)}"
 
     def _build_image_caption(self, image: dict[str, Any]) -> str:
         credit = self._sanitize_caption_text(image.get("credit", ""))
@@ -1051,6 +1272,23 @@ class HTMLAssembler:
         return text
 
     @staticmethod
+    def _previous_lodging_stop(
+        destinations: list[dict[str, Any]], index: int
+    ) -> dict[str, Any] | None:
+        """The lodging stop a leg arriving at destinations[index] starts from.
+
+        Walks back past grouped day trips. Returns None when there is no
+        earlier lodging stop, which means the leg starts at the trip's
+        departure gateway instead.
+        """
+        for previous_index in range(index - 1, -1, -1):
+            candidate = destinations[previous_index]
+            if not isinstance(candidate, dict) or is_grouped(candidate):
+                continue
+            return candidate
+        return None
+
+    @staticmethod
     def _route_waypoint_sort_key(stop: Any) -> tuple[int, float]:
         if not isinstance(stop, dict):
             return (1, 0.0)
@@ -1089,9 +1327,42 @@ class HTMLAssembler:
         if not destination:
             return ""
 
-        params = [f"destination={quote(destination)}", "travelmode=driving", "api=1"]
+        # This link sits inside "Getting Here". Opening driving directions for a
+        # booked rail leg made the link contradict the section around it.
+        # GH #2 adds the second way a leg can say it is not a drive: a
+        # manifest `transport_mode: transit`, with no booking involved.
+        # `mixed` stays driving -- there the drive is still the primary
+        # answer and the transit options sit beside it.
+        travelmode = self._MAPS_TRAVELMODE_BY_ARRIVAL.get(
+            self._booked_arrival_mode(dest), "driving"
+        )
+        leg_mode = resolved_mode(dest)
+        if leg_mode == "transit":
+            travelmode = "transit"
+        elif leg_mode in _MAPS_TRAVELMODE_BY_LEG_MODE:
+            travelmode = _MAPS_TRAVELMODE_BY_LEG_MODE[leg_mode]
+        params = [f"destination={quote(destination)}", f"travelmode={travelmode}", "api=1"]
         if previous_name:
             params.append(f"origin={quote(previous_name)}")
+
+        # Transit rejects waypoints outright -- Google returns "Sorry, we could
+        # not calculate transit directions" and the link is dead -- and they are
+        # meaningless there anyway: you cannot take a 12-mile detour off a
+        # scheduled train.
+        #
+        # An early return rather than a branch threaded through the loop, on
+        # purpose. This function's failures live in that loop (the
+        # `optimize:true` mis-geocode below, and design.md 4.5 item 16's
+        # unresolved en-route case), so the transit path is kept out of it
+        # entirely and the driving path is left byte-identical.
+        #
+        # bicycling and walking deliberately fall THROUGH to that loop instead
+        # of returning here. The Maps URL scheme accepts waypoints for both,
+        # and a self-powered leg is where they matter most: on a two-day ride
+        # the stops are the itinerary rather than a detour from it. Hence a
+        # test on transit specifically, not on "anything that is not driving".
+        if travelmode == "transit":
+            return "https://www.google.com/maps/dir/?" + "&".join(params)
 
         waypoint_names: list[str] = []
         destination_name = str(destination or "").strip()
@@ -1100,10 +1371,37 @@ class HTMLAssembler:
             [stop for stop in stops if isinstance(stop, dict) and stop.get("route_waypoint_eligible") is not False],
             key=self._route_waypoint_sort_key,
         )
+        # A coordinate resolves to the right point but Google LABELS it by
+        # reverse geocoding, so the route panel reads "Millcreek 2nd post
+        # market, 5FGM+75" where the itinerary says "Red Cliffs National
+        # Conservation Area Overlook". The pins are correct and the list is
+        # unreadable, which is indistinguishable from the pins being wrong.
+        #
+        # A place_id is both: it names one specific place permanently AND
+        # Google renders its real name. The resolver already produces them --
+        # 107 place_id links on the last sw build -- and stores each inside the
+        # item's maps_url, so they cost nothing extra to reuse here.
+        #
+        # All-or-nothing: waypoint_place_ids must correspond positionally to
+        # waypoints, so a partial list would misalign labels against points.
+        # One stop without an id sends the whole leg back to coordinates.
+        waypoint_place_ids: list[str] = []
         for stop in ordered_stops[:8]:
             stop_name = str(stop.get("name", "") or "").strip()
             if not stop_name:
                 continue
+            # url_discovery._attach_place_id stores it as its own field so the
+            # stop keeps its coordinate maps_url for the map badge. The
+            # maps_url parse stays as a fallback for items whose place_id
+            # arrived inside a resolver-built link instead.
+            place_id = str(stop.get("place_id", "") or "").strip() or self._place_id_from_maps_url(
+                str(stop.get("maps_url", "") or "")
+            )
+            if place_id:
+                waypoint_names.append(stop_name)
+                waypoint_place_ids.append(place_id)
+                continue
+            waypoint_place_ids.append("")
             # Prefer a real geocoded coordinate over any name-based guess when
             # one exists (url_discovery.py already verified it's plausibly
             # on-route -- see _prune_en_route_stops_by_geometry). A coordinate
@@ -1129,7 +1427,24 @@ class HTMLAssembler:
             elif waypoint_scope and self._looks_location_qualified(waypoint_scope):
                 waypoint_names.append(self._maps_fallback_query_text(stop_name, waypoint_scope))
             else:
-                waypoint_names.append(stop_name)
+                # No coordinate and no safe scope. The two options this comment
+                # already rejects are appending the arrival destination (wrong
+                # for a stop not near it) and emitting the bare name -- which
+                # is what shipped, and is how "Rico Historic District" on the
+                # Telluride -> Pagosa Springs leg put a San Juan Island pin in
+                # Washington State, the same failure as the Snoqualmie case
+                # above.
+                #
+                # There is a third option: leave the stop off the route line.
+                # A map missing one pin is a smaller loss than a map that
+                # detours 1,200 miles, and the stop still has its own card
+                # with its own link. Silence beats a confident wrong answer.
+                logger.info(
+                    "Route waypoint omitted for %r: no geocode and no "
+                    "location-qualified scope, so a bare name would be "
+                    "ambiguous to Google Maps",
+                    stop_name,
+                )
         if waypoint_names:
             # Our own waypoint ordering (_route_waypoint_sort_key /
             # route_progress_ratio) is a straight-line projection onto the
@@ -1157,6 +1472,10 @@ class HTMLAssembler:
             # the correct ~10-minute local one. Reverted -- there is no
             # working reorder-via-URL option for this scheme.
             params.append("waypoints=" + quote("|".join(waypoint_names), safe="|"))
+            if waypoint_place_ids and all(waypoint_place_ids) and len(waypoint_place_ids) == len(waypoint_names):
+                params.append(
+                    "waypoint_place_ids=" + quote("|".join(waypoint_place_ids), safe="|")
+                )
         return "https://www.google.com/maps/dir/?" + "&".join(params)
 
     def _build_destination_scope_maps_url(self, destination_name: str = "", source_url: str = "") -> str:
@@ -1260,6 +1579,201 @@ class HTMLAssembler:
         "shuttle": ("\U0001f690", "Shuttle"),
         "other": ("\U0001f9f3", "Travel"),
     }
+
+    #: Icons for a SUGGESTED transit option, sharing the vocabulary of
+    #: _TRANSPORT_KINDS so a booked leg and a suggested one read as siblings.
+    #: What distinguishes them is what they carry -- a confirmation number
+    #: versus an Unverified badge -- not a separate visual language
+    #: (multimodal-routing.md 3.3).
+    _TRANSIT_OPTION_ICONS: dict[str, str] = {
+        "bus": "\U0001f68c",
+        "coach": "\U0001f68c",
+        "train": "\U0001f686",
+        "rail": "\U0001f686",
+        "ferry": "\u26f4\ufe0f",
+        "shuttle": "\U0001f690",
+        "tram": "\U0001f68b",
+        "metro": "\U0001f687",
+        "subway": "\U0001f687",
+    }
+
+    @staticmethod
+    def _transfer_label(transfers: int) -> str:
+        """"Direct", "1 transfer", "N transfers".
+
+        Shared by the headline badge and the option card so one value cannot
+        render two ways on the same card. The Japan acceptance run showed
+        exactly that: "Direct" inside the option, "0 transfers" in the badge
+        above it, describing the same leg.
+        """
+        if transfers == 0:
+            return "Direct"
+        return "1 transfer" if transfers == 1 else f"{transfers} transfers"
+
+    def _build_route_badges_row(
+        self,
+        *,
+        route_label: str,
+        distance: Any,
+        travel_time: Any,
+        day_trip_badge: str = "",
+        transit_options: Any = None,
+    ) -> str:
+        """The headline row: route label plus whichever badges actually apply.
+
+        Each badge is independent. Gating them as a pair meant an empty
+        `distance_miles` -- the correct state for a leg measured in
+        timetables rather than road miles -- also suppressed the duration.
+
+        On a Format A transit leg a transfer count stands in for distance:
+        "1 transfer" is the figure a traveler on that leg plans around, and
+        road mileage is not.
+        """
+        distance_text = str(distance or "").strip()
+        time_text = str(travel_time or "").strip()
+
+        badges: list[str] = []
+        if day_trip_badge:
+            badges.append(day_trip_badge.strip())
+        if distance_text:
+            badges.append(
+                f'<span class="badge badge-distance">{html_escape.escape(distance_text)} mi</span>'
+            )
+        if time_text:
+            badges.append(
+                f'<span class="badge badge-time">{html_escape.escape(time_text)}</span>'
+            )
+
+        options = transit_options if isinstance(transit_options, dict) else {}
+        if options.get("has_transit"):
+            first = (options.get("options") or [{}])[0]
+            transfers = first.get("transfers") if isinstance(first, dict) else None
+            if not distance_text and isinstance(transfers, int):
+                badges.append(
+                    f'<span class="badge badge-transfers">{self._transfer_label(transfers)}</span>'
+                )
+            if options.get("confidence") != "api_verified":
+                badges.append('<span class="badge badge-unverified">&#9888; Unverified</span>')
+
+        if not badges:
+            if not route_label:
+                return ""
+            return f'  <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
+
+        html = '  <div class="route-headline-row">\n'
+        if route_label:
+            html += f'    <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
+        html += '    <div class="route-badges route-badges-inline">\n'
+        for badge in badges:
+            html += f'      {badge}\n'
+        html += '    </div>\n'
+        html += '  </div>\n'
+        return html
+
+    def _build_leg_trail_link_html(self, getting_here: Any) -> str:
+        """The AllTrails page for this leg's section, when discovery found one.
+
+        Rendered through _safe_href like every other external link, and only
+        from a URL discovery resolved -- the model is never asked for one and
+        could not be trusted with it (design.md 1.4). No link, no row.
+        """
+        if not isinstance(getting_here, dict):
+            return ""
+        url = str(getting_here.get("trail_url", "") or "").strip()
+        if not url:
+            return ""
+        label = str(getting_here.get("trail_label", "") or "").strip() or "Trail section"
+        return (
+            '  <div class="leg-trail-link">\n'
+            f'    \U0001f97e <a href="{self._safe_href(url)}" class="attr-link" '
+            f'target="_blank" rel="noopener">{html_escape.escape(label)}</a>'
+            f' <span class="attr-external-link" title="link source">'
+            f'{self._link_source_icon(url)}</span>\n'
+            '  </div>\n'
+        )
+
+    def _build_transit_options_html(self, transit_options: Any) -> str:
+        """The Phase 1 transit block: suggestions, or an honest negative.
+
+        Every prose field goes through html_escape. design.md 4.5 item 11
+        records that `route_summary` is interpolated raw one function away
+        from an identical line that is escaped; that inconsistency stops here
+        rather than being extended (multimodal-routing.md 4.2).
+
+        No field here is ever a link. The model is not permitted to produce
+        one and the normalizer strips it, so there is no href to build.
+        """
+        if not isinstance(transit_options, dict) or not transit_options:
+            return ""
+
+        if not transit_options.get("has_transit"):
+            assessment = str(transit_options.get("honest_assessment", "") or "").strip()
+            if not assessment:
+                return ""
+            html = '  <div class="transit-options">\n'
+            html += '    <div class="transit-header">\U0001f687 PUBLIC TRANSPORT</div>\n'
+            html += f'    <p class="transit-assessment">{html_escape.escape(assessment)}</p>\n'
+            tip = str(transit_options.get("local_tip", "") or "").strip()
+            if tip:
+                html += f'    <p class="transit-local-tip">{html_escape.escape(tip)}</p>\n'
+            html += '  </div>\n'
+            return html
+
+        html = '  <div class="transit-options">\n'
+        html += '    <div class="transit-header">\U0001f687 PUBLIC TRANSPORT OPTIONS</div>\n'
+        for option in (transit_options.get("options") or []):
+            if not isinstance(option, dict):
+                continue
+            mode = str(option.get("mode", "") or "").strip().lower()
+            icon = self._TRANSIT_OPTION_ICONS.get(mode, "\U0001f9f3")
+            label = html_escape.escape(str(option.get("label", "") or ""))
+            html += '    <div class="stop-card transit-option">\n'
+            html += f'      <div class="transit-option-name">{icon} {label}</div>\n'
+
+            meta: list[str] = []
+            duration = str(option.get("duration", "") or "").strip()
+            if duration:
+                meta.append(
+                    f'<span class="badge badge-time">{html_escape.escape(duration)}</span>'
+                )
+            fare = str(option.get("fare", "") or "").strip()
+            if fare:
+                meta.append(
+                    f'<span class="badge badge-fare">{html_escape.escape(fare)}</span>'
+                )
+            transfers = option.get("transfers")
+            if isinstance(transfers, int):
+                meta.append(
+                    f'<span class="badge badge-transfers">{self._transfer_label(transfers)}</span>'
+                )
+            if meta:
+                html += '      <div class="route-badges">' + " ".join(meta) + '</div>\n'
+
+            for field, css in (
+                ("notes", "transit-option-notes"),
+                ("booking_hint", "transit-option-hint"),
+            ):
+                value = str(option.get(field, "") or "").strip()
+                if value:
+                    html += f'      <p class="{css}">{html_escape.escape(value)}</p>\n'
+            html += '    </div>\n'
+
+        fallback = str(transit_options.get("fallback", "") or "").strip()
+        if fallback:
+            html += f'    <p class="transit-fallback">{html_escape.escape(fallback)}</p>\n'
+
+        # The card must not read as a timetable. Same posture as an unlinked
+        # attraction's Unverified marker: a traveler who arrives to find a
+        # fabricated festival is worse off than one told there is nothing on,
+        # and a traveler stranded at a bus stop is worse off still.
+        if transit_options.get("confidence") != "api_verified":
+            html += (
+                '    <p class="transit-disclaimer">&#9888; These options are AI-suggested '
+                'and unverified. Confirm schedules with the operator before relying on '
+                'them.</p>\n'
+            )
+        html += '  </div>\n'
+        return html
 
     def _build_trip_transportation(self, trip: dict[str, Any]) -> str:
         """Trip-wide travel chips rendered under the route overview map.
@@ -1646,7 +2160,7 @@ class HTMLAssembler:
             return ""
         route_summary = gh.get("route_summary", "")
         distance = gh.get("distance_miles", "")
-        drive_time = gh.get("drive_time", "")
+        travel_time = gh.get("travel_time", "")
         stops = gh.get("en_route_stops", [])
         route_label = ""
         if previous_name:
@@ -1688,7 +2202,22 @@ class HTMLAssembler:
                 elif self._should_render_without_url(stop, section="en_route_stop"):
                     visible_stops.append((stop, "", is_map_fallback))
 
-        route_destination = {"name": current_route_target or dest.get("name", "")}
+        # Carry the booked legs through. This used to be a name-only dict, so
+        # _build_route_gmaps_url saw no transportation and every per-destination
+        # link fell back to travelmode=driving -- 11 of 12 links on an all-rail
+        # itinerary opened car directions. The trip-level link was correct,
+        # which is why testing the helper in isolation missed it.
+        # RESOLVED_MODE_KEY joined it 2026-09-05, for the same reason and after
+        # the same failure: a `hike` itinerary rendered "Walking Here" over a
+        # link that opened driving directions, because the heading read `dest`
+        # and the link read this dict. Anything _build_route_gmaps_url consults
+        # has to be carried here, and an isolated test of that helper cannot
+        # catch the omission -- test through _build_getting_here.
+        route_destination = {
+            "name": current_route_target or dest.get("name", ""),
+            "transportation": dest.get("transportation") or [],
+            RESOLVED_MODE_KEY: resolved_mode(dest),
+        }
         # _build_route_gmaps_url applies its own [:8] cap (Google's own
         # interactive directions UI is documented to support only a limited
         # number of waypoints reliably) -- now that it's capping the already
@@ -1717,9 +2246,28 @@ class HTMLAssembler:
             "market": "🛍️",
         }
         
+        # Nothing to describe: no leg label, no figures, no prose, no stops
+        # and no transit options. Rendering the header alone leaves a card
+        # that says "Getting Here" and then stops, which is what the first
+        # destination of a manifest with no `trip.departure` produced once
+        # its invented figures were dropped upstream.
+        if not any((
+            route_label,
+            str(distance or "").strip(),
+            str(travel_time or "").strip(),
+            str(route_summary or "").strip(),
+            visible_stops,
+            gh.get("transit_options"),
+        )):
+            return ""
+
         html = '<div class="card getting-here-card getting-here-subcard">\n'
         html += '  <div class="getting-here-header">\n'
-        html += '    <h3>🚗 Getting Here</h3>\n'
+        # A leg the traveler pedals or walks should not sit under a car.
+        heading = _GETTING_HERE_HEADING_BY_LEG_MODE.get(
+            resolved_mode(dest), '🚗 Getting Here'
+        )
+        html += f'    <h3>{heading}</h3>\n'
         if gmaps_url:
             html += f'    <a href="{gmaps_url}" target="_blank" rel="noopener" class="gmaps-link">Open in Google Maps →</a>\n'
         html += '  </div>\n'
@@ -1730,26 +2278,26 @@ class HTMLAssembler:
             else ""
         )
 
-        # Route summary with distance and time badges
-        if distance and drive_time:
-            html += '  <div class="route-headline-row">\n'
-            if route_label:
-                html += f'    <div class="route-headline">{html_escape.escape(route_label)}</div>\n'
-            html += '    <div class="route-badges route-badges-inline">\n'
-            if day_trip_badge:
-                html += f'      {day_trip_badge}'
-            html += f'      <span class="badge badge-distance">{distance} mi</span>\n'
-            html += f'      <span class="badge badge-time">{drive_time}</span>\n'
-            html += '    </div>\n'
-            html += '  </div>\n'
-        elif route_label:
-            html += f'  <div class="route-headline">{html_escape.escape(route_label)}'
-            if day_trip_badge:
-                html += f' {day_trip_badge}'
-            html += '</div>\n'
+        # Route summary with distance and time badges. Each badge now
+        # renders on its own merits. This was gated on `distance and
+        # travel_time` together, so a transit leg -- where road miles are
+        # meaningless and `distance_miles` is correctly left empty -- lost
+        # the DURATION badge too, silently, which is the one figure that leg
+        # actually has (multimodal-routing.md 4.2).
+        html += self._build_route_badges_row(
+            route_label=route_label,
+            distance=distance,
+            travel_time=travel_time,
+            day_trip_badge=day_trip_badge,
+            transit_options=gh.get('transit_options'),
+        )
 
         if route_summary:
             html += f'  <p class="route-summary">{route_summary}</p>\n'
+
+        html += self._build_leg_trail_link_html(gh)
+
+        html += self._build_transit_options_html(gh.get('transit_options'))
 
         # GH #68 multi-site grouping §5: en-route stops deferred to the
         # group base render a pointer instead of just silently vanishing.
@@ -1768,7 +2316,7 @@ class HTMLAssembler:
                 if url:
                     source_icon = self._link_source_icon(url)
                     name_html = (
-                        f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{stop_name}</a>'
+                        f'<a href="{self._safe_href(url)}" class="attr-link" target="_blank" rel="noopener">{stop_name}</a>'
                         f' <span class="attr-external-link" title="link source">{source_icon}</span>'
                     )
                 else:
@@ -1783,13 +2331,21 @@ class HTMLAssembler:
                 detour_parts: list[str] = []
                 detour_miles = stop.get("detour_distance_miles")
                 detour_minutes = stop.get("detour_time_minutes")
+                # Round trip, not one way. Both the geometry floor and the
+                # estimate in url_discovery are 2x the stop's perpendicular
+                # offset from the route, and the card never said so -- "24.0 mi
+                # detour" reads as one-way to anyone planning a day.
                 if detour_miles not in (None, ""):
-                    detour_parts.append(f"{detour_miles} mi detour")
+                    detour_parts.append(f"{detour_miles} mi round trip")
                 if detour_minutes not in (None, ""):
                     detour_parts.append(f"{detour_minutes} min")
                 detour_html = ""
                 if detour_parts:
-                    detour_html = f' <span class="stop-detour">({html_escape.escape(" | ".join(detour_parts))})</span>'
+                    label = html_escape.escape(" | ".join(detour_parts))
+                    detour_html = (
+                        f' <span class="stop-detour" title="Added distance and time'
+                        f' for the round-trip detour off the main route">({label})</span>'
+                    )
                 description_raw = str(stop.get("description", "") or "").strip()
                 practical_note_raw = str(stop.get("practical_note", "") or "").strip()
                 if practical_note_raw and practical_note_raw.casefold() == description_raw.casefold():
@@ -1817,10 +2373,24 @@ class HTMLAssembler:
                 description = html_escape.escape(description_raw)
                 practical_note = html_escape.escape(practical_note_raw)
                 note_html = f'<div class="stop-note">{practical_note}</div>' if practical_note else ""
+                # The lunch stop is a recommendation to eat somewhere, so it
+                # gets a badge and a link that searches for food there. Before
+                # this it rendered as an ordinary stop whose map link pointed
+                # at the place itself -- accurate, but not the thing being
+                # suggested. ai_content._inject_lunch_stop_suggestions marks it.
+                lunch_html = ""
+                if stop.get("is_lunch_stop"):
+                    lunch_url = str(stop.get("lunch_maps_url", "") or "").strip()
+                    lunch_html = ' <span class="badge badge-lunch">🍽 Lunch stop</span>'
+                    if lunch_url:
+                        lunch_html += (
+                            f' <a href="{self._safe_href(lunch_url)}" class="lunch-link"'
+                            f' target="_blank" rel="noopener">Find lunch here</a>'
+                        )
                 html += (
                     f'    <div class="stop-card">'
                     f'<span class="stop-icon">{icon}</span>'
-                    f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}{rating_badge_html}{caution_html}{maps_corner_html}'
+                    f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}{rating_badge_html}{lunch_html}{caution_html}{maps_corner_html}'
                     f'<div class="stop-desc">{description}</div>{note_html}</div>'
                     f'</div>\n'
                 )
@@ -2282,9 +2852,24 @@ class HTMLAssembler:
         else:
             # Fallback: no confirmed ticketed events
             html += '<h3>🎭 Cultural Events</h3>\n'
-            honest = events.get("honest_assessment", "")
+            # prompts/cultural_events.txt defines two shapes: Format A
+            # (has_events true, events[], ambient_scene) and Format B
+            # (has_events false, honest_assessment). The model returns hybrids
+            # -- Format B's flag with Format A's prose field -- and this branch
+            # only read honest_assessment, so a populated ambient_scene was
+            # discarded in favour of boilerplate. That is content generated and
+            # billed, then thrown away: 8 destinations across the three trips
+            # on 2026-08-30, each warning about a "missing" field while
+            # carrying a perfectly usable one.
+            honest = str(events.get("honest_assessment", "") or "").strip()
             if not honest:
-                logger.warning("No honest_assessment for '%s' (events=%s)", dest_name, events)
+                honest = str(events.get("ambient_scene", "") or "").strip()
+            if not honest:
+                # Neither field present: a real gap, still worth a warning.
+                logger.warning(
+                    "No honest_assessment or ambient_scene for '%s' (events=%s)",
+                    dest_name, events,
+                )
                 honest = "No ticketed events were confidently verified for these dates. Check visitor center and local calendars close to travel dates."
             html += f'<p>{honest}</p>\n'
             tip = events.get("local_tip", "")
@@ -2298,7 +2883,7 @@ class HTMLAssembler:
                         # Link the specific named place where it appears in the tip text.
                         tip_html = (
                             html_escape.escape(tip_text[:match.start()])
-                            + f'<a href="{self._safe_href(tip_url)}" target="_blank" rel="noopener">'
+                            + f'<a href="{self._safe_href(tip_url)}" class="tip-link" target="_blank" rel="noopener">'
                             + html_escape.escape(tip_text[match.start():match.end()])
                             + '</a>'
                             + html_escape.escape(tip_text[match.end():])
@@ -2308,7 +2893,7 @@ class HTMLAssembler:
                         # mention rather than silently dropping a real, verified URL.
                         tip_html = (
                             html_escape.escape(tip_text)
-                            + f' <a href="{self._safe_href(tip_url)}" target="_blank" rel="noopener">'
+                            + f' <a href="{self._safe_href(tip_url)}" class="tip-link" target="_blank" rel="noopener">'
                             + html_escape.escape(tip_name)
                             + '</a>'
                         )
@@ -2519,7 +3104,7 @@ class HTMLAssembler:
             if url:
                 source_icon = self._link_source_icon(url)
                 name_html = (
-                    f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{rest_name}</a>'
+                    f'<a href="{self._safe_href(url)}" class="rest-link" target="_blank" rel="noopener">{rest_name}</a>'
                     f' <span class="attr-external-link" title="link source">{source_icon}</span>'
                 )
             else:
@@ -2578,6 +3163,41 @@ class HTMLAssembler:
             desc = re.sub(r"(?i)\b(?:price|prices?)\b\s*[:\-]?\s*[\$#]{1,4}", "", desc)
             desc = re.sub(r"\b\d+(?:\.\d+)?\s*(?:/\s*5|stars?)\b", "", desc, flags=re.IGNORECASE)
             desc = re.sub(r"(?:^|[\s,;:])(?:[\$#]{1,4})+(?:[\s,;:]|$)", " ", desc)
+            # RANGED price tokens ("$$-$$$"). The rule above matches a run of
+            # $ or #, so the hyphen defeats it and the range survived into the
+            # teaser -- rendering "$$-$$$, Belgian." directly beside the $$
+            # badge and the Belgian badge that already say it. Same duplication
+            # dipstick55 Theme D removed from the title, still in the teaser.
+            desc = re.sub(
+                r"(?:^|[\s,;:])[\$#]{1,4}\s*[-‐-―]\s*[\$#]{1,4}(?=[\s,;:.]|$)",
+                " ",
+                desc,
+            )
+            # A leading cuisine echo, now that the price in front of it is gone.
+            # Matched as a whole leading CLAUSE rather than an exact prefix: the
+            # harvest writes "Belgian Seafood." where the cuisine field says
+            # only "Seafood", so anchoring on the field value alone misses it.
+            # Bounded to a short clause so a real opening sentence that happens
+            # to name the cuisine is never eaten.
+            if cuisine:
+                lead = re.match(r"^[\s,;:.]*([^.]{1,40})\.\s*", desc)
+                if lead:
+                    clause = lead.group(1).strip()
+                    words = clause.split()
+                    cuisine_words = {w.lower().strip(",") for w in cuisine.split()}
+                    clause_words = {w.lower().strip(",") for w in words}
+                    if len(words) <= 4 and cuisine_words & clause_words:
+                        desc = desc[lead.end():]
+            # Same echo with the cuisine FIELD empty, which happens when the
+            # harvest fills the description but not the badge -- "9 et Voisins"
+            # shipped "Belgian. Traditional stoemp..." with no Belgian badge to
+            # match against. A single bare word followed by a full stop and then
+            # real prose is a label, not a sentence.
+            if not cuisine:
+                desc = re.sub(r"^\s*([A-Z][A-Za-z\-]{2,14})\.\s+(?=[A-Z])", "", desc, count=1)
+            desc = desc.lstrip(" .,;:")
+            # ". ." left where a stripped field sat between two separators.
+            desc = re.sub(r"\.\s*(?:\.\s*)+", ". ", desc)
             desc = re.sub(r"\s+", " ", desc).strip(" -:|,;")
 
         synthetic = False
@@ -2689,6 +3309,17 @@ class HTMLAssembler:
             return "", False
 
         return "", False
+
+    @staticmethod
+    def _place_id_from_maps_url(url: str) -> str:
+        """The place_id inside a resolver-built Maps link, or "".
+
+        place_resolver renders `.../maps/place/?q=place_id:ChIJ...`; the id is
+        never stored separately, so this is where it is recovered from. Reusing
+        it costs no extra API call.
+        """
+        match = re.search(r"place_id:([A-Za-z0-9_\-]+)", str(url or ""))
+        return match.group(1) if match else ""
 
     @staticmethod
     def _link_source_icon(url: str) -> str:
