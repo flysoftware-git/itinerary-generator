@@ -21,7 +21,7 @@ import re
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
-from generator.transit_routing import RESOLVED_MODE_KEY, resolved_mode
+from generator.transit_routing import LegMode, RESOLVED_MODE_KEY, leg_mode, resolved_mode
 from generator.multi_site_grouping import (
     DEFAULT_BASE_OWNED_CATEGORIES,
     category_deferred_to_base,
@@ -71,15 +71,6 @@ def _verify_checksum(template_text: str) -> None:
             "The frozen template has been modified. Restore it from git."
         )
 
-
-#: Google Maps travelmode values for the self-powered leg modes. Kept apart
-#: from HTMLAssembler._MAPS_TRAVELMODE_BY_ARRIVAL, which is keyed by BOOKED leg
-#: type: nobody books a bike ride, so the two never overlap and merging them
-#: would blur what each is answering.
-_MAPS_TRAVELMODE_BY_LEG_MODE: dict[str, str] = {
-    "bike": "bicycling",
-    "hike": "walking",
-}
 
 #: Header icon and label per leg mode, so the card does not say "Getting Here"
 #: under a car icon for a leg the traveler walks.
@@ -370,18 +361,26 @@ class HTMLAssembler:
         if not ret and waypoints:
             waypoints = waypoints[:-1]
 
-        # DRIVING, always, and this one is deliberate. Google Maps cannot
-        # compute transit directions with waypoints, so making this link follow
-        # the trip's rail mode meant dropping them -- and a "Full Route Map"
-        # that shows only Brussels Airport to Frankfurt is not the full route.
+        # Driving for a transit trip, and that is deliberate: Google Maps
+        # cannot compute transit directions with waypoints, so following the
+        # trip's rail mode meant dropping them -- and a "Full Route Map" that
+        # shows only Brussels Airport to Frankfurt is not the full route.
         # Trading a broken link for a working link to the wrong thing is not an
-        # improvement.
+        # improvement. This link answers "what shape is the trip", which needs
+        # every stop in order, and driving is the only mode that renders that
+        # for rail. Per-leg links in Getting Here still use the booked mode and
+        # give real transit directions, which is where a traveller looks for
+        # times and platforms.
         #
-        # This link answers "what shape is the trip", which needs every stop in
-        # order. Driving is the only mode that renders that. Per-leg links in
-        # Getting Here still use the booked mode and give real transit
-        # directions, which is where a traveller looks for times and platforms.
-        travelmode = "driving"
+        # bicycling and walking are the exception, because the reason above is
+        # about transit specifically: the Maps URL scheme DOES accept waypoints
+        # for both, so a self-powered trip keeps every stop AND gets the right
+        # mode. Without this a five-state bike ride offered to drive itself.
+        trip_leg = LegMode(
+            declared=str((trip_meta or {}).get("transport_mode", "") or "").strip(),
+            booked_type="",
+        )
+        travelmode = trip_leg.maps_travelmode if trip_leg.is_self_powered else "driving"
         params = [
             "api=1",
             f"origin={quote(origin)}",
@@ -403,6 +402,8 @@ class HTMLAssembler:
         return "https://www.google.com/maps/dir/?" + "&".join(params)
 
     #: Google Maps travelmode values, keyed by the manifest's booked leg type.
+    #: Read only by _maps_travelmode_for_trip, which nothing calls. Every live
+    #: decision now goes through transit_routing.LegMode.maps_travelmode.
     _MAPS_TRAVELMODE_BY_ARRIVAL = {
         "train": "transit",
         "bus": "transit",
@@ -466,6 +467,12 @@ class HTMLAssembler:
         A trip is treated as transit when EVERY stated leg is non-driving;
         anything mixed or unstated stays driving, which is this generator's
         original and still most common case.
+
+        NOTE (2026-09-05): nothing calls this. The full-route link is built in
+        _build_google_maps_url, which decides its own mode and documents why.
+        Kept rather than deleted because the reasoning above is sound and the
+        method is referenced by tests, but do not "fix" the route link here --
+        it was tried, and the fix had no effect on any page.
         """
         modes = []
         for dest in ((trip or {}).get("destinations") or []):
@@ -1333,14 +1340,11 @@ class HTMLAssembler:
         # manifest `transport_mode: transit`, with no booking involved.
         # `mixed` stays driving -- there the drive is still the primary
         # answer and the transit options sit beside it.
-        travelmode = self._MAPS_TRAVELMODE_BY_ARRIVAL.get(
-            self._booked_arrival_mode(dest), "driving"
-        )
-        leg_mode = resolved_mode(dest)
-        if leg_mode == "transit":
-            travelmode = "transit"
-        elif leg_mode in _MAPS_TRAVELMODE_BY_LEG_MODE:
-            travelmode = _MAPS_TRAVELMODE_BY_LEG_MODE[leg_mode]
+        # One question, one answer. This used to combine a booked-type lookup
+        # with a declared-mode lookup by hand, and got it wrong twice -- once
+        # for rail because the dict it was handed carried no transportation,
+        # once for hiking because that dict carried no leg mode.
+        travelmode = leg_mode(dest).maps_travelmode
         params = [f"destination={quote(destination)}", f"travelmode={travelmode}", "api=1"]
         if previous_name:
             params.append(f"origin={quote(previous_name)}")
@@ -2265,7 +2269,7 @@ class HTMLAssembler:
         html += '  <div class="getting-here-header">\n'
         # A leg the traveler pedals or walks should not sit under a car.
         heading = _GETTING_HERE_HEADING_BY_LEG_MODE.get(
-            resolved_mode(dest), '🚗 Getting Here'
+            leg_mode(dest).declared, '🚗 Getting Here'
         )
         html += f'    <h3>{heading}</h3>\n'
         if gmaps_url:

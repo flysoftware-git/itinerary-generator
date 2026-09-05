@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -348,6 +349,138 @@ ROUTES_TRAVEL_MODE_BY_LEG_MODE: dict[str, str] = {
 }
 
 
+#: Booked leg types that mean the traveler is not driving themselves. Defined
+#: once here; ai_content and url_discovery each carried their own copy, with a
+#: comment on one asking that they be kept in step by hand.
+NON_DRIVING_BOOKED_TYPES: frozenset[str] = frozenset(
+    {"train", "plane", "ship", "ferry", "bus", "shuttle"}
+)
+
+#: Google MAPS url travelmode per declared leg mode. `mixed` and `auto` are
+#: absent: both are drives as far as a link is concerned.
+MAPS_TRAVELMODE_BY_LEG_MODE: dict[str, str] = {
+    "transit": "transit",
+    "bike": "bicycling",
+    "hike": "walking",
+}
+
+#: The same, for a leg whose mode is stated only by a BOOKING.
+MAPS_TRAVELMODE_BY_BOOKED_TYPE: dict[str, str] = {
+    "train": "transit",
+    "bus": "transit",
+    "shuttle": "transit",
+    "ferry": "transit",
+    "ship": "transit",
+    "plane": "transit",
+    "car": "driving",
+}
+
+
+@dataclass(frozen=True)
+class LegMode:
+    """Everything the pipeline needs to know about how one leg is covered.
+
+    Resolved once, from the stamped `transport_mode` and whatever booking the
+    destination carries, and then asked rather than re-derived. It exists
+    because seven places were each answering "is this a drive?" from whichever
+    half of the evidence they happened to hold, and four of them were wrong at
+    least once:
+
+      * the per-leg Maps link opened car directions on an all-rail itinerary,
+        because the dict it was handed carried no transportation;
+      * it did so again on a hike, because that dict carried no leg mode;
+      * the card heading said "Getting Here" over a car icon for a walk;
+      * the full-route link offered to drive a five-state bike ride;
+      * en-route suppression had to be fixed at two sources, with a comment on
+        one asking the other be kept in step by hand.
+
+    Every one was a site deciding for itself. The value is that this is the
+    only place a new question about a leg gets answered.
+    """
+
+    #: What the manifest declared: auto | transit | mixed | bike | hike.
+    declared: str
+    #: The booked leg type, if the traveler holds one: train, plane, car...
+    booked_type: str
+
+    @property
+    def is_self_powered(self) -> bool:
+        """Pedalled or walked. Nobody operates it, so nothing is scheduled."""
+        return self.declared in SELF_POWERED_MODES
+
+    @property
+    def is_road_leg(self) -> bool:
+        """Whether a road estimate describes this leg at all.
+
+        False for transit and for self-powered legs alike: a 1.30 road factor
+        at 60 mph describes a train no better than it describes a bicycle.
+        """
+        return not (self.declared in ("transit",) + SELF_POWERED_MODES)
+
+    @property
+    def has_roadside(self) -> bool:
+        """Whether en-route stops mean anything on this leg.
+
+        There is no roadside on a train, and none on a booked flight or
+        ferry. `mixed` keeps its stops because the drive is still on the
+        table, and a bike or a walk keeps them most of all -- there the stops
+        are the day rather than an interruption to it.
+        """
+        if self.declared == "transit":
+            return False
+        return self.booked_type not in NON_DRIVING_BOOKED_TYPES
+
+    @property
+    def maps_travelmode(self) -> str:
+        """What a Google Maps link for this leg should open.
+
+        The declaration wins over the booking: it is a statement about the
+        leg rather than an inference from what happens to have a confirmation
+        number, and a self-powered trip books nothing at all.
+        """
+        if self.declared in MAPS_TRAVELMODE_BY_LEG_MODE:
+            return MAPS_TRAVELMODE_BY_LEG_MODE[self.declared]
+        return MAPS_TRAVELMODE_BY_BOOKED_TYPE.get(self.booked_type, "driving")
+
+    @property
+    def routes_travel_mode(self) -> str:
+        """Google Routes travelMode to price this leg with, or "".
+
+        TRANSIT for a leg someone else operates, BICYCLE/WALK for one the
+        traveler powers. Empty for a drive, which this project has never
+        asked Routes about.
+        """
+        if self.declared in ROUTES_TRAVEL_MODE_BY_LEG_MODE:
+            return ROUTES_TRAVEL_MODE_BY_LEG_MODE[self.declared]
+        if self.declared == "transit" or self.booked_type in NON_DRIVING_BOOKED_TYPES:
+            return "TRANSIT"
+        return ""
+
+    @property
+    def wants_transit_options(self) -> bool:
+        """Whether Phase 1 should generate suggestions for this leg.
+
+        Self-powered legs are excluded by construction rather than by cost:
+        nobody operates them, so there is no timetable to suggest. A booking
+        excludes a leg too, but that is a fact about the destination rather
+        than the mode -- see should_generate_options.
+        """
+        return self.declared in ("transit", "mixed")
+
+
+def leg_mode(dest: dict[str, Any] | None) -> LegMode:
+    """The one resolver. Everything else about a leg is derived from this."""
+    return LegMode(declared=resolved_mode(dest), booked_type=booked_arrival_type(dest))
+
+
+def booked_arrival_type(dest: dict[str, Any] | None) -> str:
+    """The type of the booked leg arriving at this destination, if any."""
+    leg = booked_arrival_leg(dest)
+    if not isinstance(leg, dict):
+        return ""
+    return str(leg.get("type", "") or "").strip().lower()
+
+
 #: Walking hours in a day when the manifest does not say. Matches
 #: ai_content's own fallback for default_daily_activity_hours, so a trip that
 #: sets nothing gets one answer rather than two.
@@ -405,7 +538,7 @@ def format_self_powered_duration(minutes: Any, *, hours_per_day: Any = None) -> 
 
 def is_self_powered(dest: dict[str, Any] | None) -> bool:
     """True on a `bike` or `hike` leg."""
-    return resolved_mode(dest) in SELF_POWERED_MODES
+    return leg_mode(dest).is_self_powered
 
 
 def resolved_mode(dest: dict[str, Any] | None) -> str:
@@ -426,8 +559,11 @@ def suppresses_en_route_stops(dest: dict[str, Any] | None) -> bool:
     `bike` and `hike` keep theirs, and are the strongest case for them in the
     whole design: a cyclist stops more often than a driver, not less, and the
     stops are the day rather than an interruption to it.
+
+    Narrower than LegMode.has_roadside, which also excludes a leg with a
+    BOOKED flight or ferry. This one asks only what the manifest declared.
     """
-    return resolved_mode(dest) == "transit"
+    return leg_mode(dest).declared == "transit"
 
 
 def should_generate_options(dest: dict[str, Any] | None, mode: str) -> bool:
@@ -448,7 +584,7 @@ def should_generate_options(dest: dict[str, Any] | None, mode: str) -> bool:
     # from this tuple because there is nothing to suggest: no operator, no
     # timetable, no fare, no transfers. A "Public transport options" card on a
     # leg the traveler pedals would answer a question nobody asked.
-    if mode not in ("transit", "mixed"):
+    if not LegMode(declared=mode, booked_type="").wants_transit_options:
         return False
     booking = booked_arrival_leg(dest)
     if booking is not None:

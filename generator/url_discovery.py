@@ -37,7 +37,7 @@ import threading
 from threading import Lock
 from typing import Any
 from generator.llm_client import MultiLLMClient
-from generator.transit_routing import suppresses_en_route_stops
+from generator.transit_routing import NON_DRIVING_BOOKED_TYPES, leg_mode
 from generator.road_estimate import (
     ROAD_DISTANCE_FACTOR,
     drive_minutes,
@@ -11849,22 +11849,15 @@ class URLDiscoverer:
     #: Duplicated rather than imported: url_discovery importing ai_content
     #: would be circular, and a shared constants module for one frozenset is
     #: not worth the indirection.
-    _NON_DRIVING_ARRIVAL_MODES = frozenset({"train", "plane", "ship", "ferry", "bus", "shuttle"})
+    _NON_DRIVING_ARRIVAL_MODES = NON_DRIVING_BOOKED_TYPES
 
     @classmethod
     def _arrival_is_not_self_driven(cls, dest: dict[str, Any] | None) -> bool:
-        if not isinstance(dest, dict):
-            return False
-        # GH #2: a manifest can say the leg is transit without any booking.
-        # `mixed` is excluded on purpose -- see AIContentGenerator's copy.
-        if suppresses_en_route_stops(dest):
-            return True
-        for leg in (dest.get("transportation") or []):
-            if isinstance(leg, dict):
-                mode = str(leg.get("type", "") or "").strip().lower()
-                if mode:
-                    return mode in cls._NON_DRIVING_ARRIVAL_MODES
-        return False
+        """Delegates. This module and ai_content each had their own copy, and
+        the fix for en-route stops on rail had to be made in both -- "two
+        sources, one rule", as the comment at the call site puts it. There is
+        one source now."""
+        return not leg_mode(dest).has_roadside
 
     def _discover_leg_trail_link(
         self, ai: dict[str, Any], dest: dict[str, Any] | None, origin_name: str, dest_name: str
@@ -11898,15 +11891,28 @@ class URLDiscoverer:
         if not isinstance(getting_here, dict):
             return
 
-        # A manifest-supplied section name is the whole difference between a
-        # query that can match and one that cannot. Composing
-        # "<trail> <stop> to <stop>" names a page no catalogue has: AllTrails
-        # names its PCT pages by guidebook section, so the name-matching gate
-        # rejected every composed candidate on the first 15-leg run. The
-        # composed form is kept only as a last resort, and is expected to
-        # fail on any trail sectioned the way this one is.
-        authored_section = str((dest or {}).get("trail_section", "") or "").strip()
-        section = authored_section or f"{trail_name} {origin_name} to {dest_name}"
+        # ONLY an authored section name is searched for. Composing
+        # "<trail> <stop> to <stop>" was tried and is now removed, because it
+        # failed in both directions:
+        #
+        #   On the PCT it matched nothing -- AllTrails names those pages by
+        #   guidebook section, so the strict matcher rejected every composed
+        #   candidate across a full 15-leg run.
+        #
+        #   On the East Coast Greenway it matched something WRONG. "East Coast
+        #   Greenway Newburyport, Massachusetts to Boston, Massachusetts"
+        #   resolved to the East Boston Greenway, a three-mile neighbourhood
+        #   path, on the strength of the shared words. It then rendered under
+        #   a label naming the 43-mile leg. A rider following that link gets
+        #   the wrong path, which is worse than getting none.
+        #
+        # A name the generator invented is not evidence about a catalogue's
+        # contents. Without one the human supplied, there is no query worth
+        # making.
+        section = str((dest or {}).get("trail_section", "") or "").strip()
+        if not section:
+            return
+        authored_section = section
 
         # An authored URL ends the guessing. It costs no search, cannot be
         # mismatched, and is the same footing planning_links has always stood
@@ -11916,6 +11922,7 @@ class URLDiscoverer:
         # Ashland while its slug names Highway 5 and Highway 140, so strict
         # matching rejects the page under either phrasing.
         authored_url = str((dest or {}).get("trail_url", "") or "").strip()
+        # (Reached only with a section name in hand -- see above.)
         if authored_url:
             getting_here["trail_url"] = authored_url
             getting_here["trail_label"] = authored_section or (
@@ -15322,9 +15329,14 @@ class URLDiscoverer:
         that already covers booked non-road arrivals. That return is about
         en-route stops and could move; this one is about the number.
         """
-        if suppresses_en_route_stops(dest):
+        # is_road_leg rather than "is it transit": a scraped DRIVING duration
+        # describes a bicycle no better than it describes a train. Reachable
+        # on a bike leg, which keeps its en-route discovery and so does not
+        # take the early return above.
+        if not leg_mode(dest).is_road_leg:
             logger.info(
-                "  Route distance/time left alone for '%s': transit leg, not a drive", dest_name
+                "  Route distance/time left alone for '%s': %s leg, not a drive",
+                dest_name, leg_mode(dest).declared,
             )
             return
         fetched_miles: float | None = None

@@ -5610,3 +5610,65 @@ def test_brand_urls_with_unexpected_schemes_are_dropped() -> None:
     assert "javascript:" not in footer
     assert "Prepared by Acme Travel" in footer          # the name is still fine
     assert "Report broken links" in footer              # support fell back
+
+
+@pytest.mark.parametrize("mode, expected", [
+    ("bike", "bicycling"), ("hike", "walking"),
+])
+def test_the_full_route_link_follows_a_self_powered_trip(mode, expected) -> None:
+    """Tested through _build_google_maps_url, which is what actually builds
+    the link. The first attempt at this fixed _maps_travelmode_for_trip, whose
+    name says it does exactly this and which nothing calls -- the rebuilt page
+    was byte-identical."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [{"name": "Portland, Maine"}, {"name": "New Haven, Connecticut"}]
+
+    url = assembler._build_google_maps_url(
+        destinations, {"departure": "Portland, Maine", "transport_mode": mode}
+    )
+
+    assert f"travelmode={expected}" in url
+
+
+def test_a_self_powered_full_route_link_keeps_its_waypoints() -> None:
+    """The whole reason transit stays on driving is that Maps drops waypoints
+    for it. Bicycling and walking keep them, so the exception is safe."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [{"name": "A"}, {"name": "B"}, {"name": "C"}]
+
+    url = assembler._build_google_maps_url(
+        destinations, {"departure": "Start", "return": "End", "transport_mode": "bike"}
+    )
+
+    assert "travelmode=bicycling" in url
+    assert "waypoints=" in url
+
+
+@pytest.mark.parametrize("mode", ["transit", "mixed", "auto", ""])
+def test_the_full_route_link_stays_driving_for_everything_else(mode) -> None:
+    """Transit deliberately so: Maps cannot compute transit directions with
+    waypoints, and a full-route map missing every stop between the ends is not
+    a full route."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [{"name": "A"}, {"name": "B"}, {"name": "C"}]
+
+    url = assembler._build_google_maps_url(
+        destinations, {"departure": "Start", "transport_mode": mode}
+    )
+
+    assert "travelmode=driving" in url
+
+
+def test_maps_travelmode_for_trip_still_infers_from_bookings() -> None:
+    """Nothing calls this helper -- see the note on it. Kept under test so the
+    next person to reach for it finds out what it does before wiring it in."""
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"name": "A", "transportation": [{"type": "train"}]},
+            {"name": "B", "transportation": [{"type": "train"}]},
+        ],
+    }
+    assert HTMLAssembler._maps_travelmode_for_trip(trip) == "transit"
+
+
