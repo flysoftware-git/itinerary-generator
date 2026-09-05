@@ -807,7 +807,7 @@ trip
 │   ├── title, subtitle, theme_color(inert), budget?, environment?
 │   ├── departure?, departure_datetime?, return?, return_datetime?
 │   ├── default_day_start_time?, default_daily_activity_hours?, attractions_per_day?
-│   ├── has_high_clearance_vehicle?
+│   ├── has_high_clearance_vehicle?, max_hike_miles?, max_hike_elevation_gain_ft?
 │   ├── llm { provider, model, temperature, max_tokens, features? }
 │   ├── llm_provider?, llm_model?, llm_features?      ← flat legacy twins
 │   └── departure_lat/lng, return_lat/lng             ← stage 2
@@ -922,7 +922,7 @@ concurrent slot timeouts instead.
 |---|---|
 | `validation_report.json` | validity, errors, warnings, per-model cost and calls |
 | `destination_status_report.json` (+ `.md`) | per-destination status, triggers, stage scope, retry outcomes |
-| `run_ledger.jsonl` | stage timings, gate-A metrics, breaker stats, banned-phrase counts, retry efficiency, CLI flags |
+| `run_ledger.jsonl` | stage timings, gate-A metrics, breaker stats, banned-phrase counts, retry efficiency, CLI flags, cost, route freshness |
 | `entity_registry_debug.json` | full registry dump (`--verbose` only) |
 | `direct_batch_parity_report.json` | harvest capture vs rendered links |
 | `url_diff_report.json` (+ `.md`) | this run's URLs vs the previous run's |
@@ -1179,9 +1179,9 @@ Recorded rather than silently corrected, since the repository is under active de
 on `issue-6-v2`.
 
 - Several module docstrings predate the code they head: `image_fetcher.py` describes a
-  two-provider chain and a base64 data-URI mode that does not exist; `html_assembler.py`
-  says it injects an "attribution block" (it injects a generator footer, above the drive
-  modal); `main.py`'s docstring omits eight of its 26 CLI flags.
+  two-provider chain and a base64 data-URI mode that does not exist; `main.py`'s docstring
+  omits eight of its 26 CLI flags. (`html_assembler.py`'s "attribution block" step was the
+  third; corrected alongside `requirements.md` §8.)
 - `requirements.md` §10's config table lists `ai.max_tokens: 3000`; `config.yaml` has
   `4096`.
 - `config.yaml`'s `grok_search.endpoint` still points at `/v1/chat/completions`, which the
@@ -1192,9 +1192,6 @@ on `issue-6-v2`.
 - `README.md` describes the output as "self-contained"; it references Tailwind, Lucide and
   Leaflet from CDNs.
 - The two documents number pipeline stages differently (§1.2).
-- `requirements.md` §8 requires that no attribution footer block be appended; the assembler
-  injects a generator footer unconditionally. The requirement and the code disagree —
-  §4.1 links §8 for completeness, not because it is satisfied.
 - `provider-model-matrix.md` and `search-provider-capability-probe.md` assign Claude to two
   search roles; `config.yaml` currently runs all three on Grok (§2.4).
 

@@ -36,6 +36,7 @@ from time import perf_counter
 from typing import Any
 import click
 from generator import __version__, __template_version__
+from generator.environments import ENVIRONMENTS, UnknownEnvironment, resolve_environment
 from generator.entity_registry import build_entity_registry, reconcile_schedule_from_registry, reconcile_trip_from_registry
 
 logger = logging.getLogger(__name__)
@@ -2424,8 +2425,8 @@ def _write_development_build_info(output_dir: Path, build_info: dict[str, Any]) 
 )
 @click.option(
     "--environment",
-    type=click.Choice(["dev", "eval", "prod"], case_sensitive=False),
-    help="Environment override (dev/eval/prod). Optional.",
+    type=click.Choice(list(ENVIRONMENTS), case_sensitive=False),
+    help=f"Environment override ({'/'.join(ENVIRONMENTS)}). Optional.",
 )
 @click.option(
     "--env-file",
@@ -2578,6 +2579,9 @@ def main(
     finalized = False
     stage_timings: dict[str, float] = {}
     runtime_metrics: dict[str, Any] = {}
+    # Bound here rather than at construction, because _finalize_run reads it
+    # and runs on paths that fail long before the client exists.
+    llm_client = None
     # What the run ACTUALLY used, as opposed to the llm_provider/llm_model
     # fields in the ledger record, which are the CLI overrides and are
     # therefore null on every run that does not pass --llm-model. That gap
@@ -2649,6 +2653,54 @@ def main(
             "stage_timings_seconds": stage_timings,
             "runtime_metrics": runtime_metrics,
         }
+        # Cost, read live from the client rather than from runtime_metrics.
+        #
+        # The gate_a metrics block already carries a per-stage cost breakdown,
+        # but it is assembled near the end of stage 6 -- so a run that dies in
+        # stage 3, 4 or 5 has always landed in the ledger with no cost at all.
+        # Those are exactly the runs whose cost is least guessable and most
+        # worth having: a run that fails during URL discovery has already paid
+        # for content generation, and a ledger that reports nothing for it
+        # biases every average built from the file downward.
+        #
+        # `cost_complete` distinguishes the two, because a partial cost and a
+        # finished one must never be averaged together as though they were the
+        # same measurement.
+        record["cost_usd"] = None
+        record["cost_complete"] = False
+        if llm_client is not None:
+            # A ceiling breach kills the process without any handler, so the
+            # atexit guard files it as "terminated_without_finalize" -- true,
+            # and the least useful of the possible explanations. The tracker
+            # remembers, so the record can say what actually happened.
+            if getattr(llm_client.usage_tracker, "ceiling_hit", False):
+                if status == "terminated_without_finalize":
+                    status = "cost_ceiling_exceeded"
+                    record["status"] = status
+                    record["error"] = (
+                        "Run stopped by the configured cost ceiling "
+                        "(ai.run_cost_ceiling_usd); no further model calls were made."
+                    )
+            try:
+                usage = llm_client.usage_summary() or {}
+                record["cost_usd"] = round(float(usage.get("total_estimated_cost_usd") or 0.0), 6)
+                record["cost_complete"] = status == "completed"
+                # A floor rather than an estimate when any model went unpriced;
+                # recorded so a historical row can be reread with that in mind.
+                unpriced = usage.get("unpriced_models") or []
+                if unpriced:
+                    record["cost_unpriced_models"] = list(unpriced)
+            except Exception as exc:  # pragma: no cover - defensive only
+                logger.warning("Could not read run cost for the ledger: %s", exc)
+
+        # Top level, beside the cost it qualifies, rather than only inside
+        # `runtime_metrics`: anything reading this file to build a cost
+        # distribution needs both, and a figure nested two levels deeper than
+        # the number it explains is a figure that gets left out.
+        #
+        # None on a run that failed before URL discovery, or one that skipped
+        # it -- which is honest. There was no harvesting to be warm or cold.
+        record["route_freshness"] = runtime_metrics.get("route_freshness")
         try:
             _append_run_ledger(ledger_path, record)
         except Exception as exc:  # pragma: no cover - defensive only
@@ -2765,9 +2817,15 @@ def main(
     env_from_cli = environment
     env_from_env = os.environ.get("ENVIRONMENT")
 
-    environment_selected = (
-        (env_from_cli or env_from_manifest or env_from_env or "dev").lower()
-    )
+    # Resolved in one place, and *checked* whichever of the three wins -- the
+    # value becomes a directory segment and the ledger's path, and only two of
+    # the three sources used to validate it.
+    try:
+        environment_selected = resolve_environment(
+            cli=env_from_cli, manifest=env_from_manifest, variable=env_from_env
+        )
+    except UnknownEnvironment as exc:
+        raise click.ClickException(str(exc)) from exc
     # Correct the pre-resolution "dev" placeholder now that the real
     # environment is known, so the run ledger for this (and every later)
     # environment lands in its own file instead of always under dev/.
@@ -3262,6 +3320,13 @@ def main(
                 circuit_breaker_stats[label] = client.get_circuit_breaker_stats()
         if circuit_breaker_stats:
             runtime_metrics["circuit_breaker_stats"] = circuit_breaker_stats
+
+        # How much of this run's harvesting was already on disk when it started.
+        # Recorded rather than left computable: the same cost means a different
+        # thing on a cold route than on a warm one, and a run that did not say
+        # which it was cannot be re-read later.
+        if hasattr(url_discoverer, "harvest_freshness"):
+            runtime_metrics["route_freshness"] = url_discoverer.harvest_freshness()
 
     if verbose:
         registry_report_path = _write_entity_registry_debug_report(output_dir, registry)

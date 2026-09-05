@@ -144,7 +144,7 @@ python -m generator.main [OPTIONS]
   --llm-provider [openai|anthropic|deepseek|gemini|grok|azure_openai]
                            Override LLM provider for this run
   --llm-model TEXT         Override LLM model for this run
-  --environment [dev|test|prod]
+  --environment [dev|eval|prod]
                            Optional environment override (also enables output/<environment>/ nesting)
   --log-level [debug|info|warning|error|critical]
                            Console logging threshold (`--verbose` overrides this to DEBUG)

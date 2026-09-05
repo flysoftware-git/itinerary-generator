@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 import jsonschema
 
+from generator.environments import ENVIRONMENTS
 from generator.multi_site_grouping import VALID_BASE_OWNED_CATEGORIES
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,26 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                 "title": {"type": "string"},
                 "subtitle": {"type": "string"},
                 "theme_color": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+                "brand": {
+                    "description": (
+                        "Optional distributor credit and support routing for the generated "
+                        "page footer (§8.3). Absent -- the ordinary case -- the footer renders "
+                        "exactly as it always has, crediting this project and pointing at its "
+                        "issue tracker. Provenance (§8.2) is not configurable and is not here."
+                    ),
+                    "type": "object",
+                    "properties": {
+                        "distributor": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "distributor_url": {"type": "string", "pattern": "^https://"},
+                        # https or mailto only. A generated guide is a published
+                        # artifact that outlives the run: `http://` is a downgrade
+                        # someone else can read, and `javascript:` is script
+                        # injection through a YAML file.
+                        "support_url": {"type": "string", "pattern": "^(https://|mailto:)"},
+                        "support_label": {"type": "string", "minLength": 1, "maxLength": 80},
+                    },
+                    "additionalProperties": False,
+                },
                 "budget": {
                     "description": "Optional budget guidance consumed by content generation.",
                     "oneOf": [
@@ -226,17 +247,47 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                     "make. Omitted (or true) = current behavior, unchanged; this "
                                     "is an opt-in filter, never a new default restriction.",
                 },
+                "max_hike_miles": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Optional traveler walking limit, in miles on foot for a "
+                                   "single outing. When set, attractions reporting a longer "
+                                   "`distance_miles` are excluded from the generated output. "
+                                   "Omitted = current behavior, unchanged: this is an opt-in "
+                                   "filter, never a new default restriction, and it mirrors "
+                                   "has_high_clearance_vehicle in that respect.\n\n"
+                                   "An attraction that reports NO distance is never excluded. "
+                                   "The figure is produced by the model rather than measured, "
+                                   "so a missing one means 'not known' and filtering on it "
+                                   "would drop real options for lack of an estimate. Absence "
+                                   "and zero are different things and only one of them is a "
+                                   "number.",
+                },
+                "max_hike_elevation_gain_ft": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Optional traveler climbing limit, in feet of ascent for a "
+                                   "single outing. Works exactly as max_hike_miles: opt-in, "
+                                   "and an attraction reporting no elevation gain is never "
+                                   "excluded.",
+                },
                 "llm_provider": {
                     "type": "string",
                     "enum": ["openai", "anthropic", "deepseek", "gemini", "grok", "azure_openai"],
                 },
                 "environment": {
                     "type": "string",
-                    "enum": ["dev", "test", "prod"],
+                    # One list, named in generator/environments.py. The same
+                    # setting is reachable from a manifest, a flag and an env
+                    # var, and a value one of them rejects is not one another
+                    # should accept. `test` was the previous name for `eval`.
+                    "enum": list(ENVIRONMENTS),
                     "description": "Optional environment tag for hybrid selection. "
                                    "Priority: CLI > manifest > ENVIRONMENT env var. "
                                    "Does not affect config.yaml unless user chooses "
-                                   "to implement environment-specific configs later."
+                                   "to implement environment-specific configs later. "
+                                   "Renamed from `test` to `eval`; a manifest still "
+                                   "carrying `test` needs the one-word change."
                 },
                 "llm_features": {
                     "type": "object",

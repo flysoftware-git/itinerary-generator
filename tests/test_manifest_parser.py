@@ -964,3 +964,115 @@ def test_a_near_miss_spelling_is_still_rejected(tmp_path):
     with pytest.raises(ValueError) as exc_info:
         parser.load(str(f))
     assert "bryce_canyon" in str(exc_info.value)
+
+
+def test_manifest_environment_matches_the_cli_choice() -> None:
+    """One setting, three entry points, one set of values.
+
+    `environment` is reachable from a manifest, from `--environment` and from
+    the `ENVIRONMENT` variable, and nothing tied the first two together. They
+    drifted: the flag was renamed `test` -> `eval` while the schema kept `test`,
+    so a manifest could name an environment the CLI refused, and the name the
+    CLI wanted was one the manifest rejected. This test is the tie.
+    """
+    import click
+
+    from generator.main import main as cli
+    from generator.manifest_parser import MANIFEST_SCHEMA
+
+    option = next(
+        param for param in cli.params
+        if isinstance(param, click.Option) and "--environment" in param.opts
+    )
+    schema_values = (
+        MANIFEST_SCHEMA["properties"]["trip"]["properties"]["environment"]["enum"]
+    )
+    assert list(option.type.choices) == list(schema_values)
+
+
+def test_environment_enum_is_dev_eval_prod() -> None:
+    """`eval` rather than `test`, because these runs are evaluated rather than
+    part of a test suite -- and a directory named `test` beside `tests/` reads
+    as somewhere pytest writes."""
+    from generator.manifest_parser import MANIFEST_SCHEMA
+
+    schema = MANIFEST_SCHEMA["properties"]["trip"]["properties"]
+    assert schema["environment"]["enum"] == ["dev", "eval", "prod"]
+
+
+def test_trip_brand_schema_valid(tmp_path):
+    manifest_content = """
+trip:
+  title: "Brand Test"
+  subtitle: "Schema"
+  theme_color: "#123456"
+  brand:
+    distributor: "Acme Travel"
+    distributor_url: "https://acme.example"
+    support_url: "mailto:help@acme.example"
+    support_label: "Email us"
+destinations:
+  - id: test
+    name: "Test Destination"
+    dates: "Jan 1-3, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+"""
+    f = tmp_path / "brand_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    trip = parser.load(str(f))
+    assert trip["trip"]["brand"]["distributor"] == "Acme Travel"
+
+
+def test_trip_brand_rejects_non_https_support_url(tmp_path):
+    """A generated guide outlives the run that made it. `javascript:` is script
+    injection through a YAML file and `http://` is a downgrade someone else
+    reads."""
+    manifest_content = """
+trip:
+  title: "Brand Test"
+  subtitle: "Schema"
+  theme_color: "#123456"
+  brand:
+    support_url: "javascript:alert(1)"
+destinations:
+  - id: test
+    name: "Test Destination"
+    dates: "Jan 1-3, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+"""
+    f = tmp_path / "bad_brand_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    with pytest.raises(Exception):
+        parser.load(str(f))
+
+
+def test_trip_brand_rejects_unknown_keys(tmp_path):
+    """`brand` is attribution and support routing. A tier name, an audience or a
+    palette arriving here would be three separate concerns collapsing into one
+    block, which is the thing the block is shaped to avoid."""
+    manifest_content = """
+trip:
+  title: "Brand Test"
+  subtitle: "Schema"
+  theme_color: "#123456"
+  brand:
+    tier: "premium"
+destinations:
+  - id: test
+    name: "Test Destination"
+    dates: "Jan 1-3, 2026"
+    planning_links:
+      - label: "Notes"
+        url: "https://example.com"
+"""
+    f = tmp_path / "tier_brand_manifest.yaml"
+    f.write_text(manifest_content, encoding="utf-8")
+    parser = ManifestParser()
+    with pytest.raises(Exception):
+        parser.load(str(f))

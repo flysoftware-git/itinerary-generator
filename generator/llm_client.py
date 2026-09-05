@@ -183,15 +183,44 @@ class UsageRecord:
     tool_call_cost_usd: float = 0.0
 
 
+class RunCostCeilingExceeded(RuntimeError):
+    """A run tried to spend past its configured ceiling and was stopped.
+
+    Deliberately not a transient error: retrying, failing over to another
+    provider, or waiting changes nothing, and each of those would spend more
+    money answering a signal that says stop spending money.
+    """
+
+    def __init__(self, spent_usd: float, ceiling_usd: float) -> None:
+        self.spent_usd = float(spent_usd)
+        self.ceiling_usd = float(ceiling_usd)
+        super().__init__(
+            f"Run cost ceiling reached: ${self.spent_usd:.4f} spent against a "
+            f"${self.ceiling_usd:.2f} ceiling (ai.run_cost_ceiling_usd). "
+            "No further model calls will be made."
+        )
+
+
 class UsageTracker:
     def __init__(
         self,
         pricing_map: dict[str, dict[str, float]] | None = None,
         tool_call_pricing_map: dict[str, float] | None = None,
+        ceiling_usd: float | None = None,
     ) -> None:
         self._pricing = pricing_map or DEFAULT_PRICING_USD_PER_1M
         self._tool_call_pricing = tool_call_pricing_map or DEFAULT_TOOL_CALL_PRICING_USD_PER_1000
         self._records: list[UsageRecord] = []
+        # None or <= 0 means no ceiling, which stays the default: a guard that
+        # stops a build is only wanted by someone who asked for it.
+        self._ceiling_usd = float(ceiling_usd) if ceiling_usd and float(ceiling_usd) > 0 else None
+        # Models seen with no pricing entry. Their calls are costed at $0.00,
+        # so a run containing one has an understated total -- and a ceiling
+        # cannot guard spend it prices at nothing. Reported in summary().
+        self._unpriced_models: set[str] = set()
+        # Sticky, so the reason a run stopped survives the exception being
+        # raised and re-raised through a pipeline that does not catch it.
+        self._ceiling_hit = False
         self._lock = threading.Lock()
         # Keys already warned about, so a blind spot is reported once per run
         # rather than once per call. Guarded by _lock -- _warn_once is reached
@@ -232,6 +261,39 @@ class UsageTracker:
         with self._lock:
             self._records.append(record)
 
+    def total_cost_usd(self) -> float:
+        """Estimated spend so far. Cheap enough to call before every request."""
+        with self._lock:
+            return round(sum(r.estimated_cost_usd for r in self._records), 6)
+
+    @property
+    def ceiling_usd(self) -> float | None:
+        return self._ceiling_usd
+
+    @property
+    def ceiling_hit(self) -> bool:
+        """Whether this run was ever refused a call for cost.
+
+        Read at finalize time: nothing in the pipeline catches the exception,
+        so without this the ledger would record only that the process exited,
+        which is the one explanation that is never useful.
+        """
+        return self._ceiling_hit
+
+    def check_ceiling(self) -> None:
+        """Refuse to authorize another call once the ceiling is reached.
+
+        Checked *before* the request rather than after it, which is the whole
+        point: a guard that notices afterwards has already paid. It means the
+        ceiling is crossed at most once, by the call that reaches it.
+        """
+        if self._ceiling_usd is None:
+            return
+        spent = self.total_cost_usd()
+        if spent >= self._ceiling_usd:
+            self._ceiling_hit = True
+            raise RunCostCeilingExceeded(spent, self._ceiling_usd)
+
     def _estimate_cost(self, provider: str, model: str, in_tokens: int, out_tokens: int) -> float:
         key = f"{provider}:{model}"
         prices = self._pricing.get(key)
@@ -254,6 +316,8 @@ class UsageTracker:
             # against $24/day of real xAI billing on 2026-08-16 and 08-17: the
             # configured model had no pricing entry and nothing said so. The
             # ledger looked healthy because search fees still totalled up.
+            with self._lock:
+                self._unpriced_models.add(key)
             self._warn_once(
                 f"unpriced-model:{key}",
                 "Cost reporting blind spot: no pricing entry for %r (and no prefix match). "
@@ -352,6 +416,10 @@ class UsageTracker:
             "models": rows,
             "total_calls": len(self._records),
             "total_estimated_cost_usd": total,
+            # Non-empty means the total above is a floor rather than an
+            # estimate: every call to these models was costed at $0.00. On
+            # 2026-08-16 that gap read as $0.00/day against real billing.
+            "unpriced_models": sorted(self._unpriced_models),
             "total_tool_call_cost_usd": total_tool_call_cost,
             "records": [
                 {
@@ -402,7 +470,9 @@ class MultiLLMClient:
         # accounting stays centralized regardless of which provider actually
         # served a given call -- a fresh per-instance tracker would silently
         # lose track of spend incurred during failover.
-        self.usage_tracker = usage_tracker or UsageTracker()
+        self.usage_tracker = usage_tracker or UsageTracker(
+            ceiling_usd=llm_cfg.get("run_cost_ceiling_usd", ai_cfg.get("run_cost_ceiling_usd")),
+        )
         self._fallback_client: "MultiLLMClient | None" = None
         fallback_provider = str(
             llm_cfg.get("fallback_provider") or ai_cfg.get("fallback_provider") or ""
@@ -623,6 +693,12 @@ class MultiLLMClient:
             cached = self._json_cache.get(cache_key)
         if cached is not None:
             return copy.deepcopy(cached)
+
+        # After the cache and before any spend, including before failover: a
+        # cached answer costs nothing and should still be served once the
+        # ceiling is reached, and failing over to a second provider is still
+        # spending money.
+        self.usage_tracker.check_ceiling()
 
         if self._fallback_client is not None and self.is_circuit_open():
             logger.warning(
