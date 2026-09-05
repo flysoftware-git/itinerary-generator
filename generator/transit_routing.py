@@ -298,14 +298,27 @@ def stamp_resolved_modes(trip: dict[str, Any]) -> None:
     destinations = [d for d in (trip.get("destinations") or []) if isinstance(d, dict)]
     trip_meta = trip.get("trip") if isinstance(trip.get("trip"), dict) else {}
     legs = trip.get("legs")
+    # Whether the FIRST destination has an inbound leg at all. Usually it does
+    # not: the journey into it is the trip's own arrival, which
+    # trip.transportation describes, and forcing `auto` there keeps a flight
+    # in from being described as a drive.
+    #
+    # `trip.departure` changes that. It names a real starting point, so there
+    # is a leg from it, and on a walked or ridden trip that leg is walked or
+    # ridden like every other -- a thru-hike does not drive its first section.
+    # Forcing `auto` there also meant an explicit `transport_mode` on the first
+    # destination was ignored without a word, which is the silent-fallback
+    # class the `legs:` id contract exists to prevent.
+    first_leg_has_origin = bool(str(trip_meta.get("departure", "") or "").strip())
+
     previous_id = ""
     for index, dest in enumerate(destinations):
-        # The first destination has no inbound leg between stops -- the
-        # journey into it is the trip's own arrival, which trip.transportation
-        # describes.
-        mode = "auto" if index == 0 else resolve_leg_mode(
-            dest, previous_id=previous_id, trip_meta=trip_meta, legs=legs
-        )
+        if index == 0 and not first_leg_has_origin:
+            mode = "auto"
+        else:
+            mode = resolve_leg_mode(
+                dest, previous_id=previous_id, trip_meta=trip_meta, legs=legs
+            )
         dest[RESOLVED_MODE_KEY] = mode
         if not str(dest.get("group_with", "") or "").strip():
             previous_id = str(dest.get("id", "") or "").strip()

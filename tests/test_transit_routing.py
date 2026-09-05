@@ -446,3 +446,50 @@ class TestSelfPoweredModes:
         from generator.transit_routing import is_self_powered
 
         assert is_self_powered({"_transport_mode": mode}) is expected
+
+
+class TestTheFirstLeg:
+    """Whether destination[0] has an inbound leg depends on trip.departure."""
+
+    def _trip(self, **trip_meta):
+        from generator.transit_routing import stamp_resolved_modes
+
+        trip = {
+            "trip": dict(trip_meta),
+            "destinations": [
+                {"id": "callahans", "name": "Callahan's"},
+                {"id": "fish_lake", "name": "Fish Lake"},
+            ],
+        }
+        stamp_resolved_modes(trip)
+        return trip["destinations"]
+
+    def test_no_departure_means_no_first_leg(self):
+        """The journey into the first stop is the trip's own arrival -- a
+        flight in must not be described as a drive, or as a hike."""
+        first, second = self._trip(transport_mode="hike")
+        assert first["_transport_mode"] == "auto"
+        assert second["_transport_mode"] == "hike"
+
+    def test_a_named_departure_gives_the_first_leg_the_trip_mode(self):
+        """A thru-hike does not drive its first section."""
+        first, second = self._trip(transport_mode="hike", departure="Seiad Valley, California")
+        assert first["_transport_mode"] == "hike"
+        assert second["_transport_mode"] == "hike"
+
+    def test_a_driving_trip_is_unchanged_either_way(self):
+        assert self._trip()[0]["_transport_mode"] == "auto"
+        assert self._trip(departure="Las Vegas, Nevada")[0]["_transport_mode"] == "auto"
+
+    def test_an_explicit_first_destination_mode_is_no_longer_swallowed(self):
+        """It used to be overridden by the index-0 rule without a word, which
+        is the silent-fallback class the legs: id contract exists to
+        prevent."""
+        from generator.transit_routing import stamp_resolved_modes
+
+        trip = {
+            "trip": {"departure": "Seiad Valley, California"},
+            "destinations": [{"id": "callahans", "transport_mode": "hike"}],
+        }
+        stamp_resolved_modes(trip)
+        assert trip["destinations"][0]["_transport_mode"] == "hike"
