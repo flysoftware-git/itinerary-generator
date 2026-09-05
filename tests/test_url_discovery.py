@@ -17741,19 +17741,38 @@ class TestLegTrailLink:
         d._log_decision = lambda **kw: None
         return d
 
-    def test_it_asks_for_the_named_trail_between_these_two_stops(self):
+    def test_it_asks_for_the_section_the_manifest_named(self):
         d = self._discoverer("https://www.alltrails.com/trail/us/washington/pct-h")
         ai = {"getting_here": {}}
         dest = {"name": "Trout Lake", "_transport_mode": "hike",
-                "_trail_name": "Pacific Crest Trail"}
+                "_trail_name": "Pacific Crest Trail",
+                "trail_section": "PCT: Section H - Bridge of the Gods - White Pass"}
 
         d._discover_leg_trail_link(ai, dest, "Cascade Locks", "Trout Lake")
 
-        assert d.calls[0][0] == "Pacific Crest Trail Cascade Locks to Trout Lake"
+        assert d.calls[0][0] == "PCT: Section H - Bridge of the Gods - White Pass"
         assert ai["getting_here"]["trail_url"].endswith("pct-h")
         assert ai["getting_here"]["trail_label"] == (
-            "Pacific Crest Trail: Cascade Locks to Trout Lake"
+            "PCT: Section H - Bridge of the Gods - White Pass"
         )
+
+    def test_a_leg_with_no_section_name_asks_nothing(self):
+        """The composed "<trail> <stop> to <stop>" query was tried and removed.
+        It failed both ways: nothing matched it across a full PCT run, and on
+        the East Coast Greenway it matched the WRONG thing -- "East Coast
+        Greenway Newburyport to Boston" resolved to the East Boston Greenway,
+        a three-mile neighbourhood path, and rendered under a label naming the
+        43-mile leg. A name the generator invented is not evidence about a
+        catalogue's contents."""
+        d = self._discoverer("https://www.alltrails.com/trail/us/massachusetts/east-boston-greenway")
+        ai = {"getting_here": {}}
+        dest = {"name": "Boston", "_transport_mode": "bike",
+                "_trail_name": "East Coast Greenway"}
+
+        d._discover_leg_trail_link(ai, dest, "Newburyport", "Boston")
+
+        assert d.calls == []
+        assert "trail_url" not in ai["getting_here"]
 
     def test_it_runs_with_trail_links_switched_off(self):
         """--trails governs trail links for attractions AT a destination --
@@ -17762,7 +17781,8 @@ class TestLegTrailLink:
         so tying them together meant the wanted one dragged in the unwanted."""
         d = self._discoverer("https://www.alltrails.com/trail/x", disable_trails=True)
         ai = {"getting_here": {}}
-        dest = {"name": "B", "_transport_mode": "hike", "_trail_name": "Pacific Crest Trail"}
+        dest = {"name": "B", "_transport_mode": "hike", "_trail_name": "Pacific Crest Trail",
+                "trail_section": "PCT: Section B"}
 
         d._discover_leg_trail_link(ai, dest, "A", "B")
 

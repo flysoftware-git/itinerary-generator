@@ -5610,3 +5610,34 @@ def test_brand_urls_with_unexpected_schemes_are_dropped() -> None:
     assert "javascript:" not in footer
     assert "Prepared by Acme Travel" in footer          # the name is still fine
     assert "Report broken links" in footer              # support fell back
+
+
+@pytest.mark.parametrize("mode, expected", [
+    ("bike", "bicycling"), ("hike", "walking"), ("transit", "transit"),
+])
+def test_the_whole_route_link_follows_the_trips_transport_mode(mode, expected) -> None:
+    """`transport_mode` is an explicit statement about every leg; the booked-
+    transportation inference it used to rely on is empty on a self-powered
+    trip. That is how the New England ride shipped a whole-route link opening
+    car directions across five states it is ridden through."""
+    trip = {"trip": {"transport_mode": mode}, "destinations": [{"name": "A"}, {"name": "B"}]}
+
+    assert HTMLAssembler._maps_travelmode_for_trip(trip) == expected
+
+
+def test_the_whole_route_link_still_infers_from_bookings_when_no_mode_is_set() -> None:
+    trip = {
+        "trip": {},
+        "destinations": [
+            {"name": "A", "transportation": [{"type": "train"}]},
+            {"name": "B", "transportation": [{"type": "train"}]},
+        ],
+    }
+    assert HTMLAssembler._maps_travelmode_for_trip(trip) == "transit"
+
+
+def test_a_mixed_trip_keeps_driving_for_the_whole_route_link() -> None:
+    """`mixed` means the drive is still on the table, and the overview link is
+    the one place a single answer has to cover every leg."""
+    trip = {"trip": {"transport_mode": "mixed"}, "destinations": [{"name": "A"}]}
+    assert HTMLAssembler._maps_travelmode_for_trip(trip) == "driving"

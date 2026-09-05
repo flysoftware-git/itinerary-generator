@@ -11898,15 +11898,28 @@ class URLDiscoverer:
         if not isinstance(getting_here, dict):
             return
 
-        # A manifest-supplied section name is the whole difference between a
-        # query that can match and one that cannot. Composing
-        # "<trail> <stop> to <stop>" names a page no catalogue has: AllTrails
-        # names its PCT pages by guidebook section, so the name-matching gate
-        # rejected every composed candidate on the first 15-leg run. The
-        # composed form is kept only as a last resort, and is expected to
-        # fail on any trail sectioned the way this one is.
-        authored_section = str((dest or {}).get("trail_section", "") or "").strip()
-        section = authored_section or f"{trail_name} {origin_name} to {dest_name}"
+        # ONLY an authored section name is searched for. Composing
+        # "<trail> <stop> to <stop>" was tried and is now removed, because it
+        # failed in both directions:
+        #
+        #   On the PCT it matched nothing -- AllTrails names those pages by
+        #   guidebook section, so the strict matcher rejected every composed
+        #   candidate across a full 15-leg run.
+        #
+        #   On the East Coast Greenway it matched something WRONG. "East Coast
+        #   Greenway Newburyport, Massachusetts to Boston, Massachusetts"
+        #   resolved to the East Boston Greenway, a three-mile neighbourhood
+        #   path, on the strength of the shared words. It then rendered under
+        #   a label naming the 43-mile leg. A rider following that link gets
+        #   the wrong path, which is worse than getting none.
+        #
+        # A name the generator invented is not evidence about a catalogue's
+        # contents. Without one the human supplied, there is no query worth
+        # making.
+        section = str((dest or {}).get("trail_section", "") or "").strip()
+        if not section:
+            return
+        authored_section = section
 
         # An authored URL ends the guessing. It costs no search, cannot be
         # mismatched, and is the same footing planning_links has always stood
@@ -11916,6 +11929,7 @@ class URLDiscoverer:
         # Ashland while its slug names Highway 5 and Highway 140, so strict
         # matching rejects the page under either phrasing.
         authored_url = str((dest or {}).get("trail_url", "") or "").strip()
+        # (Reached only with a section name in hand -- see above.)
         if authored_url:
             getting_here["trail_url"] = authored_url
             getting_here["trail_label"] = authored_section or (

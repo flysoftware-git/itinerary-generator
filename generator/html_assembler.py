@@ -466,7 +466,19 @@ class HTMLAssembler:
         A trip is treated as transit when EVERY stated leg is non-driving;
         anything mixed or unstated stays driving, which is this generator's
         original and still most common case.
+
+        `transport_mode` is checked first and wins outright. It is an explicit
+        statement about every leg rather than an inference from what happens
+        to be booked, and a booking list is usually empty on a self-powered
+        trip -- which is how the New England ride shipped a whole-route link
+        that opened car directions across five states it is ridden through.
         """
+        trip_mode = str(((trip or {}).get("trip") or {}).get("transport_mode", "") or "").strip()
+        if trip_mode in _MAPS_TRAVELMODE_BY_LEG_MODE:
+            return _MAPS_TRAVELMODE_BY_LEG_MODE[trip_mode]
+        if trip_mode == "transit":
+            return "transit"
+
         modes = []
         for dest in ((trip or {}).get("destinations") or []):
             if not isinstance(dest, dict):
