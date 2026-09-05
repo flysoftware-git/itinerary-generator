@@ -11803,7 +11803,38 @@ class URLDiscoverer:
         if not isinstance(getting_here, dict):
             return
 
-        section = f"{trail_name} {origin_name} to {dest_name}"
+        # A manifest-supplied section name is the whole difference between a
+        # query that can match and one that cannot. Composing
+        # "<trail> <stop> to <stop>" names a page no catalogue has: AllTrails
+        # names its PCT pages by guidebook section, so the name-matching gate
+        # rejected every composed candidate on the first 15-leg run. The
+        # composed form is kept only as a last resort, and is expected to
+        # fail on any trail sectioned the way this one is.
+        authored_section = str((dest or {}).get("trail_section", "") or "").strip()
+        section = authored_section or f"{trail_name} {origin_name} to {dest_name}"
+
+        # An authored URL ends the guessing. It costs no search, cannot be
+        # mismatched, and is the same footing planning_links has always stood
+        # on: design.md 1.4 bars the MODEL from producing a URL, not the
+        # human. Worth having because a catalogue's titles and slugs
+        # disagree -- AllTrails' own title for Section B names Callahan's and
+        # Ashland while its slug names Highway 5 and Highway 140, so strict
+        # matching rejects the page under either phrasing.
+        authored_url = str((dest or {}).get("trail_url", "") or "").strip()
+        if authored_url:
+            getting_here["trail_url"] = authored_url
+            getting_here["trail_label"] = authored_section or (
+                f"{trail_name}: {origin_name} to {dest_name}"
+            )
+            self._log_decision(
+                kind="leg_trail",
+                dest_name=dest_name,
+                item_name=section,
+                reason="manifest_supplied",
+                message="leg trail link taken from the manifest",
+                url=authored_url,
+            )
+            return
         # Deliberately past the --trails switch. That switch governs trail
         # links for ATTRACTIONS AT a destination -- a priced enrichment, off
         # by default, and on a thru-hike mostly day loops near the resupply
@@ -11824,7 +11855,9 @@ class URLDiscoverer:
             )
             return
         getting_here["trail_url"] = url
-        getting_here["trail_label"] = f"{trail_name}: {origin_name} to {dest_name}"
+        getting_here["trail_label"] = authored_section or (
+            f"{trail_name}: {origin_name} to {dest_name}"
+        )
         self._log_decision(
             kind="leg_trail",
             dest_name=dest_name,

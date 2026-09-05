@@ -429,6 +429,33 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                        "trip rather than a relocation; set there it is "
                                        "warned about and ignored.",
                     },
+                    "trail_section": {
+                        "type": "string",
+                        "description": "Optional name of the trail section covering the leg "
+                                       "ARRIVING at this destination, written as the trail "
+                                       "catalogue names it -- e.g. 'Pacific Crest Trail "
+                                       "(PCT): Section B - Callahan's-Ashland to Fish Lake'. "
+                                       "Only used on bike/hike legs. Without it the lookup "
+                                       "has to compose a section name from the two stop "
+                                       "names, which no catalogue page is called, so it "
+                                       "matches nothing. Several legs may share one section: "
+                                       "guidebook sections are where the road crosses, "
+                                       "resupply stops are where you can buy food.",
+                    },
+                    "trail_url": {
+                        "type": "string",
+                        "description": "Optional URL for this leg's trail section, supplied "
+                                       "by the author. Used verbatim and skips discovery "
+                                       "entirely. design.md 1.4 bars the MODEL from "
+                                       "producing a URL; a human may, which is the same "
+                                       "footing planning_links has always stood on. Worth "
+                                       "supplying here because a trail catalogue's own "
+                                       "titles and slugs disagree -- AllTrails calls one "
+                                       "page 'Section B - Callahan's-Ashland to Fish Lake' "
+                                       "and slugs it 'pct-or-section-b-highway-5-to-"
+                                       "highway-140-fish-lake' -- so no search phrase "
+                                       "reliably resolves it.",
+                    },
                     "base_owned_categories": {
                         "type": "array",
                         "items": {"type": "string", "enum": sorted(VALID_BASE_OWNED_CATEGORIES)},

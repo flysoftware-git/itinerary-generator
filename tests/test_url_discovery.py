@@ -17772,6 +17772,37 @@ class TestLegTrailLink:
         assert d.calls[0][2] is True
         assert ai["getting_here"]["trail_url"]
 
+    def test_a_manifest_supplied_url_is_used_and_costs_no_search(self):
+        """The catalogue's own title and slug disagree -- AllTrails names one
+        page "Section B - Callahan's-Ashland to Fish Lake" and slugs it
+        "pct-or-section-b-highway-5-to-highway-140-fish-lake" -- so strict
+        matching rejects it under either phrasing. An authored URL ends that,
+        and design.md 1.4 bars the MODEL from producing a URL, not the human."""
+        d = self._discoverer("https://www.alltrails.com/trail/should-not-be-used")
+        ai = {"getting_here": {}}
+        dest = {
+            "name": "Fish Lake Resort", "_transport_mode": "hike",
+            "_trail_name": "Pacific Crest Trail",
+            "trail_section": "Pacific Crest Trail (PCT): Section B",
+            "trail_url": "https://www.alltrails.com/trail/us/oregon/pct-or-section-b",
+        }
+
+        d._discover_leg_trail_link(ai, dest, "Callahan's Lodge", "Fish Lake Resort")
+
+        assert ai["getting_here"]["trail_url"].endswith("pct-or-section-b")
+        assert ai["getting_here"]["trail_label"] == "Pacific Crest Trail (PCT): Section B"
+        assert d.calls == []
+
+    def test_an_authored_section_name_is_searched_when_no_url_is_given(self):
+        d = self._discoverer("https://www.alltrails.com/trail/x")
+        ai = {"getting_here": {}}
+        dest = {"name": "B", "_transport_mode": "hike", "_trail_name": "PCT",
+                "trail_section": "PCT: Section B"}
+
+        d._discover_leg_trail_link(ai, dest, "A", "B")
+
+        assert d.calls[0][0] == "PCT: Section B"
+
     def test_no_trail_name_means_no_query(self):
         """"A to B" alone matches whatever AllTrails has near either end."""
         d = self._discoverer("https://www.alltrails.com/trail/x")
