@@ -19,7 +19,11 @@ import requests
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient, LLMCircuitOpenError
 from generator.multi_site_grouping import group_base_id, is_grouped, is_park_like
-from generator.transit_routing import resolved_mode, suppresses_en_route_stops
+from generator.transit_routing import (
+    NON_DRIVING_BOOKED_TYPES,
+    leg_mode,
+    resolved_mode,
+)
 from generator.road_estimate import (
     ROAD_DISTANCE_FACTOR,
     drive_minutes,
@@ -1961,7 +1965,10 @@ class AIContentGenerator:
 
     #: Booked modes on which a traveller cannot make a roadside stop. "car" is
     #: absent deliberately -- a rental car is exactly when en-route stops work.
-    _NON_DRIVING_ARRIVAL_MODES = frozenset({"train", "plane", "ship", "ferry", "bus", "shuttle"})
+    #: Alias for the one definition in transit_routing. This constant and
+    #: url_discovery's copy were maintained by hand, under a comment asking
+    #: that they be kept in step.
+    _NON_DRIVING_ARRIVAL_MODES = NON_DRIVING_BOOKED_TYPES
 
     @classmethod
     def _arrival_mode(cls, dest: dict[str, Any] | None) -> str:
@@ -1988,9 +1995,7 @@ class AIContentGenerator:
         manifest that states no transportation is most likely a road trip,
         which is what this generator was built for.
         """
-        if suppresses_en_route_stops(dest):
-            return True
-        return cls._arrival_mode(dest) in cls._NON_DRIVING_ARRIVAL_MODES
+        return not leg_mode(dest).has_roadside
 
     def _normalize_getting_here(
         self,
@@ -2564,7 +2569,7 @@ class AIContentGenerator:
             # undo (multimodal-routing.md 4.1).
             # bike and hike join transit here for the same reason: a 1.30 road
             # factor at 60 mph describes none of them.
-            if resolved_mode(dest) in ("transit", "bike", "hike"):
+            if not leg_mode(dest).is_road_leg:
                 continue
             miles, time_str = _estimate_haversine_route(
                 origin.get("lat"), origin.get("lng"), dest.get("lat"), dest.get("lng"),

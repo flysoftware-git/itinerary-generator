@@ -567,3 +567,87 @@ class TestTrailNameStamping:
         }
         stamp_resolved_modes(trip)
         assert all(TRAIL_NAME_KEY not in d for d in trip["destinations"])
+
+
+class TestLegModeIsTheOnlyResolver:
+    """Seven places used to answer "how is this leg covered?" from whichever
+    half of the evidence each happened to hold. This is the table those seven
+    now read."""
+
+    def _leg(self, declared="auto", booked=""):
+        from generator.transit_routing import leg_mode
+
+        dest = {"_transport_mode": declared}
+        if booked:
+            dest["transportation"] = [{"type": booked}]
+        return leg_mode(dest)
+
+    @pytest.mark.parametrize("declared, booked, expected", [
+        ("auto", "", "driving"),
+        ("mixed", "", "driving"),
+        ("transit", "", "transit"),
+        ("bike", "", "bicycling"),
+        ("hike", "", "walking"),
+        # A booking speaks when the manifest does not.
+        ("auto", "train", "transit"),
+        ("auto", "car", "driving"),
+        # The declaration wins over the booking: it is a statement about the
+        # leg, not an inference from what has a confirmation number.
+        ("bike", "train", "bicycling"),
+    ])
+    def test_maps_travelmode(self, declared, booked, expected):
+        assert self._leg(declared, booked).maps_travelmode == expected
+
+    @pytest.mark.parametrize("declared, booked, expected", [
+        ("auto", "", ""), ("mixed", "", ""),
+        ("transit", "", "TRANSIT"), ("auto", "train", "TRANSIT"),
+        ("bike", "", "BICYCLE"), ("hike", "", "WALK"),
+    ])
+    def test_routes_travel_mode(self, declared, booked, expected):
+        assert self._leg(declared, booked).routes_travel_mode == expected
+
+    @pytest.mark.parametrize("declared, expected", [
+        ("auto", True), ("mixed", True),
+        ("transit", False), ("bike", False), ("hike", False),
+    ])
+    def test_is_road_leg(self, declared, expected):
+        """A 1.30 road factor at 60 mph describes a train no better than it
+        describes a bicycle, so both are excluded from road geometry."""
+        assert self._leg(declared).is_road_leg is expected
+
+    @pytest.mark.parametrize("declared, booked, expected", [
+        ("auto", "", True), ("mixed", "", True),
+        ("bike", "", True), ("hike", "", True),      # the stops ARE the day
+        ("transit", "", False),
+        ("auto", "train", False), ("auto", "ferry", False),
+        ("auto", "car", True),
+    ])
+    def test_has_roadside(self, declared, booked, expected):
+        assert self._leg(declared, booked).has_roadside is expected
+
+    @pytest.mark.parametrize("declared, expected", [
+        ("transit", True), ("mixed", True),
+        ("auto", False), ("bike", False), ("hike", False),
+    ])
+    def test_wants_transit_options(self, declared, expected):
+        """Self-powered legs are excluded by construction, not by cost:
+        nobody operates them, so there is no timetable to suggest."""
+        assert self._leg(declared).wants_transit_options is expected
+
+    def test_the_old_helpers_now_agree_with_it_by_construction(self):
+        """ai_content and url_discovery each carried their own copy of the
+        booked-type set, under a comment asking they be kept in step by hand.
+        Both now delegate here."""
+        from generator.ai_content import AIContentGenerator
+        from generator.transit_routing import NON_DRIVING_BOOKED_TYPES
+        from generator.url_discovery import URLDiscoverer
+
+        assert AIContentGenerator._NON_DRIVING_ARRIVAL_MODES is NON_DRIVING_BOOKED_TYPES
+        assert URLDiscoverer._NON_DRIVING_ARRIVAL_MODES is NON_DRIVING_BOOKED_TYPES
+
+        for dest in ({"_transport_mode": "transit"}, {"transportation": [{"type": "ferry"}]},
+                     {"_transport_mode": "bike"}, {}):
+            assert (
+                AIContentGenerator._arrival_is_not_self_driven(dest)
+                == URLDiscoverer._arrival_is_not_self_driven(dest)
+            )

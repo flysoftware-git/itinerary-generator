@@ -21,7 +21,7 @@ import re
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
-from generator.transit_routing import RESOLVED_MODE_KEY, resolved_mode
+from generator.transit_routing import LegMode, RESOLVED_MODE_KEY, leg_mode, resolved_mode
 from generator.multi_site_grouping import (
     DEFAULT_BASE_OWNED_CATEGORIES,
     category_deferred_to_base,
@@ -71,15 +71,6 @@ def _verify_checksum(template_text: str) -> None:
             "The frozen template has been modified. Restore it from git."
         )
 
-
-#: Google Maps travelmode values for the self-powered leg modes. Kept apart
-#: from HTMLAssembler._MAPS_TRAVELMODE_BY_ARRIVAL, which is keyed by BOOKED leg
-#: type: nobody books a bike ride, so the two never overlap and merging them
-#: would blur what each is answering.
-_MAPS_TRAVELMODE_BY_LEG_MODE: dict[str, str] = {
-    "bike": "bicycling",
-    "hike": "walking",
-}
 
 #: Header icon and label per leg mode, so the card does not say "Getting Here"
 #: under a car icon for a leg the traveler walks.
@@ -385,9 +376,11 @@ class HTMLAssembler:
         # about transit specifically: the Maps URL scheme DOES accept waypoints
         # for both, so a self-powered trip keeps every stop AND gets the right
         # mode. Without this a five-state bike ride offered to drive itself.
-        travelmode = _MAPS_TRAVELMODE_BY_LEG_MODE.get(
-            str((trip_meta or {}).get("transport_mode", "") or "").strip(), "driving"
+        trip_leg = LegMode(
+            declared=str((trip_meta or {}).get("transport_mode", "") or "").strip(),
+            booked_type="",
         )
+        travelmode = trip_leg.maps_travelmode if trip_leg.is_self_powered else "driving"
         params = [
             "api=1",
             f"origin={quote(origin)}",
@@ -409,6 +402,8 @@ class HTMLAssembler:
         return "https://www.google.com/maps/dir/?" + "&".join(params)
 
     #: Google Maps travelmode values, keyed by the manifest's booked leg type.
+    #: Read only by _maps_travelmode_for_trip, which nothing calls. Every live
+    #: decision now goes through transit_routing.LegMode.maps_travelmode.
     _MAPS_TRAVELMODE_BY_ARRIVAL = {
         "train": "transit",
         "bus": "transit",
@@ -1345,14 +1340,11 @@ class HTMLAssembler:
         # manifest `transport_mode: transit`, with no booking involved.
         # `mixed` stays driving -- there the drive is still the primary
         # answer and the transit options sit beside it.
-        travelmode = self._MAPS_TRAVELMODE_BY_ARRIVAL.get(
-            self._booked_arrival_mode(dest), "driving"
-        )
-        leg_mode = resolved_mode(dest)
-        if leg_mode == "transit":
-            travelmode = "transit"
-        elif leg_mode in _MAPS_TRAVELMODE_BY_LEG_MODE:
-            travelmode = _MAPS_TRAVELMODE_BY_LEG_MODE[leg_mode]
+        # One question, one answer. This used to combine a booked-type lookup
+        # with a declared-mode lookup by hand, and got it wrong twice -- once
+        # for rail because the dict it was handed carried no transportation,
+        # once for hiking because that dict carried no leg mode.
+        travelmode = leg_mode(dest).maps_travelmode
         params = [f"destination={quote(destination)}", f"travelmode={travelmode}", "api=1"]
         if previous_name:
             params.append(f"origin={quote(previous_name)}")
@@ -2277,7 +2269,7 @@ class HTMLAssembler:
         html += '  <div class="getting-here-header">\n'
         # A leg the traveler pedals or walks should not sit under a car.
         heading = _GETTING_HERE_HEADING_BY_LEG_MODE.get(
-            resolved_mode(dest), '🚗 Getting Here'
+            leg_mode(dest).declared, '🚗 Getting Here'
         )
         html += f'    <h3>{heading}</h3>\n'
         if gmaps_url:

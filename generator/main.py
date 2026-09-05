@@ -2160,15 +2160,16 @@ def _enforce_transit_leg_durations(trip: dict) -> int:
 
     Returns the number of legs whose figures were corrected.
     """
-    from generator.transit_routing import option_duration, resolved_mode
+    from generator.transit_routing import leg_mode, option_duration
 
     corrected = 0
     for dest in (trip.get("destinations") or []):
         if not isinstance(dest, dict):
             continue
-        leg_mode = resolved_mode(dest)
-        if leg_mode not in ("transit", "bike", "hike"):
+        leg = leg_mode(dest)
+        if leg.is_road_leg:
             continue
+        leg_mode_name = leg.declared
         ai = dest.get("ai_content")
         if not isinstance(ai, dict):
             continue
@@ -2198,13 +2199,13 @@ def _enforce_transit_leg_durations(trip: dict) -> int:
         # empty value is what the badge row was restructured to survive.
         if stale_miles:
             getting_here["distance_miles"] = ""
-        getting_here["travel_mode"] = leg_mode
+        getting_here["travel_mode"] = leg_mode_name
 
         if stale_time or stale_miles:
             corrected += 1
             logger.info(
                 "%s leg '%s': replaced road figures (%s / %s) with %s",
-                leg_mode.title(), dest.get("name", ""),
+                leg_mode_name.title(), dest.get("name", ""),
                 stale_miles or "no distance", stale_time or "no time",
                 f"the suggested band '{band}'" if band else "no duration",
             )
@@ -2233,11 +2234,7 @@ def _apply_transit_estimates(
     Returns the number of legs updated, for the run summary.
     """
     from generator.transit_estimate import TRANSIT_MODES, TransitEstimator, format_duration
-    from generator.transit_routing import (
-        ROUTES_TRAVEL_MODE_BY_LEG_MODE,
-        format_self_powered_duration,
-        resolved_mode,
-    )
+    from generator.transit_routing import format_self_powered_duration, leg_mode
 
     if estimator is None:
         estimator = TransitEstimator()
@@ -2270,7 +2267,7 @@ def _apply_transit_estimates(
         # second is why this gate widened -- a declared-but-unbooked leg had
         # no source of a real duration at all, so it kept whatever the model
         # guessed, which was a drive.
-        declared_transit = resolved_mode(dest) == "transit"
+        leg = leg_mode(dest)
         # bike and hike are priced here too, by BICYCLE/WALK rather than
         # TRANSIT. They have exactly the problem transit had -- no honest
         # source for a duration, so the model's driving guess survived -- and
@@ -2278,8 +2275,8 @@ def _apply_transit_estimates(
         # durations are facts about roads and gradients rather than about
         # whose timetable Google licenses, so the API knows them on corridors
         # where TRANSIT returns nothing.
-        routes_travel_mode = ROUTES_TRAVEL_MODE_BY_LEG_MODE.get(resolved_mode(dest))
-        qualifies = mode in TRANSIT_MODES or declared_transit or bool(routes_travel_mode)
+        routes_travel_mode = leg.routes_travel_mode
+        qualifies = bool(routes_travel_mode) or mode in TRANSIT_MODES
         if qualifies and previous_name and name:
             estimate = estimator.estimate(
                 previous_name, name, travel_mode=routes_travel_mode or "TRANSIT"
@@ -2296,7 +2293,7 @@ def _apply_transit_estimates(
                     # unusable, and precise enough to look plannable. Divided
                     # by the day the manifest says this traveler puts in, it
                     # becomes the figure they actually want.
-                    if routes_travel_mode:
+                    if leg.is_self_powered:
                         getting_here["travel_time"] = format_self_powered_duration(
                             estimate["minutes"],
                             hours_per_day=trip_meta.get("default_daily_activity_hours"),
@@ -2309,7 +2306,7 @@ def _apply_transit_estimates(
                     # approximation; transit times move with the timetable.
                     getting_here["duration_is_estimate"] = True
                     getting_here["travel_mode"] = (
-                        resolved_mode(dest) if routes_travel_mode else (mode or "transit")
+                        leg.declared if leg.is_self_powered else (mode or "transit")
                     )
                     updated += 1
                     logger.info(
