@@ -17803,6 +17803,22 @@ class TestLegTrailLink:
 
         assert d.calls[0][0] == "PCT: Section B"
 
+    def test_the_first_leg_still_gets_its_authored_link(self):
+        """The first destination has no origin_name in the discovery pass even
+        when trip.departure gives it a real leg. That is only needed to
+        compose a section name, so requiring it dropped 1 of 15 links on a
+        manifest that named every section outright."""
+        d = self._discoverer(None)
+        ai = {"getting_here": {}}
+        dest = {"name": "Callahan's Lodge", "_transport_mode": "hike",
+                "_trail_name": "Pacific Crest Trail",
+                "trail_section": "PCT: Section R/A - Seiad Valley to Interstate 5",
+                "trail_url": "https://www.alltrails.com/trail/us/california/pct-section-r-a"}
+
+        d._discover_leg_trail_link(ai, dest, "", "Callahan's Lodge")
+
+        assert ai["getting_here"]["trail_url"].endswith("pct-section-r-a")
+
     def test_no_trail_name_means_no_query(self):
         """"A to B" alone matches whatever AllTrails has near either end."""
         d = self._discoverer("https://www.alltrails.com/trail/x")

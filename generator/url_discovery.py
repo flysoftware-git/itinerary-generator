@@ -11797,7 +11797,14 @@ class URLDiscoverer:
         from generator.transit_routing import TRAIL_NAME_KEY
 
         trail_name = str((dest or {}).get(TRAIL_NAME_KEY, "") or "").strip()
-        if not trail_name or not origin_name or not dest_name:
+        if not trail_name or not dest_name:
+            return
+        # origin_name is only needed to COMPOSE a section name. The first
+        # destination has none here even when trip.departure gives it a real
+        # leg, so requiring it dropped the first leg's link on a manifest that
+        # named its section outright -- 14 of 15 rendered.
+        authored = (dest or {}).get("trail_url") or (dest or {}).get("trail_section")
+        if not origin_name and not authored:
             return
         getting_here = ai.get("getting_here")
         if not isinstance(getting_here, dict):
