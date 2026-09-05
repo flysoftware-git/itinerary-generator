@@ -11742,6 +11742,53 @@ class URLDiscoverer:
                     return mode in cls._NON_DRIVING_ARRIVAL_MODES
         return False
 
+    def _discover_leg_trail_link(
+        self, ai: dict[str, Any], dest: dict[str, Any] | None, origin_name: str, dest_name: str
+    ) -> None:
+        """Attach the AllTrails page for THIS leg's section of a named trail.
+
+        Only where the manifest has said enough to ask: a `bike`/`hike` leg
+        and a `trip.trail_name`. Without the name there is no query worth
+        making -- "Cascade Locks to Trout Lake" alone matches whatever
+        AllTrails has near either end, which on a thru-hike is a day loop.
+
+        Goes through _search_alltrails_for_trail rather than around it, so the
+        publish-confidence gate, the slug denylist and the post-search filters
+        all apply. Those exist because AllTrails matching fails in specific
+        documented ways, and a leg link is no more trustworthy than an
+        attraction link.
+        """
+        from generator.transit_routing import TRAIL_NAME_KEY
+
+        trail_name = str((dest or {}).get(TRAIL_NAME_KEY, "") or "").strip()
+        if not trail_name or not origin_name or not dest_name:
+            return
+        getting_here = ai.get("getting_here")
+        if not isinstance(getting_here, dict):
+            return
+
+        section = f"{trail_name} {origin_name} to {dest_name}"
+        url = self._search_alltrails_for_trail(section, dest_name)
+        if not url:
+            self._log_decision(
+                kind="leg_trail",
+                dest_name=dest_name,
+                item_name=section,
+                reason="no_trail_link_found",
+                message="no AllTrails page matched this leg's section",
+            )
+            return
+        getting_here["trail_url"] = url
+        getting_here["trail_label"] = f"{trail_name}: {origin_name} to {dest_name}"
+        self._log_decision(
+            kind="leg_trail",
+            dest_name=dest_name,
+            item_name=section,
+            reason="discovery_completed",
+            message="leg trail link",
+            url=url,
+        )
+
     def _discover_en_route_stops(
         self,
         ai: dict[str, Any],
@@ -12243,6 +12290,8 @@ class URLDiscoverer:
                             stop["url"] = f"https://www.google.com/maps/search/?api=1&query={quote(q)}"
                             stop["_url_assigned_by"] = "maps_query_rebuilt"
                         logger.warning("  En-route safety fallback assigned url for '%s'", sn)
+
+        self._discover_leg_trail_link(ai, dest, origin_name, dest_name)
 
         # Derive distance/time from the actual route rather than AI-generated estimates.
         self._update_route_distance_and_time(

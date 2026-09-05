@@ -152,6 +152,16 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                    "-- they change the leg's duration, its map link and "
                                    "how it is described. Overridable per destination.",
                 },
+                "trail_name": {
+                    "type": "string",
+                    "description": "Optional named trail this trip follows on foot or "
+                                   "by bike, e.g. 'Pacific Crest Trail'. Used to look up "
+                                   "the AllTrails page for each leg's section, so it "
+                                   "only has an effect on legs whose transport_mode is "
+                                   "bike or hike. The generator never invents this: "
+                                   "without it, a leg gets no trail link rather than a "
+                                   "guessed one.",
+                },
                 "transportation": {
                     "type": "array",
                     "description": "Optional TRIP-WIDE booked travel legs -- the flight in, "

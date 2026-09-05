@@ -320,6 +320,11 @@ def stamp_resolved_modes(trip: dict[str, Any]) -> None:
                 dest, previous_id=previous_id, trip_meta=trip_meta, legs=legs
             )
         dest[RESOLVED_MODE_KEY] = mode
+        # Only where it means something: a trail name on a driven leg would
+        # invite a link to a footpath nobody is walking.
+        trail_name = str(trip_meta.get("trail_name", "") or "").strip()
+        if trail_name and mode in SELF_POWERED_MODES:
+            dest[TRAIL_NAME_KEY] = trail_name
         if not str(dest.get("group_with", "") or "").strip():
             previous_id = str(dest.get("id", "") or "").strip()
 
@@ -341,6 +346,61 @@ ROUTES_TRAVEL_MODE_BY_LEG_MODE: dict[str, str] = {
     "bike": "BICYCLE",
     "hike": "WALK",
 }
+
+
+#: Walking hours in a day when the manifest does not say. Matches
+#: ai_content's own fallback for default_daily_activity_hours, so a trip that
+#: sets nothing gets one answer rather than two.
+DEFAULT_ACTIVITY_HOURS_PER_DAY = 5.0
+
+#: Where the trip's trail name is stamped, alongside the resolved mode and for
+#: the same reason: url_discovery sees a destination, never trip_meta.
+TRAIL_NAME_KEY = "_trail_name"
+
+
+def format_self_powered_duration(minutes: Any, *, hours_per_day: Any = None) -> str:
+    """Hours for a leg that fits in a day; DAYS for one that does not.
+
+    Google's WALK mode returns continuous walking time along a routable path.
+    On the PCT run that produced "45 hrs 55 min" for a leg the manifest
+    schedules as seven days -- a real walking figure answering a question
+    nobody asked, since nobody walks forty-six hours without stopping, and
+    precise enough to look like something a hiker could plan around.
+
+    The manifest already carries the missing divisor:
+    `trip.default_daily_activity_hours` is how long this traveler walks in a
+    day. Dividing by it turns an unusable figure into the one a hiker
+    actually wants, out of data the trip already stated rather than a
+    constant invented here.
+
+    Phrased "about N days" on purpose. The division is honest but the input
+    is a road-routed estimate, and a bare "6 days" would carry more precision
+    than the number has.
+    """
+    try:
+        total = float(minutes or 0)
+    except (TypeError, ValueError):
+        return ""
+    if total <= 0:
+        return ""
+
+    try:
+        per_day = float(hours_per_day) if hours_per_day is not None else 0.0
+    except (TypeError, ValueError):
+        per_day = 0.0
+    if per_day <= 0:
+        per_day = DEFAULT_ACTIVITY_HOURS_PER_DAY
+
+    from generator.transit_estimate import format_duration
+
+    day_minutes = per_day * 60.0
+    if total <= day_minutes:
+        return format_duration(int(round(total)))
+
+    days = int(round(total / day_minutes))
+    # Strictly longer than a day, so never "about 1 day".
+    days = max(2, days)
+    return f"about {days} days"
 
 
 def is_self_powered(dest: dict[str, Any] | None) -> bool:

@@ -5436,3 +5436,50 @@ def test_the_getting_here_link_matches_the_card_it_sits_in(mode, travelmode) -> 
     html = assembler._build_getting_here(ai, dest, previous_name="Cascade Locks")
 
     assert f"travelmode={travelmode}" in html
+
+
+def test_the_leg_trail_link_renders_when_discovery_found_one() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {
+        "route_summary": "Gravel and climbing.",
+        "travel_time": "about 6 days",
+        "trail_url": "https://www.alltrails.com/trail/us/washington/pct-section-h",
+        "trail_label": "Pacific Crest Trail: Cascade Locks to Trout Lake",
+    }}
+
+    html = assembler._build_getting_here(
+        ai, {"name": "Trout Lake", "_transport_mode": "hike"}, previous_name="Cascade Locks"
+    )
+
+    assert "alltrails.com/trail/us/washington/pct-section-h" in html
+    assert "Cascade Locks to Trout Lake" in html
+    assert "about 6 days" in html
+
+
+def test_no_trail_link_row_without_a_url() -> None:
+    """No link, no row -- the model is never asked for one, so an absent URL
+    means discovery found nothing rather than that something went missing."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {"route_summary": "The leg.", "travel_time": "about 6 days",
+                           "trail_label": "Pacific Crest Trail: A to B"}}
+
+    html = assembler._build_getting_here(
+        ai, {"name": "B", "_transport_mode": "hike"}, previous_name="A"
+    )
+
+    assert "leg-trail-link" not in html
+
+
+def test_the_trail_label_is_escaped() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    ai = {"getting_here": {
+        "travel_time": "about 6 days",
+        "trail_url": "https://www.alltrails.com/trail/x",
+        "trail_label": "<script>alert('x')</script>",
+    }}
+
+    html = assembler._build_getting_here(
+        ai, {"name": "B", "_transport_mode": "hike"}, previous_name="A"
+    )
+
+    assert "<script>" not in html

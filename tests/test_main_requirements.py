@@ -2328,3 +2328,52 @@ def test_a_priced_self_powered_leg_is_left_alone(mode):
     gh = trip["destinations"][1]["ai_content"]["getting_here"]
     assert gh["travel_time"] == "5 hrs"
     assert gh["distance_miles"] == "62"
+
+
+def test_a_multi_day_walk_is_scheduled_in_days_not_walking_hours():
+    """The PCT run's headline defect: Google's continuous WALK duration
+    rendered as the leg duration for a leg spanning a week."""
+    import generator.main as main_mod
+    from generator.transit_routing import stamp_resolved_modes
+
+    trip = {
+        "trip": {"transport_mode": "hike", "default_daily_activity_hours": 8,
+                 "departure": "Cascade Locks, Oregon"},
+        "destinations": [
+            {"id": "cascade_locks", "name": "Cascade Locks", "ai_content": {}},
+            {"id": "trout_lake", "name": "Trout Lake", "ai_content": {}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    estimator = _CountingEstimator(result={"minutes": 2755, "miles": 123, "estimated": True})
+
+    main_mod._apply_transit_estimates(
+        trip, departure_hint="Cascade Locks, Oregon", estimator=estimator
+    )
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "about 6 days"
+    assert "hrs" not in gh["travel_time"]
+
+
+def test_a_transit_leg_still_reads_in_hours():
+    """Only the self-powered modes convert. A train really does take 2 hrs
+    16 min, and rendering that as a fraction of a day would be absurd."""
+    import generator.main as main_mod
+    from generator.transit_routing import stamp_resolved_modes
+
+    trip = {
+        "trip": {"transport_mode": "transit", "default_daily_activity_hours": 8,
+                 "departure": "Tokyo"},
+        "destinations": [
+            {"id": "tokyo", "name": "Tokyo", "ai_content": {}},
+            {"id": "kyoto", "name": "Kyoto", "ai_content": {}},
+        ],
+    }
+    stamp_resolved_modes(trip)
+    estimator = _CountingEstimator(result={"minutes": 136, "miles": 133, "estimated": True})
+
+    main_mod._apply_transit_estimates(trip, departure_hint="Tokyo", estimator=estimator)
+
+    gh = trip["destinations"][1]["ai_content"]["getting_here"]
+    assert gh["travel_time"] == "2 hrs 16 min"

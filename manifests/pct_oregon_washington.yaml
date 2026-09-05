@@ -30,6 +30,13 @@ trip:
   # on all 15 destinations; a single stop can still override it.
   transport_mode: hike
 
+  # Names the trail so each leg can be linked to its own AllTrails section.
+  # Only consulted on bike/hike legs, and never invented: without this, a leg
+  # gets no trail link rather than a guessed one. Needs trail discovery on
+  # (`--trails`, or trails.enabled in config.yaml) -- it is off by default as
+  # a cost measure, which on a hiking trip is the wrong default.
+  trail_name: Pacific Crest Trail
+
   # Seiad Valley is the last California town before the state line and the
   # usual staging point for a border start. The first leg therefore covers the
   # final ~37 California miles up to the border, then the 27 Oregon miles to

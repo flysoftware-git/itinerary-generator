@@ -2232,7 +2232,11 @@ def _apply_transit_estimates(
     Returns the number of legs updated, for the run summary.
     """
     from generator.transit_estimate import TRANSIT_MODES, TransitEstimator, format_duration
-    from generator.transit_routing import ROUTES_TRAVEL_MODE_BY_LEG_MODE, resolved_mode
+    from generator.transit_routing import (
+        ROUTES_TRAVEL_MODE_BY_LEG_MODE,
+        format_self_powered_duration,
+        resolved_mode,
+    )
 
     if estimator is None:
         estimator = TransitEstimator()
@@ -2245,6 +2249,7 @@ def _apply_transit_estimates(
         return 0
 
     destinations = trip.get("destinations", []) or []
+    trip_meta = trip.get("trip") if isinstance(trip.get("trip"), dict) else {}
     updated = 0
     previous_name = str(departure_hint or "").strip()
 
@@ -2285,7 +2290,18 @@ def _apply_transit_estimates(
                     if not isinstance(getting_here, dict):
                         getting_here = {}
                         ai["getting_here"] = getting_here
-                    getting_here["travel_time"] = format_duration(estimate["minutes"])
+                    # Google's WALK/BICYCLE duration is continuous travel time,
+                    # so a multi-day leg comes back as "45 hrs 55 min" -- true,
+                    # unusable, and precise enough to look plannable. Divided
+                    # by the day the manifest says this traveler puts in, it
+                    # becomes the figure they actually want.
+                    if routes_travel_mode:
+                        getting_here["travel_time"] = format_self_powered_duration(
+                            estimate["minutes"],
+                            hours_per_day=trip_meta.get("default_daily_activity_hours"),
+                        )
+                    else:
+                        getting_here["travel_time"] = format_duration(estimate["minutes"])
                     if estimate.get("miles"):
                         getting_here["distance_miles"] = estimate["miles"]
                     # Consumed by the renderer so the figure reads as an

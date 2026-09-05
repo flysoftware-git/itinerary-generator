@@ -1668,6 +1668,28 @@ class HTMLAssembler:
         html += '  </div>\n'
         return html
 
+    def _build_leg_trail_link_html(self, getting_here: Any) -> str:
+        """The AllTrails page for this leg's section, when discovery found one.
+
+        Rendered through _safe_href like every other external link, and only
+        from a URL discovery resolved -- the model is never asked for one and
+        could not be trusted with it (design.md 1.4). No link, no row.
+        """
+        if not isinstance(getting_here, dict):
+            return ""
+        url = str(getting_here.get("trail_url", "") or "").strip()
+        if not url:
+            return ""
+        label = str(getting_here.get("trail_label", "") or "").strip() or "Trail section"
+        return (
+            '  <div class="leg-trail-link">\n'
+            f'    \U0001f97e <a href="{self._safe_href(url)}" class="attr-link" '
+            f'target="_blank" rel="noopener">{html_escape.escape(label)}</a>'
+            f' <span class="attr-external-link" title="link source">'
+            f'{self._link_source_icon(url)}</span>\n'
+            '  </div>\n'
+        )
+
     def _build_transit_options_html(self, transit_options: Any) -> str:
         """The Phase 1 transit block: suggestions, or an honest negative.
 
@@ -2270,6 +2292,8 @@ class HTMLAssembler:
 
         if route_summary:
             html += f'  <p class="route-summary">{route_summary}</p>\n'
+
+        html += self._build_leg_trail_link_html(gh)
 
         html += self._build_transit_options_html(gh.get('transit_options'))
 

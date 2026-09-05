@@ -493,3 +493,77 @@ class TestTheFirstLeg:
         }
         stamp_resolved_modes(trip)
         assert trip["destinations"][0]["_transport_mode"] == "hike"
+
+
+class TestSelfPoweredDuration:
+    """Google WALK returns continuous travel time. The PCT run rendered
+    "45 hrs 55 min" for a leg the manifest schedules as seven days -- true,
+    unusable, and precise enough to look plannable."""
+
+    def test_a_multi_day_leg_reads_in_days(self):
+        from generator.transit_routing import format_self_powered_duration
+
+        # 45 hrs 55 min at an 8-hour walking day.
+        assert format_self_powered_duration(2755, hours_per_day=8) == "about 6 days"
+
+    def test_a_leg_inside_one_day_keeps_its_hours(self):
+        """A three-hour walk is a three-hour walk; days would be worse."""
+        from generator.transit_routing import format_self_powered_duration
+
+        assert format_self_powered_duration(180, hours_per_day=8) == "3 hrs"
+
+    def test_the_manifests_own_day_length_is_the_divisor(self):
+        """Same leg, two travelers: the figure follows what they said their
+        day is, not a constant invented here."""
+        from generator.transit_routing import format_self_powered_duration
+
+        assert format_self_powered_duration(2400, hours_per_day=10) == "about 4 days"
+        assert format_self_powered_duration(2400, hours_per_day=5) == "about 8 days"
+
+    @pytest.mark.parametrize("bad", [None, 0, -3, "eight"])
+    def test_a_missing_or_unusable_day_length_falls_back(self, bad):
+        from generator.transit_routing import (
+            DEFAULT_ACTIVITY_HOURS_PER_DAY,
+            format_self_powered_duration,
+        )
+
+        out = format_self_powered_duration(2400, hours_per_day=bad)
+        expected = round(2400 / (DEFAULT_ACTIVITY_HOURS_PER_DAY * 60))
+        assert out == f"about {expected} days"
+
+    def test_it_never_says_about_1_day(self):
+        """Anything past the day budget is at least two, or the phrasing
+        contradicts the branch it is in."""
+        from generator.transit_routing import format_self_powered_duration
+
+        assert format_self_powered_duration(481, hours_per_day=8) == "about 2 days"
+
+    @pytest.mark.parametrize("minutes", [0, None, -5, "", "abc"])
+    def test_no_duration_stays_empty(self, minutes):
+        from generator.transit_routing import format_self_powered_duration
+
+        assert format_self_powered_duration(minutes, hours_per_day=8) == ""
+
+
+class TestTrailNameStamping:
+    def test_a_trail_name_reaches_self_powered_legs(self):
+        from generator.transit_routing import TRAIL_NAME_KEY, stamp_resolved_modes
+
+        trip = {
+            "trip": {"transport_mode": "hike", "trail_name": "Pacific Crest Trail",
+                     "departure": "Seiad Valley, California"},
+            "destinations": [{"id": "a"}, {"id": "b"}],
+        }
+        stamp_resolved_modes(trip)
+        assert all(d[TRAIL_NAME_KEY] == "Pacific Crest Trail" for d in trip["destinations"])
+
+    def test_a_driven_leg_gets_no_trail_name(self):
+        """A trail link on a leg nobody walks invites a footpath nobody is on."""
+        from generator.transit_routing import TRAIL_NAME_KEY, stamp_resolved_modes
+
+        trip = {
+            "trip": {"trail_name": "Pacific Crest Trail"},
+            "destinations": [{"id": "a"}, {"id": "b"}],
+        }
+        stamp_resolved_modes(trip)
+        assert all(TRAIL_NAME_KEY not in d for d in trip["destinations"])
