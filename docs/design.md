@@ -922,7 +922,7 @@ concurrent slot timeouts instead.
 |---|---|
 | `validation_report.json` | validity, errors, warnings, per-model cost and calls |
 | `destination_status_report.json` (+ `.md`) | per-destination status, triggers, stage scope, retry outcomes |
-| `run_ledger.jsonl` | stage timings, gate-A metrics, breaker stats, banned-phrase counts, retry efficiency, CLI flags |
+| `run_ledger.jsonl` | stage timings, gate-A metrics, breaker stats, banned-phrase counts, retry efficiency, CLI flags, cost, route freshness |
 | `entity_registry_debug.json` | full registry dump (`--verbose` only) |
 | `direct_batch_parity_report.json` | harvest capture vs rendered links |
 | `url_diff_report.json` (+ `.md`) | this run's URLs vs the previous run's |

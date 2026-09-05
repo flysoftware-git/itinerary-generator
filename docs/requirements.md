@@ -861,6 +861,13 @@ Output path policy:
 Run ledger policy:
 - Every run appends one JSON-lines record to `run_ledger.jsonl`, whose path resolves to the same `dev`/`eval`/`prod` environment as the rest of the run (`<output>/<environment>/run_ledger.jsonl`), not a hardcoded location.
 - A crashed run still writes a `terminated_without_finalize` record via an `atexit` guard.
+- Each record carries `route_freshness`: how many harvest lookups were served from the
+  persistent cache as it stood when the run *started* (`warm`), served from a harvest the
+  same run performed (`repeat`), or paid for (`cold`), plus `warm_ratio` over the two that
+  could have been purchases. A run's cost is not interpretable without it — the same trip
+  costs several times more on a route nothing has harvested before — and the information
+  is gone once the process exits. `null` when no harvesting happened, which includes every
+  `--dry-run` and `--skip-url-discovery` run.
 
 Privacy redaction policy:
 - `planning_links` (manifest-provided Notion/reservation/personal-planning links, §3) and `lodging.name` (specific property name) carry personal data and must not appear in output meant for wider distribution.
