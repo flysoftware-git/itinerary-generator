@@ -30,6 +30,8 @@ and one call per destination is a rounding error against a run.
 """
 from __future__ import annotations
 
+from generator import maps_platform
+
 import json
 import logging
 import os
@@ -94,7 +96,12 @@ class PlacesBudgetFilter:
     """One instance per run. Holds no disk state and publishes no field."""
 
     def __init__(self, api_key: str | None = None, *, timeout: int = _TIMEOUT_SECONDS) -> None:
-        self._key = str(api_key or os.environ.get("GOOGLE_MAPS_PLATFORM_KEY", "") or "").strip()
+        # `maps_platform.api_key` returns "" unless config permits the spend,
+        # so an unconfigured run cannot be switched on by an environment
+        # variable that arrived for some other reason.
+        self._key = str(
+            api_key if api_key is not None else maps_platform.api_key() or ""
+        ).strip()
         self._timeout = timeout
         self._by_destination: dict[str, dict[str, dict[str, Any]]] = {}
         self.call_count = 0

@@ -272,6 +272,30 @@ cultural_events:
   search_provider: "grok"
 
 # ── Transit routing (GH #2, Phase 1) ──────────────────────────────────
+# ── Google Maps Platform ──────────────────────────────────────────────────────
+# The consent gate in front of every metered Maps Platform call: Places Text
+# Search (generator/place_resolver.py, generator/places_filter.py) and Routes
+# (generator/transit_estimate.py).
+#
+# OFF, and off is the only safe default. These three modules used to decide for
+# themselves by looking for GOOGLE_MAPS_PLATFORM_KEY in the environment, which
+# meant a key that arrived for some other reason -- another project, a shared CI
+# secret, an experiment nobody unset -- turned three billable products on for
+# every run afterwards, with no line in any file recording that anyone had
+# agreed to it.
+#
+# A key is a credential; this is the decision. Both are needed: with this true
+# and no key nothing happens, and with a key and this false nothing happens.
+#
+# What turning it on buys: place_id-backed map links instead of text searches,
+# a rating/price filter over candidates the pipeline already found, and real
+# durations on transit legs instead of blanks. All three degrade to exactly the
+# current behaviour when off -- none of them is a source, and no field any of
+# them returns is published.
+maps_platform:
+  enabled: false
+
+
 transit_routing:
   # The global kill switch. Left ON because the real gate is the manifest:
   # a leg only costs a call when it says `transport_mode: transit`/`mixed`
