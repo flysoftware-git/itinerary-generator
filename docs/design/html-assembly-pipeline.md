@@ -222,6 +222,43 @@ anchors selected by descent — `.rest-name a`, `.lodging-val a`,
 `.links-list li a` — stayed brown and the test passed anyway. The test now
 walks every rule in the stylesheet that colours an anchor.
 
+## The head-metadata placeholders: v3's scheme is authoritative (2026-09-05)
+
+The same bug — every itinerary announcing itself as the Southwest trip in its
+`<head>` — was fixed twice, independently, once on each line:
+
+| commit | date | introduces | on v2 | on v3 |
+|---|---|---|---|---|
+| `3ead3ad` | 28 Aug | `DOCUMENT_TITLE`, `APP_SHORT_NAME`, `TRIP_DESCRIPTION` | no | yes |
+| `9d020e6` | 4 Sep | `TRIP_TITLE_TEXT`, `TRIP_DESCRIPTION` | yes | no |
+
+Neither line carries the other's. That is why PR #84 read as `CONFLICTING`
+against `v2` and merged into `v3` with nothing to resolve: the conflict was
+not staleness, it was two answers to one question meeting.
+
+**v3's scheme is the one to keep** (owner decision, 2026-09-05). It is a
+strict superset, not merely a different spelling:
+
+    v3   APP_SHORT_NAME  DOCUMENT_TITLE  THEME_COLOR  THEME_COLOR_HEX  TRIP_DESCRIPTION  TRIP_TITLE
+    v2                   TRIP_TITLE_TEXT                               TRIP_DESCRIPTION  TRIP_TITLE
+
+`DOCUMENT_TITLE` and `TRIP_TITLE_TEXT` do the same job under different names.
+Beyond that, `v2` has no `APP_SHORT_NAME`, so the PWA home-screen label stays
+hardcoded there, and no `THEME_COLOR`/`THEME_COLOR_HEX` at all — every trip
+rendered from that template ignores its manifest's `theme_color` and comes out
+terracotta, which is the defect 2.4.0 fixed on the other line.
+
+### What this means for anything crossing between the lines
+
+A backport from `v3` to `v2` that touches the head must convert
+`DOCUMENT_TITLE` to `TRIP_TITLE_TEXT`, or bring the whole scheme across. The
+second is the better trade the moment more than one such change is needed:
+`v2`'s template also lacks the theme substitutions those changes assume.
+
+Any such move also changes `templates/v2.5_template.html`, so
+`templates/checksums.txt` must be regenerated and `__template_version__`
+moved, or the run fails its integrity check — see the template-version guard.
+
 ## Design Tradeoffs
 Pros:
 - Deterministic output shape and rendering order.
