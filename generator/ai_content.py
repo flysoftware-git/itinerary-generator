@@ -18,6 +18,7 @@ from typing import Any
 import requests
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from generator.llm_client import MultiLLMClient, LLMCircuitOpenError
+from generator.fanout_metrics import pool as instrumented_pool
 from generator.multi_site_grouping import group_base_id, is_grouped, is_park_like
 from generator.transit_routing import (
     NON_DRIVING_BOOKED_TYPES,
@@ -564,7 +565,9 @@ class AIContentGenerator:
             )
             logger.debug(f"  Set scenic_drives for {dest['name']}: {len(dest['scenic_drives'])} drives")
 
-        with ThreadPoolExecutor(max_workers=self._llm_stage_max_workers(len(destinations))) as pool:
+        with instrumented_pool(
+            "stage_3_destination_content", self._llm_stage_max_workers(len(destinations))
+        ) as pool:
             futures = [pool.submit(_one, (i, d)) for i, d in enumerate(destinations)]
             for f in as_completed(futures):
                 f.result()
