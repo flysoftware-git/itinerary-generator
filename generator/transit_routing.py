@@ -548,24 +548,6 @@ def resolved_mode(dest: dict[str, Any] | None) -> str:
     return str(dest.get(RESOLVED_MODE_KEY, "") or "").strip() or "auto"
 
 
-def suppresses_en_route_stops(dest: dict[str, Any] | None) -> bool:
-    """True on a `transit` leg, false on `mixed` (multimodal-routing.md 4.4).
-
-    There is no roadside to stop at on a train, so an en-route stop there is
-    structurally meaningless -- and skipping one of the four parallel
-    discovery jobs is a real cost saving. Under `mixed` the drive is still on
-    the table, so its stops are still real.
-
-    `bike` and `hike` keep theirs, and are the strongest case for them in the
-    whole design: a cyclist stops more often than a driver, not less, and the
-    stops are the day rather than an interruption to it.
-
-    Narrower than LegMode.has_roadside, which also excludes a leg with a
-    BOOKED flight or ferry. This one asks only what the manifest declared.
-    """
-    return leg_mode(dest).declared == "transit"
-
-
 def should_generate_options(dest: dict[str, Any] | None, mode: str) -> bool:
     """Whether this leg gets generated transit options.
 
