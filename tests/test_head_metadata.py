@@ -69,6 +69,24 @@ class TestNoSouthwestLeftInTheTemplate:
         for placeholder in ("<!--DOCUMENT_TITLE-->", "<!--APP_SHORT_NAME-->", "<!--TRIP_DESCRIPTION-->"):
             assert placeholder in head, placeholder
 
+    def test_a_title_containing_an_ampersand_is_escaped(self):
+        """Ported from the v2 page-title fix (PR #91) when its implementation
+        was superseded by this one during the v2 -> v3 merge. That change
+        carried the observation worth keeping: real trip titles contain
+        ampersands -- "Old Hickory & Asheville" -- and a <title> is HTML text.
+        This side already escapes; nothing was asserting that it does."""
+        import inspect
+
+        from generator.html_assembler import HTMLAssembler
+
+        source = inspect.getsource(HTMLAssembler)
+        at = source.index("<!--DOCUMENT_TITLE-->")
+        window = source[at - 240:at + 240]
+        assert "escape" in window, (
+            "DOCUMENT_TITLE is substituted without escaping; a title like "
+            "'Old Hickory & Asheville' would reach the tab as raw markup"
+        )
+
     def test_every_head_placeholder_is_substituted(self):
         """A placeholder the assembler forgets renders as a literal comment --
         which is how the theme colour silently pinned every trip to terracotta."""
