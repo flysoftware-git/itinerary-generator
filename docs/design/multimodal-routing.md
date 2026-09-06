@@ -572,6 +572,20 @@ still on the table there, so its stops are still real.
 The accepted cost: those destinations lose a content section. That is the right trade because
 the section was never applicable, not because it was cheap to drop.
 
+**Extended 2026-09-05 to a booked flight or ferry, which this section did not cover.** The
+rule above is about what the manifest *declares*; the same structural fact holds for what it
+*books*. There is no roadside on a flight either, so a leg carrying a booked non-driving
+transport suppresses its en-route stops for the same reason a `transit` leg does. `mixed`
+still keeps them -- a booking does not remove the drive that is also on the table -- and so
+do `bike` and `hike`.
+
+**One rule, in one place.** `LegMode.has_roadside` answers this and is what the discovery
+sites call. A second, narrower `suppresses_en_route_stops` implementing only the declared
+half survived the consolidation that produced `LegMode` and had no callers in either
+repository; it is gone, and `test_has_roadside` already covered every case its own tests
+asserted plus the booked ones. A rule with two implementations is a rule with two answers
+waiting to happen, which is what that consolidation was for.
+
 **Scenic drives** should *not* be suppressed by `transport_mode` alone. A traveler who takes
 a train to Moab may still rent a jeep there; `has_high_clearance_vehicle` is the existing
 orthogonal flag, and scenic drives are destination content rather than leg content. Product

@@ -411,20 +411,6 @@ class TestSelfPoweredModes:
 
         assert should_generate_options({"name": "Bryce"}, mode) is False
 
-    @pytest.mark.parametrize("mode", ["bike", "hike"])
-    def test_en_route_stops_are_kept(self, mode):
-        """The strongest case for stops in the design: a cyclist stops more
-        often than a driver, and the stops are the day rather than an
-        interruption to it."""
-        from generator.transit_routing import suppresses_en_route_stops
-
-        assert suppresses_en_route_stops({"_transport_mode": mode}) is False
-
-    def test_transit_still_suppresses_them(self):
-        from generator.transit_routing import suppresses_en_route_stops
-
-        assert suppresses_en_route_stops({"_transport_mode": "transit"}) is True
-
     @pytest.mark.parametrize("mode, expected", [("bike", "BICYCLE"), ("hike", "WALK")])
     def test_each_maps_to_a_routes_travel_mode(self, mode, expected):
         from generator.transit_routing import ROUTES_TRAVEL_MODE_BY_LEG_MODE
