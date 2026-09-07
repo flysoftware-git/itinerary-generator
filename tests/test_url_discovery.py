@@ -17305,6 +17305,63 @@ class TestEnRouteStopsResolveToMaps:
         assert "google.com/maps/search/" in url
         assert "Shafer" in url
 
+    def test_a_free_geocode_is_tried_before_settling_for_a_name_query(self):
+        """An en-route stop gets the same free geocode an attraction gets.
+
+        Without this the New England ride shipped Mount Agamenticus, Wickford
+        Village and Stony Creek as bare text queries -- the unverifiable form
+        -- while every stop beside them carried a coordinate, purely because
+        nothing on this path asked for one.
+        """
+        disc = self._discoverer()
+        with patch.object(disc, "_geocode_en_route_stop_for_route", return_value=(43.2214, -70.6939)):
+            url = disc._en_route_maps_url(
+                {"name": "Mount Agamenticus"},
+                "Mount Agamenticus",
+                "Portsmouth, New Hampshire",
+                (43.0718, -70.7626),
+            )
+        assert URLDiscoverer._is_coordinate_maps_query_url(url)
+        assert "43.2214" in url
+        assert "Agamenticus" not in url
+
+    def test_no_bias_box_means_no_geocode_at_all(self):
+        """An unbiased geocode is wrong, not merely vaguer.
+
+        "Canyon Overlook" near Zion resolves to 34.26,-84.54 -- Georgia --
+        and a coordinate link renders that as a precise pin with nothing
+        admitting the guess. Without the destination to bias against, the
+        name query is the honest answer.
+        """
+        disc = self._discoverer()
+        with patch.object(disc, "_geocode_en_route_stop_for_route") as geo:
+            url = disc._en_route_maps_url(
+                {"name": "Canyon Overlook"}, "Canyon Overlook", "Zion National Park"
+            )
+        geo.assert_not_called()
+        assert "Canyon" in url
+
+    def test_the_name_query_is_reached_only_after_the_geocode_fails(self):
+        """The text query stays as the last resort, not the second step."""
+        disc = self._discoverer()
+        with patch.object(disc, "_geocode_en_route_stop_for_route", return_value=None):
+            url = disc._en_route_maps_url(
+                {"name": "Stony Creek"}, "Stony Creek", "New Haven, Connecticut"
+            )
+        assert not URLDiscoverer._is_coordinate_maps_query_url(url)
+        assert "Stony" in url
+
+    def test_a_route_verified_geocode_still_outranks_the_free_one(self):
+        """Ordering, not just presence: the coordinate the route vouched for
+        must win, and no geocode call should be made at all."""
+        disc = self._discoverer()
+        stop = {"name": "Canyon Overlook", "route_waypoint_eligible": True,
+                "geocode_lat": 37.2128153, "geocode_lng": -112.9445374}
+        with patch.object(disc, "_geocode_en_route_stop_for_route") as geo:
+            url = disc._en_route_maps_url(stop, "Canyon Overlook", "Zion National Park", (37.3, -113.0))
+        geo.assert_not_called()
+        assert "37.2128153" in url
+
     def test_maps_mode_is_an_accepted_en_route_source(self):
         disc = self._discoverer()
         assert getattr(disc, "_en_route_source", "") == "maps"
@@ -17369,6 +17426,110 @@ class TestCoordinateMapsUrlSurvivesTheQueryRebuild:
             allow_google_maps_search=True,
         )
         assert kept == coord, "coordinate was rewritten into a name query"
+
+
+class TestTheAuditWritesBackWhatItResolved:
+    """A resolved URL must reach the stop, not just the log.
+
+    `audit_discovered_urls` wrote `stop["url"]` only when retention CHANGED
+    the URL it was handed. That silently discarded every value produced by
+    the two blocks above it -- the AllTrails-batch preference and maps mode
+    -- because those reassign the local `url`, so retention accepting the new
+    value unchanged looked identical to "nothing to do".
+
+    Measured on the East Coast Greenway run: `en_route_resolved_to_maps`
+    announced a coordinate for Wickford Village Historic District and Stony
+    Creek, `en_route_geocode_verified_kept` accepted it, and the page still
+    rendered the text query the direct batch had left in `stop["url"]`. The
+    decision log said the fix worked, which is why it survived a rerun.
+    """
+
+    @staticmethod
+    def _discoverer():
+        mock_llm = type("MockLLM", (), {"provider": "grok", "model": "grok-4.5", "usage_tracker": None})()
+        with patch("generator.search_provider.GrokSearch"), patch("generator.search_provider.ClaudeSearch"):
+            disc = URLDiscoverer(config_path="config.yaml", llm_client=mock_llm)
+        disc._en_route_source = "maps"
+        return disc
+
+    @staticmethod
+    def _trip(stop, name="Narragansett, Rhode Island", lat=41.4501, lng=-71.4495):
+        return {
+            "destinations": [
+                {
+                    "name": name,
+                    "lat": lat,
+                    "lng": lng,
+                    "ai_content": {"getting_here": {"en_route_stops": [stop]}},
+                }
+            ]
+        }
+
+    def test_a_coordinate_replaces_the_text_query_the_batch_left_behind(self):
+        disc = self._discoverer()
+        stop = {
+            "name": "Wickford Village Historic District",
+            "url": "https://www.google.com/maps/search/?api=1&query=Wickford%20Village%20Historic%20District",
+            "route_waypoint_eligible": True,
+            "geocode_lat": 41.5711941,
+            "geocode_lng": -71.4524181,
+        }
+        disc.audit_discovered_urls(self._trip(stop))
+
+        assert URLDiscoverer._is_coordinate_maps_query_url(stop.get("url", "")), (
+            f"stop kept {stop.get('url')!r} instead of the coordinate it resolved to"
+        )
+        assert "41.5711941" in stop["url"]
+
+    def test_a_real_page_already_harvested_is_not_replaced_by_a_pin(self):
+        """Maps mode saves the hunt, it does not refuse a page in hand.
+
+        Widening the write-back exposed this: with the assignment finally
+        landing, maps mode overwrote every official page the direct batch had
+        found -- thetrustees.org, ipswichmuseum.org, historicbeverly.net --
+        with a bare coordinate. 34 real pages became pins in one run. The
+        AllTrails exemption already stated the rule ("free, specific, and
+        strictly more useful than a pin"); nothing about it was specific to
+        AllTrails.
+        """
+        disc = self._discoverer()
+        page = "https://thetrustees.org/place/appleton-farms/"
+        stop = {
+            "name": "Appleton Farms",
+            "url": page,
+            "route_waypoint_eligible": True,
+            "geocode_lat": 42.6478864,
+            "geocode_lng": -70.8542545,
+        }
+        # Retention is held to a passthrough so this asserts the maps-mode
+        # guard alone. Its real verdict depends on harvested candidate rows
+        # this bare harness has none of, which is a separate question from
+        # whether maps mode should have displaced the page before it.
+        with patch.object(disc, "_retain_discovered_url", side_effect=lambda u, *a, **k: u):
+            disc.audit_discovered_urls(
+                self._trip(stop, "Boston, Massachusetts", 42.3601, -71.0589)
+            )
+        assert stop.get("url") == page
+
+    def test_a_stop_already_holding_the_right_value_is_left_alone(self):
+        """The write-back must be idempotent, not merely present.
+
+        A stop that already carries the coordinate maps mode would resolve
+        for it must come out the other side carrying that same coordinate --
+        the condition widened here governs whether an assignment happens, and
+        widening it must not turn into rewriting what was already correct.
+        """
+        disc = self._discoverer()
+        coord = "https://www.google.com/maps/search/?api=1&query=41.5711941%2C-71.4524181"
+        stop = {
+            "name": "Wickford Village Historic District",
+            "url": coord,
+            "route_waypoint_eligible": True,
+            "geocode_lat": 41.5711941,
+            "geocode_lng": -71.4524181,
+        }
+        disc.audit_discovered_urls(self._trip(stop))
+        assert stop.get("url") == coord
 
 
 class TestMapsModeStillRunsTheEnRouteHarvest:

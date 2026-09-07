@@ -3079,6 +3079,10 @@ class URLDiscoverer:
                 )
                 stop["is_seed"] = stop_is_seed
                 url = str(stop.get("url", "") or "").strip()
+                # What the stop arrived carrying. The write-back below compares
+                # against THIS rather than against `url`, which several blocks
+                # between here and there are entitled to reassign.
+                original_url = url
                 # An en-route stop can be a trail -- Canyon Overlook Trail is
                 # one. Until now this path hard-coded allow_alltrails=False, so
                 # a trail that happened to be classified as an en-route stop
@@ -3105,14 +3109,33 @@ class URLDiscoverer:
                         url = batch_trail_url
                 direct_batch_authoritative_url = self._is_remembered_direct_batch_authoritative_url(url, stop_name)
                 # "maps" mode: resolve the stop to a Google Maps link instead
-                # of hunting a website. An AllTrails URL already harvested by
-                # the trail batch still wins -- it is free, trail-specific,
-                # and strictly more useful than a pin.
+                # of hunting a website. What the mode buys is not spending
+                # searches on pages that mostly do not exist for a roadside
+                # pullout -- it is about the hunt, not about refusing a page
+                # already in hand. So a real source URL the batch has ALREADY
+                # harvested wins, for the reason the AllTrails exemption here
+                # gave first and which was never specific to AllTrails: it is
+                # free, it is specific to the stop, and it is strictly more
+                # useful than a pin. thetrustees.org/place/appleton-farms/
+                # tells a rider the opening hours; 42.6479,-70.8543 does not.
+                #
+                # Only a Maps URL is displaced, which is the case the mode
+                # exists for: a bare text query naming the stop is a guess,
+                # and a coordinate at least resolves to one point.
                 en_route_maps_mode = (
                     str(getattr(self, "_en_route_source", DEFAULT_EN_ROUTE_SOURCE) or "") == "maps"
                 )
-                if en_route_maps_mode and not self._is_alltrails_trail_url(url):
-                    maps_primary = self._en_route_maps_url(stop, stop_name, dest_name)
+                url_is_a_real_page = bool(url) and not self._is_google_maps_candidate_url(url)
+                if en_route_maps_mode and not self._is_alltrails_trail_url(url) and not url_is_a_real_page:
+                    stop_lat, stop_lng = (dest or {}).get("lat"), (dest or {}).get("lng")
+                    stop_viewbox = (
+                        (float(stop_lat), float(stop_lng))
+                        if isinstance(stop_lat, (int, float)) and isinstance(stop_lng, (int, float))
+                        else None
+                    )
+                    maps_primary = self._en_route_maps_url(
+                        stop, stop_name, dest_name, stop_viewbox
+                    )
                     if maps_primary:
                         self._log_decision(
                             kind="en-route stop",
@@ -3137,8 +3160,22 @@ class URLDiscoverer:
                     # must not be rejected as a vague search result.
                     allow_google_maps_search=en_route_maps_mode,
                 )
+                # Two questions, one of which used to be asked for both.
+                # "Did retention reject what it was handed" is `cleaned != url`
+                # and governs the rejection log. "Does the stop still hold the
+                # right value" is `cleaned != original_url` and governs the
+                # write-back -- `url` is a local that the AllTrails-batch block
+                # and the maps-mode block above are both entitled to reassign,
+                # so a value they introduced and retention then accepted
+                # unchanged satisfied the old single test of `cleaned != url`
+                # and was never written. It was logged first, which is what
+                # made it look applied: en_route_resolved_to_maps announced a
+                # coordinate for Wickford Village and Stony Creek while the
+                # page went on rendering the text query the direct batch had
+                # left in `stop["url"]`.
                 if cleaned != url:
                     self._log_rejected_url("en-route stop", dest_name, stop_name, url)
+                if cleaned != original_url:
                     if cleaned:
                         stop["url"] = cleaned
                         stop["_url_assigned_by"] = "audit_retention_cleaned"
@@ -4892,7 +4929,13 @@ class URLDiscoverer:
         lat, lng = coords
         return f"https://www.google.com/maps/search/?api=1&query={quote(f'{lat},{lng}')}"
 
-    def _en_route_maps_url(self, stop: dict[str, Any], stop_name: str, dest_name: str) -> str:
+    def _en_route_maps_url(
+        self,
+        stop: dict[str, Any],
+        stop_name: str,
+        dest_name: str,
+        dest_latlng: tuple[float, float] | None = None,
+    ) -> str:
         """A Google Maps link for an en-route stop, built locally at zero cost.
 
         Why en-route stops resolve to Maps rather than a website: they are
@@ -4906,16 +4949,50 @@ class URLDiscoverer:
         page -- a land-agency landing page for a specific roadside pullout.
         The granularity simply does not exist to be found.
 
-        Prefers the coordinate form when the stop carries a route-verified
-        geocode, because it resolves to the exact spot rather than whatever
-        a name search happens to match -- and `_prune_en_route_stops_by_geometry`
-        has already sanity-checked that coordinate against the actual route.
+        Three forms, in descending order of how precisely they answer
+        "where is it", and the order matters more than any one of them:
+
+        1. The stop's route-verified geocode, when it has one. It resolves to
+           the exact spot, and `_prune_en_route_stops_by_geometry` has already
+           sanity-checked that coordinate against the actual route.
+        2. A free, cached Nominatim geocode of the name, biased to the
+           destination. Still a coordinate, just not one the route vouched
+           for. Requires the bias box: unbiased it does not degrade, it
+           misfires -- "Canyon Overlook" near Zion comes back in Georgia.
+        3. A name search, which is a guess rendered as a link.
+
+        Zero cost throughout: (2) shares the persistent cache the route
+        geocodes fill, so a destination looked up once is free thereafter.
         """
         if self._item_has_verified_route_geocode(stop):
             lat = str(stop.get("geocode_lat", "") or "").strip()
             lng = str(stop.get("geocode_lng", "") or "").strip()
             if lat and lng:
                 return f"https://www.google.com/maps/search/?api=1&query={quote(f'{lat},{lng}')}"
+        # No route-verified geocode. Before settling for a name search, ask
+        # the same free, cached geocode an attraction in this position gets
+        # (see the `geocode_maps` block in audit_discovered_urls). A stop is
+        # not entitled to less: the New England ride shipped Mount
+        # Agamenticus, Wickford Village and Stony Creek as bare text queries
+        # while every stop beside them carried a coordinate, purely because
+        # nothing here asked.
+        # Only with a bias box. Unbiased, this lookup is not a weaker
+        # coordinate but a wrong one: "Canyon Overlook" near Zion resolves to
+        # 34.26,-84.54 -- Georgia, some 1,700 miles off -- and renders as a
+        # precise pin with nothing about it admitting the guess. The
+        # destination's own coordinate is what makes the answer local, which
+        # is why the attraction path passes one too. Without it, a name query
+        # is the honest fallback: visibly a search, and treated as
+        # unverifiable by `_is_unverifiable_maps_query`.
+        if dest_latlng is not None:
+            geo_url = self._geocode_maps_url_for_item(stop_name, dest_name, dest_latlng)
+            if geo_url:
+                return geo_url
+
+        # A name search is the last resort, and it is the unverifiable form:
+        # `_is_unverifiable_maps_query` will not treat it as evidence the
+        # place was found. It is offered as a map, labelled as a map, and
+        # left to the retention policy to judge.
         query_text = self._maps_fallback_query_text(stop_name, dest_name)
         if not query_text:
             return ""

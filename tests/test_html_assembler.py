@@ -1,6 +1,7 @@
 import pytest
 
 from generator.html_assembler import CHECKSUM_PATH, TEMPLATE_PATH, HTMLAssembler, _verify_checksum
+from generator.transit_routing import RESOLVED_MODE_KEY
 
 
 def test_template_checksum_matches_stored_hash() -> None:
@@ -3131,7 +3132,7 @@ def test_destination_attractions_map_url_uses_multi_waypoint_directions() -> Non
     /maps/dir/ URL, not collapse to a generic destination-only search."""
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     url = assembler._build_destination_attractions_map_url(
-        "St. George, Utah",
+        {"name": "St. George, Utah"},
         [
             {"name": "Pioneer Park"},
             {"name": "St. George Dinosaur Discovery Site"},
@@ -3194,7 +3195,7 @@ def test_destination_attractions_map_url_prefers_geocoded_coordinates() -> None:
     since a coordinate resolves to exactly one point."""
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     url = assembler._build_destination_attractions_map_url(
-        "Moab, Utah",
+        {"name": "Moab, Utah"},
         [
             {"name": "Delicate Arch", "geocode_lat": 38.7436, "geocode_lng": -109.4993},
             {"name": "Dead Horse Point", "geocode_lat": 38.4802, "geocode_lng": -109.7404},
@@ -3206,10 +3207,40 @@ def test_destination_attractions_map_url_prefers_geocoded_coordinates() -> None:
     assert "destination=38.4802%2C-109.7404" in url
 
 
+def test_destination_attractions_map_url_follows_a_ridden_trips_mode() -> None:
+    """A trip ridden between its stops is ridden around them too.
+
+    The New England page shipped twelve attraction loops offering to drive
+    between stops a rider reaches by bicycle, because this URL hardcoded
+    driving while the route links were being fixed elsewhere.
+    """
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    url = assembler._build_destination_attractions_map_url(
+        {"name": "Boston, Massachusetts", RESOLVED_MODE_KEY: "bike"},
+        [{"name": "Fenway Park"}, {"name": "Boston Public Garden"}],
+    )
+
+    assert "travelmode=bicycling" in url
+    assert "travelmode=driving" not in url
+
+
+def test_destination_attractions_map_url_keeps_driving_for_a_rail_trip() -> None:
+    """Transit cannot render a waypoint URL, so it stands aside for driving --
+    the same trade the whole-route link makes, and the reason the rule is
+    shared rather than restated."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    url = assembler._build_destination_attractions_map_url(
+        {"name": "Frankfurt, Germany", RESOLVED_MODE_KEY: "transit"},
+        [{"name": "Romerberg"}, {"name": "Stadel Museum"}],
+    )
+
+    assert "travelmode=driving" in url
+
+
 def test_destination_attractions_map_url_single_item_remains_focused_search() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     url = assembler._build_destination_attractions_map_url(
-        "St. George, Utah",
+        {"name": "St. George, Utah"},
         [{"name": "Pioneer Park"}],
     )
 
