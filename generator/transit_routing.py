@@ -326,6 +326,10 @@ def stamp_resolved_modes(trip: dict[str, Any]) -> None:
         trail_name = str(trip_meta.get("trail_name", "") or "").strip()
         if trail_name and mode in SELF_POWERED_MODES:
             dest[TRAIL_NAME_KEY] = trail_name
+        # Copied out now, while the booking is still here to read.
+        booked = booked_arrival_type(dest)
+        if booked:
+            dest[BOOKED_TYPE_KEY] = booked
         if not str(dest.get("group_with", "") or "").strip():
             previous_id = str(dest.get("id", "") or "").strip()
 
@@ -474,11 +478,19 @@ def leg_mode(dest: dict[str, Any] | None) -> LegMode:
 
 
 def booked_arrival_type(dest: dict[str, Any] | None) -> str:
-    """The type of the booked leg arriving at this destination, if any."""
+    """The type of the booked leg arriving at this destination, if any.
+
+    Falls back to the value stamped at parse time when the booking itself is
+    gone, which is what privacy redaction leaves behind in prod.
+    """
     leg = booked_arrival_leg(dest)
-    if not isinstance(leg, dict):
+    if isinstance(leg, dict):
+        booked = str(leg.get("type", "") or "").strip().lower()
+        if booked:
+            return booked
+    if not isinstance(dest, dict):
         return ""
-    return str(leg.get("type", "") or "").strip().lower()
+    return str(dest.get(BOOKED_TYPE_KEY, "") or "").strip().lower()
 
 
 #: Walking hours in a day when the manifest does not say. Matches
@@ -489,6 +501,19 @@ DEFAULT_ACTIVITY_HOURS_PER_DAY = 5.0
 #: Where the trip's trail name is stamped, alongside the resolved mode and for
 #: the same reason: url_discovery sees a destination, never trip_meta.
 TRAIL_NAME_KEY = "_trail_name"
+
+#: Where the BOOKED leg type is stamped, at parse time, before anything can
+#: remove it.
+#:
+#: Privacy redaction clears `destination.transportation` wholesale in prod --
+#: correctly, since a carrier plus a record locator is enough to change
+#: somebody else's booking. But the leg's travel mode was being read back out
+#: of that same list at render time, so redaction silently turned every booked
+#: rail leg into a drive: an all-rail itinerary published with car icons and
+#: driving directions while the identical dev build was right. The type alone
+#: is not sensitive -- "this leg is a train" is on the face of the page -- so
+#: it is copied out before the payload goes.
+BOOKED_TYPE_KEY = "_booked_type"
 
 
 def format_self_powered_duration(minutes: Any, *, hours_per_day: Any = None) -> str:
