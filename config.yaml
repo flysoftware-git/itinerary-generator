@@ -293,7 +293,23 @@ cultural_events:
 # current behaviour when off -- none of them is a source, and no field any of
 # them returns is published.
 maps_platform:
-  enabled: false
+  # Owner decision, 2026-09-06: ON. One gate over three metered products --
+  # Routes (transit_estimate) and Places Text Search (place_resolver,
+  # places_filter) -- so this authorises all three, not only the one that
+  # prompted it.
+  #
+  # What prompted it: self-powered legs get their duration and distance from
+  # Routes in BICYCLE/WALK mode. With the gate shut there is no honest figure
+  # for them at all -- `_enforce_transit_leg_durations` blanks the leg rather
+  # than substitute a driving estimate -- so a published bike or hike
+  # itinerary loses every leg duration. See docs/design/multimodal-routing.md.
+  #
+  # This is not new spend relative to the pages already published: those runs
+  # predate the gate, when a key in the environment turned all three on by
+  # itself. Turning it on restores that, with the decision now recorded where
+  # it can be reviewed. The credential still comes from the environment and
+  # both are still required.
+  enabled: true
 
 
 transit_routing:
