@@ -13,6 +13,84 @@ published artifact; **patch** for fixes that leave behaviour unchanged.
 `__template_version__` tracks the frozen HTML template separately and does
 not move with this number.
 
+## 3.2.0 — 2026-09-07
+
+9 commits since 3.1.0, most of them from other sessions working the same
+mainline. `__template_version__` stays at 2.5.7; the frozen template is
+untouched.
+
+**Minor**: `en_route_stops.vehicle_range_miles` is new configuration surface
+(shipped commented out — absent means nobody has said how far the tank goes,
+which is the ordinary case), and booked transportation legs gained a `stops`
+array. Existing manifests and configs are unaffected.
+
+### Added
+
+- **A booked leg can say where it calls.** A cruise is not one place with two
+  dates, and a seven-night sailing used to produce a booking naming only the
+  embarkation port. `TRANSPORTATION_ITEM_SCHEMA` gains an ordered `stops` array
+  of `{place, date}`; the extraction prompt asks for them and is told to return
+  `[]` for a single-hop booking, because inventing the middle of an itinerary is
+  worse than leaving it empty. The same applies to a multi-city rail fare.
+
+- **Access notes.** A destination can say what is known about getting in — and
+  say when it is not known, rather than implying either way.
+
+- **`en_route_stops.vehicle_range_miles`.** The en-route stop fires on whichever
+  limit comes first, three hours of driving or a tank.
+
+### Fixed
+
+- **A republished guide was invisible to the people reading it.** `./index.html`
+  is precached in the service worker's `SHELL` and the fetch handler was
+  cache-first, so a reader who had opened a guide once kept being served that
+  copy. Navigations are now network-first, falling back to the cache only when
+  `fetch` rejects; images and pinned CDN assets stay cache-first. This is the
+  second half of the bug the per-build cache key addressed in 2.x — that key
+  purges the old shell only after the new worker activates, and the navigation
+  triggering the update has already been answered from the old cache. It turned
+  "stale forever" into "stale for one load," and one load is enough. It cost
+  three corrected trail links: published, verified in the deployed HTML, and
+  still 404 for the reader.
+
+- **A bike trip's links stopped offering to drive.** Twelve attraction-loop
+  pills still hardcoded driving on a page for a rider crossing five states by
+  bicycle; the rule lived at one of the two sites needing it and is now
+  `LegMode.waypoint_travelmode`, asked by both. The second site was found by
+  counting `travelmode=` values in the built HTML, which is now the check.
+
+- **Three en-route stops were linked by a name search** while every stop beside
+  them carried a coordinate — nothing had asked for the geocode that was already
+  cached. Now tried in descending precision, and only with a bias box: written
+  without one, "Canyon Overlook" near Zion resolved to Georgia, ~1,700 miles
+  off, rendered as a precise pin admitting nothing.
+
+- **The audit threw away what it resolved.** `audit_discovered_urls` wrote
+  `stop["url"]` only under `cleaned != url`, but `url` is a local that earlier
+  blocks reassign — so a value they introduced and retention accepted unchanged
+  made "retention changed nothing" and "there is nothing to write" the same
+  condition. Any AllTrails link the trail batch had already bought was dropped
+  the same way, silently, for as long as both blocks have existed.
+
+- **The fuel stop was past the fuel needed to reach it.** The range bound
+  decided *whether* to suggest a stop and nothing decided *where*: on a 900-mile
+  leg with a 200-mile tank the pick landed at mile 450. The target is now
+  `min(0.5, reach)`.
+
+- **The day count needed two day numbers; only the span needed a month.**
+  Routing the count through the span dropped every string whose leading word is
+  not a month name to 1 — "Nights 2-5", "Days 1-5", "Week 3-7" — and every
+  day-scaled target is computed against `day_count`, so those destinations got
+  one day of content instead of four. Also: "Sept" is a month. Missing it meant
+  a fully dated stay went invisible and its days were reported unaccounted for.
+
+- **"Silent when off" was not silent.** The access-notes template carried a
+  labelled line that was always present, so with the flag unset every existing
+  trip's prompt gained an instruction to say nothing about accessibility — a new
+  instruction pointed the wrong way, not the absence of one. The placeholder now
+  owns the whole line, and the rendered prompt with the flag off is
+  byte-identical to 3.1.0's.
+
 ## 3.1.0 — 2026-09-06
 
 11 commits since 3.0.0. `__template_version__` stays at 2.5.7 — the frozen
