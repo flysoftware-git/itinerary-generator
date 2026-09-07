@@ -70,6 +70,40 @@ TRANSPORTATION_ITEM_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": "Carrier/rental manage-booking or info URL.",
         },
+        "stops": {
+            "type": "array",
+            "description": "Where a multi-stop booked leg calls on the way, in "
+                           "the order the traveler reaches them. A cruise or a "
+                           "multi-city rail fare is not one place with two "
+                           "dates: it is an itinerary, and every call is "
+                           "somewhere the traveler will actually be. Without "
+                           "this the booking says only where it starts and "
+                           "ends, so the places in between cannot be written "
+                           "about, linked, or planned around -- which is most "
+                           "of the trip on a sailing. Empty or absent for the "
+                           "ordinary single-hop leg, which is unchanged.",
+            "items": {
+                "type": "object",
+                "required": ["place"],
+                "properties": {
+                    "place": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The port, station or city called at, "
+                                       "named the way a destination is so it "
+                                       "can be matched to one.",
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": "The day of the call, ISO 8601 where "
+                                       "the booking states it. Free-text like "
+                                       "`depart` and `dates`: nothing in the "
+                                       "pipeline schedules from it.",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
     },
     "additionalProperties": False,
 }

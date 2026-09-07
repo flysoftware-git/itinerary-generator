@@ -89,7 +89,8 @@ Return STRICT JSON with this shape:
   "location": string,
   "checkin_time": string,
   "dates": string,
-  "city": string
+  "city": string,
+  "stops": [ { "place": string, "date": string } ]
 }
 
 Rules:
@@ -102,6 +103,13 @@ Rules:
 - "city" must be the destination city or park the booking is FOR, as plainly
   as possible (e.g. "Springdale, UT"), since it is used to match the booking
   to an itinerary stop.
+- "stops" is the itinerary of a multi-stop booked leg, in the order the
+  traveler reaches them: the ports of a cruise, the cities of a multi-city rail
+  fare. Include the embarkation port as the first entry when the email names
+  it. Give "date" only where the email states one, ISO 8601 (YYYY-MM-DD).
+  Return [] for a single-hop booking such as a flight or a car -- an itinerary
+  is a fact the email either lists or does not, and inventing the middle of one
+  is worse than leaving it empty.
 - Use "" for anything the email does not state. NEVER invent a confirmation
   number, price, date or URL. An empty string is always better than a guess.
 - Return only the JSON object, no prose.
@@ -496,6 +504,22 @@ def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, 
         return "lodging", _clean(("name", "location", "checkin_time", "confirmation_number", "website"))
 
     fragment = _clean(("provider", "label", "confirmation_number", "depart", "arrive", "website"))
+    # Where the leg calls on the way. `_clean` handles strings and these are
+    # objects, so they are filtered here instead -- and filtered rather than
+    # passed through, because a call with no place is not a place the traveler
+    # will be, and the schema says so. Absent when there are none, so a flight
+    # keeps exactly the fragment it produced before.
+    stops = []
+    for stop in reservation.get("stops") or []:
+        if not isinstance(stop, dict):
+            continue
+        place = str(stop.get("place", "") or "").strip()
+        if not place:
+            continue
+        when = str(stop.get("date", "") or "").strip()
+        stops.append({"place": place, **({"date": when} if when else {})})
+    if stops:
+        fragment["stops"] = stops
     kind = str(reservation.get("type", "") or "").strip().lower()
     # Derived from the schema rather than restated. A local copy of this set
     # silently downgraded every type the schema gained -- a forwarded cruise

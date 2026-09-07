@@ -1037,3 +1037,105 @@ def test_cli_actually_calls_the_filing_pass() -> None:
     assert "unrelated" not in handled_block, (
         "another trip's booking would be filed away and lost to its own manifest"
     )
+
+
+# --------------------------------------------------------------- port calls
+
+
+def test_a_multi_stop_leg_carries_where_it_calls() -> None:
+    """A cruise or a multi-city rail fare is not one place with two dates: it is
+    an itinerary, and every call is somewhere the traveler will actually be.
+
+    Without the calls a booking says only where it starts and ends, so the
+    places in between cannot be written about, linked, or planned around --
+    which on a sailing is most of the trip.
+    """
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship", "provider": "Silversea",
+        "stops": [
+            {"place": "Venice, Italy", "date": "2026-06-14"},
+            {"place": "Split, Croatia", "date": "2026-06-16"},
+        ],
+    })
+
+    assert fragment["stops"] == [
+        {"place": "Venice, Italy", "date": "2026-06-14"},
+        {"place": "Split, Croatia", "date": "2026-06-16"},
+    ]
+
+
+def test_the_order_is_the_itinerarys_and_is_not_sorted() -> None:
+    """A schedule is a sequence. Sorting by date would silently repair a
+    mis-stated date into a different itinerary, which is a worse failure than
+    showing the traveler a date that is visibly wrong."""
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship",
+        "stops": [{"place": "Kotor", "date": "2026-06-18"},
+                  {"place": "Split", "date": "2026-06-16"}],
+    })
+
+    assert [s["place"] for s in fragment["stops"]] == ["Kotor", "Split"]
+
+
+def test_a_call_with_no_date_keeps_its_place() -> None:
+    """Half an answer is still an answer: an email listing ports and no days
+    still says where the traveler will be."""
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship", "stops": [{"place": "Kotor"}],
+    })
+
+    assert fragment["stops"] == [{"place": "Kotor"}]
+
+
+def test_a_call_with_no_place_is_dropped() -> None:
+    """It is not somewhere the traveler will be, and the schema requires one."""
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship",
+        "stops": [{"date": "2026-06-16"}, {"place": "  "}, "Kotor"],
+    })
+
+    assert "stops" not in fragment
+
+
+def test_a_single_hop_booking_is_unchanged() -> None:
+    """The control, and the reason `stops` is absent rather than empty: a flight
+    must produce exactly the fragment it produced before."""
+    _, fragment = reservation_to_manifest_fragment(
+        {"kind": "transportation", "type": "plane", "provider": "United"})
+
+    assert fragment == {"type": "plane", "provider": "United"}
+
+
+def test_the_extraction_prompt_asks_for_the_calls() -> None:
+    """The converter can only carry what the model was asked to produce."""
+    from generator.reservation_ingest import _build_extraction_prompt
+
+    prompt = _build_extraction_prompt()
+    assert '"stops"' in prompt
+    assert "single-hop" in prompt, "nothing tells the model when to return none"
+
+
+def test_the_schema_accepts_a_leg_that_calls_somewhere() -> None:
+    """`additionalProperties` is False on this item, so carrying the calls and
+    accepting them are one change rather than two."""
+    import jsonschema
+
+    from generator.manifest_parser import TRANSPORTATION_ITEM_SCHEMA
+
+    jsonschema.validate(
+        {"type": "ship", "stops": [{"place": "Venice, Italy", "date": "2026-06-14"}]},
+        TRANSPORTATION_ITEM_SCHEMA,
+    )
+
+
+def test_the_schema_refuses_a_call_with_no_place() -> None:
+    import jsonschema
+    import pytest
+
+    from generator.manifest_parser import TRANSPORTATION_ITEM_SCHEMA
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            {"type": "ship", "stops": [{"date": "2026-06-14"}]},
+            TRANSPORTATION_ITEM_SCHEMA,
+        )
