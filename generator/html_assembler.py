@@ -21,7 +21,14 @@ import re
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
-from generator.transit_routing import LegMode, RESOLVED_MODE_KEY, leg_mode, resolved_mode
+from generator.transit_routing import (
+    BOOKED_TYPE_KEY,
+    LegMode,
+    RESOLVED_MODE_KEY,
+    booked_arrival_type,
+    leg_mode,
+    resolved_mode,
+)
 from generator.multi_site_grouping import (
     DEFAULT_BASE_OWNED_CATEGORIES,
     category_deferred_to_base,
@@ -2221,6 +2228,11 @@ class HTMLAssembler:
             "name": current_route_target or dest.get("name", ""),
             "transportation": dest.get("transportation") or [],
             RESOLVED_MODE_KEY: resolved_mode(dest),
+            # The booked type as stamped at parse time. `transportation` above
+            # is empty in prod -- redaction clears it -- so without this the
+            # link falls back to driving on exactly the itineraries whose legs
+            # are booked trains.
+            BOOKED_TYPE_KEY: booked_arrival_type(dest),
         }
         # _build_route_gmaps_url applies its own [:8] cap (Google's own
         # interactive directions UI is documented to support only a limited
@@ -2268,6 +2280,10 @@ class HTMLAssembler:
         html = '<div class="card getting-here-card getting-here-subcard">\n'
         html += '  <div class="getting-here-header">\n'
         # A leg the traveler pedals or walks should not sit under a car.
+        # Keyed on the declared mode: bike and hike are the only two that
+        # rename this card. A booked train keeps "Getting Here" -- the icon is
+        # the section's, not the leg's, and _build_transportation_pills already
+        # names the carrier.
         heading = _GETTING_HERE_HEADING_BY_LEG_MODE.get(
             leg_mode(dest).declared, '🚗 Getting Here'
         )

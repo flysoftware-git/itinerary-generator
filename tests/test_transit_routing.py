@@ -637,3 +637,62 @@ class TestLegModeIsTheOnlyResolver:
                 AIContentGenerator._arrival_is_not_self_driven(dest)
                 == URLDiscoverer._arrival_is_not_self_driven(dest)
             )
+
+
+class TestLegModeSurvivesRedaction:
+    """Privacy redaction clears `destination.transportation` in prod, and the
+    leg's travel mode was read back out of that list at render time. So every
+    published booked-rail itinerary rendered as a drive -- car icon, driving
+    directions -- while the identical dev build was correct. The Europe page
+    shipped that way.
+    """
+
+    def _europe_leg(self):
+        from generator.transit_routing import stamp_resolved_modes
+
+        trip = {
+            "trip": {},
+            "destinations": [
+                {"id": "brussels", "name": "Brussels",
+                 "transportation": [{"type": "train", "provider": "Eurostar",
+                                     "confirmation_number": "XR7Q2M"}]},
+                {"id": "amsterdam", "name": "Amsterdam",
+                 "transportation": [{"type": "train", "confirmation_number": "AB12CD"}]},
+            ],
+        }
+        stamp_resolved_modes(trip)
+        return trip
+
+    def test_the_mode_survives_the_booking_being_cleared(self):
+        import generator.main as main_mod
+        from generator.transit_routing import leg_mode
+
+        trip = self._europe_leg()
+        dest = trip["destinations"][1]
+        assert leg_mode(dest).maps_travelmode == "transit"
+
+        main_mod._apply_privacy_redaction(trip)
+
+        assert dest["transportation"] == [], "redaction must still clear the booking"
+        assert leg_mode(dest).maps_travelmode == "transit", (
+            "the link fell back to driving once the booking was redacted"
+        )
+
+    def test_redaction_still_removes_everything_sensitive(self):
+        """The type is kept because it is on the face of the page anyway. The
+        carrier and the record locator are not, and must still go."""
+        import generator.main as main_mod
+
+        trip = self._europe_leg()
+        main_mod._apply_privacy_redaction(trip)
+
+        rendered = repr(trip)
+        assert "XR7Q2M" not in rendered and "AB12CD" not in rendered
+        assert "Eurostar" not in rendered
+
+    def test_a_trip_with_no_booking_is_unaffected(self):
+        from generator.transit_routing import BOOKED_TYPE_KEY, stamp_resolved_modes
+
+        trip = {"trip": {}, "destinations": [{"id": "a"}, {"id": "b"}]}
+        stamp_resolved_modes(trip)
+        assert all(BOOKED_TYPE_KEY not in d for d in trip["destinations"])
