@@ -48,7 +48,7 @@ destinations:
     # ~28 mi. The Eastern Trail carries most of it traffic-free through the
     # Scarborough Marsh; the last stretch is on-road.
     trail_section: Biddeford to Kennebunk via Eastern Trail
-    trail_url: https://www.alltrails.com/trail/us/maine/biddeford-to-kennebunk-via-eastern-
+    trail_url: https://www.alltrails.com/trail/us/maine/biddeford-to-kennebunk-via-eastern-trail
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
@@ -68,7 +68,7 @@ destinations:
     # ~22 mi and the shortest day of the trip. Rest day: the Seacoast
     # Greenway behind you, the Border to Boston trail ahead.
     trail_section: Hampton to Portsmouth via New Hampshire Seacoast Greenway
-    trail_url: https://www.alltrails.com/trail/us/new-hampshire/hampton-to-portsmouth-via-the
+    trail_url: https://www.alltrails.com/trail/us/new-hampshire/hampton-to-portsmouth-via-the-new-hampshire-seacoast-greenway
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
@@ -97,7 +97,7 @@ destinations:
     # ~32 mi. The Washington Secondary and South County paths take most of
     # the day off the road.
     trail_section: Washington Secondary Rail Trail
-    trail_url: https://www.alltrails.com/trail/us/rhode-island/washington-secondary-rail-trai
+    trail_url: https://www.alltrails.com/trail/us/rhode-island/washington-secondary-rail-trail
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
