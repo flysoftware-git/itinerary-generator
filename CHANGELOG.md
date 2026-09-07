@@ -13,6 +13,71 @@ published artifact; **patch** for fixes that leave behaviour unchanged.
 `__template_version__` tracks the frozen HTML template separately and does
 not move with this number.
 
+## 3.1.0 — 2026-09-06
+
+11 commits since 3.0.0. `__template_version__` stays at 2.5.7 — the frozen
+template is untouched, and every change here is behind it.
+
+**Minor because the configuration surface grew**, not because the pages look
+different. `maps_platform.enabled` is a new key with a real decision behind it,
+and the run ledger gained a second dimension. A config file written for 3.0.0
+still runs unchanged; the new key defaults to off.
+
+Named separately because the number is published: the footer of every generated
+guide carries `__version__`, so a value that stops moving while the generator
+keeps changing makes three different builds claim to be the same one. 3.0.0 was
+on the last four published itineraries, none of which were built from it.
+
+### Added
+
+- **Fan-out instrumentation.** Per-branch spans and pool utilisation land in
+  `run_ledger.jsonl`, so the one wall-clock figure for the stage 4/5 block can
+  name which branch set it. "All three took 700s" and "URL discovery took 700s
+  while the other two finished in 40" call for entirely different work, and
+  before this they were the same line. `tests/test_fanout_metrics.py` keeps the
+  coverage honest as new pools appear.
+
+- **`maps_platform.enabled`.** One gate over the three metered Google products
+  (Routes, and Places Text Search in both `place_resolver` and `places_filter`),
+  and it fails closed. Now on, with the decision recorded beside the key rather
+  than in a commit message.
+
+### Changed
+
+- **A key in the environment is a credential, not a decision.** Finding
+  `GOOGLE_MAPS_API_KEY` set used to be read as permission to spend against it.
+  Billing is a choice the config makes; the environment only says whether the
+  choice is possible.
+
+- **One rule for whether a leg has a roadside.** The question "can this leg have
+  en-route stops?" was answered in seven places, and they had drifted apart. It
+  is now `LegMode`, resolved once at parse time.
+
+### Fixed
+
+- **Redaction turned every booked train into a drive, but only in prod.** Leg
+  mode was read from `transportation`, which privacy redaction clears wholesale
+  — so the published build, and only the published build, described a booked
+  train as a drive. The booked type is now stamped at parse time, before
+  redaction can reach it. This is the second defect in this cycle visible only
+  in the artifact that ships.
+
+- **Deduplication is discovery working, and it was counted as discovery
+  failing** — which then triggered a retry pass over URLs that had been found.
+
+- **A retry that remembers its failures cannot resolve anything.** The retry
+  pass reused the estimator's failure cache, so it re-answered from the failures
+  it was retrying.
+
+- **Three trail links were 404s, cut mid-slug.** Three of the five East Coast
+  Greenway `trail_url` values were transcribed from console output truncated to
+  76 characters. Note for anyone checking such links: AllTrails serves 403 to
+  every automated request, so an HTTP probe cannot separate a good URL from a
+  broken one here. The search that produced the URL, read in full, is the check.
+
+- **v3 had no CI**, because the workflow triggers still named `v2`. `gh pr
+  checks` reports "no checks" for both "not configured" and "not yet run".
+
 ## 3.0.0 — 2026-09-05
 
 19 commits since 2.7.0, plus the merge that brings `v2` in. `__template_version__`
