@@ -15,7 +15,11 @@ from __future__ import annotations
 
 import pytest
 
+from pathlib import Path
+
 from generator.ai_content import AIContentGenerator
+
+PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "destination_content.txt"
 from generator.manifest_parser import MANIFEST_SCHEMA
 
 
@@ -65,11 +69,37 @@ def test_a_non_boolean_flag_is_refused():
 # ---------------------------------------------------------------- guidance
 
 def test_off_by_default_and_silent_when_off():
-    """A guide nobody asked for access notes on renders as it always did."""
+    """Silent means nothing, not a sentence saying nothing.
+
+    This returned "not requested -- say nothing about accessibility" for a
+    labelled line that was always present, so every existing trip's prompt
+    gained an instruction where it had none. A flag nobody set must not change
+    what anybody gets, and a model told to say nothing about access may drop
+    detail it used to mention in passing.
+    """
     for meta in ({}, None, {"access_notes": False}, {"title": "A drive"}):
-        said = _guidance(meta)
-        assert "REPORT ACCESS" not in said
-        assert "say nothing about accessibility" in said
+        assert _guidance(meta) == ""
+
+
+def test_the_prompt_is_unchanged_for_a_trip_that_did_not_ask():
+    """The guarantee itself, checked against the rendered prompt rather than
+    the guidance string: the placeholder owns its whole line, so with the flag
+    off the line is gone rather than blank."""
+    template = (PROMPT_PATH).read_text(encoding="utf-8")
+    rendered = AIContentGenerator._render_prompt_template(
+        template, arrival_mode_guidance="X", access_guidance=_guidance({})
+    )
+    assert "Access:" not in rendered
+    assert "Arrival mode:   X\nSeeds" in rendered
+
+
+def test_the_line_is_labelled_when_the_trip_did_ask():
+    template = (PROMPT_PATH).read_text(encoding="utf-8")
+    rendered = AIContentGenerator._render_prompt_template(
+        template, arrival_mode_guidance="X", access_guidance=_guidance({"access_notes": True})
+    )
+    assert "Arrival mode:   X\nAccess:         REPORT ACCESS" in rendered
+    assert rendered.count("Access:") == 1
 
 
 def test_when_asked_it_wants_the_foot_approach_measured():

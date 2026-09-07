@@ -1699,9 +1699,16 @@ class AIContentGenerator:
     def _build_access_guidance(self, trip_meta: dict[str, Any] | None) -> str:
         """What is known about GETTING IN, when the manifest asks for it.
 
-        Off unless `trip.access_notes` is true, and silent when off: a guide
-        that has not been asked for access information renders exactly as it
-        did before, with no sentence added and no placeholder left behind.
+        Off unless `trip.access_notes` is true, and silent when off. Silent
+        means the prompt is byte-identical to the one every existing trip
+        already sends: this returns the WHOLE LINE including its newline, or
+        the empty string, and the template carries `{access_guidance}` with no
+        newline of its own. Returning a value for a labelled line that is
+        always present is not silence -- it put "Access: not requested -- say
+        nothing about accessibility" into every trip's prompt, which is a new
+        instruction where there had been none, and the model that reads it may
+        drop access detail it used to mention in passing. A flag nobody set
+        should not change what anybody gets.
 
         **The instruction is mostly about what not to do.** The failure mode
         here is not omission, it is confident invention: a model asked whether
@@ -1718,8 +1725,9 @@ class AIContentGenerator:
         an inference from the kind of place it is.
         """
         if not (trip_meta or {}).get("access_notes"):
-            return "not requested — say nothing about accessibility"
+            return ""
         return (
+            "Access:         "
             "REPORT ACCESS for every place you name. Three things, in the "
             "description: (1) if the only way in is on foot, how far it is from "
             "parking or the nearest transit stop, and what the surface and "
@@ -1730,7 +1738,7 @@ class AIContentGenerator:
             "operator. A confident wrong yes is discovered at the door, after "
             "the journey, and is far worse than an honest unknown. Do not claim "
             "a place is accessible unless a source says so, and say that the "
-            "venue's own information is the one to trust before travelling."
+            "venue's own information is the one to trust before travelling.\n"
         )
 
     def _build_arrival_mode_guidance(self, dest: dict[str, Any] | None) -> str:
