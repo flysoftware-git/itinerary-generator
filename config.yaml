@@ -241,6 +241,16 @@ en_route_stops:
   # It never invents a place, so it stays silent when `enabled` is false --
   # with no verified candidates there is nothing honest to recommend.
   lunch_stop_min_drive_minutes: 180
+  # How far the vehicle goes on a tank, in miles. The stop above fires on
+  # whichever limit is reached FIRST -- three hours of driving, or a tank --
+  # so on a fast road the range can bite well before the clock does.
+  #
+  # Commented out on purpose. Absent means nobody has said, which is the
+  # ordinary case: not every trip is driven, and a number invented here would
+  # put a fuel stop on a leg that never needed one. The range is converted at
+  # each leg's own speed, so 350 miles is under five hours of interstate and
+  # most of a day on a mountain road.
+  # vehicle_range_miles: 350
 
 cultural_events:
   # OFF by default as of 2026-08-22. Measured across three cold-start runs:
