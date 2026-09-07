@@ -396,7 +396,25 @@ class AIContentGenerator:
         if travel_minutes < earns:
             return None
 
-        best: tuple[int, float, dict[str, Any]] | None = None
+        # How far along the leg the tank actually reaches, and therefore the
+        # furthest point it is any use to be sent to. Without this the stop was
+        # always the one nearest the MIDPOINT, which on a leg longer than two
+        # tanks is past the point the driver runs dry: a 900-mile leg with a
+        # 200-mile tank recommended a town at mile 450 and passed over one at
+        # mile 180. The threshold decided whether to suggest a stop and nothing
+        # decided where, so the bound that exists to stop somebody being
+        # stranded put the stop beyond the fuel to reach it.
+        #
+        # It binds whenever the range is known and the leg outruns it, not only
+        # when the range is the SHORTER bound. A leg that earns its stop on
+        # time can still be longer than a tank.
+        reach = AIContentGenerator._reachable_ratio(getting_here, range_miles)
+        # As late as the tank allows, but no later than the middle: a fuel stop
+        # wants to be deep into the leg to save a second one, and a lunch stop
+        # wants the middle. Where both apply the earlier of the two wins.
+        target = min(0.5, reach) if reach is not None else 0.5
+
+        best: tuple[tuple[int, int, float], dict[str, Any]] | None = None
         for stop in (getting_here.get("en_route_stops", []) or []):
             if not isinstance(stop, dict) or not str(stop.get("name", "") or "").strip():
                 continue
@@ -406,14 +424,52 @@ class AIContentGenerator:
                 continue
             if not (0.0 <= ratio <= 1.0):
                 continue
+            # Out of reach is not a candidate. Naming one would be telling the
+            # traveler to refuel somewhere they cannot get to.
+            if reach is not None and ratio > reach:
+                continue
             rank = (
                 0 if AIContentGenerator._is_populated_place(stop) else 1,
                 0 if stop.get("is_seed") else 1,
-                abs(ratio - 0.5),
+                abs(ratio - target),
             )
             if best is None or rank < best[0]:
                 best = (rank, stop)
+        # Nothing within reach means nothing to say. The same silence this
+        # function already keeps when en-route discovery is off: it never names
+        # a place the rest of the pipeline has not verified, and a stop the
+        # traveler cannot reach is not a recommendation.
         return best[1] if best else None
+
+    @staticmethod
+    def _reachable_ratio(getting_here: Any, range_miles: float | None) -> float | None:
+        """How far along the leg one tank goes, as a fraction of it.
+
+        Measured from the start of the leg on a FULL TANK. Owner, 2026-09-06:
+        *"you can assume every day starts with a topoff"* -- so a leg that
+        begins a driving day begins it full, and the range is spent against
+        this leg rather than carried in part from the last one. Without that
+        premise this fraction would need a running fuel level the manifest does
+        not model.
+
+        None when the range is unset or the leg carries no distance -- an
+        unmeasured leg is not evidence of a short one, and the same fallback
+        `_stop_threshold_minutes` makes. None also when a tank covers the whole
+        leg, since then nothing is out of reach and the midpoint is free to win.
+        """
+        try:
+            miles = float(range_miles) if range_miles else 0.0
+        except (TypeError, ValueError):
+            return None
+        if miles <= 0:
+            return None
+        try:
+            leg_miles = float((getting_here or {}).get("distance_miles") or 0)
+        except (TypeError, ValueError):
+            return None
+        if leg_miles <= 0 or miles >= leg_miles:
+            return None
+        return miles / leg_miles
 
     # Words that mark a stop as a landform, a park or a region rather than a
     # town. Reuses multi_site_grouping.is_park_like for the park half so the

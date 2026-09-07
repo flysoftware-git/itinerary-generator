@@ -170,3 +170,50 @@ def test_a_trip_with_no_range_set_reads_exactly_as_before() -> None:
     trip = _trip("5 hr", 250)
     _Gen(DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES, None)._inject_lunch_stop_suggestions(trip)
     assert "Break for lunch around Oak Ridge, roughly the midpoint." in _summary(trip)
+
+# ------------------------------------------------ where the stop actually goes
+
+
+def _stops(*pairs):
+    return [{"name": n, "route_progress_ratio": r} for n, r in pairs]
+
+
+def test_the_fuel_stop_is_within_the_tank_that_has_to_reach_it() -> None:
+    """The bound decided WHETHER to suggest a stop and nothing decided WHERE.
+
+    A 900-mile leg with a 200-mile tank recommended the town nearest the
+    midpoint -- mile 450 -- and passed over one at mile 180. The stop that
+    exists so nobody is stranded was itself 250 miles past the fuel needed to
+    reach it. The tank is full at the start of the leg (every day starts with a
+    topoff), so reach is measured from mile 0.
+    """
+    leg = _leg("12 hr", 900, _stops(("Fuelville", 0.20), ("Midtown", 0.50)))
+    assert Gen._pick_lunch_stop(leg, 180, 200)["name"] == "Fuelville"
+
+
+def test_the_cap_binds_even_when_the_clock_is_the_shorter_bound() -> None:
+    """A leg can earn its stop on time and still be longer than a tank. The
+    reason that fired says which sentence to write; it does not decide whether
+    the driver can get there."""
+    leg = _leg("12 hr", 800, _stops(("Town A", 0.40), ("Town B", 0.50), ("Town C", 0.90)))
+    assert Gen._stop_threshold_minutes(leg, 180, 350)[1] == "time"
+    assert Gen._pick_lunch_stop(leg, 180, 350)["name"] == "Town A"
+
+
+def test_with_no_range_set_the_midpoint_still_wins() -> None:
+    """The cap must not exist when nobody has said what the tank is."""
+    leg = _leg("12 hr", 800, _stops(("Town A", 0.40), ("Town B", 0.50), ("Town C", 0.90)))
+    assert Gen._pick_lunch_stop(leg, 180, None)["name"] == "Town B"
+
+
+def test_a_tank_that_covers_the_leg_does_not_move_the_stop() -> None:
+    leg = _leg("6 hr", 300, _stops(("Town A", 0.40), ("Town B", 0.50), ("Town C", 0.90)))
+    assert Gen._pick_lunch_stop(leg, 180, 500)["name"] == "Town B"
+
+
+def test_nothing_within_reach_says_nothing() -> None:
+    """It never names a place the pipeline has not verified, and a stop the
+    traveler cannot reach is not a recommendation. Silence is the same answer
+    this function already gives when en-route discovery is off."""
+    leg = _leg("12 hr", 900, _stops(("FarTown", 0.80)))
+    assert Gen._pick_lunch_stop(leg, 180, 200) is None
