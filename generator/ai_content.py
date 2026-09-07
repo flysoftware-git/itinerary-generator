@@ -1568,6 +1568,7 @@ class AIContentGenerator:
             next_destination=next_dest or "none",
             budget_guidance=self._build_budget_guidance(trip_meta),
             arrival_mode_guidance=self._build_arrival_mode_guidance(dest),
+            access_guidance=self._build_access_guidance(trip_meta),
             seeds="\n  ".join(f"- {s}" for s in seeds) if seeds else "  (none — generate full recommendations)",
         )
         what_to_know_prompt = self._render_prompt_template(
@@ -1694,6 +1695,43 @@ class AIContentGenerator:
             )
 
         return "\n".join(lines)
+
+    def _build_access_guidance(self, trip_meta: dict[str, Any] | None) -> str:
+        """What is known about GETTING IN, when the manifest asks for it.
+
+        Off unless `trip.access_notes` is true, and silent when off: a guide
+        that has not been asked for access information renders exactly as it
+        did before, with no sentence added and no placeholder left behind.
+
+        **The instruction is mostly about what not to do.** The failure mode
+        here is not omission, it is confident invention: a model asked whether
+        a place is accessible will readily answer "yes, wheelchair accessible"
+        from nothing but the name, and that answer is worse than silence. A
+        reader can plan around "not documented" -- ring ahead, pick another
+        day, bring somebody -- and cannot plan around a wrong yes, which is
+        discovered at the door after the drive.
+
+        So the guidance asks for three things and forbids a fourth: the
+        distance and surface of a foot approach where that is the only way in,
+        whatever accessible entry, parking and facilities are actually
+        documented, the words "not documented" where they are not -- and never
+        an inference from the kind of place it is.
+        """
+        if not (trip_meta or {}).get("access_notes"):
+            return "not requested — say nothing about accessibility"
+        return (
+            "REPORT ACCESS for every place you name. Three things, in the "
+            "description: (1) if the only way in is on foot, how far it is from "
+            "parking or the nearest transit stop, and what the surface and "
+            "gradient are like; (2) what is documented about step-free entry, "
+            "accessible parking, accessible toilets and hire of mobility aids; "
+            "(3) the words \"access not documented\" where you do not know. "
+            "NEVER infer accessibility from the type of place, its age, or its "
+            "operator. A confident wrong yes is discovered at the door, after "
+            "the journey, and is far worse than an honest unknown. Do not claim "
+            "a place is accessible unless a source says so, and say that the "
+            "venue's own information is the one to trust before travelling."
+        )
 
     def _build_arrival_mode_guidance(self, dest: dict[str, Any] | None) -> str:
         """Tell the model how the traveller actually ARRIVES.
