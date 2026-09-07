@@ -7,7 +7,7 @@ Previous stop:  {previous_destination}
 Next stop:      {next_destination}
 Budget:         {budget_guidance}
 Arrival mode:   {arrival_mode_guidance}
-Seeds (attractions the traveler specifically intends to visit — include ALL of
+{access_guidance}Seeds (attractions the traveler specifically intends to visit — include ALL of
        these, do not omit any, and add further recommendations around them):
   {seeds}
 

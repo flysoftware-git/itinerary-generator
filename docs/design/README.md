@@ -18,6 +18,7 @@ This directory captures behavior-oriented design notes for major pipeline compon
 - `v2-issue-6-invariants.md`: Phase 0 non-regression contract capturing the behaviors v2 must preserve.
 - `v2-issue-6-registry-schema.md`: Phase 1 registry/reconciliation schema draft for v2 orchestration.
 - `reservation-email-ingestion.md`: how forwarded confirmation emails become manifest data — matching, the three outcomes, mailbox handling, and the security posture.
+- `access-notes.md`: `trip.access_notes` -- what a guide says about getting in. The foot approach measured, the documented facilities, and the words "access not documented" where that is the truth. Why the honesty rule is the load-bearing half: a confident wrong yes is discovered at the door after the journey, and a reader can plan around unknown but not around wrong.
 - `multimodal-routing.md`: GH #2 design for transit-aware legs; phased AI-only then Google Directions, and why Phase 1 must not emit clock times.
 - `per-day-item-caps.md`: how per-day item targets bound attraction, restaurant, en-route and scenic-drive counts.
 - `cost-accounting-and-reduction.md`: how run spend is measured against the provider's own bill, what the 2026-08-21 reconciliation overturned, and a repeatable benchmarking procedure.

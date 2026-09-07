@@ -192,6 +192,25 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                         },
                     ],
                 },
+                "access_notes": {
+                    "description": (
+                        "Optional. When true, every destination's content is asked to say "
+                        "what is known about REACHING each place named -- how far it is on "
+                        "foot from parking or the nearest transit stop when that is the only "
+                        "way in, the surface and gradient of that approach, and whether step-"
+                        "free entry, accessible parking or accessible facilities are "
+                        "documented. Absent (the default) nothing changes and no access "
+                        "sentence is added. "
+                        "The point of the flag is the honesty rule it carries: the model is "
+                        "told to say plainly when access is NOT documented rather than to "
+                        "infer it. A guide that guesses 'wheelchair accessible' from a place "
+                        "name is worse than one that says nothing, because a traveller can "
+                        "plan around 'unknown' and cannot plan around a wrong yes. Nothing "
+                        "here is a substitute for the venue's own information, and the "
+                        "generated text says so."
+                    ),
+                    "type": "boolean",
+                },
                 "transport_mode": {
                     "type": "string",
                     "enum": list(TRANSPORT_MODES),
