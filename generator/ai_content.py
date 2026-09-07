@@ -178,6 +178,21 @@ def strip_markdown_emphasis(value: Any) -> Any:
 # via en_route_stops.lunch_stop_min_drive_minutes.
 DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES = 180
 
+# How far the vehicle goes on a tank, in miles. **Unset by default, and that is
+# the honest default**: not every trip is driven, not every car's range is
+# known, and a number invented here would put a fuel stop on a leg nobody
+# needed one for. Set it via `en_route_stops.vehicle_range_miles` and the stop
+# fires on whichever limit is reached first.
+#
+# Owner, 2026-09-06: *"en-route lunch / refuel stop should be the shortest of
+# continuous time driving parameter and vehicle range"*. That reframes the
+# feature rather than adding one -- the stop already exists, and range is a
+# second bound on it. The two are in different units, so the range is converted
+# to minutes AT THIS LEG'S OWN SPEED: 350 miles is under five hours of
+# interstate and most of a day on a mountain road, and a threshold that ignored
+# that would be wrong in opposite directions on the two.
+DEFAULT_VEHICLE_RANGE_MILES: float | None = None
+
 _FOCUS_LOOKBACK_PERIODS = 6
 
 
@@ -293,8 +308,56 @@ class AIContentGenerator:
         )
 
     @staticmethod
+    def _stop_threshold_minutes(
+        getting_here: Any,
+        threshold_minutes: int,
+        range_miles: float | None,
+    ) -> tuple[int, str]:
+        """Minutes of driving that earn a stop, and which limit says so.
+
+        The shorter of the two bounds, per owner 2026-09-06. Returns the reason
+        alongside the number because the traveler is being told different things
+        -- *you will want lunch* and *you will need fuel* are not the same
+        sentence, and a stop that says the wrong one is worse than one that says
+        nothing.
+
+        The range is converted at THIS LEG'S own speed rather than a nominal
+        one. A tank of 350 miles is under five hours of interstate and most of a
+        day on a mountain road; a fixed conversion would put the fuel stop too
+        early on one and too late on the other, and too late is the one that
+        strands somebody.
+
+        Falls back to time alone when the leg has no distance to convert
+        against -- an unmeasured leg is not evidence of a short one.
+        """
+        by_time = max(0, int(threshold_minutes or 0))
+        try:
+            miles = float(range_miles) if range_miles else 0.0
+        except (TypeError, ValueError):
+            miles = 0.0
+        if miles <= 0:
+            return by_time, "time"
+
+        leg_minutes = AIContentGenerator._parse_duration_minutes(
+            str((getting_here or {}).get("travel_time", "") or "")
+        )
+        try:
+            leg_miles = float((getting_here or {}).get("distance_miles") or 0)
+        except (TypeError, ValueError):
+            leg_miles = 0.0
+        if leg_minutes <= 0 or leg_miles <= 0:
+            return by_time, "time"
+
+        by_range = int(round(leg_minutes * (miles / leg_miles)))
+        if by_time and by_time <= by_range:
+            return by_time, "time"
+        return by_range, "range"
+
+    @staticmethod
     def _pick_lunch_stop(
-        getting_here: Any, threshold_minutes: int = DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
+        getting_here: Any,
+        threshold_minutes: int = DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES,
+        range_miles: float | None = DEFAULT_VEHICLE_RANGE_MILES,
     ) -> dict[str, Any] | None:
         """The en-route stop to suggest a lunch break at, or None.
 
@@ -327,10 +390,31 @@ class AIContentGenerator:
         travel_minutes = AIContentGenerator._parse_duration_minutes(
             str(getting_here.get("travel_time", "") or "")
         )
-        if travel_minutes < max(0, int(threshold_minutes or 0)):
+        earns, _reason = AIContentGenerator._stop_threshold_minutes(
+            getting_here, threshold_minutes, range_miles
+        )
+        if travel_minutes < earns:
             return None
 
-        best: tuple[int, float, dict[str, Any]] | None = None
+        # How far along the leg the tank actually reaches, and therefore the
+        # furthest point it is any use to be sent to. Without this the stop was
+        # always the one nearest the MIDPOINT, which on a leg longer than two
+        # tanks is past the point the driver runs dry: a 900-mile leg with a
+        # 200-mile tank recommended a town at mile 450 and passed over one at
+        # mile 180. The threshold decided whether to suggest a stop and nothing
+        # decided where, so the bound that exists to stop somebody being
+        # stranded put the stop beyond the fuel to reach it.
+        #
+        # It binds whenever the range is known and the leg outruns it, not only
+        # when the range is the SHORTER bound. A leg that earns its stop on
+        # time can still be longer than a tank.
+        reach = AIContentGenerator._reachable_ratio(getting_here, range_miles)
+        # As late as the tank allows, but no later than the middle: a fuel stop
+        # wants to be deep into the leg to save a second one, and a lunch stop
+        # wants the middle. Where both apply the earlier of the two wins.
+        target = min(0.5, reach) if reach is not None else 0.5
+
+        best: tuple[tuple[int, int, float], dict[str, Any]] | None = None
         for stop in (getting_here.get("en_route_stops", []) or []):
             if not isinstance(stop, dict) or not str(stop.get("name", "") or "").strip():
                 continue
@@ -340,14 +424,52 @@ class AIContentGenerator:
                 continue
             if not (0.0 <= ratio <= 1.0):
                 continue
+            # Out of reach is not a candidate. Naming one would be telling the
+            # traveler to refuel somewhere they cannot get to.
+            if reach is not None and ratio > reach:
+                continue
             rank = (
                 0 if AIContentGenerator._is_populated_place(stop) else 1,
                 0 if stop.get("is_seed") else 1,
-                abs(ratio - 0.5),
+                abs(ratio - target),
             )
             if best is None or rank < best[0]:
                 best = (rank, stop)
+        # Nothing within reach means nothing to say. The same silence this
+        # function already keeps when en-route discovery is off: it never names
+        # a place the rest of the pipeline has not verified, and a stop the
+        # traveler cannot reach is not a recommendation.
         return best[1] if best else None
+
+    @staticmethod
+    def _reachable_ratio(getting_here: Any, range_miles: float | None) -> float | None:
+        """How far along the leg one tank goes, as a fraction of it.
+
+        Measured from the start of the leg on a FULL TANK. Owner, 2026-09-06:
+        *"you can assume every day starts with a topoff"* -- so a leg that
+        begins a driving day begins it full, and the range is spent against
+        this leg rather than carried in part from the last one. Without that
+        premise this fraction would need a running fuel level the manifest does
+        not model.
+
+        None when the range is unset or the leg carries no distance -- an
+        unmeasured leg is not evidence of a short one, and the same fallback
+        `_stop_threshold_minutes` makes. None also when a tank covers the whole
+        leg, since then nothing is out of reach and the midpoint is free to win.
+        """
+        try:
+            miles = float(range_miles) if range_miles else 0.0
+        except (TypeError, ValueError):
+            return None
+        if miles <= 0:
+            return None
+        try:
+            leg_miles = float((getting_here or {}).get("distance_miles") or 0)
+        except (TypeError, ValueError):
+            return None
+        if leg_miles <= 0 or miles >= leg_miles:
+            return None
+        return miles / leg_miles
 
     # Words that mark a stop as a landform, a park or a region rather than a
     # town. Reuses multi_site_grouping.is_park_like for the park half so the
@@ -506,6 +628,20 @@ class AIContentGenerator:
             )
         except (TypeError, ValueError):
             self._lunch_stop_min_drive_minutes = DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
+
+        # How far the vehicle goes on a tank. Beside the minutes because they
+        # are two bounds on one stop, and the shorter of them wins.
+        #
+        # None, not zero, when unset or unreadable: zero would be a range of no
+        # miles, which fires a fuel stop on every leg. Absent means "nobody has
+        # said", and nobody having said is the ordinary case.
+        try:
+            said = (self._config.get("en_route_stops", {}) or {}).get(
+                "vehicle_range_miles", DEFAULT_VEHICLE_RANGE_MILES
+            )
+            self._vehicle_range_miles = float(said) if said else None
+        except (TypeError, ValueError):
+            self._vehicle_range_miles = DEFAULT_VEHICLE_RANGE_MILES
 
         ai_cfg = self._config.get("ai", {}) or {}
         try:
@@ -2455,6 +2591,7 @@ class AIContentGenerator:
         threshold = getattr(
             self, "_lunch_stop_min_drive_minutes", DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
         )
+        range_miles = getattr(self, "_vehicle_range_miles", DEFAULT_VEHICLE_RANGE_MILES)
         for dest in (trip.get("destinations", []) or []):
             if not isinstance(dest, dict):
                 continue
@@ -2462,9 +2599,12 @@ class AIContentGenerator:
             if not isinstance(ai_content, dict):
                 continue
             getting_here = ai_content.get("getting_here")
-            stop = self._pick_lunch_stop(getting_here, threshold)
+            stop = self._pick_lunch_stop(getting_here, threshold, range_miles)
             if not stop:
                 continue
+            _earns, reason = self._stop_threshold_minutes(
+                getting_here, threshold, range_miles
+            )
             name = str(stop.get("name", "") or "").strip()
             days = ai_content.get("possible_daily_schedule", []) or []
             if not name or not days or not isinstance(days[0], dict):
@@ -2475,9 +2615,17 @@ class AIContentGenerator:
             summary = str(periods[0].get("summary", "") or "")
             if name.lower() in summary.lower():
                 continue
-            periods[0]["summary"] = (
-                f"{summary} Break for lunch around {name}, roughly the midpoint."
-            ).strip()
+            # Which limit fired decides the sentence. "You will want lunch" and
+            # "you will need fuel before here" are different facts, and a leg
+            # that outruns the tank is the one where saying the wrong one has a
+            # consequence.
+            said = (
+                f"Stop for fuel around {name}, roughly the midpoint -- this leg "
+                "is longer than a tank. Somewhere to eat, too."
+                if reason == "range" else
+                f"Break for lunch around {name}, roughly the midpoint."
+            )
+            periods[0]["summary"] = f"{summary} {said}".strip()
             # Mark the stop itself, not just the schedule prose. Until now this
             # only appended a sentence, so the picked stop rendered as an
             # ordinary en-route card with no indication it was the lunch
@@ -2488,8 +2636,10 @@ class AIContentGenerator:
                 "https://www.google.com/maps/search/?api=1&query="
                 + quote(f"restaurants near {name}")
             )
+            stop["stop_reason"] = reason
             logger.info(
-                "  Lunch stop suggested for '%s': %s (%s)",
+                "  %s stop suggested for '%s': %s (%s)",
+                "Fuel" if reason == "range" else "Lunch",
                 dest.get("name", ""), name, getting_here.get("travel_time", ""),
             )
 
