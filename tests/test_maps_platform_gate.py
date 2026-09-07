@@ -115,11 +115,20 @@ def test_an_explicit_key_still_wins(funded, monkeypatch, tmp_path):
     assert TransitEstimator(api_key="explicit").available is True
 
 
-def test_the_shipped_config_has_the_gate_shut():
-    """The default anybody gets on a fresh clone. If this ever flips, it should
-    take a deliberate edit and a review, which is the whole point of the
-    decision living in a committed file."""
+def test_the_shipped_config_matches_the_recorded_decision():
+    """What anybody gets on a fresh clone, and it is ON as of 2026-09-06.
+
+    This was `is False` when the gate was introduced, with a docstring saying a
+    flip should take a deliberate edit and a review. It did: the owner turned
+    it on so that self-powered legs get real Routes durations, which is the one
+    figure a bike or hike itinerary cannot honestly do without -- with the gate
+    shut those legs publish no duration at all rather than a wrong one.
+
+    The tripwire is kept rather than deleted, and still fails in BOTH
+    directions: an accidental flip either way has to come here and say so. The
+    value is not the assertion, it is that changing the shipped default cannot
+    be done quietly."""
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parent.parent
-    assert maps_platform.enabled(root / "config.yaml") is False
+    assert maps_platform.enabled(root / "config.yaml") is True
