@@ -41,6 +41,7 @@ import click
 from generator import __version__, __template_version__
 from generator.environments import ENVIRONMENTS, UnknownEnvironment, resolve_environment
 from generator.entity_registry import build_entity_registry, reconcile_schedule_from_registry, reconcile_trip_from_registry
+from generator import date_span
 from generator import fanout_metrics
 from generator.fanout_metrics import BranchSpans, pool as instrumented_pool
 
@@ -2954,6 +2955,28 @@ def main(
         sys.exit(1)
 
     click.echo(f"  ✓ {len(trip['destinations'])} destination(s) loaded")
+
+    # Days the itinerary does not account for (multimodal-routing.md SS9).
+    #
+    # A cruise or a sleeper train carries the traveler for days, and the
+    # manifest models travel and lodging as separate things -- so the sailing is
+    # absent from lodging entirely and those days simply are not in the trip.
+    # Measured on a two-stop Adriatic manifest: six days of a twelve-day trip
+    # rendered, and nothing anywhere noticed the other six.
+    #
+    # Reported, never refused. A gap is a sailing, a sleeper, days deliberately
+    # left unplanned, or a stop somebody forgot, and only the traveler can say
+    # which. What the engine owes them is to say the days are unaccounted for
+    # rather than quietly rendering a shorter trip.
+    for run in date_span.unaccounted(
+        [(str(d.get("name", "")), str(d.get("dates", "")))
+         for d in trip["destinations"]]
+    ):
+        click.echo(
+            f"  ⚠ {run['days']} day(s) unaccounted for: "
+            f"{run['from']:%b %d} to {run['to']:%b %d}, "
+            f"between {run['after']} and {run['before']}"
+        )
 
     # Booking counts reach the console rather than only the log, because the
     # runner is expected to run at WARNING (a real run emits ~1700 INFO lines,
