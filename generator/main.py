@@ -2075,6 +2075,41 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
+    // A page navigation goes to the network FIRST, and falls back to the
+    // cache only when the network cannot answer.
+    //
+    // Cache-first is right for images and pinned CDN assets -- those are
+    // immutable, and their URLs change when their content does. It is wrong
+    // for the itinerary itself. index.html is precached in SHELL, so
+    // cache-first served the copy from whenever the reader first opened the
+    // page and kept serving it: a republished guide was invisible for at
+    // least one load, and indefinitely to a reader who never happened to
+    // reload twice. That is exactly backwards for the one file that is
+    // expected to be republished, and it shipped three corrected trail links
+    // that nobody could see.
+    //
+    // The offline guarantee is unchanged. Whatever is cached is still
+    // returned whenever fetch rejects, which is what being offline looks
+    // like from here.
+    if (event.request.mode === 'navigate') {
+        event.respondWith(
+            fetch(event.request)
+                .then((response) => {
+                    if (response && response.ok) {
+                        const clone = response.clone();
+                        caches.open(CACHE).then((cache) => cache.put(event.request, clone));
+                    }
+                    return response;
+                })
+                .catch(() =>
+                    caches
+                        .match(event.request)
+                        .then((cached) => cached || caches.match('./index.html'))
+                )
+        );
+        return;
+    }
+
     event.respondWith(
         caches.match(event.request).then((cached) => {
             if (cached) {
