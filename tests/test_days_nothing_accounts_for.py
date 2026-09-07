@@ -103,6 +103,70 @@ def test_the_count_still_answers_exactly_as_it_did() -> None:
         assert day_count(text) == expected, text
 
 
+def test_the_count_survives_a_word_that_is_not_a_month() -> None:
+    """The count needs two day numbers; only the span needs a month.
+
+    Making `span` primary put a month-name check in front of both, so every
+    string whose leading word is not a month fell to 1 -- and every day-scaled
+    target in the pipeline is computed against this number, so a destination
+    written "Nights 2-5" was silently given one day of content instead of four.
+    These are the shapes that changed, measured against the parser as it stood
+    before the refactor.
+    """
+    for text, expected in (
+        ("Nights 2-5", 4),
+        ("Week 3-7", 5),
+        ("Days 1-5", 5),
+        ("Stay 1-3", 3),
+        ("spring 4-8", 5),
+        ("Summer 2-4", 3),
+        ("Winter 10-12", 3),
+        ("Mon 5-9", 5),
+        ("Tues 2-4", 3),
+        ("February 28-30, 2026", 3),
+    ):
+        assert day_count(text) == expected, text
+
+
+def test_a_word_that_is_not_a_month_still_has_no_span() -> None:
+    """The count is recoverable from two day numbers and the span is not.
+    "Week 3-7" is five days of something, and nothing says which five."""
+    for text in ("Nights 2-5", "Week 3-7", "spring 4-8", "TBC"):
+        assert span(text) is None, text
+
+
+def test_sept_is_a_month() -> None:
+    """`calendar.month_abbr` gives "Sep" and people write "Sept". It counted 1
+    and had no span, so a stay written that way both under-generated its days
+    and reported as a gap the traveler did not have."""
+    assert day_count("Sept 2-4, 2026") == 3
+    assert span("Sept 5-8, 2026") == (dt.date(2026, 9, 5), dt.date(2026, 9, 8))
+
+
+def test_a_stay_written_sept_is_not_a_gap() -> None:
+    """The false positive the month table fixed at the root: a real, fully
+    dated stay that the parser could not read was dropped, and the days it
+    covers were reported unaccounted for between the wrong two stays."""
+    assert unaccounted([
+        ("Venice", "September 1-3, 2026"),
+        ("Ljubljana", "Sept 4-8, 2026"),
+        ("Dubrovnik", "September 9-12, 2026"),
+    ]) == []
+
+    # And with a real gap either side of it, the middle stay is now one of the
+    # stays a gap is measured BETWEEN, rather than invisible: unreadable, it
+    # was dropped and the two survivors were reported six days apart.
+    runs = unaccounted([
+        ("Venice", "September 1-3, 2026"),
+        ("Ljubljana", "Sept 6-8, 2026"),
+        ("Dubrovnik", "September 11-12, 2026"),
+    ])
+    assert [(r["days"], r["after"], r["before"]) for r in runs] == [
+        (2, "Venice", "Ljubljana"),
+        (2, "Ljubljana", "Dubrovnik"),
+    ]
+
+
 def test_the_maximum_still_caps() -> None:
     assert day_count("2026-10-01 to 2026-10-30", maximum=5) == 5
 

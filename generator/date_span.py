@@ -25,6 +25,10 @@ import re
 
 _MONTHS = {name.lower(): num for num, name in enumerate(calendar.month_name) if name}
 _MONTHS.update({name.lower(): num for num, name in enumerate(calendar.month_abbr) if name})
+# `calendar.month_abbr` gives "Sep", and people write "Sept". It is the one
+# common month abbreviation the stdlib tables miss -- every other month is
+# either spelled out or has its three-letter form written exactly.
+_MONTHS["sept"] = 9
 
 _DASHES = ("–", "—", "−")
 
@@ -76,10 +80,39 @@ def day_count(dates: str, *, maximum: int | None = None) -> int:
     not run away on a long stay.
     """
     found = span(dates)
-    count = ((found[1] - found[0]).days + 1) if found else 1
+    if found:
+        count = (found[1] - found[0]).days + 1
+    else:
+        # A span needs to know WHICH days, so it needs a month it recognises.
+        # A count never did: two day numbers are enough, and that is all this
+        # function ever asked for. Making `span` primary without this made
+        # every string whose leading word is not a month name fall to 1 --
+        # "Nights 2-5" 4 -> 1, "Week 3-7" 5 -> 1, and "Sept 2-4, 2026" 3 -> 1
+        # before "sept" was added above. Since every day-scaled target in the
+        # pipeline is computed against this, that is a destination silently
+        # given one day of content instead of three.
+        count = _day_numbers_only(_normalize(dates)) or 1
     if maximum is not None:
         count = min(count, maximum)
     return max(1, count)
+
+
+def _day_numbers_only(text: str) -> int | None:
+    """How many days two day-numbers span, with no month to place them in.
+
+    The counting half of what `_same_month` used to do, kept for `day_count`
+    alone. `span` must not use it: "Week 3-7" is five days of something, and
+    nothing here says which five, so a span built from it would put a
+    destination on days the traveler never named.
+    """
+    match = re.search(r"[A-Za-z]+\s+(\d{1,2})(?:\s*-\s*(\d{1,2}))?(?:,\s*\d{4})?", text)
+    if not match:
+        return None
+    first = int(match.group(1))
+    last = int(match.group(2) or match.group(1))
+    if last < first:
+        return None
+    return last - first + 1
 
 
 def _cross_month(text: str) -> tuple[_dt.date, _dt.date] | None:
