@@ -66,3 +66,56 @@ def test_activate_still_purges_other_caches():
     _write_pwa_assets(d, TRIP, build_id="run-A")
     sw = (d / "sw.js").read_text(encoding="utf-8")
     assert "keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))" in sw
+
+
+def _sw(build_id="run-A", body="<html>x</html>"):
+    d = pathlib.Path(tempfile.mkdtemp())
+    (d / "index.html").write_text(body, encoding="utf-8")
+    _write_pwa_assets(d, TRIP, build_id=build_id)
+    return (d / "sw.js").read_text(encoding="utf-8")
+
+
+def test_navigation_goes_to_the_network_before_the_cache():
+    """The other half of the bug this file already documents.
+
+    A per-build cache key purges the old shell, but only once the new worker
+    has installed and activated -- and the navigation that triggers that
+    update has already been answered from the old cache by then. With
+    './index.html' precached in SHELL and a cache-first fetch handler, a
+    republished guide was invisible for at least one load, and indefinitely
+    to a reader who never reloaded twice.
+
+    That is how three corrected trail links reached the server, were verified
+    over HTTP, and still 404'd for the person reading the page.
+    """
+    sw = _sw()
+    nav = sw.index("event.request.mode === 'navigate'")
+    cache_first = sw.index("caches.match(event.request).then((cached)")
+    assert nav < cache_first, (
+        "the navigate branch must come before the cache-first branch, "
+        "or navigations never reach it"
+    )
+    # Inside the navigate branch, fetch is what is called first.
+    branch = sw[nav : nav + 800]
+    assert "fetch(event.request)" in branch
+    assert branch.index("fetch(event.request)") < branch.index("caches.match"), (
+        "the navigate branch must try the network before the cache"
+    )
+
+
+def test_navigation_still_falls_back_to_the_cache_when_offline():
+    """Network-first must not mean network-only."""
+    sw = _sw()
+    nav = sw.index("event.request.mode === 'navigate'")
+    branch = sw[nav : nav + 800]
+    assert ".catch(" in branch, "no offline fallback on the navigate branch"
+    assert "caches" in branch.split(".catch(", 1)[1], (
+        "the offline fallback must read from the cache"
+    )
+
+
+def test_assets_are_still_cache_first():
+    """Only navigation changed. Images and pinned CDN assets are immutable."""
+    sw = _sw()
+    assert "caches.match(event.request).then((cached)" in sw
+    assert "response.type === 'opaque'" in sw

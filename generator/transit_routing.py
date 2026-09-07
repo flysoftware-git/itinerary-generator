@@ -447,6 +447,24 @@ class LegMode:
         return MAPS_TRAVELMODE_BY_BOOKED_TYPE.get(self.booked_type, "driving")
 
     @property
+    def waypoint_travelmode(self) -> str:
+        """travelmode for a Maps link that carries waypoints.
+
+        Google Maps cannot compute TRANSIT directions with waypoints -- the
+        URL returns "Sorry, we could not calculate transit directions". So a
+        link that must keep every stop in order asks for driving instead,
+        which is the only mode that renders the shape of a rail trip at all.
+
+        Self-powered legs are the exception: the URL scheme DOES accept
+        waypoints for bicycling and walking, so those keep every stop AND get
+        the right mode. Without it a five-state bike ride offered to drive
+        itself, and the destination attraction loops on the same page still
+        did after the route links were fixed -- two sites answering one
+        question, which is the whole reason this lives here.
+        """
+        return self.maps_travelmode if self.is_self_powered else "driving"
+
+    @property
     def routes_travel_mode(self) -> str:
         """Google Routes travelMode to price this leg with, or "".
 

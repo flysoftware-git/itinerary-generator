@@ -387,7 +387,7 @@ class HTMLAssembler:
             declared=str((trip_meta or {}).get("transport_mode", "") or "").strip(),
             booked_type="",
         )
-        travelmode = trip_leg.maps_travelmode if trip_leg.is_self_powered else "driving"
+        travelmode = trip_leg.waypoint_travelmode
         params = [
             "api=1",
             f"origin={quote(origin)}",
@@ -410,7 +410,8 @@ class HTMLAssembler:
 
     #: Google Maps travelmode values, keyed by the manifest's booked leg type.
     #: Read only by _maps_travelmode_for_trip, which nothing calls. Every live
-    #: decision now goes through transit_routing.LegMode.maps_travelmode.
+    #: decision goes through transit_routing.LegMode: maps_travelmode for a
+    #: single leg, waypoint_travelmode for a link carrying waypoints.
     _MAPS_TRAVELMODE_BY_ARRIVAL = {
         "train": "transit",
         "bus": "transit",
@@ -476,7 +477,8 @@ class HTMLAssembler:
         original and still most common case.
 
         NOTE (2026-09-05): nothing calls this. The full-route link is built in
-        _build_google_maps_url, which decides its own mode and documents why.
+        _build_google_maps_url, which asks LegMode.waypoint_travelmode -- the
+        one rule shared with the destination attraction loops.
         Kept rather than deleted because the reasoning above is sound and the
         method is referenced by tests, but do not "fix" the route link here --
         it was tried, and the fix had no effect on any page.
@@ -844,7 +846,7 @@ class HTMLAssembler:
                 f'<a href="{weather_url}" class="notion-header-btn" target="_blank" rel="noopener">Current Weather</a>'
             )
         attractions_map_url = self._build_destination_attractions_map_url(
-            str(dest.get("name", "") or ""),
+            dest,
             attractions,
         )
         if attractions_map_url:
@@ -877,9 +879,16 @@ class HTMLAssembler:
 
     def _build_destination_attractions_map_url(
         self,
-        dest_name: str,
+        dest: dict[str, Any],
         attractions: list[dict[str, Any]],
     ) -> str:
+        """The "Attractions Map" pill: one directions URL through the stops.
+
+        Takes the destination rather than its name because the link needs two
+        things from it -- the label that qualifies each search term, and the
+        mode the traveller is actually moving in.
+        """
+        dest_name = str((dest or {}).get("name", "") or "")
         entries: list[dict[str, Any]] = []
         seen: set[str] = set()
         for item in attractions or []:
@@ -932,10 +941,15 @@ class HTMLAssembler:
         destination = points[-1]
         waypoints = points[1:-1]
 
+        # Same rule as the whole-route link, for the same reason: this URL
+        # carries waypoints, so transit cannot render it and driving stands in
+        # -- but a trip ridden between its stops is ridden around them too. The
+        # New England bike page shipped twelve of these offering to drive
+        # between attractions a rider reaches by bicycle.
         params = [
             f"origin={quote(origin)}",
             f"destination={quote(destination)}",
-            "travelmode=driving",
+            f"travelmode={leg_mode(dest).waypoint_travelmode}",
             "api=1",
         ]
         if waypoints:

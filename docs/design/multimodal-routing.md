@@ -561,6 +561,23 @@ The waypoint skip is correctness twice over: en-route stops are a car concept, a
 history says the waypoint path is where this function's failures live. Leave the driving
 path byte-identical. **Verify live before shipping.**
 
+**Superseded 2026-09-06 for the links that carry waypoints.** The early return above was
+written when a non-driving mode meant transit, where Maps genuinely cannot compute
+directions with waypoints. It does not hold for `bike` and `hike`: the Maps URL scheme
+accepts waypoints for `bicycling` and `walking`, so a self-powered trip keeps every stop
+*and* gets the right mode. Dropping the stops there would throw away the trip's shape to
+avoid a limitation that does not apply.
+
+**One rule, in one place.** `LegMode.waypoint_travelmode` answers "what mode does a
+waypoint-carrying Maps link ask for" -- self-powered legs get their own mode, everything
+else stands aside for driving. Both sites call it: the whole-route link
+(`_build_google_maps_url`) and the per-destination attraction loop
+(`_build_destination_attractions_map_url`). They were fixed a day apart precisely because
+the rule lived at only one of them: the New England ride shipped a page whose route links
+had been corrected to `bicycling` while twelve attraction loops on the same page still
+offered to drive. The second site was not found by reasoning about the first -- it was found
+by counting `travelmode=` values in the built HTML.
+
 ### 4.4 En-route stops, scenic drives, grouped day trips
 
 **En-route stops** are not discovered for a `transit` leg — **confirmed 2026-08-21 (open

@@ -879,6 +879,99 @@ the first place before touching it -- not available in this session without
 API credentials. Left as a known follow-up rather than risked as a
 same-night change to a widely-shared code path.
 
+### Extended 2026-09-06: the free geocode an attraction already got
+The East Coast Greenway run shipped three stops -- Mount Agamenticus, Wickford
+Village Historic District, Stony Creek -- whose primary link was a bare Maps
+text query, the form `_is_unverifiable_maps_query` explicitly refuses to treat
+as evidence, while every stop beside them on the same page carried a
+coordinate. The cause was not a failed lookup. Nothing on the en-route path
+asked: `_en_route_maps_url` went straight from "no route-verified geocode" to
+a name search, whereas an attraction in exactly that position gets a free,
+cached Nominatim geocode first (the `geocode_maps` block in
+`audit_discovered_urls`, added when 29 attractions were being deleted outright
+for want of a link). A stop is not entitled to less than an attraction.
+
+`_en_route_maps_url` now tries three forms in descending precision: the
+route-verified geocode, then the free biased geocode, then the name query.
+
+**The bias box is a correctness requirement, not a tuning knob.** Writing this
+without one produced a live wrong answer immediately: "Canyon Overlook" near
+Zion came back as `34.262751,-84.5375845` -- Georgia, ~1,700 miles off -- and
+would have rendered as a precise pin with nothing about it admitting the
+guess. That is strictly worse than the text query it replaced, and it is the
+same trade the East Coast Greenway trail-link fix refused (a wrong path is
+worse than no path). So the geocode is attempted **only** when the destination
+coordinate is available to bias against; with no bias, the name query stands,
+visibly a search and correctly classed unverifiable. See the section below for
+the plausibility guards that sit under this on the geocode path itself.
+
+Tests: `test_a_free_geocode_is_tried_before_settling_for_a_name_query`,
+`test_no_bias_box_means_no_geocode_at_all`,
+`test_a_route_verified_geocode_still_outranks_the_free_one`,
+`test_the_name_query_is_reached_only_after_the_geocode_fails`.
+
+### The audit resolved a URL and then threw it away
+Shipping the above exposed a larger bug underneath it, and the way it was
+found is the point. The geocode fix worked -- the log showed
+`en_route_resolved_to_maps` producing the right coordinate for Wickford
+Village (41.5712,-71.4524) and `en_route_geocode_verified_kept` accepting it
+-- and the rebuilt page still rendered the text query. **The decision log
+recorded an intention, not an outcome**, and reading it as an outcome would
+have closed this as fixed.
+
+`audit_discovered_urls` wrote `stop["url"]` under `if cleaned != url`, where
+`url` is a local that two blocks above it are entitled to reassign: the
+AllTrails-batch preference and maps mode. So when one of those introduced a
+new value and `_retain_discovered_url` then *accepted it unchanged*,
+`cleaned == url` held and the assignment never ran -- the stop kept whatever
+an earlier stage had left, in this case the direct batch's
+`direct_batch_selected_authoritative` text query. The condition conflated two
+questions:
+
+| Question | Test | Governs |
+|---|---|---|
+| Did retention reject what it was handed? | `cleaned != url` | the rejection log |
+| Does the stop still hold the right value? | `cleaned != original_url` | the write-back |
+
+They are now asked separately, against `original_url` captured at the top of
+the loop. This was never specific to maps mode: any AllTrails URL the trail
+batch had already bought and retention accepted was dropped the same way,
+silently, for as long as both blocks have existed.
+
+Tests: `TestTheAuditWritesBackWhatItResolved` --
+`test_a_coordinate_replaces_the_text_query_the_batch_left_behind` (fails
+against the old condition) and
+`test_a_stop_already_holding_the_right_value_is_left_alone` (the widened
+condition must not rewrite what was already correct).
+
+### What the widened write-back then exposed: maps mode was displacing real pages
+Making the assignment land changed the page far more than intended. The
+en-route stops went from 34 official pages + 3 coordinates + 4 text queries to
+**39 coordinates and nothing else**: thetrustees.org, ipswichmuseum.org,
+historicbeverly.net, strawberybanke.org all replaced by pins. Maps mode had
+always been written to displace them; the dropped write-back was the only
+reason it never had.
+
+So the bug was load-bearing, and removing it required stating the rule it had
+been standing in for. **What `en_route_source: maps` buys is not spending
+searches on pages that mostly do not exist for a roadside pullout -- it is
+about the hunt, not about refusing a page already in hand.** The exemption
+already sitting at that call site said so for AllTrails ("free,
+trail-specific, and strictly more useful than a pin"), and nothing in that
+reasoning was specific to AllTrails. It now covers any real source URL the
+batch has already harvested; only a Google Maps URL is displaced, which is the
+case the mode exists for. `thetrustees.org/place/appleton-farms/` gives a
+rider opening hours, `42.6479,-70.8543` does not.
+
+Note that `direct_batch_authoritative_url` was already being computed for
+en-route stops at that call site and then never read -- the restaurant path
+two blocks down uses its own copy. The guard this needed was half-built.
+
+Test: `test_a_real_page_already_harvested_is_not_replaced_by_a_pin`. It holds
+`_retain_discovered_url` to a passthrough, because retention's real verdict
+depends on harvested candidate rows a bare harness has none of -- a separate
+question from whether maps mode should have displaced the page before it.
+
 ## En-Route Stop Geocode Resolving to a Completely Wrong Location
 Real screenshot evidence from the project owner, a fresh run (dipstick75)
 right after the Rockville/Grafton fix above shipped: on the St. George ->
