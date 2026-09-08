@@ -18066,3 +18066,67 @@ def test_leg_trail_discovery_is_its_own_job_not_a_tail_of_en_route():
 
     dispatch = inspect.getsource(URLDiscoverer.discover_all)
     assert "_discover_leg_trail_link" in dispatch
+
+
+def test_concurrent_page_fetches_do_not_swap_redirect_targets():
+    """The redirect gate (`_redirect_target_lacks_item_relevance`) rejects a
+    candidate URL on the strength of `_fetch_final_url_cache`, and page
+    fetches run on a thread pool. If the final URL travels back from the
+    validator through one attribute on the shared validator instance,
+    another thread can overwrite it in the window between this thread's call
+    returning and this thread reading it -- so this URL is filed against
+    that URL's redirect, and a good link is rejected (or a bad one accepted)
+    for a reason nothing in the record explains.
+
+    The interleaving is forced, not raced: thread A's fetch completes, then
+    parks in that exact window until thread B's fetch has completed, and
+    only then does A read the final URL back.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from generator.url_validator import URLValidator
+
+    url_a = "https://www.opentable.com/r/some-restaurant"
+    url_b = "https://www.fws.gov/refuge/some-refuge"
+    final_a = "https://www.opentable.com/r/some-restaurant-renamed"
+    final_b = "https://www.fws.gov/refuge/some-refuge/visit-us"
+    finals = {url_a: final_a, url_b: final_b}
+
+    a_fetched = threading.Event()
+    b_fetched = threading.Event()
+
+    class SequencedValidator(URLValidator):
+        def get_text(self, url, timeout=None):
+            out = super().get_text(url, timeout=timeout)
+            if url == url_a:
+                a_fetched.set()
+                assert b_fetched.wait(timeout=10), "thread B never fetched"
+            else:
+                assert a_fetched.wait(timeout=10), "thread A never fetched"
+                b_fetched.set()
+            return out
+
+    def fake_get(url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.text = "page body"
+        resp.url = finals[url]
+        return resp
+
+    validator = SequencedValidator(timeout=1)
+    validator.session.get = MagicMock(side_effect=fake_get)
+
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_validator = validator
+    discoverer._fetch_final_url_cache = {}
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(discoverer._fetch_page_text_uncached, url_a),
+            pool.submit(discoverer._fetch_page_text_uncached, url_b),
+        ]
+        for future in futures:
+            assert future.result(timeout=15)[0] is True
+
+    assert discoverer._fetch_final_url_cache[url_a] == final_a
+    assert discoverer._fetch_final_url_cache[url_b] == final_b
