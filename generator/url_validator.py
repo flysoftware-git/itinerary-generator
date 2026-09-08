@@ -28,11 +28,45 @@ class URLValidator:
         "get_text_requests": 0,
     }
 
+    _FINAL_URL_STORE_LOCK = threading.Lock()
+
     def __init__(self, timeout: int = DEFAULT_TIMEOUT, user_agent: str = DEFAULT_UA) -> None:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": user_agent})
         self.results: list[dict[str, Any]] = []
+        self.__dict__["_final_url_store"] = threading.local()
+
+    def _get_final_url_store(self) -> threading.local:
+        # Lazily created, because some callers build a validator without
+        # running __init__ (tests using __new__, subclasses that skip super).
+        store = self.__dict__.get("_final_url_store")
+        if store is None:
+            with URLValidator._FINAL_URL_STORE_LOCK:
+                store = self.__dict__.get("_final_url_store")
+                if store is None:
+                    store = threading.local()
+                    self.__dict__["_final_url_store"] = store
+        return store
+
+    @property
+    def _last_final_url(self) -> str:
+        """The URL the *calling thread's* most recent get_text ended on.
+
+        One validator is shared by every page-fetch worker, so this cannot
+        live on the instance: a second thread finishing its own fetch in the
+        window between a caller's get_text returning and that caller reading
+        this back would hand the caller the other thread's redirect, which
+        the caller then files against its own URL. Keeping the record in
+        thread-local storage makes it belong to the call that produced it,
+        and leaves the single-threaded contract -- call, then read --
+        exactly as it was.
+        """
+        return str(getattr(self._get_final_url_store(), "value", "") or "")
+
+    @_last_final_url.setter
+    def _last_final_url(self, value: str) -> None:
+        self._get_final_url_store().value = str(value or "")
 
     @classmethod
     def _increment_counter(cls, key: str) -> None:
@@ -60,6 +94,10 @@ class URLValidator:
         return self._check(url)
 
     def get_text(self, url: str, timeout: int | None = None) -> tuple[bool, int | str, str]:
+        # Cleared up front so a call that never reaches a response -- an
+        # exception, a bad scheme -- leaves no final URL rather than the
+        # previous call's, which the caller would attribute to this URL.
+        self._last_final_url = ""
         if not url or not urlparse(url).scheme:
             return False, "invalid_url", ""
         to = timeout or self.timeout
