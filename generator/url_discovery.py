@@ -140,6 +140,12 @@ def _strip_non_visible_html_noise(text: str) -> str:
     stripped = _HTML_SCRIPT_STYLE_RE.sub(" ", text)
     stripped = _HTML_COMMENT_RE.sub(" ", stripped)
     return stripped
+# How much of a fetched page body the campground filter reads. A page that is
+# ABOUT a campground says so in its title and opening; a park page mentions the
+# campground it happens to contain much further down. See
+# _is_campground_focused_result_for_noncamping_item.
+CAMPGROUND_TEXT_SCAN_CHARS = 2000
+
 GENERIC_BAD_URL_MARKERS = (
     "404errorpage",
     "/assetdetail/",
@@ -15796,7 +15802,21 @@ class URLDiscoverer:
             "recreation.gov/camping",
             "reserveamerica",
         )
-        text_blob = f" {str(candidate_text or '').lower()} {str(fetched_text or '').lower()} "
+        # Candidate text is a search result's title and snippet -- short, and a
+        # campground marker in it is meaningful. A fetched page body is not:
+        # every state park, national forest and BLM recreation page names a
+        # campground somewhere, because it has one, so matching the whole body
+        # rejects the correct page for the place itself.
+        #
+        # A campground-focused page announces it at the top; a park page
+        # mentions its campground in a footer or a related-links block. Measured
+        # on four live pages, the first marker sat 54k, 63k, 185k and 212k
+        # characters in, while a genuine campground page carries it in the
+        # title. Scanning only the opening separates the two by a wide margin.
+        text_blob = (
+            f" {str(candidate_text or '').lower()} "
+            f"{str(fetched_text or '').lower()[:CAMPGROUND_TEXT_SCAN_CHARS]} "
+        )
         campground_text_markers = (
             " campground",
             " campgrounds",

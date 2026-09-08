@@ -10335,6 +10335,39 @@ def test_is_relevant_result_allows_campground_page_for_camping_item_name():
     assert ok is True
 
 
+def test_is_relevant_result_keeps_park_page_that_merely_mentions_its_campground():
+    """A park's own page names the campground it contains, far down the body.
+
+    Measured on live pages 2026-09-07: the first campground marker sat 54,207
+    characters into Kodachrome Basin State Park's own page, 63,137 into Goblin
+    Valley's, 212,003 into a Dixie National Forest visitor-centre page, and
+    185,382 into a restaurant's site that mentions a nearby RV park. Scanning
+    the whole body rejected all four -- the correct, official page for the
+    place itself -- because every public-lands recreation page names a
+    campground somewhere, having one.
+
+    The distinction the filter wants is whether a page is ABOUT a campground,
+    and such a page says so in its title and opening rather than in a footer.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    body = (
+        "Kodachrome Basin State Park near Bryce Canyon is known for its "
+        "sandstone chimneys and slot canyons. "
+        + ("Trail descriptions and scenery notes for the park. " * 120)
+        + " The park campground has 27 campsites and a group site."
+    )
+    assert body.index("campground") > 2000, "marker must sit past the scan window"
+
+    with patch.object(discoverer, "_fetch_page_text", return_value=(True, 200, body)):
+        ok = discoverer._is_relevant_result(
+            "https://stateparks.utah.gov/parks/kodachrome-basin/",
+            "Kodachrome Basin State Park",
+            "Bryce Canyon National Park",
+        )
+
+    assert ok is True
+
+
 def test_is_relevant_result_generic_branch_accepts_blocked_fetch_with_matching_candidate():
     """Regression: the generic (non-AllTrails) relevance branch used to treat
     ANY fetch failure as proof of a dead link, including a 403 from a
