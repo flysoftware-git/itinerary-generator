@@ -42,6 +42,12 @@ class ReportWriter:
             },
             "errors": report.get("errors", []),
             "warnings": report.get("warnings", []),
+            # Tri-state liveness for every published link (see
+            # url_discovery.LINK_LIVENESS_*). Carried here rather than left in
+            # the log because "how much of this guide did the gate actually
+            # check?" is a property of the artifact, and a log line is gone by
+            # the time anyone asks.
+            "link_liveness": report.get("link_liveness", {}),
             "html_path": report.get("html_path", ""),
         }
         report_path = self._output_dir / "validation_report.json"

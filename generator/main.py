@@ -3584,6 +3584,10 @@ def main(
     from generator.report_writer import ReportWriter
     validator = HTMLValidator(config_path)
     report = validator.validate(output_file, trip)
+    # Tri-state link liveness, recorded by the URL audit (url_discovery's
+    # LINK_LIVENESS_*). Attached here so the published artifact says how much
+    # of itself the fail-closed gate was actually able to check.
+    report["link_liveness"] = trip.get("_link_liveness", {}) or {}
     report_path = ReportWriter(output_dir).write(report)
     click.echo(f"  ✓ Validation report: {report_path}")
 
