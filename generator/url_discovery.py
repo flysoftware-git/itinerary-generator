@@ -357,6 +357,43 @@ DEFAULT_ALLTRAILS_BLOCK_COOLDOWN_SECONDS = 8.0
 # generic page-text fetch -- avoids re-probing a domain that just blocked us
 # for every subsequent distinct URL on that same domain.
 DEFAULT_DOMAIN_BLOCK_COOLDOWN_SECONDS = 8.0
+# The three states a published link can be in, and why there are three rather
+# than two.
+#
+# The publication gate is fail-closed: a URL that is *definitively* dead
+# (404/410, or a host that does not resolve) is stripped before assembly. What
+# survives the gate carries a single bit -- it shipped -- and that bit
+# conflates two very different situations. A link can ship because it was
+# fetched and answered, or it can ship because nothing ever managed to ask it.
+# Bot-blocking makes the second case ordinary rather than exotic: on a guide
+# measured while writing this, 34 of 115 published links (29.6%) sat on domains
+# that answer an automated fetch with a block page, a connection reset, or
+# nothing at all, so the gate passed them having learned nothing about them.
+#
+# The two cases are indistinguishable in the output, and the difference is
+# exactly what a reader of a fail-closed guarantee wants to know. So liveness
+# is recorded as a tri-state:
+#
+#   live      -- a fetch succeeded; the link answered
+#   dead      -- a fetch returned a definitively-dead verdict that the
+#                bot-block carve-out did not withdraw (the state the gate acts on)
+#   unchecked -- everything else: never fetched, fetched and blocked, timed
+#                out, skipped by a domain cooldown, refused at the TCP level
+#
+# `unchecked` is a statement about the instrument, not about the URL. It says
+# the pipeline does not know -- which is honest, and is not the same as "fine".
+LINK_LIVENESS_LIVE = "live"
+LINK_LIVENESS_DEAD = "dead"
+LINK_LIVENESS_UNCHECKED = "unchecked"
+# Precedence when one URL is observed more than once in a run. Fail-closed
+# ordering, and order-independent by construction: a dead observation is never
+# laundered by a later live one, and a live observation always beats "we never
+# found out".
+LINK_LIVENESS_PRECEDENCE = {
+    LINK_LIVENESS_UNCHECKED: 0,
+    LINK_LIVENESS_LIVE: 1,
+    LINK_LIVENESS_DEAD: 2,
+}
 # Wayback Machine fallback for AllTrails geo extraction (see
 # _fetch_wayback_alltrails_text): a direct AllTrails fetch is bot-blocked by
 # DataDome essentially universally in production (see _fetch_alltrails_text's
@@ -3419,6 +3456,26 @@ class URLDiscoverer:
 
         self._deduplicate_cross_destination_drives(trip)
         self._deduplicate_attractions_against_en_route_stops_tripwide(trip)
+
+        # Last thing the audit does, because it must describe the links that
+        # actually survived it rather than the ones it started with.
+        liveness = self.link_liveness_report(trip)
+        trip["_link_liveness"] = liveness
+        counts = liveness["counts"]
+        logger.info(
+            "Link liveness: %d published, %d live, %d dead, %d unchecked (%.1f%%)%s",
+            liveness["published_count"],
+            counts[LINK_LIVENESS_LIVE],
+            counts[LINK_LIVENESS_DEAD],
+            counts[LINK_LIVENESS_UNCHECKED],
+            liveness["unchecked_share"] * 100.0,
+            (
+                " -- unchecked concentrated on: "
+                + ", ".join(f"{d}={n}" for d, n in list(liveness["unchecked_by_domain"].items())[:5])
+            )
+            if liveness["unchecked_by_domain"]
+            else "",
+        )
 
     def _retain_discovered_url(
         self,
@@ -13879,6 +13936,7 @@ class URLDiscoverer:
         with self._request_cache_lock:
             cached = self._verify_url_cache.get(url)
         if cached is not None:
+            self._record_fetch_liveness(url, bool(cached[0]), cached[1])
             return cached
 
         result = self._url_validator.verify_url(url)
@@ -13889,6 +13947,7 @@ class URLDiscoverer:
             result = (False, "invalid_verify_result")
         with self._request_cache_lock:
             self._verify_url_cache[url] = result
+        self._record_fetch_liveness(url, bool(result[0]), result[1])
         self._mark_persistent_cache_dirty()
         return result
 
@@ -14534,9 +14593,108 @@ class URLDiscoverer:
         host = urlparse(url or "").netloc.lower()
         return host.endswith(".gov") or ".gov." in host
 
+    # ------------------------------------------------------------------
+    # Link liveness ledger (see LINK_LIVENESS_* above)
+    #
+    # Purely observational. Nothing below changes which URLs are accepted or
+    # rejected -- it records what the gate learned while deciding, so that a
+    # published link can afterwards say which of the three states it is in
+    # rather than only that it shipped.
+    # ------------------------------------------------------------------
+
+    def classify_link_liveness(self, url: str, ok: bool, status: int | str | None) -> str:
+        """Map one fetch outcome onto a liveness state.
+
+        Deliberately built from the same two predicates the publication gate
+        itself uses, so the ledger cannot drift away from the decision it is
+        describing: a status is `dead` exactly when the gate would reject on
+        it, and `unchecked` covers every outcome the gate deliberately fails
+        open on -- timeouts, 401/403 block pages, SSL errors, cooldown
+        synthetics, and the bot-block carve-out that withdraws an otherwise
+        definitive verdict.
+        """
+        if ok:
+            return LINK_LIVENESS_LIVE
+        if self._is_definitively_dead_status(status) and not self._is_bot_block_false_negative_dead_status(url, status):
+            return LINK_LIVENESS_DEAD
+        return LINK_LIVENESS_UNCHECKED
+
+    def _record_link_liveness(self, url: str | None, state: str, detail: str = "") -> None:
+        """Merge one observation into the run's ledger, most severe wins."""
+        normalized = str(url or "").strip()
+        if not normalized or state not in LINK_LIVENESS_PRECEDENCE:
+            return
+        if not hasattr(self, "_link_liveness"):
+            self._link_liveness = {}
+        if not hasattr(self, "_request_cache_lock"):
+            self._request_cache_lock = Lock()
+        with self._request_cache_lock:
+            previous = self._link_liveness.get(normalized)
+            if previous is not None and LINK_LIVENESS_PRECEDENCE[previous[0]] >= LINK_LIVENESS_PRECEDENCE[state]:
+                return
+            self._link_liveness[normalized] = (state, str(detail or ""))
+
+    def _record_fetch_liveness(self, url: str | None, ok: bool, status: int | str | None, detail: str = "") -> None:
+        normalized = str(url or "").strip()
+        if not normalized:
+            return
+        state = self.classify_link_liveness(normalized, ok, status)
+        self._record_link_liveness(normalized, state, detail or str(status if status is not None else ""))
+
+    def link_liveness_state(self, url: str | None) -> str:
+        """The state recorded for one URL this run. Never checked -> unchecked."""
+        normalized = str(url or "").strip()
+        if not normalized:
+            return LINK_LIVENESS_UNCHECKED
+        recorded = getattr(self, "_link_liveness", {}) or {}
+        entry = recorded.get(normalized)
+        return entry[0] if entry else LINK_LIVENESS_UNCHECKED
+
+    def link_liveness_report(self, trip: dict[str, Any]) -> dict[str, Any]:
+        """Tri-state liveness for every link the trip is about to publish.
+
+        A URL the ledger never saw is `unchecked` with detail `never_fetched`
+        -- the state the whole exercise exists to make visible, because it is
+        the one that previously looked exactly like `live`.
+
+        `unchecked_by_domain` is here rather than left to the caller because
+        the failure is domain-shaped in practice: a handful of bot-blocking
+        hosts account for nearly all of it, and a per-domain count is what
+        turns the number into something actionable.
+        """
+        published = self._collect_discovered_urls(trip)
+        recorded = dict(getattr(self, "_link_liveness", {}) or {})
+        states: dict[str, str] = {}
+        details: dict[str, str] = {}
+        counts = {LINK_LIVENESS_LIVE: 0, LINK_LIVENESS_DEAD: 0, LINK_LIVENESS_UNCHECKED: 0}
+        unchecked_by_domain: dict[str, int] = {}
+        for url in sorted(published):
+            entry = recorded.get(url)
+            state, detail = entry if entry else (LINK_LIVENESS_UNCHECKED, "never_fetched")
+            states[url] = state
+            details[url] = detail
+            counts[state] = counts.get(state, 0) + 1
+            if state == LINK_LIVENESS_UNCHECKED:
+                domain = urlparse(url).netloc.lower()
+                if domain:
+                    unchecked_by_domain[domain] = unchecked_by_domain.get(domain, 0) + 1
+        total = len(states)
+        return {
+            "states": states,
+            "details": details,
+            "counts": counts,
+            "published_count": total,
+            "unchecked_share": (counts[LINK_LIVENESS_UNCHECKED] / total) if total else 0.0,
+            "unchecked_by_domain": dict(
+                sorted(unchecked_by_domain.items(), key=lambda row: (-row[1], row[0]))
+            ),
+        }
+
     def _fetch_page_text(self, url: str, timeout: int = 8) -> tuple[bool, int | str, str]:
         if self._is_alltrails_trail_url(url):
-            return self._fetch_alltrails_text(url, timeout=timeout)
+            result = self._fetch_alltrails_text(url, timeout=timeout)
+            self._record_fetch_liveness(url, bool(result[0]), result[1])
+            return result
 
         if not hasattr(self, "_page_text_cache"):
             self._page_text_cache = {}
@@ -14548,6 +14706,11 @@ class URLDiscoverer:
         with self._request_cache_lock:
             cached = self._page_text_cache.get(url)
         if cached is not None:
+            # Recorded on a cache hit too, not only on the miss that filled it:
+            # the page-text cache persists across runs, so a later run can
+            # publish a link whose only observation it inherited and would
+            # otherwise report as never checked.
+            self._record_fetch_liveness(url, bool(cached[0]), cached[1])
             return cached
 
         domain = urlparse(url).netloc.lower()
@@ -14563,10 +14726,17 @@ class URLDiscoverer:
                 # later call after the cooldown naturally expires still gets
                 # a real attempt -- instead of paying a full network timeout
                 # for a call very unlikely to succeed.
+                #
+                # This is the archetypal `unchecked`: no request was made, so
+                # the 403 is a placeholder rather than an observation, and the
+                # ledger says so instead of letting a synthetic status stand in
+                # for a verdict.
+                self._record_link_liveness(url, LINK_LIVENESS_UNCHECKED, "domain_cooldown")
                 return False, 403, ""
 
         result = self._fetch_page_text_uncached(url, timeout=timeout)
         status = result[1]
+        self._record_fetch_liveness(url, bool(result[0]), status)
         if domain and isinstance(status, int) and status in (401, 403):
             cooldown = float(
                 getattr(self, "_domain_block_cooldown_seconds", DEFAULT_DOMAIN_BLOCK_COOLDOWN_SECONDS) or 0.0
