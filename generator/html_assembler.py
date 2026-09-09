@@ -19,7 +19,7 @@ import hashlib, json, logging
 from datetime import datetime
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import parse_qs, quote, urlparse
 
 from generator.transit_routing import (
@@ -64,6 +64,118 @@ def _image_href(img: dict[str, Any]) -> str:
     if not local:
         return ""
     return f"./images/{quote(Path(local).name)}"
+
+#: The tile layer this template carried hardcoded before `map.tiles` existed.
+#: These are the values an absent, empty or unusable config falls back to, so a
+#: user who never touches the key renders exactly what they rendered before.
+DEFAULT_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+DEFAULT_TILE_ATTRIBUTION = "© OpenStreetMap contributors"
+DEFAULT_TILE_MAX_ZOOM = 13
+
+#: A tile URL Leaflet can actually fill in. Checked rather than assumed, because
+#: the failure is invisible in the generator and total in the browser: a URL
+#: without these renders one broken image per tile and no error anywhere.
+_TILE_URL_PLACEHOLDERS = ("{z}", "{x}", "{y}")
+
+
+class TileSettings(NamedTuple):
+    """What the overview map's tile layer is built from."""
+
+    url: str
+    attribution: str
+    max_zoom: int
+
+
+def _js_string(value: str) -> str:
+    """A JS string literal for `value`, safe to sit inside a <script> block.
+
+    `json.dumps` does the quoting and the backslashes. `ensure_ascii=False` is
+    deliberate: the default attribution is "© OpenStreetMap contributors", and
+    escaping it to a \\u sequence would change the bytes of every page this
+    generator has ever produced to say the same thing less legibly.
+
+    That leaves two hazards JSON does not cover, both of which only matter
+    because the literal is going into HTML rather than into a .json file:
+
+      * `</` ends the enclosing <script> early. The HTML parser is looking for
+        the sequence and does not care that it falls inside a string literal.
+      * U+2028 and U+2029 are ordinary characters to JSON and *line
+        terminators* to JavaScript, so one in an attribution is a syntax error
+        rather than a quirk.
+    """
+    literal = json.dumps(value, ensure_ascii=False)
+    # chr(), not the characters themselves: they are invisible in an editor
+    # and they do not reliably survive being copied through tooling, which
+    # is how this line was first written wrong.
+    for raw, escaped in ((chr(0x2028), "\\u2028"), (chr(0x2029), "\\u2029")):
+        literal = literal.replace(raw, escaped)
+    return literal.replace("</", "<\\/")
+
+
+def _tile_settings(config: dict[str, Any] | None) -> TileSettings:
+    """Read `map.tiles` from config, falling back per field to the OSM default.
+
+    **Per field, not per section.** A config that sets a URL and forgets the
+    attribution should ship the wrong attribution for nobody: it gets the URL it
+    asked for and the default attribution, plus a warning naming what it did.
+    Refusing the whole section on one bad field would silently revert the URL as
+    well, which is the surprise this is written to avoid.
+
+    Every fallback is logged. A tile source is a licence obligation as much as a
+    setting -- ODbL requires attribution to travel with the data -- so a config
+    that is quietly ignored is exactly the case that must not be quiet.
+    """
+    section = ((config or {}).get("map") or {}).get("tiles") or {}
+    if not isinstance(section, dict):
+        logger.warning(
+            "config `map.tiles` is %s, not a mapping; using the OpenStreetMap defaults",
+            type(section).__name__,
+        )
+        section = {}
+
+    url = str(section.get("url", "") or "").strip()
+    if not url:
+        url = DEFAULT_TILE_URL
+    elif not all(token in url for token in _TILE_URL_PLACEHOLDERS):
+        missing = ", ".join(t for t in _TILE_URL_PLACEHOLDERS if t not in url)
+        logger.warning(
+            "config `map.tiles.url` (%s) is missing %s, so Leaflet could not build a "
+            "tile request from it; using the OpenStreetMap default",
+            url, missing,
+        )
+        url = DEFAULT_TILE_URL
+
+    attribution = str(section.get("attribution", "") or "").strip()
+    if not attribution:
+        if url != DEFAULT_TILE_URL:
+            # A custom host with no attribution set. The default names OSM,
+            # which may now be the wrong credit -- say so rather than let the
+            # page carry a claim the operator did not make.
+            logger.warning(
+                "config `map.tiles.url` is set but `attribution` is not; the map will "
+                "credit OpenStreetMap. Set `map.tiles.attribution` to whatever your "
+                "tile source requires."
+            )
+        attribution = DEFAULT_TILE_ATTRIBUTION
+
+    raw_zoom = section.get("max_zoom", DEFAULT_TILE_MAX_ZOOM)
+    try:
+        max_zoom = int(raw_zoom)
+    except (TypeError, ValueError):
+        logger.warning(
+            "config `map.tiles.max_zoom` (%r) is not a number; using %d",
+            raw_zoom, DEFAULT_TILE_MAX_ZOOM,
+        )
+        max_zoom = DEFAULT_TILE_MAX_ZOOM
+    if not 0 <= max_zoom <= 22:
+        logger.warning(
+            "config `map.tiles.max_zoom` (%d) is outside Leaflet's 0-22; using %d",
+            max_zoom, DEFAULT_TILE_MAX_ZOOM,
+        )
+        max_zoom = DEFAULT_TILE_MAX_ZOOM
+
+    return TileSettings(url=url, attribution=attribution, max_zoom=max_zoom)
+
 
 def _verify_checksum(template_text: str) -> None:
     """Hard fail if template SHA-256 doesn't match stored value."""
@@ -166,6 +278,16 @@ class HTMLAssembler:
         # ── Map markers JSON ─────────────────────────────────────────────────
         markers = self._build_map_markers(trip["destinations"], meta)
         html = html.replace("'<!--MAP_MARKERS_JSON-->'", json.dumps(markers))
+
+        # ── Tile layer ───────────────────────────────────────────────────────
+        # The quotes are part of the search string, as they are for the markers
+        # above: `_js_string` emits the whole JS literal, so a URL or an
+        # attribution containing a quote cannot break out of the string it is
+        # substituted into. `max_zoom` is a bare number and is already an int.
+        tiles = _tile_settings(self._config)
+        html = html.replace("'<!--TILE_URL-->'", _js_string(tiles.url))
+        html = html.replace("'<!--TILE_ATTRIBUTION-->'", _js_string(tiles.attribution))
+        html = html.replace("<!--TILE_MAX_ZOOM-->", str(tiles.max_zoom))
 
         # ── Nav tabs ────────────────────────────────────────────────────────
         html = html.replace("<!--NAV_TABS-->", self._build_nav_tabs(trip["destinations"], meta))

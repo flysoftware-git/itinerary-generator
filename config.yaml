@@ -9,6 +9,35 @@ template:
   version: "2.5"
   verify_checksum: true
 
+# ── Overview map ─────────────────────────────────────────────────────────────
+# The tile source for the Leaflet overview map. Every field is optional and
+# falls back individually to the values below, which are what the template
+# carried hardcoded before this key existed -- so leaving this section alone
+# renders exactly what it rendered before.
+#
+# Two reasons to change it, neither of which applies to everybody:
+#
+#   * OSMF's tile usage policy says access "may be withdrawn at any point" for
+#     what it judges a commercial service. If this generator runs behind one,
+#     that policy is aimed at you, and the answer is your own tiles or a
+#     provider you hold terms with.
+#   * OSM labels places in the local language, so an English guide to Japan
+#     ships a Japanese map. A Latin-script basemap needs a different source.
+#
+# `url` must contain {z}, {x} and {y}; {s} is optional and Leaflet fills it from
+# its own subdomain list. A URL missing any of the first three is ignored with a
+# warning, because the failure is silent everywhere else -- the generator sees
+# nothing wrong and the browser draws one broken image per tile.
+#
+# `attribution` is a licence obligation rather than decoration: OSM-derived
+# tiles are ODbL and the credit travels with them. Change the source and this
+# almost certainly changes too. Check what your provider requires.
+map:
+  tiles:
+    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+    attribution: "© OpenStreetMap contributors"
+    max_zoom: 13
+
 # ── Azure OpenAI ─────────────────────────────────────────────────────────────
 ai:
   # Supported providers: openai | anthropic | deepseek | gemini | grok
