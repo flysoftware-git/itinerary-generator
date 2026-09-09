@@ -839,14 +839,14 @@ a badge on every link is a different, noisier claim.
 
 ```
 About the links. 81 of the 115 links in this guide were fetched and found working. The
-other 34 are on sites that refuse automated requests — TripAdvisor, OpenTable, AllTrails,
-Yelp — so they could not be checked from here, and nothing has been guessed in place of
+other 34 could not be reached to check from here — mostly sites that refuse automated
+requests: TripAdvisor, OpenTable, AllTrails, Yelp — and nothing has been guessed in place of
 checking. No link that failed a check was published.
 ```
 
 The wording carries the requirement, so it is specified rather than left to taste:
 
-- **"Could not be checked from here", never "we could not verify."** The limit is in this
+- **"Could not be **reached** to check from here", never "we could not verify."** The limit is in this
   pipeline's connection, not in the link. A bot-blocked page is not a suspect page, and
   wording that implies otherwise is a claim about a URL that nothing observed.
 - **Name the blocking domains**, from `unchecked_by_domain`, most frequent first, a few

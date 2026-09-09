@@ -5744,10 +5744,10 @@ def test_the_statement_matches_a_real_report():
     nothing which failed a check is on the page at all."""
     assert _note(_REAL_REPORT) == (
         "About the links. 81 of the 115 links in this guide were fetched and "
-        "found working. The other 34 are on sites that refuse automated "
-        "requests — TripAdvisor, OpenTable, AllTrails, Yelp — so they "
-        "could not be checked from here, and nothing has been guessed in place "
-        "of checking. No link that failed a check was published."
+        "found working. The other 34 could not be reached to check from "
+        "here — mostly sites that refuse automated requests: TripAdvisor, "
+        "OpenTable, AllTrails, Yelp — and nothing has been guessed in "
+        "place of checking. No link that failed a check was published."
     )
 
 
@@ -5757,7 +5757,7 @@ def test_the_blocking_domains_are_named_most_frequent_first():
     order has to follow the counts rather than the dict's insertion luck."""
     text = _note(_liveness(1, 3, {"www.yelp.com": 2, "www.opentable.com": 1}))
 
-    assert "— Yelp, OpenTable —" in text
+    assert ": Yelp, OpenTable —" in text
 
 
 def test_only_a_few_domains_are_named():
@@ -5778,7 +5778,7 @@ def test_only_a_few_domains_are_named():
     )
 
     assert "Resy" not in text
-    assert "— TripAdvisor, OpenTable, AllTrails, Yelp —" in text
+    assert ": TripAdvisor, OpenTable, AllTrails, Yelp —" in text
 
 
 def test_an_unknown_host_renders_as_its_domain_not_an_invented_brand():
@@ -5803,7 +5803,7 @@ def test_the_limit_is_located_in_the_connection_not_in_the_link():
     thing on the page that says so."""
     text = _note(_REAL_REPORT)
 
-    assert "could not be checked from here" in text
+    assert "could not be reached to check from here" in text
     assert "could not verify" not in text
     assert "unable to verify" not in text
 
@@ -5820,10 +5820,27 @@ def test_every_link_checked_says_so_and_still_makes_the_promise():
 
 def test_every_link_unchecked():
     assert _note(_liveness(0, 115, {"www.tripadvisor.com": 90, "www.yelp.com": 25})) == (
-        "About the links. None of the 115 links in this guide could be checked "
-        "from here: they are on sites that refuse automated requests — "
+        "About the links. None of the 115 links in this guide could be reached "
+        "to check from here — mostly sites that refuse automated requests: "
         "TripAdvisor, Yelp — and nothing has been guessed in place of "
         "checking. No link that failed a check was published."
+    )
+
+
+def test_a_guide_whose_only_link_could_not_be_reached():
+    """The one-link, none-reached corner, found by an injection that passed.
+
+    Replacing "could not be reached to check from here" with "we could not
+    verify" left every other test green, because this path -- total 1, unchecked
+    1 -- was the only place that string appeared first and nothing asserted it.
+    A guide with a single link is not exotic; a short trip with one attraction
+    produces one.
+    """
+    assert _note(_liveness(0, 1, {"www.yelp.com": 1})) == (
+        "About the links. The single link in this guide could not be reached "
+        "to check from here — mostly a site that refuses automated requests: "
+        "Yelp — and nothing has been guessed in place of checking. No link "
+        "that failed a check was published."
     )
 
 
@@ -5848,8 +5865,8 @@ def test_a_single_unchecked_link_reads_as_one_link():
 
     assert (
         "4 of the 5 links in this guide were fetched and found working. The "
-        "other one is on a site that refuses automated requests — Yelp "
-        "— so it could not be checked from here"
+        "other one could not be reached to check from here — mostly a site "
+        "that refuses automated requests: Yelp —"
     ) in text
 
 
@@ -5858,14 +5875,14 @@ def test_several_links_on_one_blocked_host_are_on_a_site_not_on_sites():
     unchecked links behind one WAF are one site's doing."""
     text = _note(_liveness(6, 3, {"www.yelp.com": 3}))
 
-    assert "The other 3 are on a site that refuses automated requests — Yelp —" in text
+    assert "The other 3 could not be reached to check from here — mostly a site that refuses automated requests: Yelp —" in text
 
 
 def test_unchecked_links_with_no_recorded_domain_drop_the_naming_clause():
     text = _note(_liveness(4, 1, {}))
 
     assert "automated requests" not in text
-    assert "The other one could not be checked from here" in text
+    assert "The other one could not be reached to check from here" in text
 
 
 def test_the_promise_is_withdrawn_rather_than_told_falsely():
@@ -5876,7 +5893,10 @@ def test_the_promise_is_withdrawn_rather_than_told_falsely():
 
     assert "No link that failed a check was published." not in text
     assert "The other 34" not in text
-    assert "34 of them are on a site that refuses automated requests" in text
+    assert (
+        "34 of them could not be reached to check from here — mostly a site "
+        "that refuses automated requests: Yelp"
+    ) in text
 
 
 def test_the_note_reads_the_keys_the_ledger_actually_writes():

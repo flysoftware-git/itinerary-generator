@@ -3635,13 +3635,14 @@ class HTMLAssembler:
 
         if live == 0 and unchecked == total:
             if total == 1:
-                body = "The single link in this guide could not be checked from here"
-                subject = "it is"
+                body = "The single link in this guide could not be reached to check from here"
             else:
-                body = f"None of the {total} {links} in this guide could be checked from here"
-                subject = "they are"
+                body = (
+                    f"None of the {total} {links} in this guide could be reached "
+                    "to check from here"
+                )
             body += (
-                f": {subject} on {site} automated requests{domains}and "
+                f" — mostly {site} automated requests: {domains.strip(' —')} — and "
                 if domains
                 else ", and "
             )
@@ -3659,16 +3660,23 @@ class HTMLAssembler:
             rest = "The other one" if accounted else "One of them"
         else:
             rest = f"The other {unchecked}" if accounted else f"{unchecked} of them"
+        # "Could not be reached to check", and the hosts as the usual reason
+        # rather than the stated cause. `unchecked` also covers timeouts and
+        # refused connections, so naming the blockers as *the* cause would be
+        # broader than the data -- while dropping them entirely would turn a
+        # recognisable fact back into a number a reader can only be suspicious
+        # of. "Mostly" is the whole of the hedge and it is doing real work.
         if domains:
             body = (
-                f"{checked} {rest} {'is' if one else 'are'} on {site} automated "
-                f"requests{domains}so {'it' if one else 'they'} could not be checked "
-                "from here, and nothing has been guessed in place of checking."
+                f"{checked} {rest} could not be reached to check from here — "
+                f"mostly {site} automated requests: "
+                f"{domains.strip(' —')} — and nothing has been guessed in place "
+                "of checking."
             )
         else:
             body = (
-                f"{checked} {rest} could not be checked from here, and nothing "
-                "has been guessed in place of checking."
+                f"{checked} {rest} could not be reached to check from here, and "
+                "nothing has been guessed in place of checking."
             )
         return f"About the links. {body}{promise}"
 
