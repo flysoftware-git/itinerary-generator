@@ -509,6 +509,7 @@ _RETENTION_EXIT_LABELS = {
     28: 'if redirect_target',
     29: 'if not self._is_relevant_result(url, item_name, dest_name, candidate=candidate, deep_check=deep_check, item_description=',
     30: "if allow_google_maps_search and policy_class in {'google_maps_search', 'google_maps_dir'}",
+    31: "if kind in {'generic', 'attraction'} and self._is_the_destinations_own_page(url, item_name, dest_name)",
 }
 
 DEFAULT_FALLBACK_MODE = "search"
@@ -3808,6 +3809,25 @@ class URLDiscoverer:
                     kind, item_name, url,
                 )
                 return self._reject_retention(20)
+        # GH #59. Scoped to the kinds that name a thing inside a destination:
+        # restaurants have their own generic-landing rule
+        # (`_is_generic_restaurant_landing_url`), and an en-route stop is not
+        # inside the destination at all -- it sits on the leg between two.
+        #
+        # Seeds are NOT exempt. A seed is a human saying "I want to see this",
+        # which makes the link's correctness matter more rather than less; the
+        # seed still survives verified-link-or-seed and renders without a link
+        # rather than with one pointing at the wrong thing. Same trade the
+        # trail-link fix made: a wrong page is worse than no page.
+        if kind in {"generic", "attraction"} and self._is_the_destinations_own_page(url, item_name, dest_name):
+            logger.info(
+                "Destination's own page rejected as a specific %s link for '%s' (%s): %s",
+                kind,
+                item_name or "unknown",
+                dest_name or "unknown destination",
+                url,
+            )
+            return self._reject_retention(31)
         if kind in {"generic", "attraction"} and self._is_category_style_activity(item_name):
             if self._is_generic_geographic_url_for_category(url, item_name):
                 logger.info(
@@ -15913,6 +15933,56 @@ class URLDiscoverer:
             "byway",
         )
         return any(marker in path for marker in geographic_markers)
+
+    @classmethod
+    def _is_the_destinations_own_page(cls, url: str, item_name: str, dest_name: str) -> bool:
+        """True when the URL is the DESTINATION's page, offered as an ITEM's link.
+
+        GH #59: "Red Canyon" linked to a generic Utah.com Capitol Reef listing.
+        Reproduced on v3 2026-09-08 -- that one live page was accepted as the
+        link for four different attractions (Red Canyon, Hickman Bridge Trail,
+        Cathedral Valley, Sulphur Creek).
+
+        **No text check can catch this, and that is why the rule is about the
+        URL.** A destination's overview page legitimately talks about the things
+        inside it: fetched live, that Capitol Reef page contains "hickman
+        bridge", "cathedral valley" and "sulphur creek". A relevance gate
+        reading the prose is therefore right to say the page is about the item,
+        and still wrong to accept it -- the page is *about* the destination, and
+        mentions the item the way a table of contents mentions a chapter.
+
+        Two conditions, and both are needed:
+
+          1. every distinctive word of the DESTINATION appears in the URL path,
+             which is what makes it that destination's own page rather than
+             some page that merely sits under it, and
+          2. no distinctive word of the ITEM appears anywhere in the URL.
+
+        (2) is what keeps `.../capitol-reef/hickman-bridge` -- a real page for a
+        real thing -- from being caught by (1). The item's words are taken after
+        subtracting the destination's, so an attraction named for its park is
+        judged on what it adds: "Capitol Reef Visitor Center" is asked for
+        "visitor" or "center", not for "capitol".
+
+        Returns False when the item adds nothing to the destination's own name.
+        An attraction called simply "Capitol Reef" has no word of its own to
+        look for, condition (2) would hold vacuously, and the park's page is
+        the right answer for it rather than the wrong one.
+        """
+        path = (urlparse(url or "").path or "").lower()
+        if not path:
+            return False
+
+        dest_tokens = set(cls._significant_tokens(dest_name))
+        if not dest_tokens or not all(token in path for token in dest_tokens):
+            return False
+
+        item_tokens = set(cls._significant_tokens(item_name)) - dest_tokens
+        if not item_tokens:
+            return False
+
+        lower = (url or "").lower()
+        return not any(token in lower for token in item_tokens)
 
     @staticmethod
     def _is_category_offer_listing_url(url: str) -> bool:

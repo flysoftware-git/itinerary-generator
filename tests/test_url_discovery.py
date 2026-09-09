@@ -5517,6 +5517,23 @@ def test_search_attraction_direct_batch_authoritative_prefers_item_specific_url_
 
 
 def test_search_attraction_direct_batch_authoritative_uses_maps_link_from_snippet_text():
+    """SUPERSEDED BY GH #59, 2026-09-08.
+
+    This asserted that a town's own landing page is an acceptable link for a
+    specific attraction inside it, on the strength of the batch row's snippet
+    naming the item. #59 is the same shape seen from the other side -- "Red
+    Canyon" linking to a generic Capitol Reef listing -- and says such a link
+    must be refused.
+
+    The snippet is not the distinguishing evidence it looks like: a
+    destination's overview page legitimately names the things inside it, so
+    almost any of them can produce a row whose text matches. Fetched live, the
+    Capitol Reef page contains "hickman bridge", "cathedral valley" and
+    "sulphur creek".
+
+    Kept as a test rather than deleted, with the assertion reversed, because
+    the case is still the one worth pinning -- only the answer changed.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
 
@@ -5535,10 +5552,27 @@ def test_search_attraction_direct_batch_authoritative_uses_maps_link_from_snippe
             "October 18, 2026",
         )
 
-    assert out == "https://www.visitutah.com/places-to-go/cities-and-towns/st-george"
+    assert not out, "the town's own page is not a specific attraction's link (GH #59)"
 
 
 def test_search_attraction_direct_batch_authoritative_rejects_snippet_maps_link_for_other_item():
+    """SUPERSEDED BY GH #59, 2026-09-08.
+
+    This asserted that a town's own landing page is an acceptable link for a
+    specific attraction inside it, on the strength of the batch row's snippet
+    naming the item. #59 is the same shape seen from the other side -- "Red
+    Canyon" linking to a generic Capitol Reef listing -- and says such a link
+    must be refused.
+
+    The snippet is not the distinguishing evidence it looks like: a
+    destination's overview page legitimately names the things inside it, so
+    almost any of them can produce a row whose text matches. Fetched live, the
+    Capitol Reef page contains "hickman bridge", "cathedral valley" and
+    "sulphur creek".
+
+    Kept as a test rather than deleted, with the assertion reversed, because
+    the case is still the one worth pinning -- only the answer changed.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
 
@@ -5557,10 +5591,27 @@ def test_search_attraction_direct_batch_authoritative_rejects_snippet_maps_link_
             "October 18, 2026",
         )
 
-    assert out == "https://www.visitutah.com/places-to-go/cities-and-towns/st-george"
+    assert not out, "the town's own page is not a specific attraction's link (GH #59)"
 
 
 def test_search_attraction_direct_batch_authoritative_keeps_item_matching_generic_landing_page():
+    """SUPERSEDED BY GH #59, 2026-09-08.
+
+    This asserted that a town's own landing page is an acceptable link for a
+    specific attraction inside it, on the strength of the batch row's snippet
+    naming the item. #59 is the same shape seen from the other side -- "Red
+    Canyon" linking to a generic Capitol Reef listing -- and says such a link
+    must be refused.
+
+    The snippet is not the distinguishing evidence it looks like: a
+    destination's overview page legitimately names the things inside it, so
+    almost any of them can produce a row whose text matches. Fetched live, the
+    Capitol Reef page contains "hickman bridge", "cathedral valley" and
+    "sulphur creek".
+
+    Kept as a test rather than deleted, with the assertion reversed, because
+    the case is still the one worth pinning -- only the answer changed.
+    """
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._direct_batch_authoritative = True
 
@@ -5579,7 +5630,7 @@ def test_search_attraction_direct_batch_authoritative_keeps_item_matching_generi
             "October 18, 2026",
         )
 
-    assert out == "https://www.visitutah.com/places-to-go/cities-and-towns/st-george"
+    assert not out, "the town's own page is not a specific attraction's link (GH #59)"
 
 
 def test_search_attraction_direct_batch_authoritative_accepts_valid_feature_name_variant() -> None:
@@ -18281,3 +18332,58 @@ def test_concurrent_page_fetches_do_not_swap_redirect_targets():
 
     assert discoverer._fetch_final_url_cache[url_a] == final_a
     assert discoverer._fetch_final_url_cache[url_b] == final_b
+
+
+class TestTheDestinationsOwnPageIsNotAnItemsLink:
+    """GH #59: "Red Canyon" linked to a generic Capitol Reef listing page.
+
+    Closed as completed 2026-08-14 with no comments and no linked commit, and
+    still reproducing on v3 2026-09-08: one live page
+    (utah.com/destinations/national-parks/capitol-reef-national-park/) was
+    accepted as the link for four different attractions.
+
+    **Why the rule reads the URL and not the page.** A destination's overview
+    page legitimately talks about the things inside it -- fetched live, that
+    Capitol Reef page contains "hickman bridge", "cathedral valley" and
+    "sulphur creek". Any gate reading the prose is right that the page is about
+    the item and still wrong to accept it. The page is *about* the destination
+    and mentions the item the way a contents page mentions a chapter.
+    """
+
+    P = staticmethod(URLDiscoverer._is_the_destinations_own_page)
+    DEST = "Capitol Reef National Park"
+    GENERIC = "https://www.utah.com/destinations/national-parks/capitol-reef-national-park/"
+
+    def test_the_destinations_page_is_not_a_specific_attractions_link(self):
+        for item in ("Red Canyon", "Hickman Bridge Trail", "Cathedral Valley", "Sulphur Creek"):
+            assert self.P(self.GENERIC, item, self.DEST), item
+
+    def test_a_real_page_for_the_item_is_not_caught(self):
+        """The second condition is what keeps this rule from eating the pages
+        it exists to prefer -- the item's own words are in the URL."""
+        assert not self.P(
+            "https://www.utah.com/destinations/national-parks/capitol-reef-national-park/hickman-bridge/",
+            "Hickman Bridge Trail", self.DEST,
+        )
+
+    def test_an_item_named_for_its_park_is_judged_on_what_it_adds(self):
+        """"Capitol Reef Visitor Center" is asked for "visitor" or "center",
+        not for "capitol" -- otherwise the park's own name would satisfy the
+        rule for everything inside it."""
+        assert self.P(self.GENERIC, "Capitol Reef Visitor Center", self.DEST)
+
+    def test_an_item_that_IS_the_destination_keeps_the_page(self):
+        """No word of its own to look for, so the second condition would hold
+        vacuously. For an attraction called simply "Capitol Reef" the park's
+        page is the right answer, not the wrong one."""
+        assert not self.P(self.GENERIC, "Capitol Reef", self.DEST)
+
+    def test_a_url_that_does_not_name_the_destination_is_untouched(self):
+        """Both conditions are required. Without the first, any URL lacking the
+        item's words would be rejected -- including opaque but correct ones."""
+        assert not self.P("https://example.com/attractions/12345", "Red Canyon", self.DEST)
+        assert not self.P("https://www.nps.gov/zion/index.htm", "Red Canyon", self.DEST)
+
+    def test_the_rejection_is_a_labelled_retention_exit(self):
+        from generator.url_discovery import _RETENTION_EXIT_LABELS
+        assert 31 in _RETENTION_EXIT_LABELS
