@@ -1,3 +1,6 @@
+import logging
+from pathlib import Path
+
 import pytest
 
 from generator.html_assembler import CHECKSUM_PATH, TEMPLATE_PATH, HTMLAssembler, _verify_checksum
@@ -5950,3 +5953,160 @@ def test_a_footer_without_a_liveness_report_is_unchanged():
 
     assert "link-liveness-note" not in footer
     assert footer == _FOOTER_BEFORE_BRAND
+
+
+# ─── Tile source (config `map.tiles`) ────────────────────────────────────────
+#
+# The template carried one hardcoded tile URL. It is configurable now, and the
+# thing these tests protect is that configurability did not change the default:
+# a user who never touches `map.tiles` must get the map they had before.
+
+
+def _tile_trip() -> dict:
+    return {
+        "trip": {"title": "Test Trip", "theme_color": "#C0623E"},
+        "_meta": {
+            "generator_version": "test",
+            "template_version": "test",
+            "generated_at_utc": "2026-07-24T00:00:00+00:00",
+            "llm": {"provider": "openai", "model": "test",
+                    "usage": {"models": [], "total_estimated_cost_usd": 0.0}},
+        },
+        "destinations": [],
+    }
+
+
+def _config_with_tiles(tmp_path, tiles) -> str:
+    import yaml
+
+    base = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    base["map"] = {"tiles": tiles}
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    return str(path)
+
+
+def test_the_shipped_config_renders_the_url_the_template_used_to_hardcode() -> None:
+    """The point of the change is that it changes nothing by default."""
+    html = HTMLAssembler(config_path="config.yaml").assemble(_tile_trip())
+
+    assert "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" in html
+    assert "© OpenStreetMap contributors" in html
+    assert "maxZoom:13" in html
+
+
+def test_no_tile_placeholder_survives_into_the_page() -> None:
+    """An unsubstituted placeholder is a broken map that raises nothing: the
+    template renders, the browser asks for a tile at a literal URL, and every
+    check in this generator passes."""
+    html = HTMLAssembler(config_path="config.yaml").assemble(_tile_trip())
+
+    assert "TILE_URL" not in html
+    assert "TILE_ATTRIBUTION" not in html
+    assert "TILE_MAX_ZOOM" not in html
+
+
+def test_a_configured_tile_source_reaches_the_page(tmp_path) -> None:
+    config = _config_with_tiles(tmp_path, {
+        "url": "https://tiles.example.com/{z}/{x}/{y}.png",
+        "attribution": "© Example",
+        "max_zoom": 19,
+    })
+
+    html = HTMLAssembler(config_path=config).assemble(_tile_trip())
+
+    assert "https://tiles.example.com/{z}/{x}/{y}.png" in html
+    assert "© Example" in html
+    assert "maxZoom:19" in html
+    assert "tile.openstreetmap.org" not in html
+
+
+def test_a_quote_in_the_attribution_cannot_break_out_of_the_script(tmp_path) -> None:
+    """The substituted values land inside a <script>. An apostrophe is ordinary
+    in an attribution -- "Crown copyright" credits and company names carry them
+    -- and one unescaped would end the JS string early and break the map."""
+    config = _config_with_tiles(tmp_path, {
+        "url": "https://tiles.example.com/{z}/{x}/{y}.png",
+        "attribution": "© Bob's Tiles",
+    })
+
+    html = HTMLAssembler(config_path=config).assemble(_tile_trip())
+
+    assert "L.tileLayer(\"https://tiles.example.com/{z}/{x}/{y}.png\"" in html
+    assert "\"\u00a9 Bob's Tiles\"" in html or '"© Bob\'s Tiles"' in html
+
+
+# ─── falling back, and saying so ─────────────────────────────────────────────
+
+
+def test_a_url_missing_the_leaflet_placeholders_falls_back_and_names_them(caplog) -> None:
+    from generator.html_assembler import DEFAULT_TILE_URL, _tile_settings
+
+    with caplog.at_level(logging.WARNING):
+        tiles = _tile_settings({"map": {"tiles": {"url": "https://tiles.example.com/map.png"}}})
+
+    assert tiles.url == DEFAULT_TILE_URL
+    assert "{z}" in caplog.text and "{x}" in caplog.text and "{y}" in caplog.text
+
+
+def test_each_field_falls_back_on_its_own() -> None:
+    """A URL set and an attribution forgotten should not silently revert the
+    URL as well -- refusing the whole section on one bad field is the surprise
+    this avoids."""
+    from generator.html_assembler import DEFAULT_TILE_ATTRIBUTION, DEFAULT_TILE_MAX_ZOOM, _tile_settings
+
+    tiles = _tile_settings({"map": {"tiles": {"url": "https://tiles.example.com/{z}/{x}/{y}.png"}}})
+
+    assert tiles.url == "https://tiles.example.com/{z}/{x}/{y}.png"
+    assert tiles.attribution == DEFAULT_TILE_ATTRIBUTION
+    assert tiles.max_zoom == DEFAULT_TILE_MAX_ZOOM
+
+
+def test_a_custom_url_with_no_attribution_warns_about_the_credit(caplog) -> None:
+    """Attribution is a licence obligation, not decoration. Pointing somewhere
+    else and keeping the OSM credit may now be a claim the operator did not
+    make, so it is said rather than left to be noticed."""
+    from generator.html_assembler import _tile_settings
+
+    with caplog.at_level(logging.WARNING):
+        _tile_settings({"map": {"tiles": {"url": "https://tiles.example.com/{z}/{x}/{y}.png"}}})
+
+    assert "attribution" in caplog.text.lower()
+
+
+def test_the_default_url_alone_does_not_warn_about_attribution(caplog) -> None:
+    """The warning above must not fire for the shipped config, or it fires on
+    every run and stops being read."""
+    from generator.html_assembler import _tile_settings
+
+    with caplog.at_level(logging.WARNING):
+        _tile_settings({"map": {"tiles": {}}})
+
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize("bad", ["deep", None, 27, -1])
+def test_an_unusable_max_zoom_falls_back(bad) -> None:
+    from generator.html_assembler import DEFAULT_TILE_MAX_ZOOM, _tile_settings
+
+    tiles = _tile_settings({"map": {"tiles": {"max_zoom": bad}}})
+
+    assert tiles.max_zoom == DEFAULT_TILE_MAX_ZOOM
+
+
+@pytest.mark.parametrize("section", [None, {}, "openstreetmap", []])
+def test_a_missing_or_malformed_section_is_the_old_behaviour(section) -> None:
+    from generator.html_assembler import (
+        DEFAULT_TILE_ATTRIBUTION, DEFAULT_TILE_MAX_ZOOM, DEFAULT_TILE_URL, _tile_settings,
+    )
+
+    tiles = _tile_settings({"map": {"tiles": section}})
+
+    assert tiles == (DEFAULT_TILE_URL, DEFAULT_TILE_ATTRIBUTION, DEFAULT_TILE_MAX_ZOOM)
+
+
+def test_no_config_at_all_is_the_old_behaviour() -> None:
+    from generator.html_assembler import DEFAULT_TILE_URL, _tile_settings
+
+    assert _tile_settings(None).url == DEFAULT_TILE_URL
+    assert _tile_settings({}).url == DEFAULT_TILE_URL
