@@ -170,6 +170,46 @@ def test_match_defers_when_two_destinations_score_near_identically() -> None:
     assert len(ranked) == 2
 
 
+def test_a_lodging_fragment_keeps_the_dates_the_stay_was_booked_for() -> None:
+    """The extraction prompt asks for `dates` and the lodging branch dropped it.
+
+    A hotel confirmation reached the sidecar with the property, the code and
+    the check-in *time*, and nothing saying which nights were booked -- the one
+    fact a stay consists of. `checkin_time` is not a substitute: `ai_content`
+    renders it as "arriving around {checkin_time}", so a date written there
+    comes out of the generator as prose about arriving around a date.
+    """
+    section, fragment = reservation_to_manifest_fragment(
+        {"kind": "lodging", "name": "The Swan Hotel",
+         "location": "Port Townsend, WA", "dates": "October 17-19, 2026",
+         "checkin_time": "4:00 PM", "confirmation_number": "PT-88214"}
+    )
+
+    assert section == "lodging"
+    assert fragment["dates"] == "October 17-19, 2026"
+    assert fragment["checkin_time"] == "4:00 PM"
+
+
+def test_a_lodging_stay_window_survives_the_merge_into_a_manifest() -> None:
+    """And the schema accepts it, which is what stops a merged manifest from
+    failing validation on a field ingestion is now allowed to write."""
+    from generator.manifest_parser import MANIFEST_SCHEMA
+
+    lodging_schema = (MANIFEST_SCHEMA["properties"]["destinations"]["items"]
+                      ["properties"]["lodging"])
+    assert "dates" in lodging_schema["properties"]
+    assert lodging_schema.get("additionalProperties") is False
+
+    trip = {"destinations": [{"id": "pt", "name": "Port Townsend",
+                              "lodging": {"location": "Port Townsend, WA"}}]}
+    counts = merge_sidecar_into_trip(
+        trip, {"destinations": {"pt": {"lodging": {"dates": "October 17-19, 2026"}}}}
+    )
+
+    assert counts["lodging_fields"] == 1
+    assert trip["destinations"][0]["lodging"]["dates"] == "October 17-19, 2026"
+
+
 def test_fragment_drops_fields_the_email_never_stated() -> None:
     """A partial extraction must fill only what it knows, so the manifest's own
     values survive for everything else."""

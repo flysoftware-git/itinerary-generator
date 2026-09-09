@@ -446,6 +446,24 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                         "properties": {
                             "name": {"type": "string"},
                             "location": {"type": "string", "minLength": 2},
+                            "dates": {
+                                "type": "string",
+                                "description": "Optional free text for when the stay itself "
+                                               "is booked (\"October 17-19, 2026\"), in the same "
+                                               "shape as destination.dates. Distinct from the "
+                                               "destination's dates, which are the whole stop: a "
+                                               "property held for two nights of a four-night stop "
+                                               "states something the stop does not. Written by "
+                                               "reservation ingestion, which reads it off the "
+                                               "confirmation; a manifest may state it directly. "
+                                               "NOT redacted in privacy-redacted builds, for the "
+                                               "same reason as lodging.location and checkin_time "
+                                               "(main._apply_privacy_redaction) -- the days a "
+                                               "traveler is at a stop are already published as "
+                                               "destination.dates, so this discloses nothing the "
+                                               "guide does not, and it is the property NAME that "
+                                               "turns a date into where-they-sleep.",
+                            },
                             "checkin_time": {"type": "string"},
                             "confirmation_number": {
                                 "type": "string",
