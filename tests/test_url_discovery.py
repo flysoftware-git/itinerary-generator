@@ -1685,6 +1685,157 @@ def test_persistent_cache_never_saves_blocked_alltrails_fetch_results(tmp_path) 
     assert payload["alltrails_fetch_results"] == {}
 
 
+def _page_text_cache_writer(tmp_path, entries):
+    cache_path = tmp_path / "persistent_cache.json"
+    writer = URLDiscoverer.__new__(URLDiscoverer)
+    writer._persistent_cache_enabled = True
+    writer._persistent_cache_path = str(cache_path)
+    writer._persistent_cache_dirty = True
+    writer._request_cache_lock = Lock()
+    writer._page_text_cache = dict(entries)
+    writer._fetch_final_url_cache = {}
+    writer._save_persistent_caches()
+    return cache_path
+
+
+def test_persistent_cache_only_saves_page_text_fetches_that_observed_something(tmp_path) -> None:
+    """The general page-text cache feeds the relevance and redirect gates, and
+    it was persisting outcomes that are not observations. A 401/403 block page,
+    a timeout or an SSL error says nothing about the URL -- it says this run
+    could not reach it -- and `classify_link_liveness` already calls exactly
+    those outcomes `unchecked`. Written to disk, that placeholder is inherited
+    by every later run and read as a measurement.
+
+    The two caches immediately below this one in `_save_persistent_caches`
+    refuse the same thing for their own transient failures (the geocoder's
+    "no result", AllTrails' DataDome block). A live status and a definitive
+    404 are observations and must still round trip.
+    """
+    live = "https://www.nps.gov/brca/"
+    gone = "https://example.org/removed"
+    blocked = "https://www.tripadvisor.com/Restaurant_Review-g1-d1.html"
+    timed_out = "https://www.opentable.com/r/somewhere"
+
+    cache_path = _page_text_cache_writer(
+        tmp_path,
+        {
+            live: (True, 200, "<html>Bryce Canyon National Park</html>"),
+            gone: (False, 404, ""),
+            blocked: (False, 403, ""),
+            timed_out: (False, "HTTPSConnectionPool: Read timed out.", ""),
+        },
+    )
+
+    saved = json.loads(cache_path.read_text(encoding="utf-8"))["page_text_results"]
+    assert live in saved
+    assert gone in saved
+    assert blocked not in saved
+    assert timed_out not in saved
+
+
+def test_a_blocked_page_text_entry_already_on_disk_is_not_loaded_as_a_measurement(tmp_path) -> None:
+    """Refusing to write new ones does not remove the ones already written --
+    they are on disk, restored by every run, and still deciding. The loader
+    applies the same predicate, so an inherited placeholder costs one real
+    fetch instead of standing in for a verdict."""
+    blocked = "https://www.tripadvisor.com/Restaurant_Review-g1-d1.html"
+    live = "https://www.nps.gov/brca/"
+
+    cache_path = tmp_path / "persistent_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "page_text_results": {
+                    blocked: {"ts": time.time(), "ok": False, "status": 403, "text": "", "final_url": ""},
+                    live: {"ts": time.time(), "ok": True, "status": 200, "text": "<html>ok</html>", "final_url": ""},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reader = URLDiscoverer.__new__(URLDiscoverer)
+    reader._persistent_cache_enabled = True
+    reader._persistent_cache_path = str(cache_path)
+    reader._page_text_cache = {}
+    reader._fetch_final_url_cache = {}
+    reader._load_persistent_caches()
+
+    assert blocked not in reader._page_text_cache
+    assert live in reader._page_text_cache
+
+
+def test_the_retention_gate_reaches_the_same_verdict_after_a_run_that_was_blocked(tmp_path) -> None:
+    """The whole point of the two guards above, at the gate they protect.
+
+    One URL, one item, one code path, twice -- differing only in what the
+    cache held. A run that reached the page sees the redirect to a generic
+    hub and rejects. A run that inherited a blocked fetch from an earlier run
+    never asks the network at all: the failed fetch fails open on liveness,
+    and the redirect record that entry does not carry is read as "this URL did
+    not redirect" rather than "nothing ever looked". The gate then accepts, on
+    no evidence, the URL the other run refused.
+
+    A gate whose verdict depends on cache warmth is not a gate. Both runs must
+    reach the same answer, and the second one has to spend a request to do it.
+    """
+    url = "https://www.nps.gov/brca/"
+    final = "https://www.nps.gov/brca/index.htm"
+    item = "Bryce Canyon National Park"
+    dest = "Bryce Canyon"
+    body = "<html><body><h1>Bryce Canyon National Park</h1></body></html>"
+    row = {"name": item, "title": item, "url": url, "snippet": "Official park site."}
+
+    def build(cache_path, status):
+        validator = MagicMock()
+        validator._last_final_url = ""
+
+        def get_text(_url, timeout=None):
+            if status == 200:
+                validator._last_final_url = final
+                return True, 200, body
+            validator._last_final_url = ""
+            return False, status, ""
+
+        validator.get_text = get_text
+        discoverer = URLDiscoverer.__new__(URLDiscoverer)
+        discoverer._url_validator = validator
+        discoverer._persistent_cache_enabled = True
+        discoverer._persistent_cache_path = str(cache_path)
+        discoverer._persistent_cache_dirty = True
+        discoverer._request_cache_lock = Lock()
+        discoverer._page_text_cache = {}
+        discoverer._fetch_final_url_cache = {}
+        discoverer._verify_url_cache = {}
+        discoverer._domain_blocked_until_ts = {}
+        discoverer._domain_block_cooldown_seconds = 0
+        discoverer._direct_batch_authoritative = True
+        return discoverer
+
+    def verdict(discoverer):
+        return discoverer._retain_discovered_url(
+            url, item, dest,
+            allow_alltrails=False,
+            kind="en-route stop",
+            candidate=row,
+            allow_shallow_relevance=False,
+            allow_google_maps_search=True,
+        )
+
+    reached = build(tmp_path / "reached.json", 200)
+    assert verdict(reached) == ""
+    assert reached._last_retention_rejection[0] == 28
+
+    blocked_run = build(tmp_path / "shared.json", 403)
+    verdict(blocked_run)
+    blocked_run._save_persistent_caches()
+
+    later_run = build(tmp_path / "shared.json", 200)
+    later_run._load_persistent_caches()
+    assert verdict(later_run) == ""
+    assert later_run._last_retention_rejection[0] == 28
+
+
 def test_persistent_cache_round_trips_direct_batch_harvest_rows(tmp_path) -> None:
     """Regression for issue #66: direct-batch harvest rows (the expensive
     per-destination-per-kind Grok HTML-list calls for attractions/restaurants/
