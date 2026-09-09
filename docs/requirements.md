@@ -821,6 +821,59 @@ Rules:
   `theme_color`). Those are separate concerns and collapsing them into one block is how a
   configuration surface stops being explicable.
 
+### 8.4 The link-liveness statement — provenance for the links themselves
+
+The footer records what built the page. It said nothing about the part of the page a
+reader actually depends on: the links.
+
+Publication is fail-closed, so a link that was checked and found dead is stripped before
+assembly. Every link a reader can see is therefore in one of exactly two states — **fetched
+and working**, or **never successfully reached**. Bot-blocking makes the second state
+ordinary rather than exotic, and on the page the two were indistinguishable. That is the
+conflation the tri-state liveness ledger records (`url_discovery.link_liveness_report`); it
+reached the validation report and stopped there. This section carries it the last hop.
+
+`html_assembler._build_link_liveness_note` renders **one statement**, in the footer, between
+the provenance line and the support line. No per-link marks: the fact is about the page, and
+a badge on every link is a different, noisier claim.
+
+```
+About the links. 81 of the 115 links in this guide were fetched and found working. The
+other 34 could not be reached to check from here — mostly sites that refuse automated
+requests: TripAdvisor, OpenTable, AllTrails, Yelp — and nothing has been guessed in place of
+checking. No link that failed a check was published.
+```
+
+The wording carries the requirement, so it is specified rather than left to taste:
+
+- **"Could not be **reached** to check from here", never "we could not verify."** The limit is in this
+  pipeline's connection, not in the link. A bot-blocked page is not a suspect page, and
+  wording that implies otherwise is a claim about a URL that nothing observed.
+- **Name the blocking domains**, from `unchecked_by_domain`, most frequent first, a few
+  rather than all. A bare count is a number a reader can only be suspicious of; four host
+  names turn it into something they already recognise. A host with no known display name
+  renders as its own domain — inventing a brand name is the same class of guess this
+  statement exists to refuse.
+- **Never speculate.** No "may no longer be available" or equivalent. The third state exists
+  because "we did not check" was rendering as "we checked and it was fine"; replacing it
+  with a *different* guess undoes that.
+- **The last sentence is the fail-closed promise**, and it is the first place a reader can
+  see that the promise exists. It is withdrawn only if a link that failed a check somehow
+  reached the page, because a false assurance is worse than none.
+
+Degenerate cases, and what each renders:
+
+| Case | Rendered |
+|---|---|
+| Some checked, some not | The statement above |
+| Nothing unchecked | `All 115 links in this guide were fetched and found working.` — shorter, and it keeps the promise |
+| Everything unchecked | `None of the 115 links in this guide could be checked from here: …` |
+| No links in the guide | **Nothing.** "0 of 0" is noise, not provenance |
+| No liveness block on the trip | **Nothing.** Absent is not zero: a guide built before the ledger existed recorded neither state, and "0 unchecked" would be a confident false claim about a run that measured nothing — the exact conflation being fixed |
+
+The last row is the common case for every guide produced before the ledger shipped, and it
+is the one that must not be got wrong.
+
 ---
 
 ## 9. CLI Interface

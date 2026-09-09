@@ -5,6 +5,7 @@ import pytest
 
 from generator.manifest_parser import ManifestParser
 from generator.reservation_ingest import (
+    NotAMessage,
     build_sidecar,
     email_to_text,
     match_destination,
@@ -54,6 +55,76 @@ def test_email_to_text_truncates_long_bodies() -> None:
     subject, body = email_to_text(_msg("x", "y" * 50000))
 
     assert len(body) <= 12000
+
+
+#: The OLE compound-document header. An Outlook `.msg` is a container in this
+#: format, not a message, and it is what a mail client hands over when a message
+#: is dragged out of it -- so it is the non-message most likely to arrive where
+#: a message was meant.
+_OLE_HEADER = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def test_an_outlook_msg_is_refused_rather_than_read_as_garbage() -> None:
+    """The defect this guards is silent, which is why it is worth a test.
+
+    `email.message_from_bytes` cannot fail. Handed the OLE container an Outlook
+    `.msg` actually is, it returned a message with an empty subject and ~780
+    characters of the container's own bytes decoded as latin-1 -- non-empty, so
+    a caller's "is there anything to read?" check passed and the noise went on
+    to the extractor as though it were an email body. That is an LLM call, and
+    a charge, against a file that was never a message.
+    """
+    with pytest.raises(NotAMessage) as caught:
+        email_to_text(_OLE_HEADER + bytes(range(256)) * 4)
+
+    # Says what it got, so a caller can tell the sender what to do instead.
+    assert ".msg" in str(caught.value)
+
+
+def test_a_pdf_handed_to_the_message_parser_is_refused() -> None:
+    """A misnamed attachment is the same defect wearing a different hat: a PDF
+    is read perfectly well by `_pdf_to_text` and not at all by the message
+    parser, and only one of those two ever says so."""
+    with pytest.raises(NotAMessage) as caught:
+        email_to_text(b"%PDF-1.4\nnot headers, and never were\n" + b"stream " * 40)
+
+    assert "PDF" in str(caught.value)
+
+
+def test_a_note_with_no_headers_is_not_a_message() -> None:
+    """The test is positive -- does this look like a message -- rather than a
+    list of formats to exclude, because the set of things that are not email is
+    unbounded. Plain text is the case that shows the difference: it carries no
+    magic number to recognise it by."""
+    with pytest.raises(NotAMessage):
+        email_to_text(b"Booked the hotel, will forward later\nsee you Tuesday\n")
+
+
+def test_a_leading_colon_word_does_not_make_a_file_a_message() -> None:
+    """One `word:` line is not a header block. Requiring a *recognised* message
+    header is what separates a message from a config file or a log."""
+    with pytest.raises(NotAMessage):
+        email_to_text(b"Note: booked it\nWarning: check the dates\n\nbody\n")
+
+
+def test_a_message_with_folded_headers_and_an_mbox_line_is_still_read() -> None:
+    """The other half of a refusal is that it must not refuse real mail. Folded
+    continuation lines are ordinary in received mail, and a message saved out of
+    an mbox carries a `From ` separator that is not a header field at all."""
+    raw = (
+        b"From confirmations@hotel.example Mon Oct  6 09:14:00 2026\r\n"
+        b"Received: by mail.example (Postfix)\r\n"
+        b"\tid 4B2C1; Mon, 6 Oct 2026 09:14:00 +0000\r\n"
+        b"Subject: Your stay is confirmed\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"Confirmation ZL-4471902\r\n"
+    )
+
+    subject, body = email_to_text(raw)
+
+    assert subject == "Your stay is confirmed"
+    assert "ZL-4471902" in body
 
 
 def test_score_prefers_the_destination_whose_city_matches() -> None:

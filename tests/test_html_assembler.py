@@ -5702,4 +5702,251 @@ def test_maps_travelmode_for_trip_still_infers_from_bookings() -> None:
     }
     assert HTMLAssembler._maps_travelmode_for_trip(trip) == "transit"
 
+# ── Footer: the link-liveness statement (§8.4) ───────────────────────────────
 
+# The report shape is url_discovery.link_liveness_report's, built by hand here
+# so these tests exercise the renderer rather than the ledger (#112).
+
+
+def _liveness(live: int, unchecked: int, by_domain: dict, dead: int = 0) -> dict:
+    total = live + dead + unchecked
+    return {
+        "counts": {"live": live, "dead": dead, "unchecked": unchecked},
+        "published_count": total,
+        "unchecked_share": (unchecked / total) if total else 0.0,
+        "unchecked_by_domain": by_domain,
+    }
+
+
+_REAL_REPORT = _liveness(
+    81,
+    34,
+    {
+        "www.tripadvisor.com": 18,
+        "www.opentable.com": 9,
+        "www.alltrails.com": 5,
+        "www.yelp.com": 2,
+    },
+)
+
+
+def _note(report) -> str:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    trip = {"trip": {}, "_meta": {}, "destinations": []}
+    if report is not None:
+        trip["_link_liveness"] = report
+    return assembler._link_liveness_note_text(trip)
+
+
+def test_the_statement_matches_a_real_report():
+    """The whole point, in one statement a reader can act on: how much of this
+    page was actually checked, why the rest was not, and the promise that
+    nothing which failed a check is on the page at all."""
+    assert _note(_REAL_REPORT) == (
+        "About the links. 81 of the 115 links in this guide were fetched and "
+        "found working. The other 34 could not be reached to check from "
+        "here — mostly sites that refuse automated requests: TripAdvisor, "
+        "OpenTable, AllTrails, Yelp — and nothing has been guessed in "
+        "place of checking. No link that failed a check was published."
+    )
+
+
+def test_the_blocking_domains_are_named_most_frequent_first():
+    """A bare "34 unchecked" is a number a reader can only be suspicious of.
+    The host names are what turn it into something recognisable, so their
+    order has to follow the counts rather than the dict's insertion luck."""
+    text = _note(_liveness(1, 3, {"www.yelp.com": 2, "www.opentable.com": 1}))
+
+    assert ": Yelp, OpenTable —" in text
+
+
+def test_only_a_few_domains_are_named():
+    """A sensible few, not all of them -- a list of eleven hosts is a table
+    that wandered into a sentence."""
+    text = _note(
+        _liveness(
+            1,
+            10,
+            {
+                "www.tripadvisor.com": 4,
+                "www.opentable.com": 3,
+                "www.alltrails.com": 1,
+                "www.yelp.com": 1,
+                "www.resy.com": 1,
+            },
+        )
+    )
+
+    assert "Resy" not in text
+    assert ": TripAdvisor, OpenTable, AllTrails, Yelp —" in text
+
+
+def test_an_unknown_host_renders_as_its_domain_not_an_invented_brand():
+    text = _note(_liveness(1, 1, {"www.some-regional-guide.example": 1}))
+
+    assert "some-regional-guide.example" in text
+    assert "www." not in text
+
+
+def test_the_statement_never_speculates_about_an_unchecked_link():
+    """The third state stopped "we did not check" from rendering as "we checked
+    and it was fine". Rendering it as "this may have closed" would swap one
+    guess for another and undo the change."""
+    text = _note(_REAL_REPORT).lower()
+
+    for guess in ("may no longer", "might", "possibly", "out of date", "unverified", "suspect"):
+        assert guess not in text
+
+
+def test_the_limit_is_located_in_the_connection_not_in_the_link():
+    """A bot-blocked link is not a suspect link, and the wording is the only
+    thing on the page that says so."""
+    text = _note(_REAL_REPORT)
+
+    assert "could not be reached to check from here" in text
+    assert "could not verify" not in text
+    assert "unable to verify" not in text
+
+
+# --- degenerate cases -----------------------------------------------------
+
+
+def test_every_link_checked_says_so_and_still_makes_the_promise():
+    assert _note(_liveness(115, 0, {})) == (
+        "About the links. All 115 links in this guide were fetched and found "
+        "working. No link that failed a check was published."
+    )
+
+
+def test_every_link_unchecked():
+    assert _note(_liveness(0, 115, {"www.tripadvisor.com": 90, "www.yelp.com": 25})) == (
+        "About the links. None of the 115 links in this guide could be reached "
+        "to check from here — mostly sites that refuse automated requests: "
+        "TripAdvisor, Yelp — and nothing has been guessed in place of "
+        "checking. No link that failed a check was published."
+    )
+
+
+def test_a_guide_whose_only_link_could_not_be_reached():
+    """The one-link, none-reached corner, found by an injection that passed.
+
+    Replacing "could not be reached to check from here" with "we could not
+    verify" left every other test green, because this path -- total 1, unchecked
+    1 -- was the only place that string appeared first and nothing asserted it.
+    A guide with a single link is not exotic; a short trip with one attraction
+    produces one.
+    """
+    assert _note(_liveness(0, 1, {"www.yelp.com": 1})) == (
+        "About the links. The single link in this guide could not be reached "
+        "to check from here — mostly a site that refuses automated requests: "
+        "Yelp — and nothing has been guessed in place of checking. No link "
+        "that failed a check was published."
+    )
+
+
+def test_a_guide_with_no_links_says_nothing_rather_than_zero_of_zero():
+    assert _note(_liveness(0, 0, {})) == ""
+
+
+def test_a_guide_built_before_the_ledger_says_nothing_rather_than_zero_unchecked():
+    """The common case for everything currently on disk. Absent is not zero:
+    "0 unchecked" would be a confident claim about a run that recorded
+    nothing, which is the exact conflation the ledger exists to end."""
+    assert _note(None) == ""
+    assert _note({}) == ""
+
+
+def test_a_malformed_report_says_nothing():
+    assert _note({"counts": "not a dict", "published_count": "many"}) == ""
+
+
+def test_a_single_unchecked_link_reads_as_one_link():
+    text = _note(_liveness(4, 1, {"www.yelp.com": 1}))
+
+    assert (
+        "4 of the 5 links in this guide were fetched and found working. The "
+        "other one could not be reached to check from here — mostly a site "
+        "that refuses automated requests: Yelp —"
+    ) in text
+
+
+def test_several_links_on_one_blocked_host_are_on_a_site_not_on_sites():
+    """Plural follows the number of hosts, not the number of links: three
+    unchecked links behind one WAF are one site's doing."""
+    text = _note(_liveness(6, 3, {"www.yelp.com": 3}))
+
+    assert "The other 3 could not be reached to check from here — mostly a site that refuses automated requests: Yelp —" in text
+
+
+def test_unchecked_links_with_no_recorded_domain_drop_the_naming_clause():
+    text = _note(_liveness(4, 1, {}))
+
+    assert "automated requests" not in text
+    assert "The other one could not be reached to check from here" in text
+
+
+def test_the_promise_is_withdrawn_rather_than_told_falsely():
+    """A dead link should never reach the page -- the gate is fail-closed. If
+    one ever does, the sentence asserting it did not is the one thing that
+    must not still be rendered, and "the other 34" stops adding up."""
+    text = _note(_liveness(80, 34, {"www.yelp.com": 34}, dead=1))
+
+    assert "No link that failed a check was published." not in text
+    assert "The other 34" not in text
+    assert (
+        "34 of them could not be reached to check from here — mostly a site "
+        "that refuses automated requests: Yelp"
+    ) in text
+
+
+def test_the_note_reads_the_keys_the_ledger_actually_writes():
+    """The renderer spells the three states as literals rather than importing a
+    14k-line module for three strings. This is what stops a rename there from
+    silently emptying the statement here."""
+    from generator.url_discovery import (
+        LINK_LIVENESS_DEAD,
+        LINK_LIVENESS_LIVE,
+        LINK_LIVENESS_UNCHECKED,
+    )
+
+    report = {
+        "counts": {
+            LINK_LIVENESS_LIVE: 2,
+            LINK_LIVENESS_DEAD: 0,
+            LINK_LIVENESS_UNCHECKED: 1,
+        },
+        "published_count": 3,
+        "unchecked_by_domain": {"www.yelp.com": 1},
+    }
+
+    assert _note(report).startswith(
+        "About the links. 2 of the 3 links in this guide were fetched"
+    )
+
+
+# --- placement in the footer ----------------------------------------------
+
+
+def test_the_statement_lands_in_the_footer_provenance_block():
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    trip = _trip_with_brand()
+    trip["_link_liveness"] = _REAL_REPORT
+
+    footer = assembler._build_generator_footer(trip)
+
+    assert '<div class="link-liveness-note"' in footer
+    assert "<strong>About the links.</strong>" in footer
+    # Below what built the page, above where a reader takes a problem.
+    assert footer.index("Itinerary output:") < footer.index("link-liveness-note")
+    assert footer.index("link-liveness-note") < footer.index("Issue reporting:")
+
+
+def test_a_footer_without_a_liveness_report_is_unchanged():
+    """Additive, and it has to be: every guide built before the ledger has no
+    report, and their footers must render exactly as they always did."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+
+    footer = assembler._build_generator_footer(_trip_with_brand())
+
+    assert "link-liveness-note" not in footer
+    assert footer == _FOOTER_BEFORE_BRAND

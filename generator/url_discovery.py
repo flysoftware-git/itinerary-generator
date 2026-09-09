@@ -1791,9 +1791,18 @@ class URLDiscoverer:
                 ts = float(entry.get("ts", 0) or 0)
                 if ts < page_cutoff:
                     continue
+                status = self._status_from_json(entry.get("status", ""))
+                ok = bool(entry.get("ok", False))
+                # Dropped on the way in as well as refused on the way out. The
+                # writer above stops adding these; every entry a previous
+                # version already wrote is still on disk, still inherited, and
+                # still deciding. Skipping it costs one real fetch and replaces
+                # an inherited placeholder with an observation.
+                if self.classify_link_liveness(key, ok, status) == LINK_LIVENESS_UNCHECKED:
+                    continue
                 self._page_text_cache[key] = (
-                    bool(entry.get("ok", False)),
-                    self._status_from_json(entry.get("status", "")),
+                    ok,
+                    status,
                     str(entry.get("text", "") or ""),
                 )
                 # Absent or empty `final_url` loads as `unchecked`, which is
@@ -1966,6 +1975,26 @@ class URLDiscoverer:
 
         for key, result in list(self._page_text_cache.items()):
             if not isinstance(result, tuple) or len(result) != 3:
+                continue
+            # Only persist entries that are an observation. A fetch the liveness
+            # ledger classifies as `unchecked` -- a 401/403 block page, a
+            # timeout, an SSL error, a cooldown synthetic -- says nothing about
+            # the URL; it says something about this run's reach. Writing it to
+            # disk turns a transient block into a durable answer that every
+            # later run inherits, and the gates downstream cannot tell an
+            # inherited placeholder from a measurement: they deliberately fail
+            # open on a failed fetch, and `_redirect_target_lacks_item_relevance`
+            # reads the absent redirect record such an entry carries as "this
+            # URL did not redirect" rather than "nothing ever looked". So a URL
+            # rejected by a run that reached it is accepted by a later run that
+            # inherited a block, with no request made and nothing in the record
+            # to explain the difference.
+            #
+            # The two caches below already refuse this for their own transient
+            # failures -- the geocoder's "no result", AllTrails' DataDome block.
+            # The generic page-text cache is the one that feeds the relevance
+            # and redirect gates, and it was the one still freezing them in.
+            if self.classify_link_liveness(key, bool(result[0]), result[1]) == LINK_LIVENESS_UNCHECKED:
                 continue
             final_url = str(getattr(self, "_fetch_final_url_cache", {}).get(key, "") or "")
             payload["page_text_results"][key] = {
