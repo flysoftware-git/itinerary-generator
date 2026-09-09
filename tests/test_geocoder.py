@@ -16,6 +16,7 @@ Three separate faults, one incident:
 """
 
 import json
+import pathlib
 import threading
 import time
 
@@ -237,6 +238,72 @@ def test_a_block_that_clears_lets_the_build_continue(monkeypatch):
 
 
 # ── Concurrency ──────────────────────────────────────────────────────────
+
+def test_a_slow_write_cannot_land_an_older_snapshot_on_top_of_a_newer_one(monkeypatch):
+    """The lost update, made deterministic.
+
+    `_remember` used to snapshot the cache under `_cache_lock`, release it, and
+    then write -- so two threads could serialise their *writes* in the opposite
+    order to their *snapshots*, and the older snapshot landed last. Every entry
+    it did not contain vanished from the file while sitting correctly in
+    memory, so a build looked up eight places and cached seven.
+
+    The sibling test below catches this at about one run in six, which is the
+    worst rate a test can have: often enough to be seen, rarely enough to be
+    called flaky and re-run. This one makes it certain by holding the first
+    writer inside the write for as long as the second one needs -- the delay
+    changes the timing, not the arithmetic, and the arithmetic is what was
+    wrong.
+
+    It also covers the second half. Every thread wrote the same
+    `place_coords.json.tmp`, so two of them could interleave bytes into one file
+    and `replace` could move a half-written one into place -- the corruption
+    this module's other test is named for. Serialising the write fixes both,
+    which is why they are one fix and one test.
+    """
+    fake = _FakeGeolocator(coords=(1.0, 1.0))
+    g = _geocoder(fake)
+
+    real_write = pathlib.Path.write_text
+    first = threading.Event()
+    released = threading.Event()
+
+    def slow_write(self, *args, **kwargs):
+        # The first writer parks inside the write, which is exactly the window
+        # the old code left open between snapshotting and landing the file.
+        if not first.is_set():
+            first.set()
+            released.wait(timeout=5.0)
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", slow_write)
+
+    slow = threading.Thread(target=lambda: g._geocode("Place 0"))
+    slow.start()
+    assert first.wait(timeout=5.0), "the first write never started"
+
+    # A second lookup completes entirely while the first is still inside its
+    # write. Without the fix it snapshots two entries, writes them, and is then
+    # overwritten by the first thread's one-entry snapshot.
+    quick = threading.Thread(target=lambda: g._geocode("Place 1"))
+    quick.start()
+    # It may finish (the old code let it write straight past the first) or it
+    # may block on the write lock (the fix). Either is fine; what matters is
+    # that both have finished before the file is read, which is why it is
+    # joined again after the release rather than only here.
+    quick.join(timeout=1.0)
+
+    released.set()
+    slow.join(timeout=5.0)
+    quick.join(timeout=5.0)
+    assert not slow.is_alive() and not quick.is_alive(), "a writer never finished"
+
+    written = json.loads(geocoder_module.CACHE_PATH.read_text(encoding="utf-8"))
+    assert set(written) == {"Place 0", "Place 1"}, (
+        "an older snapshot landed on top of a newer one, so a place that was "
+        f"looked up is not in the cache: {sorted(written)}"
+    )
+
 
 def test_concurrent_lookups_do_not_corrupt_the_cache_file():
     fake = _FakeGeolocator(coords=(1.0, 1.0))
