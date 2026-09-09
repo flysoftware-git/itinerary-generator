@@ -7,7 +7,8 @@ Steps:
   3. Replace template placeholders with generated content
   4. Inject the generator footer (requirements.md 8.2) -- at the
      <!--GENERATOR_FOOTER--> placeholder if the template has one,
-     otherwise above the drive-info modal, otherwise before </body>
+     otherwise above the drive-info modal, otherwise before </body>,
+     carrying the link-liveness statement (8.4) when the run recorded one
 
 IMPORTANT: Uses Python string assembly — no Jinja2, no DOM parsing.
 Template placeholders use the pattern <!--PLACEHOLDER_NAME-->.
@@ -3535,6 +3536,163 @@ class HTMLAssembler:
                 out[key] = value
         return out
 
+    # The handful of hosts that account for nearly all unchecked links, named
+    # the way a reader would recognise them rather than as bare hostnames. A
+    # host that is not listed renders as its own domain with any leading
+    # `www.` removed: inventing a brand name would be the same class of guess
+    # this note exists to refuse.
+    _LINK_SOURCE_DISPLAY_NAMES = {
+        "airbnb.com": "Airbnb",
+        "alltrails.com": "AllTrails",
+        "booking.com": "Booking.com",
+        "expedia.com": "Expedia",
+        "facebook.com": "Facebook",
+        "instagram.com": "Instagram",
+        "opentable.com": "OpenTable",
+        "resy.com": "Resy",
+        "tripadvisor.com": "TripAdvisor",
+        "yelp.com": "Yelp",
+    }
+    # Enough names to make the number recognisable, few enough to stay a
+    # sentence. `unchecked_by_domain` is already ordered most-frequent-first.
+    _LINK_LIVENESS_NAMED_DOMAINS = 4
+
+    def _link_source_display_name(self, domain: str) -> str:
+        host = str(domain or "").strip().lower()
+        if host.startswith("www."):
+            host = host[4:]
+        return self._LINK_SOURCE_DISPLAY_NAMES.get(host, host)
+
+    def _link_liveness_note_text(self, trip: dict[str, Any]) -> str:
+        """Plain text saying which of this guide's links were actually checked.
+
+        Publication is fail-closed, so every link a reader can see is in one of
+        exactly two states: fetched and working, or never successfully reached.
+        Those two were indistinguishable on the page, which is the failure the
+        tri-state ledger in `url_discovery` (#112) exists to surface -- and
+        this is its last hop, from the validation report onto the artifact a
+        reader actually holds.
+
+        Silence is the answer in two cases, and they are not the same case:
+
+        * **No links at all.** "0 of 0" is noise, not provenance.
+        * **No liveness block.** Every guide built before the ledger existed
+          carries no record either way. Rendering that as "0 unchecked" would
+          be a confident false statement -- precisely the conflation being
+          fixed -- so an absent report says nothing rather than something
+          wrong.
+
+        The wording is load-bearing. "Could not be checked from here" locates
+        the limit in this pipeline's connection, not in the link: a bot-blocked
+        page is not a suspect page. Nothing here speculates about what an
+        unchecked link might be, because replacing "we did not check" with a
+        different guess would undo the point of having recorded it.
+        """
+        report = trip.get("_link_liveness")
+        if not isinstance(report, dict) or not report:
+            return ""
+        counts = report.get("counts")
+        counts = counts if isinstance(counts, dict) else {}
+        try:
+            total = int(report.get("published_count") or 0)
+            live = int(counts.get("live", 0) or 0)
+            dead = int(counts.get("dead", 0) or 0)
+            unchecked = int(counts.get("unchecked", 0) or 0)
+        except (TypeError, ValueError):
+            return ""
+        if total <= 0:
+            return ""
+
+        by_domain = report.get("unchecked_by_domain")
+        by_domain = by_domain if isinstance(by_domain, dict) else {}
+        named = [
+            self._link_source_display_name(domain)
+            for domain in list(by_domain)[: self._LINK_LIVENESS_NAMED_DOMAINS]
+        ]
+        named = [name for name in named if name]
+        # A bare count of 34 is a number a reader can only be suspicious of;
+        # four host names turn it into a fact they already know about the web.
+        domains = (" — " + ", ".join(named) + " — ") if named else ""
+
+        links = "link" if total == 1 else "links"
+        one = unchecked == 1
+        # Plural on the number of *hosts*, not the number of links: two
+        # unchecked links on one blocked host are on a site, not on sites.
+        site = "a site that refuses" if len(named) == 1 else "sites that refuse"
+        # The fail-closed promise, and the first place a reader can see that it
+        # exists. It is dropped -- and only dropped -- if a link that failed a
+        # check somehow reached the page, because it would then be false, and a
+        # false assurance is worse than none.
+        promise = " No link that failed a check was published." if dead == 0 else ""
+
+        if unchecked == 0:
+            body = (
+                f"The single {links} in this guide was fetched and found working."
+                if total == 1
+                else f"All {total} {links} in this guide were fetched and found working."
+            )
+            return f"About the links. {body}{promise}"
+
+        if live == 0 and unchecked == total:
+            if total == 1:
+                body = "The single link in this guide could not be reached to check from here"
+            else:
+                body = (
+                    f"None of the {total} {links} in this guide could be reached "
+                    "to check from here"
+                )
+            body += (
+                f" — mostly {site} automated requests: {domains.strip(' —')} — and "
+                if domains
+                else ", and "
+            )
+            body += "nothing has been guessed in place of checking."
+            return f"About the links. {body}{promise}"
+
+        checked = (
+            f"{live} of the {total} {links} in this guide "
+            f"{'was' if live == 1 else 'were'} fetched and found working."
+        )
+        # "The other N" only holds when nothing was dropped between the two
+        # states; a dead link on the page would make that arithmetic a lie.
+        accounted = live + unchecked == total
+        if one:
+            rest = "The other one" if accounted else "One of them"
+        else:
+            rest = f"The other {unchecked}" if accounted else f"{unchecked} of them"
+        # "Could not be reached to check", and the hosts as the usual reason
+        # rather than the stated cause. `unchecked` also covers timeouts and
+        # refused connections, so naming the blockers as *the* cause would be
+        # broader than the data -- while dropping them entirely would turn a
+        # recognisable fact back into a number a reader can only be suspicious
+        # of. "Mostly" is the whole of the hedge and it is doing real work.
+        if domains:
+            body = (
+                f"{checked} {rest} could not be reached to check from here — "
+                f"mostly {site} automated requests: "
+                f"{domains.strip(' —')} — and nothing has been guessed in place "
+                "of checking."
+            )
+        else:
+            body = (
+                f"{checked} {rest} could not be reached to check from here, and "
+                "nothing has been guessed in place of checking."
+            )
+        return f"About the links. {body}{promise}"
+
+    def _build_link_liveness_note(self, trip: dict[str, Any]) -> str:
+        text = self._link_liveness_note_text(trip)
+        if not text:
+            return ""
+        lead = "About the links."
+        rest = text[len(lead):].lstrip()
+        return (
+            '<div class="link-liveness-note" '
+            'style="margin:0.45rem auto 0;max-width:46rem;">'
+            f"<strong>{lead}</strong> {html_escape.escape(rest)}"
+            "</div>"
+        )
+
     def _build_generator_footer(self, trip: dict[str, Any]) -> str:
         """Provenance, then support routing -- two jobs, two rules (§8.2, §8.3).
 
@@ -3552,6 +3710,10 @@ class HTMLAssembler:
         meta = trip.get("_meta", {})
         version = meta.get("generator_version", "")
         brand = self._brand(trip)
+        # Provenance, so it sits with the rest of the page's record of itself:
+        # below what built the page, above where a reader takes a problem.
+        # Empty for a guide whose run recorded no liveness at all.
+        liveness = self._build_link_liveness_note(trip)
         broken_link_issue_link = (
             f"{self._REPO_URL}/issues/new"
             "?template=broken-link-report.yml&labels=bug"
@@ -3620,6 +3782,7 @@ class HTMLAssembler:
             '>Itinerary Generator</a>'
             f' v{html_escape.escape(str(version))}{manifest_segment}'
             f' · Itinerary output: {html_escape.escape(shown_time)}'
+            f'{liveness}'
             f'{support}'
             '</div>'
             '</footer>'
