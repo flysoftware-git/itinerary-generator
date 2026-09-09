@@ -71,6 +71,40 @@ trains readers to skip it.** The traveller who needs it is best served by a
 guide that carries it deliberately, and worst served by a paragraph of hedged
 boilerplate that everybody has learned to scroll past.
 
+## 4a. A flag, or the requirement itself
+
+`access_notes: true` asks the general question in §2. `access_notes: "step-free
+entry to every indoor stop"` asks that one.
+
+The general question is the right one when all that is known is that access
+matters, and it stays the default. But **it answers a need it was not told**:
+*step-free entry* and *a bench every two hundred metres* are different
+requirements, and a guide that reports whatever each venue happens to document
+serves neither of them well. The reader still has to do the matching, on a page
+that could have done it for them.
+
+So a string is stated **first** in the destination prompt, and the three things
+and the prohibition of §3 follow it unchanged. Two details are load-bearing:
+
+- **The prohibition matters more with a specific requirement, not less.** A
+  model handed the exact thing somebody needs has also been handed the answer
+  they want to hear, which is the shortest path to the confident wrong yes §3
+  exists to prevent. The instruction not to infer follows the requirement for
+  that reason.
+- **Bounded at both ends, and both bounds are about the prompt.** Under three
+  characters is a flag wearing a requirement's clothes and tells the model
+  nothing; over three hundred is a manifest field used as a document, in a
+  place where length displaces everything else in the call. Whitespace is
+  collapsed on the way in, because this lands in a labelled, line-oriented
+  prompt and a stray newline reads as the start of a new instruction.
+
+**A requirement, and not a person's circumstances.** This string reaches a
+content-generation prompt and, through it, a published page. *"Step-free entry
+to every indoor stop"* belongs there; why the reader needs it does not, and the
+difference is the whole of the care this field wants. The generator cannot
+enforce that — it is the caller's to respect — so the schema says it where
+whoever writes the manifest is reading.
+
 ## 5. What this is not
 
 Not a verification. Nothing in this project checks a building for a ramp, and

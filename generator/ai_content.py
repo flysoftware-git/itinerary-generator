@@ -1859,12 +1859,34 @@ class AIContentGenerator:
         whatever accessible entry, parking and facilities are actually
         documented, the words "not documented" where they are not -- and never
         an inference from the kind of place it is.
+
+        **A string says which question to answer.** `access_notes: true` asks
+        the general one, which is right when all that is known is that access
+        matters. A string names the actual requirement -- *step-free entry to
+        every indoor stop*, *a bench every two hundred metres* -- and those are
+        different needs that the general question answers neither of.
+
+        The specific version is stated FIRST and the general instruction still
+        follows it, because the three things and the prohibition apply either
+        way. And the prohibition matters more here, not less: a model handed the
+        exact requirement has also been handed the answer somebody wants to
+        hear, which is the shortest path to a confident wrong yes.
         """
-        if not (trip_meta or {}).get("access_notes"):
+        asked = (trip_meta or {}).get("access_notes")
+        if not asked:
             return ""
+        specific = ""
+        if isinstance(asked, str) and asked.strip():
+            specific = (
+                "The traveller needs this in particular: "
+                + " ".join(asked.split())
+                + ". Answer THAT for every place you name, and say plainly "
+                "where it is not documented. "
+            )
         return (
             "Access:         "
-            "REPORT ACCESS for every place you name. Three things, in the "
+            + specific
+            + "REPORT ACCESS for every place you name. Three things, in the "
             "description: (1) if the only way in is on foot, how far it is from "
             "parking or the nearest transit stop, and what the surface and "
             "gradient are like; (2) what is documented about step-free entry, "
