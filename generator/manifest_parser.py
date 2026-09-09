@@ -209,7 +209,31 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                         "here is a substitute for the venue's own information, and the "
                         "generated text says so."
                     ),
-                    "type": "boolean",
+                    # A string says WHICH access question to answer, and is the
+                    # reason this is not only a flag. `true` asks the general
+                    # question above, which is the right thing when all that is
+                    # known is that access matters. But *step-free entry* and *a
+                    # bench every two hundred metres* are different needs, and a
+                    # guide that answers the general question answers neither of
+                    # them: it reports what a venue documents rather than what
+                    # this reader has to know before setting out.
+                    #
+                    # The honesty rule is unchanged and applies to a string
+                    # exactly as it does to the flag -- a specific question makes
+                    # a confident wrong yes MORE likely, not less, because the
+                    # model has been handed the answer somebody wants to hear.
+                    #
+                    # A string is a *requirement*, never a person's medical
+                    # circumstances. It reaches a content-generation prompt and,
+                    # through it, a published page; "step-free entry to every
+                    # indoor stop" belongs there and why the reader needs it does
+                    # not. The generator cannot enforce that -- it is the
+                    # caller's to respect -- so it is said here, where whoever
+                    # writes the manifest is reading.
+                    "oneOf": [
+                        {"type": "boolean"},
+                        {"type": "string", "minLength": 3, "maxLength": 300},
+                    ],
                 },
                 "transport_mode": {
                     "type": "string",
