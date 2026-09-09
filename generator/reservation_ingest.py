@@ -212,6 +212,109 @@ def _pdf_to_text(payload: bytes, filename: str) -> str:
         return ""
 
 
+class NotAMessage(ValueError):
+    """Raised when the bytes handed to `email_to_text` are not an email.
+
+    `email.message_from_bytes` is a parser that cannot fail: handed a PNG, a
+    PDF, an Outlook `.msg` container or a plain note with no headers, it returns
+    a Message whose body is those bytes decoded as latin-1. The result is
+    non-empty, so every caller's "did we get anything to read?" check passes and
+    the noise goes on to the extractor -- which means an LLM call, and a charge,
+    against bytes that were never a message. The failure is silent in the worst
+    way: it looks exactly like a successful read of an email that happened to be
+    unhelpful.
+
+    So the parser refuses instead. What it costs to be wrong in each direction
+    is not symmetric -- refusing a real message tells the sender to try
+    something else, while accepting a non-message spends money and reports
+    nothing wrong.
+    """
+
+
+#: Headers that identify a thing as a message rather than as a file that
+#: happens to begin with a word and a colon. A positive test, deliberately: the
+#: set of things that are not email is unbounded and grows every time a new file
+#: format appears, so listing them is a losing game -- an Outlook container
+#: today, whatever the next mail client saves tomorrow. RFC 5322 makes `Date`
+#: and `From` mandatory on a message being sent; the rest are here because a
+#: message that has been through a mail system carries several of them, and a
+#: `.eml` saved out of a client keeps them.
+_MESSAGE_HEADERS = frozenset({
+    "from", "to", "cc", "bcc", "subject", "date", "sender", "reply-to",
+    "message-id", "received", "return-path", "delivered-to", "mime-version",
+    "content-type", "content-transfer-encoding", "x-original-to",
+    "authentication-results", "dkim-signature", "list-unsubscribe",
+})
+
+#: `field-name` from RFC 5322: printable US-ASCII except the colon.
+_HEADER_FIELD = re.compile(r"^([\x21-\x39\x3b-\x7e]+):")
+
+#: Named only so the refusal can say something the sender can act on. Nothing
+#: routes on these -- `looks_like_message` decides -- so a format missing from
+#: this list is still refused, just less helpfully.
+_SIGNATURES = (
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "an Outlook .msg file"),
+    (b"%PDF-", "a PDF"),
+    (b"PK\x03\x04", "a zip archive (a .docx, or a .zip)"),
+    (b"\x89PNG\r\n\x1a\n", "a PNG image"),
+    (b"\xff\xd8\xff", "a JPEG image"),
+    (b"GIF8", "a GIF image"),
+    (b"{\\rtf", "an RTF document"),
+)
+
+
+def _describe_bytes(raw_bytes: bytes) -> str:
+    for magic, name in _SIGNATURES:
+        if raw_bytes.startswith(magic):
+            return name
+    return ""
+
+
+def looks_like_message(raw_bytes: bytes) -> bool:
+    """True when `raw_bytes` opens with an RFC 5322 header block.
+
+    Only the head is examined -- everything up to the blank line that ends the
+    headers, capped -- because that is where the evidence is, and the rest may
+    legitimately be binary (a base64 attachment, decoded or not).
+    """
+    if not raw_bytes:
+        return False
+
+    head = raw_bytes[:8192]
+    for terminator in (b"\r\n\r\n", b"\n\n"):
+        end = head.find(terminator)
+        if end != -1:
+            head = head[:end]
+            break
+
+    # A NUL in the header block settles it: no header field may contain one,
+    # and the container formats that reach this function carry them early.
+    if b"\x00" in head:
+        return False
+
+    lines = head.decode("latin-1").split("\n")
+    # An mbox `From ` separator is not a header field but does precede one.
+    if lines and lines[0].startswith("From "):
+        lines = lines[1:]
+
+    names = []
+    for line in lines:
+        line = line.rstrip("\r")
+        if not line:
+            continue
+        if line[0] in " \t":  # a folded continuation of the field above
+            continue
+        found = _HEADER_FIELD.match(line)
+        if not found:
+            # A line that is not a header field, inside what would have to be
+            # the header block. A note beginning "Note: ..." gets exactly this
+            # far and then fails, which is right: it is a file, not a message.
+            return False
+        names.append(found.group(1).lower())
+
+    return any(name in _MESSAGE_HEADERS for name in names)
+
+
 def email_to_text(raw_bytes: bytes, *, max_chars: int = 12000) -> tuple[str, str]:
     """Return (subject, best-effort plain-text body) for a raw RFC822 message.
 
@@ -219,7 +322,18 @@ def email_to_text(raw_bytes: bytes, *, max_chars: int = 12000) -> tuple[str, str
     confirmation emails ship HTML only. Truncated because the body is going
     into an LLM prompt and confirmation emails carry long marketing tails that
     add tokens without adding facts.
+
+    Raises `NotAMessage` when the bytes are not a message at all. See that class
+    for why refusing is worth more here than a best effort.
     """
+    if not looks_like_message(raw_bytes):
+        what = _describe_bytes(raw_bytes)
+        raise NotAMessage(
+            ("that is " + what + ", not an email message")
+            if what
+            else "that is not an email message (no RFC 822 headers in it)"
+        )
+
     msg = email.message_from_bytes(raw_bytes, policy=email.policy.default)
     subject = str(msg.get("Subject", "") or "")
 
