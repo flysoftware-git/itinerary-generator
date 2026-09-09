@@ -441,9 +441,10 @@ class HTMLAssembler:
         # ── var DRIVE_DESCRIPTIONS (keyed by raw title, matches template JS) ──
         drive_descriptions = self._build_drive_descriptions(trip["destinations"])
         drive_json = json.dumps(drive_descriptions, indent=2)
+        drive_panels = self._build_drive_modal_panels(drive_descriptions)
         html = html.replace(
-            "var DRIVE_DESCRIPTIONS = {};",
-            f"var DRIVE_DESCRIPTIONS = {drive_json};",
+            "<!--DRIVE_MODAL_PANELS-->",
+            drive_panels,
         )
 
         # ── var PWA_INSTALL_ENABLED: suppress the Install App affordance for
@@ -3919,6 +3920,105 @@ class HTMLAssembler:
         if "</body>" in html:
             return html.replace("</body>", footer_html + "\n</body>", 1)
         return html + "\n" + footer_html
+
+    def _build_drive_modal_panels(self, descriptions: dict[str, Any]) -> str:
+        """One hidden panel per drive, rendered here rather than in the browser.
+
+        The template used to carry the descriptions as a JavaScript object and
+        assemble each modal's markup with string concatenation into
+        `innerHTML`. Everything it assembled is known at generation time -- a
+        guide is a finished artifact, and nothing in a drive's description can
+        change after the file is written -- so the templating had no reason to
+        happen in the browser.
+
+        Rendering it here fixes three separate things at once:
+
+        * **The modal is empty without JavaScript.** Now it is in the document.
+        * **Every field was an injection point.** A description, a category or
+          a URL went into an HTML string unescaped. They are escaped here.
+        * **The page looked like a phishing attachment.** A file that carries a
+          data table, builds markup from it at run time, appends a link element
+          and moves `window.location` is the shape of HTML smuggling, and mail
+          scanners refuse it -- measured against a real guide, which was
+          rejected as a virus until this block was removed.
+
+        Panels are emitted in the order the descriptions were built, keyed by
+        the same raw title the modal buttons carry, so the validator's
+        both-directions check between buttons and content still holds.
+        """
+        panels: list[str] = []
+        for title, desc in descriptions.items():
+            if not isinstance(desc, dict):
+                continue
+            parts: list[str] = []
+
+            badges: list[str] = []
+            category = str(desc.get("category") or "")
+            if category:
+                badges.append(
+                    '<span class="badge badge-scenic">'
+                    f"{html_escape.escape(category.replace('_', ' '))}</span>"
+                )
+            duration = str(desc.get("distance_or_duration") or "")
+            if duration:
+                badges.append(
+                    '<span class="badge badge-duration">'
+                    f"{html_escape.escape(duration)}</span>"
+                )
+            if badges:
+                parts.append(
+                    '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;'
+                    f'margin-bottom:0.9rem;">{"".join(badges)}</div>'
+                )
+
+            description = str(desc.get("description") or "")
+            if description:
+                parts.append(
+                    '<p style="margin:0 0 0.9rem;line-height:1.75;">'
+                    f"{html_escape.escape(description)}</p>"
+                )
+            best_time = str(desc.get("best_time") or "")
+            if best_time:
+                parts.append(
+                    '<p style="margin:0 0 0.65rem;"><strong>Best time:</strong> '
+                    f"{html_escape.escape(best_time)}</p>"
+                )
+            vehicle = str(desc.get("vehicle_requirement") or "")
+            if vehicle:
+                parts.append(
+                    '<p style="margin:0 0 0.65rem;"><strong>Vehicle:</strong> '
+                    f"{html_escape.escape(vehicle)}</p>"
+                )
+
+            links: list[str] = []
+            info_url = str(desc.get("url") or "")
+            route_map_url = str(desc.get("route_map_url") or "")
+            # Route Map earns a second link only when it points somewhere the
+            # More Info link does not -- otherwise it is the same place twice.
+            if route_map_url and route_map_url != info_url:
+                links.append(
+                    f'<a href="{html_escape.escape(route_map_url, quote=True)}" '
+                    'target="_blank" rel="noopener" '
+                    'class="event-link drive-route-map-link">🗺️ Route Map</a>'
+                )
+            if info_url:
+                links.append(
+                    f'<a href="{html_escape.escape(info_url, quote=True)}" '
+                    'target="_blank" rel="noopener" class="event-link">More Info</a>'
+                )
+            if links:
+                parts.append(
+                    '<p style="margin:0.8rem 0 0;display:flex;'
+                    'justify-content:flex-end;gap:0.85rem;flex-wrap:wrap;">'
+                    f'{"".join(links)}</p>'
+                )
+
+            panels.append(
+                '<div class="drive-modal-panel" data-drive-title="'
+                f'{html_escape.escape(str(title), quote=True)}" hidden>'
+                f'{"".join(parts)}</div>'
+            )
+        return "".join(panels)
 
     def _build_drive_descriptions(self, destinations: list[dict]) -> dict[str, Any]:
         """Build DRIVE_DESCRIPTIONS keyed by raw title string (matches template JS lookup).

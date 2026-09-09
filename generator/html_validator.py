@@ -4,8 +4,8 @@ html_validator.py — Post-assembly HTML validation.
 Checks:
   1. Div balance per destination section
   2. No orphan <script> tags outside designated blocks
-  3. var DRIVE_DESCRIPTIONS present (not const)
-  4. Drive modal element IDs match DRIVE_DESCRIPTIONS keys
+  3. Drive modal content is rendered into the page
+  4. Drive modal buttons and rendered panels match, in both directions
   5. Image count >= min_per_destination per section
   6. Orphan-content rate (attractions/restaurants/en-route-stops with no URL)
      within configured thresholds
@@ -89,42 +89,57 @@ class HTMLValidator:
             logger.info("Validation passed ✓ (%d warning(s))", len(warnings))
         return report
 
-    # ── Check 1: var (not const) DRIVE_DESCRIPTIONS ─────────────────────────
+    # ── Check 1: the modal's content is in the page ──────────────────────────
 
     def _check_drive_descriptions_var(self, html: str, errors: list[str]) -> None:
-        if "var DRIVE_DESCRIPTIONS" not in html:
-            if "const DRIVE_DESCRIPTIONS" in html:
-                errors.append(
-                    "DRIVE_DESCRIPTIONS declared with 'const' — must use 'var' for compatibility"
-                )
-            else:
-                errors.append("DRIVE_DESCRIPTIONS not found in output HTML")
+        """A guide with drive buttons has drive panels rendered into it.
 
-    # ── Check 2: Drive modal IDs match DRIVE_DESCRIPTIONS keys ───────────────
+        This used to require `var DRIVE_DESCRIPTIONS` -- the JavaScript object
+        the modal was built from at run time. The content is now rendered at
+        generation time, so the thing worth checking is that it reached the
+        page, not that a particular variable was declared.
+
+        Silent when the guide has no drive buttons at all, which is a guide
+        with no scenic drives rather than a defect.
+        """
+        if 'class="drive-link"' not in html and "drive-link" not in html:
+            return
+        if "drive-modal-panel" not in html:
+            errors.append(
+                "Drive modal buttons are present but no rendered panel is -- "
+                "the modal would open empty"
+            )
+
+    # ── Check 2: buttons and panels match, both directions ───────────────────
 
     def _check_drive_modal_keys(self, html: str, trip: dict[str, Any], errors: list[str]) -> None:
-        # Extract keys from var DRIVE_DESCRIPTIONS = { ... }
-        drive_json = self._extract_drive_descriptions_json(html)
-        if not drive_json:
-            return  # Already flagged by check 1
-        try:
-            import json
-            dd = json.loads(drive_json)
-        except Exception:
-            errors.append("DRIVE_DESCRIPTIONS is not valid JSON — cannot validate drive modal keys")
-            return
+        # The content is pre-rendered as one hidden panel per drive, so the
+        # check reads panels rather than the JavaScript object it replaced.
+        # The contract is unchanged and still runs in both directions: an
+        # orphan button opens an empty modal, an orphan panel is unreachable.
+        # Read whole tags rather than an attribute pattern: both the button and
+        # the panel carry data-drive-title, they are told apart by class, and
+        # attribute order is not something this check should depend on.
+        button_keys: set[str] = set()
+        panel_keys: set[str] = set()
+        for tag in re.findall(r"<[^>]+>", html):
+            if "data-drive-title=" not in tag:
+                continue
+            match = re.search(r'data-drive-title="([^"]*)"', tag)
+            if not match:
+                continue
+            key = html_lib.unescape(match.group(1))
+            if "drive-modal-panel" in tag:
+                panel_keys.add(key)
+            elif "drive-link" in tag:
+                button_keys.add(key)
 
-        # Extract data-drive-title attributes from HTML (template uses drive-link + data-drive-title)
-        raw_modal_keys = re.findall(r'data-drive-title="([^"]+)"', html)
-        modal_keys = {html_lib.unescape(k) for k in raw_modal_keys}
-        dd_keys = set(dd.keys())
-
-        orphan_modals = modal_keys - dd_keys
-        missing_modals = dd_keys - modal_keys
+        orphan_modals = button_keys - panel_keys
+        missing_modals = panel_keys - button_keys
         if orphan_modals:
-            errors.append(f"Drive modal buttons with no DRIVE_DESCRIPTIONS entry: {sorted(orphan_modals)}")
+            errors.append(f"Drive modal buttons with no rendered panel: {sorted(orphan_modals)}")
         if missing_modals:
-            errors.append(f"DRIVE_DESCRIPTIONS keys with no modal button: {sorted(missing_modals)}")
+            errors.append(f"Drive modal panels with no button: {sorted(missing_modals)}")
 
     def _extract_drive_descriptions_json(self, html: str) -> str:
         marker = "var DRIVE_DESCRIPTIONS"

@@ -4706,18 +4706,57 @@ def test_build_getting_here_omits_maps_corner_link_when_redundant_with_primary_u
     assert "badge-map" not in html
 
 
-def test_template_drive_popup_offers_distinct_route_map_icon() -> None:
+def test_drive_panel_offers_distinct_route_map_icon() -> None:
     """Project owner separately called out 'No maps offered on Scenic Drive
-    popups' -- the popup already had a plain 'Route Map' text link
-    (desc.route_map_url) but no map-icon convention matching the rest of the
-    UI, and no guard against duplicating an identical 'More Info' link. This
-    checks both: the 🗺️ icon convention is present, and it's gated on the
-    route map genuinely differing from the info link (see openDriveInfo in
-    v2.5_template.html)."""
-    template_text = TEMPLATE_PATH.read_text(encoding="utf-8")
+    popups' -- the popup already had a plain 'Route Map' text link but no
+    map-icon convention matching the rest of the UI, and no guard against
+    duplicating an identical 'More Info' link. Both still hold; the decision
+    moved from the template's JavaScript to the panel builder when the modal
+    stopped being assembled in the browser."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
 
-    assert "desc.route_map_url && desc.route_map_url !== desc.url" in template_text
-    assert "🗺️ Route Map" in template_text
+    distinct = assembler._build_drive_modal_panels({
+        "Zion Canyon": {
+            "url": "https://example.com/info",
+            "route_map_url": "https://example.com/route",
+        }
+    })
+    assert "🗺️ Route Map" in distinct
+    assert "More Info" in distinct
+
+    same = assembler._build_drive_modal_panels({
+        "Zion Canyon": {
+            "url": "https://example.com/info",
+            "route_map_url": "https://example.com/info",
+        }
+    })
+    assert "Route Map" not in same, "a second link to the same place is not a second link"
+    assert "More Info" in same
+
+
+def test_drive_panel_escapes_every_field_it_renders() -> None:
+    """The markup used to be assembled in the browser by concatenating these
+    values into an HTML string, so each of them was an injection point. They
+    are rendered here now, and rendering is only safer if it escapes."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    panel = assembler._build_drive_modal_panels({
+        '<img src=x onerror=alert(1)>': {
+            "category": "<b>cat</b>",
+            "distance_or_duration": "<b>2h</b>",
+            "description": "<script>alert('x')</script>",
+            "best_time": "<i>fall</i>",
+            "vehicle_requirement": "<u>4x4</u>",
+            "url": 'https://example.com/"onmouseover="alert(1)',
+        }
+    })
+    # The test is whether a value can leave the text node or the attribute it
+    # was put in -- not whether the characters appear at all. "onerror=" as
+    # inert text inside an escaped attribute is harmless and expected.
+    assert "<script>alert" not in panel
+    assert "<img" not in panel
+    assert 'https://example.com/"onmouseover=' not in panel, "quote escaped out of href"
+    assert "&lt;script&gt;" in panel
+    assert "&quot;onmouseover=" in panel
 
 
 def test_lodging_card_renders_confirmation_website_and_checkin() -> None:

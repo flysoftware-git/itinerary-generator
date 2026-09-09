@@ -30,9 +30,9 @@ VALID_HTML = f"""<!DOCTYPE html>
     <div class="inner"></div>
   </div>
 </section>
-<script>
-var DRIVE_DESCRIPTIONS = {json.dumps({DRIVE_KEY: {"title": "Zion Canyon Scenic Drive"}})};
-</script>
+<div id="drive-modal-body">
+  <div class="drive-modal-panel" data-drive-title="{DRIVE_KEY}" hidden><p>Zion Canyon Scenic Drive</p></div>
+</div>
 <button class="drive-link" data-drive-title="{DRIVE_KEY}"></button>
 </body>
 </html>"""
@@ -59,7 +59,23 @@ def test_valid_html_passes(tmp_path):
     assert report["error_count"] == 0
 
 
-def test_const_drive_descriptions_flagged(tmp_path):
+def test_a_panel_and_its_button_may_carry_their_attributes_in_any_order(tmp_path):
+    """The check reads tags and tells them apart by class, so it does not
+    depend on class coming before data-drive-title in either one."""
+    swapped = VALID_HTML.replace(
+        '<div class="drive-modal-panel" data-drive-title="{}" hidden>'.format(DRIVE_KEY),
+        '<div data-drive-title="{}" hidden class="drive-modal-panel">'.format(DRIVE_KEY),
+    ).replace(
+        '<button class="drive-link" data-drive-title="{}"></button>'.format(DRIVE_KEY),
+        '<button data-drive-title="{}" class="drive-link"></button>'.format(DRIVE_KEY),
+    )
+    p = _write_html(tmp_path, swapped)
+    v = _make_validator(tmp_path)
+    report = v.validate(p, SAMPLE_TRIP)
+    assert report["valid"] is True
+
+
+def _retired_const_drive_descriptions_flagged(tmp_path):
     bad_html = VALID_HTML.replace("var DRIVE_DESCRIPTIONS", "const DRIVE_DESCRIPTIONS")
     p = _write_html(tmp_path, bad_html)
     v = _make_validator(tmp_path)
@@ -67,12 +83,27 @@ def test_const_drive_descriptions_flagged(tmp_path):
     assert any("const" in e for e in report["errors"])
 
 
-def test_missing_drive_descriptions_flagged(tmp_path):
-    bad_html = VALID_HTML.replace("var DRIVE_DESCRIPTIONS", "// removed")
+def test_a_button_with_no_rendered_panel_is_flagged(tmp_path):
+    """The failure this guards is a modal that opens empty. It used to be
+    possible by declaring no DRIVE_DESCRIPTIONS; now it is possible by
+    rendering no panel, and the guide is equally broken either way."""
+    bad_html = VALID_HTML.replace("drive-modal-panel", "drive-modal-absent")
     p = _write_html(tmp_path, bad_html)
     v = _make_validator(tmp_path)
     report = v.validate(p, SAMPLE_TRIP)
-    assert any("DRIVE_DESCRIPTIONS" in e for e in report["errors"])
+    assert any("no rendered panel" in e for e in report["errors"])
+
+
+def test_a_panel_with_no_button_is_flagged(tmp_path):
+    """The other direction, which the JSON-keyed check also ran: content
+    nothing can open is content nobody will see."""
+    orphan = VALID_HTML.replace(
+        '<button class="drive-link" data-drive-title="{}"></button>'.format(DRIVE_KEY), ""
+    )
+    p = _write_html(tmp_path, orphan)
+    v = _make_validator(tmp_path)
+    report = v.validate(p, SAMPLE_TRIP)
+    assert any("no button" in e for e in report["errors"])
 
 
 def test_image_count_below_min_flagged(tmp_path):
@@ -275,17 +306,14 @@ def test_orphan_script_in_section_warns(tmp_path):
     assert any("script" in w.lower() for w in report["warnings"])
 
 
-def test_nested_drive_descriptions_json_parses(tmp_path):
-    nested = {
-        DRIVE_KEY: {
-            "title": "Zion Canyon Scenic Drive",
-            "description": "Contains nested JSON-like blocks",
-            "meta": {"season": "fall", "difficulty": {"level": "easy"}},
-        }
-    }
+def test_a_panel_whose_text_looks_like_markup_still_validates(tmp_path):
+    """Replaces a test that parsed the JavaScript object literal for nested
+    JSON. There is no literal to parse now, and the property underneath it --
+    that awkward description content does not break the page -- is about
+    escaping, which is where it is exercised."""
     html = VALID_HTML.replace(
-        json.dumps({DRIVE_KEY: {"title": "Zion Canyon Scenic Drive"}}),
-        json.dumps(nested),
+        "<p>Zion Canyon Scenic Drive</p>",
+        "<p>Contains &lt;script&gt; and {&quot;nested&quot;: {&quot;json&quot;: true}}</p>",
     )
     p = _write_html(tmp_path, html)
     v = _make_validator(tmp_path)
@@ -302,9 +330,9 @@ def test_drive_title_html_entities_do_not_break_key_matching(tmp_path):
 <section id="section-zion" class="destination-section">
     <div class="dest-header"><div class="inner"></div></div>
 </section>
-<script>
-var DRIVE_DESCRIPTIONS = {json.dumps({drive_key: {"title": drive_key}})};
-</script>
+<div id="drive-modal-body">
+  <div class="drive-modal-panel" data-drive-title="Viewpoint at Angel&#39;s Landing" hidden><p>x</p></div>
+</div>
 <button class="drive-link" data-drive-title="Viewpoint at Angel&#39;s Landing"></button>
 </body>
 </html>"""
