@@ -1210,3 +1210,199 @@ def test_the_schema_refuses_a_call_with_no_place() -> None:
             {"type": "ship", "stops": [{"date": "2026-06-14"}]},
             TRANSPORTATION_ITEM_SCHEMA,
         )
+
+
+# --------------------------------------------- what a confirmation says it cost
+
+
+def test_a_confirmation_that_states_a_price_carries_it() -> None:
+    """The extractor was never asked for the money, so it never arrived.
+
+    Not a mapping loss like the calls were: `total_cost` and `currency` were
+    absent from the requested shape, so a booking that prints its fare on the
+    first page reached the manifest without it and nothing downstream could
+    tell an unpriced booking from an unasked-for price.
+    """
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship", "provider": "A Cruise Line",
+        "total_cost": "4310.00", "currency": "EUR",
+    })
+
+    assert fragment["total_cost"] == "4310.00"
+    assert fragment["currency"] == "EUR"
+
+
+def test_a_fare_in_euros_stays_in_euros() -> None:
+    """Nothing here converts. A rate needs a date and a source, this file has
+    neither, and a fare quietly restated in dollars is a wrong number that
+    looks like a right one -- so the code travels with the amount and the
+    consumer is left to decide what it can honestly add it to."""
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship",
+        "total_cost": "4310.00", "currency": "€",
+    })
+
+    assert fragment["currency"] == "EUR"
+    assert fragment["total_cost"] == "4310.00"
+
+
+def test_a_dollar_sign_is_not_resolved_to_a_currency() -> None:
+    """The dollar sign is printed by the US, Canada, Australia, Mexico and more.
+    Resolving it to USD would be a guess about money, which is the one guess
+    the extraction prompt has always refused to make -- and it would be
+    invisible, because USD is exactly what a reader expects to see.
+
+    Kept as the document wrote it rather than dropped: a consumer that knows
+    the amount is in *some* dollar can say so, and one told no currency was
+    stated cannot.
+    """
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship",
+        "total_cost": "4310.00", "currency": "$",
+    })
+
+    assert fragment["currency"] == "$"
+
+
+def test_a_currency_code_is_normalised_and_an_amount_without_one_is_still_kept() -> None:
+    """Two halves of the same rule. A code is a code however it was typed, so
+    "eur" and "EUR " compare equal to everything downstream. And an amount with
+    no currency at all is carried anyway -- it is what the document said, and a
+    consumer that can see an unlabelled figure can ask about it."""
+    _, lowered = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship", "currency": " eur "})
+    assert lowered["currency"] == "EUR"
+
+    _, unlabelled = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship", "total_cost": "4310.00"})
+    assert unlabelled["total_cost"] == "4310.00"
+    assert "currency" not in unlabelled
+
+
+def test_the_prompt_asks_for_the_price_and_the_currency() -> None:
+    """The field has to be requested before it can be mapped. This is the half
+    that was missing: `price` appeared in the prompt exactly once, inside the
+    prohibition against inventing one, and never as something to report."""
+    from generator.reservation_ingest import EXTRACTION_SYSTEM_PROMPT
+
+    assert '"total_cost": string' in EXTRACTION_SYSTEM_PROMPT
+    assert '"currency": string' in EXTRACTION_SYSTEM_PROMPT
+    assert "ISO 4217" in EXTRACTION_SYSTEM_PROMPT
+
+
+def test_a_priced_leg_with_times_validates_against_the_schema() -> None:
+    """`additionalProperties` is False on this item, so asking for a field and
+    accepting it are one change rather than two -- and the half that is missed
+    fails at manifest load, after the money has already been spent extracting
+    it."""
+    import jsonschema
+
+    from generator.manifest_parser import TRANSPORTATION_ITEM_SCHEMA
+
+    jsonschema.validate(
+        {"type": "ship", "total_cost": "4310.00", "currency": "EUR",
+         "depart_time": "17:00", "arrive_time": "08:00",
+         "stops": [{"place": "Venice, Italy", "date": "2027-10-06",
+                    "arrive_time": "07:00", "depart_time": "17:00"}]},
+        TRANSPORTATION_ITEM_SCHEMA,
+    )
+
+
+def test_a_redacted_build_takes_the_fare_with_the_leg() -> None:
+    """A fare is a fact about the traveler's finances rather than about the
+    trip, so a published page must not carry it.
+
+    It is already covered, and this test exists to keep it that way: booked
+    legs are dropped wholesale in redacted builds, so a field added to the leg
+    inherits the redaction. A later change that started redacting these
+    field-by-field would need to be told about the money, and this is where it
+    finds out.
+    """
+    from generator.main import _apply_privacy_redaction
+
+    trip = {"trip": {"transportation": [
+        {"type": "ship", "total_cost": "4310.00", "currency": "EUR"}]},
+        "destinations": [{"transportation": [
+            {"type": "plane", "total_cost": "980.00", "currency": "USD"}]}]}
+
+    _apply_privacy_redaction(trip)
+
+    assert trip["trip"]["transportation"] == []
+    assert trip["destinations"][0]["transportation"] == []
+
+
+# ------------------------------------------------- when it sails, and from where
+
+
+def test_the_legs_own_times_are_carried_beside_its_dates() -> None:
+    """`depart` and `arrive` were bare dates. A cruise confirmation always
+    states the hour it sails and the hour it docks, and those are what tell a
+    traveler whether the day is theirs or the ship's -- so they were the most
+    load-bearing thing on the document that the extraction shape did not ask
+    for."""
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship",
+        "depart": "2027-10-06", "arrive": "2027-10-15",
+        "depart_time": "17:00", "arrive_time": "08:00",
+    })
+
+    assert fragment["depart"] == "2027-10-06"
+    assert fragment["depart_time"] == "17:00"
+    assert fragment["arrive_time"] == "08:00"
+
+
+def test_a_port_call_carries_when_it_docks_and_when_it_sails() -> None:
+    """The pair is the answer to the only question a port call raises: how long
+    is there ashore. A date alone says the ship was there that day, which is
+    true of a call lasting four hours and of one lasting fourteen."""
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship",
+        "stops": [
+            {"place": "Split, Croatia", "date": "2027-10-08",
+             "arrive_time": "08:00", "depart_time": "18:00"},
+        ],
+    })
+
+    assert fragment["stops"] == [{
+        "place": "Split, Croatia", "date": "2027-10-08",
+        "arrive_time": "08:00", "depart_time": "18:00",
+    }]
+
+
+def test_a_call_that_states_one_time_keeps_the_one_it_states() -> None:
+    """A schedule naming times at some calls and not others is ordinary, and an
+    overnight call states an arrival with no sailing on the same day. Filling
+    the gap would publish a schedule nobody wrote."""
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship",
+        "stops": [{"place": "Kotor", "date": "2027-10-10", "arrive_time": "09:00"},
+                  {"place": "Corfu", "date": "2027-10-11"}],
+    })
+
+    assert fragment["stops"][0] == {
+        "place": "Kotor", "date": "2027-10-10", "arrive_time": "09:00"}
+    assert fragment["stops"][1] == {"place": "Corfu", "date": "2027-10-11"}
+
+
+def test_the_prompt_forbids_moving_a_time_into_another_zone() -> None:
+    """Every time on a Mediterranean itinerary is local to its own port, and
+    they are on as many clocks as there are countries. A model helpfully
+    normalising them to one zone would produce times no document states, and
+    nothing downstream could detect it -- the values would still look like
+    times, still sort, and still be wrong."""
+    from generator.reservation_ingest import EXTRACTION_SYSTEM_PROMPT
+
+    assert "LOCAL TO THE PLACE" in EXTRACTION_SYSTEM_PROMPT
+    assert "UTC" in EXTRACTION_SYSTEM_PROMPT
+    # The leg's OWN times, asked for at the top level and not only inside
+    # `stops`. Written with their indentation because the first version of this
+    # assertion looked for the bare key and stayed green with the leg-level
+    # pair deleted: the stops line spells the same two names, so the prompt
+    # could stop asking when the journey itself sails and nothing would notice.
+    assert (
+        '\n  "depart_time": string,\n  "arrive_time": string,\n'
+        in EXTRACTION_SYSTEM_PROMPT
+    )
+    # And the per-call pair, which is a different fact: when the ship docks
+    # here, and when it leaves here.
+    assert '"arrive_time": string, "depart_time": string' in EXTRACTION_SYSTEM_PROMPT
