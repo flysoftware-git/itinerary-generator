@@ -615,7 +615,21 @@ def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, 
         return out
 
     if str(reservation.get("kind", "")).lower() == "lodging":
-        return "lodging", _clean(("name", "location", "checkin_time", "confirmation_number", "website"))
+        # `dates` is the only field in the extraction prompt that says WHEN a
+        # stay is, and the lodging branch used to drop it -- so a hotel
+        # confirmation that plainly names its nights reached the sidecar
+        # carrying the property, the code and the check-in *time*, and nothing
+        # at all about which days were booked. A transportation leg keeps
+        # `depart`/`arrive` and loses nothing; only lodging had this hole.
+        #
+        # `checkin_time` is not the missing field and must not be pressed into
+        # the role. It is a time of day -- `ai_content` renders it as
+        # *"arriving around {checkin_time}"* -- so a date written there comes
+        # out of the generator as prose about arriving around a date. The two
+        # answer different questions and the prompt asks for both.
+        return "lodging", _clean(
+            ("name", "location", "dates", "checkin_time", "confirmation_number", "website")
+        )
 
     fragment = _clean(("provider", "label", "confirmation_number", "depart", "arrive", "website"))
     # Where the leg calls on the way. `_clean` handles strings and these are
