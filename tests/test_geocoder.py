@@ -305,23 +305,96 @@ def test_a_slow_write_cannot_land_an_older_snapshot_on_top_of_a_newer_one(monkey
     )
 
 
-def test_concurrent_lookups_do_not_corrupt_the_cache_file():
-    fake = _FakeGeolocator(coords=(1.0, 1.0))
-    g = _geocoder(fake)
-    errors = []
+#: Enough writers, released together, to make the unsynchronised window
+#: certain rather than lucky. See the test below for why the number matters.
+_RACE_THREADS = 16
+_RACE_ROUNDS = 6
 
-    def work(i):
+#: Every writer pauses this long *inside* its write. It widens the window the
+#: unfixed code left between snapshotting the cache and landing the file; it
+#: does not change what either version computes, and the arithmetic was what
+#: was wrong. Waited on an Event rather than slept: the autouse
+#: `_no_real_sleeping` fixture replaces `time.sleep` on the shared `time`
+#: module, so a sleep here would not happen at all.
+_WRITE_PAUSE_SECONDS = 0.002
+
+
+def test_concurrent_lookups_do_not_corrupt_the_cache_file(monkeypatch):
+    """Every coordinate resolved concurrently is in the file afterwards.
+
+    This test named the corruption it was guarding against and could not
+    detect it. Measured on 2026-09-09 against `_remember` reverted to its
+    pre-fix form -- the snapshot taken under `_cache_lock`, released, then
+    written with no write lock and a temporary path every thread shared --
+    the previous version of this test was **red 0 times in 20**. It had
+    reported the defect exactly once, during a full-suite run under machine
+    load, as `assert 6 == 8`, and passed three times in a row when re-run
+    alone. A test that needs an overloaded machine to notice a lost update is
+    a lottery ticket rather than an instrument, and that single sighting was
+    the only work it ever did.
+
+    Three changes make the window reliable instead of lucky:
+
+      - a `threading.Barrier`, so the writers contend rather than queue --
+        eight threads started in a loop mostly finish in the order they were
+        started, which is the one ordering that cannot lose an update;
+      - more writers and repeated rounds, because one lost entry anywhere in
+        the run is a failure and the chances compound;
+      - a pause inside every write, widening the gap between a thread's
+        snapshot and its `replace` to something a second thread can fit in.
+
+    What is asserted is the property, not a count: the file must parse, and
+    the set of names in it must be exactly the set that was looked up. A
+    missing name is the lost update; a file that will not parse is the torn
+    temporary file, which is the worse half and the one this test is named
+    for.
+    """
+    real_write = pathlib.Path.write_text
+
+    def paused_write(self, *args, **kwargs):
+        threading.Event().wait(_WRITE_PAUSE_SECONDS)
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", paused_write)
+
+    for round_index in range(_RACE_ROUNDS):
+        Geocoder.clear_cache()
+        g = _geocoder(_FakeGeolocator(coords=(1.0, 1.0)))
+        expected = {f"Place {i}" for i in range(_RACE_THREADS)}
+        gate = threading.Barrier(_RACE_THREADS)
+        errors: list[Exception] = []
+
+        def work(i):
+            try:
+                gate.wait(timeout=5.0)
+                g._geocode(f"Place {i}")
+            except Exception as exc:  # pragma: no cover - failure detail
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=work, args=(i,)) for i in range(_RACE_THREADS)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30.0)
+
+        assert not [t for t in threads if t.is_alive()], "a lookup never finished"
+        assert not errors, f"a concurrent lookup raised: {errors[0]!r}"
+
+        raw = geocoder_module.CACHE_PATH.read_text(encoding="utf-8")
         try:
-            g._geocode(f"Place {i}")
-        except Exception as exc:  # pragma: no cover - failure detail
-            errors.append(exc)
+            written = json.loads(raw)
+        except ValueError as exc:
+            raise AssertionError(
+                "the cache file does not parse, so two writers interleaved "
+                f"bytes into the shared temporary path (round {round_index}): {exc}"
+            ) from exc
 
-    threads = [threading.Thread(target=work, args=(i,)) for i in range(8)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert not errors
-    written = json.loads(geocoder_module.CACHE_PATH.read_text(encoding="utf-8"))
-    assert len(written) == 8
+        missing = expected - set(written)
+        assert not missing, (
+            "a coordinate that was looked up is not in the cache file, so an "
+            "older snapshot landed on top of a newer one (round "
+            f"{round_index}, {len(missing)} of {_RACE_THREADS} lost): "
+            f"{sorted(missing)}"
+        )
