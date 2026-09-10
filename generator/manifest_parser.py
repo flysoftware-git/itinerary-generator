@@ -66,6 +66,58 @@ TRANSPORTATION_ITEM_SCHEMA: dict[str, Any] = {
             "description": "Free-text arrival point and/or time. See "
                            "`depart`.",
         },
+        "depart_time": {
+            "type": "string",
+            "description": "Clock time the leg leaves, LOCAL TO THE PLACE IT "
+                           "LEAVES FROM, exactly as the booking states it "
+                           "('17:00', '5:00 PM'). Separate from `depart` "
+                           "because that field is a display string a reader "
+                           "may have put a date in, and because a time is the "
+                           "one thing here that is meaningless without knowing "
+                           "which clock it is on. NOTHING NORMALIZES THIS TO A "
+                           "SINGLE ZONE: a sailing that leaves Venice at 17:00 "
+                           "and reaches Kotor at 08:00 is stating two "
+                           "different clocks, and rewriting either into the "
+                           "other's zone -- or into UTC -- produces a time no "
+                           "document anywhere says, which is a wrong answer "
+                           "that looks precise. Absent when the booking does "
+                           "not state one; never inferred from a date.",
+        },
+        "arrive_time": {
+            "type": "string",
+            "description": "Clock time the leg arrives, local to the place it "
+                           "arrives at. See `depart_time`.",
+        },
+        "total_cost": {
+            "type": "string",
+            "description": "What the booking says it costs, as digits: "
+                           "'4310.00'. A string like `dates` and `depart`, "
+                           "for the same reason -- it is transcribed from a "
+                           "document, not computed -- so no consumer should "
+                           "do arithmetic on it without first agreeing with "
+                           "`currency`. Absent when the confirmation states no "
+                           "total; never summed out of parts and never "
+                           "converted. Cleared in privacy-redacted builds "
+                           "along with the rest of the leg "
+                           "(main._apply_privacy_redaction drops booked legs "
+                           "wholesale), which is what a fare wants: it is a "
+                           "fact about the traveler's finances, not about the "
+                           "trip.",
+        },
+        "currency": {
+            "type": "string",
+            "description": "ISO 4217 code the `total_cost` is denominated in "
+                           "('EUR', 'GBP', 'USD'). Required reading for anyone "
+                           "who adds `total_cost` to anything: a fare booked "
+                           "in Euros folded into a dollar total is wrong by "
+                           "whatever the rate happens to be, and looks "
+                           "complete. Left as whatever the document said when "
+                           "it cannot be resolved to a code -- '$' names four "
+                           "currencies and resolving it would be a guess -- so "
+                           "a consumer must treat anything that is not a "
+                           "three-letter code as unknown rather than as its "
+                           "own.",
+        },
         "website": {
             "type": "string",
             "description": "Carrier/rental manage-booking or info URL.",
@@ -99,6 +151,30 @@ TRANSPORTATION_ITEM_SCHEMA: dict[str, Any] = {
                                        "the booking states it. Free-text like "
                                        "`depart` and `dates`: nothing in the "
                                        "pipeline schedules from it.",
+                    },
+                    "arrive_time": {
+                        "type": "string",
+                        "description": "Clock time the leg reaches this call, "
+                                       "LOCAL TO THIS PLACE. A cruise "
+                                       "itinerary states one per port and they "
+                                       "are on as many clocks as there are "
+                                       "countries; storing them as if they "
+                                       "shared a zone would be wrong in a way "
+                                       "nothing downstream could detect, so "
+                                       "each is kept exactly as its own "
+                                       "document states it. Absent where the "
+                                       "booking does not say -- a schedule "
+                                       "naming times at some calls and not "
+                                       "others is ordinary, and filling the "
+                                       "rest in would be inventing a schedule.",
+                    },
+                    "depart_time": {
+                        "type": "string",
+                        "description": "Clock time the leg leaves this call, "
+                                       "local to this place. With `arrive_time` "
+                                       "it is how long the traveler has ashore, "
+                                       "which is the question a port call "
+                                       "exists to answer. See `arrive_time`.",
                     },
                 },
                 "additionalProperties": False,

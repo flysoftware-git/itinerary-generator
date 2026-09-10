@@ -85,12 +85,17 @@ Return STRICT JSON with this shape:
   "confirmation_number": string,
   "depart": string,
   "arrive": string,
+  "depart_time": string,
+  "arrive_time": string,
+  "total_cost": string,
+  "currency": string,
   "website": string,
   "location": string,
   "checkin_time": string,
   "dates": string,
   "city": string,
-  "stops": [ { "place": string, "date": string } ]
+  "stops": [ { "place": string, "date": string,
+               "arrive_time": string, "depart_time": string } ]
 }
 
 Rules:
@@ -110,8 +115,23 @@ Rules:
   Return [] for a single-hop booking such as a flight or a car -- an itinerary
   is a fact the email either lists or does not, and inventing the middle of one
   is worse than leaving it empty.
+- "depart_time" and "arrive_time" are clock times, LOCAL TO THE PLACE EACH ONE
+  BELONGS TO, copied in the form the email prints them ("17:00", "5:00 PM").
+  Do not convert either into the other's time zone or into UTC. The same rule
+  applies to a stop's "arrive_time" (when the ship docks) and "depart_time"
+  (when it sails): each is local to THAT port. A schedule that gives times at
+  some calls and not others is normal -- leave the rest "".
+- "total_cost" is the total the traveler is charged for THIS booking, as digits
+  with a decimal point and nothing else: "4310.00", not "EUR 4,310" and not
+  "$4,310.00". Copy the total the email prints. Do not add up per-person or
+  per-night amounts to make one, and do not convert it into any other currency.
+- "currency" is the ISO 4217 code that amount is in -- "EUR", "GBP", "USD" --
+  read from the symbol or code the email uses beside the figure. If the email
+  shows only "$", return "$": that symbol is used by several currencies and
+  choosing one of them is a guess.
 - Use "" for anything the email does not state. NEVER invent a confirmation
-  number, price, date or URL. An empty string is always better than a guess.
+  number, price, currency, time, date or URL. An empty string is always better
+  than a guess.
 - Return only the JSON object, no prose.
 """
 
@@ -599,6 +619,53 @@ def match_destination(
     return ranked[0]["id"], ranked
 
 
+#: Currency symbols that name exactly one currency. Deliberately short, and
+#: deliberately missing "$": that symbol is printed by the United States,
+#: Canada, Australia, Mexico and a dozen more, so mapping it to USD would be a
+#: guess wearing the clothes of a lookup -- and a guess about money is the one
+#: kind this file already refuses to make ("NEVER invent a ... price").
+_UNAMBIGUOUS_CURRENCY_SYMBOLS = {
+    "€": "EUR",   # euro
+    "£": "GBP",   # pound sterling
+    "¥": "JPY",   # yen -- the renminbi is written 元 or CNY
+    "₩": "KRW",   # won
+    "₹": "INR",   # rupee
+    "₽": "RUB",   # ruble
+    "₪": "ILS",   # shekel
+    "₫": "VND",   # dong
+    "฿": "THB",   # baht
+    "₴": "UAH",   # hryvnia
+}
+
+
+def _currency_code(value: Any) -> str:
+    """What currency an extracted amount is in, as a code where that is a fact.
+
+    Three answers, and the third is the one that matters. A three-letter code
+    comes back upper-cased. A symbol that names one currency comes back as that
+    currency's code -- which is a lookup and not a conversion: nothing is
+    multiplied by a rate here, and "the euro sign means EUR" does not rot the
+    way a rate does. Anything else comes back **exactly as the document wrote
+    it**, because the alternative is choosing between the four currencies "$"
+    could mean and being right about a quarter of the time.
+
+    Passing the unresolved string through rather than dropping it is the
+    difference between a consumer knowing the amount is in a currency it cannot
+    name and believing no currency was stated. Only the first of those is
+    something a reader can be told about and fix.
+
+    Never defaults. A booking with an amount and no currency at all is exactly
+    that, and inventing one would put the fare into whatever total happened to
+    ask for it.
+    """
+    said = str(value or "").strip()
+    if not said:
+        return ""
+    if len(said) == 3 and said.isalpha():
+        return said.upper()
+    return _UNAMBIGUOUS_CURRENCY_SYMBOLS.get(said, said)
+
+
 def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """Convert an extraction into the manifest shape it belongs in.
 
@@ -631,7 +698,24 @@ def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, 
             ("name", "location", "dates", "checkin_time", "confirmation_number", "website")
         )
 
-    fragment = _clean(("provider", "label", "confirmation_number", "depart", "arrive", "website"))
+    fragment = _clean((
+        "provider", "label", "confirmation_number", "depart", "arrive",
+        # What the document says the journey costs and when it runs. Both were
+        # fields the extractor was never asked for, so a confirmation that
+        # states them plainly on its first page reached the manifest without
+        # them and no stage downstream could tell an unstated fare from an
+        # unasked-for one.
+        "depart_time", "arrive_time", "total_cost",
+        "website",
+    ))
+    # Normalized separately, because unlike every other string here there is a
+    # right answer that is not the one printed: "eur", "EUR " and "€" are one
+    # currency and three fragments, and a consumer comparing codes would treat
+    # them as three. `_currency_code` resolves only what is unambiguous and
+    # passes anything else through untouched -- see its docstring for the "$"
+    # case, which is the whole reason it does not simply upper-case.
+    if (money := _currency_code(reservation.get("currency"))):
+        fragment["currency"] = money
     # Where the leg calls on the way. `_clean` handles strings and these are
     # objects, so they are filtered here instead -- and filtered rather than
     # passed through, because a call with no place is not a place the traveler
@@ -645,7 +729,18 @@ def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, 
         if not place:
             continue
         when = str(stop.get("date", "") or "").strip()
-        stops.append({"place": place, **({"date": when} if when else {})})
+        call: dict[str, Any] = {"place": place, **({"date": when} if when else {})}
+        # In and out, each on this port's own clock. The pair is what says how
+        # long the traveler is ashore, which is the question a port call is
+        # asked; the date alone says only that the ship was there that day.
+        # Copied rather than reconciled -- a call listing one and not the other
+        # keeps the one it has, since a missing sail time is a gap in the
+        # document and filling it would be a schedule nobody published.
+        for key in ("arrive_time", "depart_time"):
+            clock = str(stop.get(key, "") or "").strip()
+            if clock:
+                call[key] = clock
+        stops.append(call)
     if stops:
         fragment["stops"] = stops
     kind = str(reservation.get("type", "") or "").strip().lower()
