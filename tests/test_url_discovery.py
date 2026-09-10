@@ -18334,6 +18334,219 @@ def test_concurrent_page_fetches_do_not_swap_redirect_targets():
     assert discoverer._fetch_final_url_cache[url_b] == final_b
 
 
+# ----------------------------------------------------------------------
+# Redirect ledger: absent must mean "never looked", not "did not redirect".
+# ----------------------------------------------------------------------
+
+
+def _redirect_ledger_discoverer():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._fetch_final_url_cache = {}
+    return discoverer
+
+
+def test_redirect_state_distinguishes_never_looked_from_no_redirect():
+    """The three states the record has to be able to hold. Before this, a
+    URL that was fetched and did not redirect was written nowhere, so it was
+    indistinguishable from one nothing ever fetched."""
+    from generator.url_discovery import (
+        LINK_REDIRECT_FOLLOWED,
+        LINK_REDIRECT_NONE,
+        LINK_REDIRECT_UNCHECKED,
+    )
+
+    discoverer = _redirect_ledger_discoverer()
+
+    never = "https://www.fs.usda.gov/recarea/carson/recarea/?recid=44248"
+    stayed = "https://www.nps.gov/zion/planyourvisit/kolob-canyons.htm"
+    moved = "https://www.fs.usda.gov/recarea/carson/recarea/?recid=99999"
+    moved_to = "https://www.fs.usda.gov/r03/carson/recreation"
+
+    discoverer._record_link_redirect(stayed, stayed)
+    discoverer._record_link_redirect(moved, moved_to)
+
+    assert discoverer.link_redirect_state(never) == LINK_REDIRECT_UNCHECKED
+    assert discoverer.link_redirect_state(stayed) == LINK_REDIRECT_NONE
+    assert discoverer.link_redirect_state(moved) == LINK_REDIRECT_FOLLOWED
+
+
+def test_a_fetch_that_does_not_redirect_records_that_it_did_not():
+    """The write side of the same fact, through the real fetch path: a
+    response whose final URL equals the requested one is an observation, and
+    the old `final_url != url` write guard threw it away."""
+    from generator.url_discovery import LINK_REDIRECT_NONE
+    from generator.url_validator import URLValidator
+
+    url = "https://www.nps.gov/zion/planyourvisit/kolob-canyons.htm"
+
+    def fake_get(requested, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.text = "Kolob Canyons Viewpoint"
+        resp.url = requested
+        return resp
+
+    validator = URLValidator(timeout=1)
+    validator.session.get = MagicMock(side_effect=fake_get)
+
+    discoverer = _redirect_ledger_discoverer()
+    discoverer._url_validator = validator
+
+    ok, status, _text = discoverer._fetch_page_text_uncached(url)
+
+    assert (ok, status) == (True, 200)
+    assert discoverer.link_redirect_state(url) == LINK_REDIRECT_NONE
+    assert discoverer._fetch_final_url_cache[url] == url
+
+
+def test_redirect_state_is_unknown_when_the_fetch_reported_no_final_url():
+    """A fetch can succeed and still observe no destination -- the validator's
+    per-thread final-URL slot is cleared at the top of every call, so a path
+    that never sets it leaves it empty. Empty is `unchecked`; recording it as
+    `not_redirected` would be the same unmeasured claim, made by the fix."""
+    from generator.url_discovery import LINK_REDIRECT_UNCHECKED
+
+    url = "https://www.opentable.com/r/some-restaurant"
+
+    class SilentValidator:
+        _last_final_url = ""
+
+        def get_text(self, requested, timeout=None):
+            return True, 200, "page body"
+
+    discoverer = _redirect_ledger_discoverer()
+    discoverer._url_validator = SilentValidator()
+
+    ok, status, _text = discoverer._fetch_page_text_uncached(url)
+
+    assert (ok, status) == (True, 200)
+    assert discoverer.link_redirect_state(url) == LINK_REDIRECT_UNCHECKED
+    assert url not in discoverer._fetch_final_url_cache
+
+
+def test_persistent_cache_entry_without_a_final_url_loads_as_unknown(tmp_path) -> None:
+    """Backward compatibility, and the crux of the change. An entry written
+    before the redirect ledger existed carries `final_url: ""` for BOTH "it
+    did not redirect" and "nothing observed one" -- the writer below is the
+    real one, driven with an empty ledger, so the payload is exactly the
+    shape already on disk. It must load as `unchecked`: reading it as
+    `not_redirected` would assert something nobody measured."""
+    from generator.url_discovery import LINK_REDIRECT_UNCHECKED
+
+    url = "https://www.fs.usda.gov/recarea/carson/recarea/?recid=44248"
+    cache_path = tmp_path / "persistent_cache.json"
+
+    writer = URLDiscoverer.__new__(URLDiscoverer)
+    writer._persistent_cache_enabled = True
+    writer._persistent_cache_path = str(cache_path)
+    writer._persistent_cache_dirty = True
+    writer._request_cache_lock = Lock()
+    writer._page_text_cache = {url: (True, 200, "Carson National Forest recreation")}
+    writer._fetch_final_url_cache = {}
+    writer._save_persistent_caches()
+
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert payload["page_text_results"][url]["final_url"] == ""
+
+    reader = URLDiscoverer.__new__(URLDiscoverer)
+    reader._persistent_cache_enabled = True
+    reader._persistent_cache_path = str(cache_path)
+    reader._page_text_cache = {}
+    reader._fetch_final_url_cache = {}
+    reader._load_persistent_caches()
+
+    assert reader._page_text_cache[url][1] == 200
+    assert url not in reader._fetch_final_url_cache
+    assert reader.link_redirect_state(url) == LINK_REDIRECT_UNCHECKED
+
+
+def test_persistent_cache_round_trips_a_measured_non_redirect(tmp_path) -> None:
+    """A measured non-redirect must survive a save/load round trip, and must
+    be persisted as the URL itself rather than as "" -- which is both what
+    makes it distinguishable from an old entry on the next load, and what
+    keeps an older reader of the same file sane: its `final_url ==
+    original_url` branch already fails open on exactly this value."""
+    from generator.url_discovery import LINK_REDIRECT_FOLLOWED, LINK_REDIRECT_NONE
+
+    stayed = "https://www.nps.gov/zion/planyourvisit/kolob-canyons.htm"
+    moved = "https://www.fs.usda.gov/recarea/carson/recarea/?recid=44248"
+    moved_to = "https://www.fs.usda.gov/r03/carson/recreation"
+    cache_path = tmp_path / "persistent_cache.json"
+
+    writer = URLDiscoverer.__new__(URLDiscoverer)
+    writer._persistent_cache_enabled = True
+    writer._persistent_cache_path = str(cache_path)
+    writer._persistent_cache_dirty = True
+    writer._request_cache_lock = Lock()
+    writer._page_text_cache = {
+        stayed: (True, 200, "Kolob Canyons Viewpoint"),
+        moved: (True, 200, "Carson National Forest recreation"),
+    }
+    writer._fetch_final_url_cache = {}
+    writer._record_link_redirect(stayed, stayed)
+    writer._record_link_redirect(moved, moved_to)
+    writer._save_persistent_caches()
+
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert payload["page_text_results"][stayed]["final_url"] == stayed
+    assert payload["page_text_results"][moved]["final_url"] == moved_to
+
+    reader = URLDiscoverer.__new__(URLDiscoverer)
+    reader._persistent_cache_enabled = True
+    reader._persistent_cache_path = str(cache_path)
+    reader._page_text_cache = {}
+    reader._fetch_final_url_cache = {}
+    reader._load_persistent_caches()
+
+    assert reader.link_redirect_state(stayed) == LINK_REDIRECT_NONE
+    assert reader.link_redirect_state(moved) == LINK_REDIRECT_FOLLOWED
+    assert reader._fetch_final_url_cache[moved] == moved_to
+
+
+def test_redirect_gate_verdict_is_unchanged_for_every_redirect_state():
+    """The whole point of making the third state representable is that it
+    changes no verdict. `unchecked` and `not_redirected` both clear the gate
+    -- for different reasons, but with the same outcome as before -- and only
+    a recorded redirect to a page that has lost the item can reject.
+
+    The `not_redirected` row is the one that bites: the page text does not
+    mention the item, so a gate that judged a non-redirect as though it were
+    a redirect would reject a URL that resolved to itself."""
+    item = "Poshuouinge Pueblo Ruins"
+    dest = "Espanola"
+    original = "https://www.fs.usda.gov/recarea/carson/recarea/?recid=44248"
+    hub = "https://www.fs.usda.gov/r03/carson/recreation"
+    hub_text = "Carson National Forest recreation opportunities and seasonal closures."
+
+    discoverer = _redirect_ledger_discoverer()
+    tokens = discoverer._significant_tokens(item)
+
+    # Nothing ever looked: no evidence, so no rejection.
+    assert discoverer._redirect_target_lacks_item_relevance(
+        original, item, dest, tokens, "attraction", hub_text
+    ) == ""
+
+    # Fetched, and it resolved to itself: nothing to judge, so no rejection,
+    # even though the page text never names the item.
+    discoverer._record_link_redirect(original, original)
+    assert discoverer._redirect_target_lacks_item_relevance(
+        original, item, dest, tokens, "attraction", hub_text
+    ) == ""
+
+    # Fetched, and it went somewhere that has lost the item: rejected, exactly
+    # as before.
+    discoverer._record_link_redirect(original, hub)
+    assert discoverer._redirect_target_lacks_item_relevance(
+        original, item, dest, tokens, "attraction", hub_text
+    ) == hub
+
+    # Fetched, went elsewhere, and the destination still names the item: kept.
+    moved_text = "Poshuouinge Pueblo Ruins trailhead, Carson National Forest."
+    assert discoverer._redirect_target_lacks_item_relevance(
+        original, item, dest, tokens, "attraction", moved_text
+    ) == ""
+
+
 class TestTheDestinationsOwnPageIsNotAnItemsLink:
     """GH #59: "Red Canyon" linked to a generic Capitol Reef listing page.
 

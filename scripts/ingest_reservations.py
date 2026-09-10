@@ -35,6 +35,7 @@ from generator.reservation_ingest import (
     email_to_text,
     extract_reservation,
     fetch_unseen_messages,
+    NotAMessage,
     load_sidecar,
     mark_messages_processed,
     summarize,
@@ -124,7 +125,14 @@ def main(manifest, config_path, env_file, mailbox, threshold, limit, archive_fol
     llm = MultiLLMClient(config_path=config_path)
     entries = []
     for uid, raw in messages:
-        subject, body = email_to_text(raw)
+        try:
+            subject, body = email_to_text(raw)
+        except NotAMessage as exc:
+            # One item in a mailbox that is not a message must not abandon the
+            # rest of it, and it must not be filed either -- like an extraction
+            # failure below, it stays where it is for a human to look at.
+            logger.warning("uid %s: %s; skipped", uid, exc)
+            continue
         if not body.strip():
             logger.warning("uid %s: no readable body; skipped", uid)
             continue

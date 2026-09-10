@@ -85,12 +85,17 @@ Return STRICT JSON with this shape:
   "confirmation_number": string,
   "depart": string,
   "arrive": string,
+  "depart_time": string,
+  "arrive_time": string,
+  "total_cost": string,
+  "currency": string,
   "website": string,
   "location": string,
   "checkin_time": string,
   "dates": string,
   "city": string,
-  "stops": [ { "place": string, "date": string } ]
+  "stops": [ { "place": string, "date": string,
+               "arrive_time": string, "depart_time": string } ]
 }
 
 Rules:
@@ -110,8 +115,23 @@ Rules:
   Return [] for a single-hop booking such as a flight or a car -- an itinerary
   is a fact the email either lists or does not, and inventing the middle of one
   is worse than leaving it empty.
+- "depart_time" and "arrive_time" are clock times, LOCAL TO THE PLACE EACH ONE
+  BELONGS TO, copied in the form the email prints them ("17:00", "5:00 PM").
+  Do not convert either into the other's time zone or into UTC. The same rule
+  applies to a stop's "arrive_time" (when the ship docks) and "depart_time"
+  (when it sails): each is local to THAT port. A schedule that gives times at
+  some calls and not others is normal -- leave the rest "".
+- "total_cost" is the total the traveler is charged for THIS booking, as digits
+  with a decimal point and nothing else: "4310.00", not "EUR 4,310" and not
+  "$4,310.00". Copy the total the email prints. Do not add up per-person or
+  per-night amounts to make one, and do not convert it into any other currency.
+- "currency" is the ISO 4217 code that amount is in -- "EUR", "GBP", "USD" --
+  read from the symbol or code the email uses beside the figure. If the email
+  shows only "$", return "$": that symbol is used by several currencies and
+  choosing one of them is a guess.
 - Use "" for anything the email does not state. NEVER invent a confirmation
-  number, price, date or URL. An empty string is always better than a guess.
+  number, price, currency, time, date or URL. An empty string is always better
+  than a guess.
 - Return only the JSON object, no prose.
 """
 
@@ -212,6 +232,109 @@ def _pdf_to_text(payload: bytes, filename: str) -> str:
         return ""
 
 
+class NotAMessage(ValueError):
+    """Raised when the bytes handed to `email_to_text` are not an email.
+
+    `email.message_from_bytes` is a parser that cannot fail: handed a PNG, a
+    PDF, an Outlook `.msg` container or a plain note with no headers, it returns
+    a Message whose body is those bytes decoded as latin-1. The result is
+    non-empty, so every caller's "did we get anything to read?" check passes and
+    the noise goes on to the extractor -- which means an LLM call, and a charge,
+    against bytes that were never a message. The failure is silent in the worst
+    way: it looks exactly like a successful read of an email that happened to be
+    unhelpful.
+
+    So the parser refuses instead. What it costs to be wrong in each direction
+    is not symmetric -- refusing a real message tells the sender to try
+    something else, while accepting a non-message spends money and reports
+    nothing wrong.
+    """
+
+
+#: Headers that identify a thing as a message rather than as a file that
+#: happens to begin with a word and a colon. A positive test, deliberately: the
+#: set of things that are not email is unbounded and grows every time a new file
+#: format appears, so listing them is a losing game -- an Outlook container
+#: today, whatever the next mail client saves tomorrow. RFC 5322 makes `Date`
+#: and `From` mandatory on a message being sent; the rest are here because a
+#: message that has been through a mail system carries several of them, and a
+#: `.eml` saved out of a client keeps them.
+_MESSAGE_HEADERS = frozenset({
+    "from", "to", "cc", "bcc", "subject", "date", "sender", "reply-to",
+    "message-id", "received", "return-path", "delivered-to", "mime-version",
+    "content-type", "content-transfer-encoding", "x-original-to",
+    "authentication-results", "dkim-signature", "list-unsubscribe",
+})
+
+#: `field-name` from RFC 5322: printable US-ASCII except the colon.
+_HEADER_FIELD = re.compile(r"^([\x21-\x39\x3b-\x7e]+):")
+
+#: Named only so the refusal can say something the sender can act on. Nothing
+#: routes on these -- `looks_like_message` decides -- so a format missing from
+#: this list is still refused, just less helpfully.
+_SIGNATURES = (
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "an Outlook .msg file"),
+    (b"%PDF-", "a PDF"),
+    (b"PK\x03\x04", "a zip archive (a .docx, or a .zip)"),
+    (b"\x89PNG\r\n\x1a\n", "a PNG image"),
+    (b"\xff\xd8\xff", "a JPEG image"),
+    (b"GIF8", "a GIF image"),
+    (b"{\\rtf", "an RTF document"),
+)
+
+
+def _describe_bytes(raw_bytes: bytes) -> str:
+    for magic, name in _SIGNATURES:
+        if raw_bytes.startswith(magic):
+            return name
+    return ""
+
+
+def looks_like_message(raw_bytes: bytes) -> bool:
+    """True when `raw_bytes` opens with an RFC 5322 header block.
+
+    Only the head is examined -- everything up to the blank line that ends the
+    headers, capped -- because that is where the evidence is, and the rest may
+    legitimately be binary (a base64 attachment, decoded or not).
+    """
+    if not raw_bytes:
+        return False
+
+    head = raw_bytes[:8192]
+    for terminator in (b"\r\n\r\n", b"\n\n"):
+        end = head.find(terminator)
+        if end != -1:
+            head = head[:end]
+            break
+
+    # A NUL in the header block settles it: no header field may contain one,
+    # and the container formats that reach this function carry them early.
+    if b"\x00" in head:
+        return False
+
+    lines = head.decode("latin-1").split("\n")
+    # An mbox `From ` separator is not a header field but does precede one.
+    if lines and lines[0].startswith("From "):
+        lines = lines[1:]
+
+    names = []
+    for line in lines:
+        line = line.rstrip("\r")
+        if not line:
+            continue
+        if line[0] in " \t":  # a folded continuation of the field above
+            continue
+        found = _HEADER_FIELD.match(line)
+        if not found:
+            # A line that is not a header field, inside what would have to be
+            # the header block. A note beginning "Note: ..." gets exactly this
+            # far and then fails, which is right: it is a file, not a message.
+            return False
+        names.append(found.group(1).lower())
+
+    return any(name in _MESSAGE_HEADERS for name in names)
+
+
 def email_to_text(raw_bytes: bytes, *, max_chars: int = 12000) -> tuple[str, str]:
     """Return (subject, best-effort plain-text body) for a raw RFC822 message.
 
@@ -219,7 +342,18 @@ def email_to_text(raw_bytes: bytes, *, max_chars: int = 12000) -> tuple[str, str
     confirmation emails ship HTML only. Truncated because the body is going
     into an LLM prompt and confirmation emails carry long marketing tails that
     add tokens without adding facts.
+
+    Raises `NotAMessage` when the bytes are not a message at all. See that class
+    for why refusing is worth more here than a best effort.
     """
+    if not looks_like_message(raw_bytes):
+        what = _describe_bytes(raw_bytes)
+        raise NotAMessage(
+            ("that is " + what + ", not an email message")
+            if what
+            else "that is not an email message (no RFC 822 headers in it)"
+        )
+
     msg = email.message_from_bytes(raw_bytes, policy=email.policy.default)
     subject = str(msg.get("Subject", "") or "")
 
@@ -485,6 +619,53 @@ def match_destination(
     return ranked[0]["id"], ranked
 
 
+#: Currency symbols that name exactly one currency. Deliberately short, and
+#: deliberately missing "$": that symbol is printed by the United States,
+#: Canada, Australia, Mexico and a dozen more, so mapping it to USD would be a
+#: guess wearing the clothes of a lookup -- and a guess about money is the one
+#: kind this file already refuses to make ("NEVER invent a ... price").
+_UNAMBIGUOUS_CURRENCY_SYMBOLS = {
+    "€": "EUR",   # euro
+    "£": "GBP",   # pound sterling
+    "¥": "JPY",   # yen -- the renminbi is written 元 or CNY
+    "₩": "KRW",   # won
+    "₹": "INR",   # rupee
+    "₽": "RUB",   # ruble
+    "₪": "ILS",   # shekel
+    "₫": "VND",   # dong
+    "฿": "THB",   # baht
+    "₴": "UAH",   # hryvnia
+}
+
+
+def _currency_code(value: Any) -> str:
+    """What currency an extracted amount is in, as a code where that is a fact.
+
+    Three answers, and the third is the one that matters. A three-letter code
+    comes back upper-cased. A symbol that names one currency comes back as that
+    currency's code -- which is a lookup and not a conversion: nothing is
+    multiplied by a rate here, and "the euro sign means EUR" does not rot the
+    way a rate does. Anything else comes back **exactly as the document wrote
+    it**, because the alternative is choosing between the four currencies "$"
+    could mean and being right about a quarter of the time.
+
+    Passing the unresolved string through rather than dropping it is the
+    difference between a consumer knowing the amount is in a currency it cannot
+    name and believing no currency was stated. Only the first of those is
+    something a reader can be told about and fix.
+
+    Never defaults. A booking with an amount and no currency at all is exactly
+    that, and inventing one would put the fare into whatever total happened to
+    ask for it.
+    """
+    said = str(value or "").strip()
+    if not said:
+        return ""
+    if len(said) == 3 and said.isalpha():
+        return said.upper()
+    return _UNAMBIGUOUS_CURRENCY_SYMBOLS.get(said, said)
+
+
 def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """Convert an extraction into the manifest shape it belongs in.
 
@@ -501,9 +682,40 @@ def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, 
         return out
 
     if str(reservation.get("kind", "")).lower() == "lodging":
-        return "lodging", _clean(("name", "location", "checkin_time", "confirmation_number", "website"))
+        # `dates` is the only field in the extraction prompt that says WHEN a
+        # stay is, and the lodging branch used to drop it -- so a hotel
+        # confirmation that plainly names its nights reached the sidecar
+        # carrying the property, the code and the check-in *time*, and nothing
+        # at all about which days were booked. A transportation leg keeps
+        # `depart`/`arrive` and loses nothing; only lodging had this hole.
+        #
+        # `checkin_time` is not the missing field and must not be pressed into
+        # the role. It is a time of day -- `ai_content` renders it as
+        # *"arriving around {checkin_time}"* -- so a date written there comes
+        # out of the generator as prose about arriving around a date. The two
+        # answer different questions and the prompt asks for both.
+        return "lodging", _clean(
+            ("name", "location", "dates", "checkin_time", "confirmation_number", "website")
+        )
 
-    fragment = _clean(("provider", "label", "confirmation_number", "depart", "arrive", "website"))
+    fragment = _clean((
+        "provider", "label", "confirmation_number", "depart", "arrive",
+        # What the document says the journey costs and when it runs. Both were
+        # fields the extractor was never asked for, so a confirmation that
+        # states them plainly on its first page reached the manifest without
+        # them and no stage downstream could tell an unstated fare from an
+        # unasked-for one.
+        "depart_time", "arrive_time", "total_cost",
+        "website",
+    ))
+    # Normalized separately, because unlike every other string here there is a
+    # right answer that is not the one printed: "eur", "EUR " and "€" are one
+    # currency and three fragments, and a consumer comparing codes would treat
+    # them as three. `_currency_code` resolves only what is unambiguous and
+    # passes anything else through untouched -- see its docstring for the "$"
+    # case, which is the whole reason it does not simply upper-case.
+    if (money := _currency_code(reservation.get("currency"))):
+        fragment["currency"] = money
     # Where the leg calls on the way. `_clean` handles strings and these are
     # objects, so they are filtered here instead -- and filtered rather than
     # passed through, because a call with no place is not a place the traveler
@@ -517,7 +729,18 @@ def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, 
         if not place:
             continue
         when = str(stop.get("date", "") or "").strip()
-        stops.append({"place": place, **({"date": when} if when else {})})
+        call: dict[str, Any] = {"place": place, **({"date": when} if when else {})}
+        # In and out, each on this port's own clock. The pair is what says how
+        # long the traveler is ashore, which is the question a port call is
+        # asked; the date alone says only that the ship was there that day.
+        # Copied rather than reconciled -- a call listing one and not the other
+        # keeps the one it has, since a missing sail time is a gap in the
+        # document and filling it would be a schedule nobody published.
+        for key in ("arrive_time", "depart_time"):
+            clock = str(stop.get(key, "") or "").strip()
+            if clock:
+                call[key] = clock
+        stops.append(call)
     if stops:
         fragment["stops"] = stops
     kind = str(reservation.get("type", "") or "").strip().lower()

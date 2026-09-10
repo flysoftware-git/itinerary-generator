@@ -5,6 +5,7 @@ import pytest
 
 from generator.manifest_parser import ManifestParser
 from generator.reservation_ingest import (
+    NotAMessage,
     build_sidecar,
     email_to_text,
     match_destination,
@@ -56,6 +57,76 @@ def test_email_to_text_truncates_long_bodies() -> None:
     assert len(body) <= 12000
 
 
+#: The OLE compound-document header. An Outlook `.msg` is a container in this
+#: format, not a message, and it is what a mail client hands over when a message
+#: is dragged out of it -- so it is the non-message most likely to arrive where
+#: a message was meant.
+_OLE_HEADER = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def test_an_outlook_msg_is_refused_rather_than_read_as_garbage() -> None:
+    """The defect this guards is silent, which is why it is worth a test.
+
+    `email.message_from_bytes` cannot fail. Handed the OLE container an Outlook
+    `.msg` actually is, it returned a message with an empty subject and ~780
+    characters of the container's own bytes decoded as latin-1 -- non-empty, so
+    a caller's "is there anything to read?" check passed and the noise went on
+    to the extractor as though it were an email body. That is an LLM call, and
+    a charge, against a file that was never a message.
+    """
+    with pytest.raises(NotAMessage) as caught:
+        email_to_text(_OLE_HEADER + bytes(range(256)) * 4)
+
+    # Says what it got, so a caller can tell the sender what to do instead.
+    assert ".msg" in str(caught.value)
+
+
+def test_a_pdf_handed_to_the_message_parser_is_refused() -> None:
+    """A misnamed attachment is the same defect wearing a different hat: a PDF
+    is read perfectly well by `_pdf_to_text` and not at all by the message
+    parser, and only one of those two ever says so."""
+    with pytest.raises(NotAMessage) as caught:
+        email_to_text(b"%PDF-1.4\nnot headers, and never were\n" + b"stream " * 40)
+
+    assert "PDF" in str(caught.value)
+
+
+def test_a_note_with_no_headers_is_not_a_message() -> None:
+    """The test is positive -- does this look like a message -- rather than a
+    list of formats to exclude, because the set of things that are not email is
+    unbounded. Plain text is the case that shows the difference: it carries no
+    magic number to recognise it by."""
+    with pytest.raises(NotAMessage):
+        email_to_text(b"Booked the hotel, will forward later\nsee you Tuesday\n")
+
+
+def test_a_leading_colon_word_does_not_make_a_file_a_message() -> None:
+    """One `word:` line is not a header block. Requiring a *recognised* message
+    header is what separates a message from a config file or a log."""
+    with pytest.raises(NotAMessage):
+        email_to_text(b"Note: booked it\nWarning: check the dates\n\nbody\n")
+
+
+def test_a_message_with_folded_headers_and_an_mbox_line_is_still_read() -> None:
+    """The other half of a refusal is that it must not refuse real mail. Folded
+    continuation lines are ordinary in received mail, and a message saved out of
+    an mbox carries a `From ` separator that is not a header field at all."""
+    raw = (
+        b"From confirmations@hotel.example Mon Oct  6 09:14:00 2026\r\n"
+        b"Received: by mail.example (Postfix)\r\n"
+        b"\tid 4B2C1; Mon, 6 Oct 2026 09:14:00 +0000\r\n"
+        b"Subject: Your stay is confirmed\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"Confirmation ZL-4471902\r\n"
+    )
+
+    subject, body = email_to_text(raw)
+
+    assert subject == "Your stay is confirmed"
+    assert "ZL-4471902" in body
+
+
 def test_score_prefers_the_destination_whose_city_matches() -> None:
     reservation = {"kind": "lodging", "city": "Springdale, UT", "dates": "October 7, 2026"}
 
@@ -97,6 +168,46 @@ def test_match_defers_when_two_destinations_score_near_identically() -> None:
 
     assert dest_id is None
     assert len(ranked) == 2
+
+
+def test_a_lodging_fragment_keeps_the_dates_the_stay_was_booked_for() -> None:
+    """The extraction prompt asks for `dates` and the lodging branch dropped it.
+
+    A hotel confirmation reached the sidecar with the property, the code and
+    the check-in *time*, and nothing saying which nights were booked -- the one
+    fact a stay consists of. `checkin_time` is not a substitute: `ai_content`
+    renders it as "arriving around {checkin_time}", so a date written there
+    comes out of the generator as prose about arriving around a date.
+    """
+    section, fragment = reservation_to_manifest_fragment(
+        {"kind": "lodging", "name": "The Swan Hotel",
+         "location": "Port Townsend, WA", "dates": "October 17-19, 2026",
+         "checkin_time": "4:00 PM", "confirmation_number": "PT-88214"}
+    )
+
+    assert section == "lodging"
+    assert fragment["dates"] == "October 17-19, 2026"
+    assert fragment["checkin_time"] == "4:00 PM"
+
+
+def test_a_lodging_stay_window_survives_the_merge_into_a_manifest() -> None:
+    """And the schema accepts it, which is what stops a merged manifest from
+    failing validation on a field ingestion is now allowed to write."""
+    from generator.manifest_parser import MANIFEST_SCHEMA
+
+    lodging_schema = (MANIFEST_SCHEMA["properties"]["destinations"]["items"]
+                      ["properties"]["lodging"])
+    assert "dates" in lodging_schema["properties"]
+    assert lodging_schema.get("additionalProperties") is False
+
+    trip = {"destinations": [{"id": "pt", "name": "Port Townsend",
+                              "lodging": {"location": "Port Townsend, WA"}}]}
+    counts = merge_sidecar_into_trip(
+        trip, {"destinations": {"pt": {"lodging": {"dates": "October 17-19, 2026"}}}}
+    )
+
+    assert counts["lodging_fields"] == 1
+    assert trip["destinations"][0]["lodging"]["dates"] == "October 17-19, 2026"
 
 
 def test_fragment_drops_fields_the_email_never_stated() -> None:
@@ -1139,3 +1250,199 @@ def test_the_schema_refuses_a_call_with_no_place() -> None:
             {"type": "ship", "stops": [{"date": "2026-06-14"}]},
             TRANSPORTATION_ITEM_SCHEMA,
         )
+
+
+# --------------------------------------------- what a confirmation says it cost
+
+
+def test_a_confirmation_that_states_a_price_carries_it() -> None:
+    """The extractor was never asked for the money, so it never arrived.
+
+    Not a mapping loss like the calls were: `total_cost` and `currency` were
+    absent from the requested shape, so a booking that prints its fare on the
+    first page reached the manifest without it and nothing downstream could
+    tell an unpriced booking from an unasked-for price.
+    """
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship", "provider": "A Cruise Line",
+        "total_cost": "4310.00", "currency": "EUR",
+    })
+
+    assert fragment["total_cost"] == "4310.00"
+    assert fragment["currency"] == "EUR"
+
+
+def test_a_fare_in_euros_stays_in_euros() -> None:
+    """Nothing here converts. A rate needs a date and a source, this file has
+    neither, and a fare quietly restated in dollars is a wrong number that
+    looks like a right one -- so the code travels with the amount and the
+    consumer is left to decide what it can honestly add it to."""
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship",
+        "total_cost": "4310.00", "currency": "€",
+    })
+
+    assert fragment["currency"] == "EUR"
+    assert fragment["total_cost"] == "4310.00"
+
+
+def test_a_dollar_sign_is_not_resolved_to_a_currency() -> None:
+    """The dollar sign is printed by the US, Canada, Australia, Mexico and more.
+    Resolving it to USD would be a guess about money, which is the one guess
+    the extraction prompt has always refused to make -- and it would be
+    invisible, because USD is exactly what a reader expects to see.
+
+    Kept as the document wrote it rather than dropped: a consumer that knows
+    the amount is in *some* dollar can say so, and one told no currency was
+    stated cannot.
+    """
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship",
+        "total_cost": "4310.00", "currency": "$",
+    })
+
+    assert fragment["currency"] == "$"
+
+
+def test_a_currency_code_is_normalised_and_an_amount_without_one_is_still_kept() -> None:
+    """Two halves of the same rule. A code is a code however it was typed, so
+    "eur" and "EUR " compare equal to everything downstream. And an amount with
+    no currency at all is carried anyway -- it is what the document said, and a
+    consumer that can see an unlabelled figure can ask about it."""
+    _, lowered = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship", "currency": " eur "})
+    assert lowered["currency"] == "EUR"
+
+    _, unlabelled = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship", "total_cost": "4310.00"})
+    assert unlabelled["total_cost"] == "4310.00"
+    assert "currency" not in unlabelled
+
+
+def test_the_prompt_asks_for_the_price_and_the_currency() -> None:
+    """The field has to be requested before it can be mapped. This is the half
+    that was missing: `price` appeared in the prompt exactly once, inside the
+    prohibition against inventing one, and never as something to report."""
+    from generator.reservation_ingest import EXTRACTION_SYSTEM_PROMPT
+
+    assert '"total_cost": string' in EXTRACTION_SYSTEM_PROMPT
+    assert '"currency": string' in EXTRACTION_SYSTEM_PROMPT
+    assert "ISO 4217" in EXTRACTION_SYSTEM_PROMPT
+
+
+def test_a_priced_leg_with_times_validates_against_the_schema() -> None:
+    """`additionalProperties` is False on this item, so asking for a field and
+    accepting it are one change rather than two -- and the half that is missed
+    fails at manifest load, after the money has already been spent extracting
+    it."""
+    import jsonschema
+
+    from generator.manifest_parser import TRANSPORTATION_ITEM_SCHEMA
+
+    jsonschema.validate(
+        {"type": "ship", "total_cost": "4310.00", "currency": "EUR",
+         "depart_time": "17:00", "arrive_time": "08:00",
+         "stops": [{"place": "Venice, Italy", "date": "2027-10-06",
+                    "arrive_time": "07:00", "depart_time": "17:00"}]},
+        TRANSPORTATION_ITEM_SCHEMA,
+    )
+
+
+def test_a_redacted_build_takes_the_fare_with_the_leg() -> None:
+    """A fare is a fact about the traveler's finances rather than about the
+    trip, so a published page must not carry it.
+
+    It is already covered, and this test exists to keep it that way: booked
+    legs are dropped wholesale in redacted builds, so a field added to the leg
+    inherits the redaction. A later change that started redacting these
+    field-by-field would need to be told about the money, and this is where it
+    finds out.
+    """
+    from generator.main import _apply_privacy_redaction
+
+    trip = {"trip": {"transportation": [
+        {"type": "ship", "total_cost": "4310.00", "currency": "EUR"}]},
+        "destinations": [{"transportation": [
+            {"type": "plane", "total_cost": "980.00", "currency": "USD"}]}]}
+
+    _apply_privacy_redaction(trip)
+
+    assert trip["trip"]["transportation"] == []
+    assert trip["destinations"][0]["transportation"] == []
+
+
+# ------------------------------------------------- when it sails, and from where
+
+
+def test_the_legs_own_times_are_carried_beside_its_dates() -> None:
+    """`depart` and `arrive` were bare dates. A cruise confirmation always
+    states the hour it sails and the hour it docks, and those are what tell a
+    traveler whether the day is theirs or the ship's -- so they were the most
+    load-bearing thing on the document that the extraction shape did not ask
+    for."""
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship",
+        "depart": "2027-10-06", "arrive": "2027-10-15",
+        "depart_time": "17:00", "arrive_time": "08:00",
+    })
+
+    assert fragment["depart"] == "2027-10-06"
+    assert fragment["depart_time"] == "17:00"
+    assert fragment["arrive_time"] == "08:00"
+
+
+def test_a_port_call_carries_when_it_docks_and_when_it_sails() -> None:
+    """The pair is the answer to the only question a port call raises: how long
+    is there ashore. A date alone says the ship was there that day, which is
+    true of a call lasting four hours and of one lasting fourteen."""
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship",
+        "stops": [
+            {"place": "Split, Croatia", "date": "2027-10-08",
+             "arrive_time": "08:00", "depart_time": "18:00"},
+        ],
+    })
+
+    assert fragment["stops"] == [{
+        "place": "Split, Croatia", "date": "2027-10-08",
+        "arrive_time": "08:00", "depart_time": "18:00",
+    }]
+
+
+def test_a_call_that_states_one_time_keeps_the_one_it_states() -> None:
+    """A schedule naming times at some calls and not others is ordinary, and an
+    overnight call states an arrival with no sailing on the same day. Filling
+    the gap would publish a schedule nobody wrote."""
+    _, fragment = reservation_to_manifest_fragment({
+        "kind": "transportation", "type": "ship",
+        "stops": [{"place": "Kotor", "date": "2027-10-10", "arrive_time": "09:00"},
+                  {"place": "Corfu", "date": "2027-10-11"}],
+    })
+
+    assert fragment["stops"][0] == {
+        "place": "Kotor", "date": "2027-10-10", "arrive_time": "09:00"}
+    assert fragment["stops"][1] == {"place": "Corfu", "date": "2027-10-11"}
+
+
+def test_the_prompt_forbids_moving_a_time_into_another_zone() -> None:
+    """Every time on a Mediterranean itinerary is local to its own port, and
+    they are on as many clocks as there are countries. A model helpfully
+    normalising them to one zone would produce times no document states, and
+    nothing downstream could detect it -- the values would still look like
+    times, still sort, and still be wrong."""
+    from generator.reservation_ingest import EXTRACTION_SYSTEM_PROMPT
+
+    assert "LOCAL TO THE PLACE" in EXTRACTION_SYSTEM_PROMPT
+    assert "UTC" in EXTRACTION_SYSTEM_PROMPT
+    # The leg's OWN times, asked for at the top level and not only inside
+    # `stops`. Written with their indentation because the first version of this
+    # assertion looked for the bare key and stayed green with the leg-level
+    # pair deleted: the stops line spells the same two names, so the prompt
+    # could stop asking when the journey itself sails and nothing would notice.
+    assert (
+        '\n  "depart_time": string,\n  "arrive_time": string,\n'
+        in EXTRACTION_SYSTEM_PROMPT
+    )
+    # And the per-call pair, which is a different fact: when the ship docks
+    # here, and when it leaves here.
+    assert '"arrive_time": string, "depart_time": string' in EXTRACTION_SYSTEM_PROMPT

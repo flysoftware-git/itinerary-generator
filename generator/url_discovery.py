@@ -400,6 +400,33 @@ LINK_LIVENESS_PRECEDENCE = {
     LINK_LIVENESS_LIVE: 1,
     LINK_LIVENESS_DEAD: 2,
 }
+# Where a URL redirected to, recorded in `_fetch_final_url_cache`, has the same
+# shape of problem the liveness ledger above was built for, one level down.
+# `_redirect_target_lacks_item_relevance` rejects a candidate on the strength of
+# that record, so the record has to be able to say which of three things it
+# means:
+#
+#   redirected     -- a fetch followed the URL somewhere else; the target is
+#                     the value, and the gate may judge it
+#   not_redirected -- a fetch resolved this URL to itself. A measured fact
+#                     about the URL, and the only one of the three that the
+#                     gate can safely read as "there is nothing to judge"
+#   unchecked      -- nothing ever looked, or the fetch that looked never
+#                     reported a final URL (a request that raised, a validator
+#                     that does not expose one). A statement about the
+#                     instrument, exactly as in the liveness ledger
+#
+# Encoding: absence means `unchecked`; a value equal to the key means
+# `not_redirected`; any other value is the redirect target. The value of an
+# entry is therefore always the final URL, which is what every existing reader
+# already assumed it was -- `.get(url, url)` at the call sites below spells the
+# same convention out. It also needs no new field on disk: entries written
+# before this change carry `final_url: ""` for BOTH "no redirect" and "never
+# looked", and an empty string is not a URL, so they load as `unchecked` and
+# assert nothing nobody measured.
+LINK_REDIRECT_FOLLOWED = "redirected"
+LINK_REDIRECT_NONE = "not_redirected"
+LINK_REDIRECT_UNCHECKED = "unchecked"
 # Wayback Machine fallback for AllTrails geo extraction (see
 # _fetch_wayback_alltrails_text): a direct AllTrails fetch is bot-blocked by
 # DataDome essentially universally in production (see _fetch_alltrails_text's
@@ -1779,9 +1806,14 @@ class URLDiscoverer:
                     status,
                     str(entry.get("text", "") or ""),
                 )
-                final_url = str(entry.get("final_url", "") or "")
-                if final_url:
-                    self._fetch_final_url_cache[key] = final_url
+                # Absent or empty `final_url` loads as `unchecked`, which is
+                # what distinguishes an entry written before the redirect
+                # ledger existed from one that says "not redirected". The old
+                # writer stored "" for both "no redirect" and "never observed",
+                # so an old entry cannot support the first claim; the new
+                # writer stores the URL itself for a measured non-redirect, and
+                # an empty string is never a URL.
+                self._record_link_redirect(key, str(entry.get("final_url", "") or ""))
 
             geocode_cutoff = now - (float(getattr(self, "_persistent_geocode_cache_ttl_hours", DEFAULT_PERSISTENT_GEOCODE_CACHE_TTL_HOURS)) * 3600.0)
             if not hasattr(self, "_en_route_stop_geocode_cache"):
@@ -10539,7 +10571,13 @@ class URLDiscoverer:
         fetch_cache = getattr(self, "_fetch_final_url_cache", None)
         if isinstance(fetch_cache, dict):
             cached_final = str(fetch_cache.get(candidate, "") or "").strip()
-            if cached_final:
+            # Deliberately still keyed on a DIFFERING target rather than on
+            # `link_redirect_state`. A recorded non-redirect is now legible
+            # here, and short-circuiting on it would be defensible -- but it
+            # would change how many requests this resolver makes, and this
+            # change is about representing the third state, not about spending
+            # or saving requests. Left exactly as it behaved before.
+            if cached_final and cached_final != candidate:
                 if isinstance(cache, dict):
                     cache[candidate] = cached_final
                 return cached_final
@@ -10547,11 +10585,14 @@ class URLDiscoverer:
         try:
             resp = self._url_validator.session.get(candidate, timeout=8)
             final_url = str(getattr(resp, "url", None) or candidate).strip()
+            # Its own response, so this is an observation either way.
+            self._record_link_redirect(candidate, final_url)
         except Exception:
+            # No response, so nothing was observed: leave the ledger alone
+            # rather than record `candidate` as its own destination. The
+            # returned value still falls back to the candidate, as before.
             final_url = candidate
 
-        if isinstance(fetch_cache, dict) and final_url and final_url != candidate:
-            fetch_cache[candidate] = final_url
         if isinstance(cache, dict):
             cache[candidate] = final_url
         return final_url
@@ -14368,9 +14409,17 @@ class URLDiscoverer:
         appears on the page the URL actually resolves to, the URL is not
         item-specific no matter how its original path looked.
         """
-        final_url = getattr(self, "_fetch_final_url_cache", {}).get(original_url)
-        if not final_url or final_url == original_url:
+        # Only a recorded redirect gives this gate anything to judge. Both
+        # `not_redirected` (measured: it resolved to itself) and `unchecked`
+        # (nothing observed) fail open, and deliberately for different
+        # reasons: the first has nothing to reject on, the second has no
+        # evidence to reject on. Splitting them changes no verdict here --
+        # they were already the same branch -- but it means a later reader can
+        # tell a URL this gate cleared from one it never saw.
+        state = self.link_redirect_state(original_url)
+        if state != LINK_REDIRECT_FOLLOWED:
             return ""
+        final_url = getattr(self, "_fetch_final_url_cache", {}).get(original_url)
         if kind == "restaurant":
             redirect_generic = self._is_generic_restaurant_landing_url(
                 final_url, item_name, dest_name, item_tokens=item_tokens
@@ -14745,6 +14794,56 @@ class URLDiscoverer:
             ),
         }
 
+    # ------------------------------------------------------------------
+    # Redirect ledger (see LINK_REDIRECT_* above)
+    #
+    # Same posture as the liveness ledger: recording only. Nothing here
+    # changes which URLs are accepted or rejected -- it makes the record able
+    # to distinguish "resolved to itself" from "never looked", so that the
+    # gate reading it can fail open on the second without having to guess.
+    # ------------------------------------------------------------------
+
+    def classify_link_redirect(self, url: str | None, final_url: str | None) -> str:
+        """Map one observed (url, final url) pair onto a redirect state.
+
+        An empty or missing final URL is `unchecked`, never `not_redirected`:
+        the fetch paths that leave it empty are the ones that did not observe
+        a destination at all -- a request that raised, a validator with no
+        final-URL channel -- and reading their silence as "it did not
+        redirect" is the ambiguity this ledger exists to remove.
+        """
+        original = str(url or "").strip()
+        final = str(final_url or "").strip()
+        if not original or not final:
+            return LINK_REDIRECT_UNCHECKED
+        return LINK_REDIRECT_NONE if final == original else LINK_REDIRECT_FOLLOWED
+
+    def _record_link_redirect(self, url: str | None, final_url: str | None) -> None:
+        """Record one observation of where a URL resolved to.
+
+        `not_redirected` is stored as the URL itself, so an entry's value is
+        always the final URL and `unchecked` remains the absence of an entry.
+        An unobserved final URL records nothing, which leaves the URL
+        `unchecked` rather than downgrading an earlier real observation.
+        """
+        original = str(url or "").strip()
+        state = self.classify_link_redirect(original, final_url)
+        if state == LINK_REDIRECT_UNCHECKED:
+            return
+        if not hasattr(self, "_fetch_final_url_cache"):
+            self._fetch_final_url_cache = {}
+        self._fetch_final_url_cache[original] = (
+            original if state == LINK_REDIRECT_NONE else str(final_url or "").strip()
+        )
+
+    def link_redirect_state(self, url: str | None) -> str:
+        """The redirect state recorded for one URL. Never observed -> unchecked."""
+        original = str(url or "").strip()
+        if not original:
+            return LINK_REDIRECT_UNCHECKED
+        recorded = getattr(self, "_fetch_final_url_cache", {}) or {}
+        return self.classify_link_redirect(original, recorded.get(original))
+
     def _fetch_page_text(self, url: str, timeout: int = 8) -> tuple[bool, int | str, str]:
         if self._is_alltrails_trail_url(url):
             result = self._fetch_alltrails_text(url, timeout=timeout)
@@ -14813,9 +14912,13 @@ class URLDiscoverer:
             try:
                 out = get_text(url, timeout=timeout)
                 if isinstance(out, tuple) and len(out) == 3:
+                    # Thread-local on the validator, and cleared at the top of
+                    # every get_text call, so an empty value here means this
+                    # call observed no destination -- `unchecked`, which
+                    # _record_link_redirect declines to write. A value equal to
+                    # `url` is a measured non-redirect and IS written.
                     final_url = str(getattr(self._url_validator, "_last_final_url", "") or "")
-                    if final_url and hasattr(self, "_fetch_final_url_cache") and final_url != url:
-                        self._fetch_final_url_cache[url] = final_url
+                    self._record_link_redirect(url, final_url)
                     return bool(out[0]), out[1], str(out[2] or "")
             except Exception:
                 pass
@@ -14824,9 +14927,10 @@ class URLDiscoverer:
         try:
             resp = self._url_validator.session.get(url, timeout=timeout)
             # Track final URL after any redirect for entity-match verification.
+            # This branch reads its own response, so a URL equal to `url` is a
+            # real observation of "it did not redirect" and is recorded as one.
             final_url = str(getattr(resp, "url", None) or url)
-            if hasattr(self, "_fetch_final_url_cache") and final_url != url:
-                self._fetch_final_url_cache[url] = final_url
+            self._record_link_redirect(url, final_url)
             return resp.status_code < 400, resp.status_code, resp.text or ""
         except Exception as exc:
             return False, str(exc), ""

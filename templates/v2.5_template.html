@@ -614,16 +614,20 @@
         if(typeof L==='undefined'){setTimeout(init,150);return;}
         var stops='<!--MAP_MARKERS_JSON-->';
         var map=L.map('overview-map',{zoomControl:true,scrollWheelZoom:false});
-        /* Standard OSM tiles. CARTO Voyager was tried here on 2026-09-02 to get
-           Latin-script labels for a Japan itinerary; its keyless raster
-           endpoint now returns every tile stamped "API KEY REQUIRED" across
-           the image, so the map shipped watermarked. Reverted 2026-09-05.
-           OSM labels places in the local language, so an English page about
-           Japan still gets Japanese labels -- unsolved, and not solvable
-           keylessly as far as this has been probed (Wikimedia's osm-intl
-           returns Japanese too). A Latin-script basemap needs a keyed
-           provider and the terms review that implies. */
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors',maxZoom:13}).addTo(map);
+        /* Tile source, from config.yaml `map.tiles`. The default is the OSMF
+           standard style, which is what this template shipped hardcoded until
+           now -- so an unchanged config renders an unchanged map.
+
+           It is configurable because the default does not suit every user.
+           OSMF's tile policy says access "may be withdrawn at any point" for
+           anything they judge a commercial service, and OSM labels places in
+           the local language, so an English page about Japan still gets
+           Japanese labels. CARTO Voyager was tried here on 2026-09-02 for the
+           label problem and reverted on 09-05: its keyless raster endpoint now
+           stamps "API KEY REQUIRED" across every tile. Both of those are
+           reasons to point somewhere else, and neither is a reason to change
+           what this file defaults to. */
+        L.tileLayer('<!--TILE_URL-->',{attribution:'<!--TILE_ATTRIBUTION-->',maxZoom:<!--TILE_MAX_ZOOM-->}).addTo(map);
         L.polyline(stops.map(function(s){return s.c;}),{color:'<!--THEME_COLOR-->',weight:2.5,dashArray:'7,6',opacity:0.85}).addTo(map);
         stops.forEach(function(s){
           var stopIndex = s.stop_index || s.idx;
