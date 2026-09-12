@@ -801,6 +801,78 @@ explicitly (e.g. only for stops actually rendered, with the same domain
 cooldown/caching discipline already applied to the main-leg fetch) rather
 than folding it into this fix.
 
+## A Destination's Own Page Is Not An Item's Link (GH #59)
+GH #59 -- *"Red Canyon resolves to a generic Utah.com Capitol Reef listing page
+rather than a destination-specific page"* -- was closed as completed on
+2026-08-14 with no comments and no linked commit, and still reproduced on `v3`
+at `abd9884`. One live page,
+`utah.com/destinations/national-parks/capitol-reef-national-park/`, was
+accepted as the link for **four different attractions**: Red Canyon, Hickman
+Bridge Trail, Cathedral Valley, Sulphur Creek. The gate was not inert -- a live
+wrong-destination page (`nps.gov/zion/index.htm`) was correctly refused -- so it
+was discriminating by *destination* and not by *entity*.
+
+**No text check can catch this, which is why the rule reads the URL.** A
+destination's overview page legitimately talks about the things inside it.
+Fetched live, that Capitol Reef page contains "hickman bridge", "cathedral
+valley" and "sulphur creek". A relevance gate reading the prose is therefore
+*correct* that the page is about the item, and still wrong to accept it: the
+page is about the destination and mentions the item the way a contents page
+mentions a chapter. Tuning the text matcher cannot separate the two, because
+there is nothing wrong with the text.
+
+`_is_the_destinations_own_page` requires both halves:
+
+1. every distinctive word of the DESTINATION appears in the URL path -- what
+   makes it that destination's own page rather than a page merely filed under
+   it; and
+2. no distinctive word of the ITEM appears anywhere in the URL.
+
+(2) is what stops the rule eating `.../capitol-reef/hickman-bridge`, the kind of
+page it exists to prefer. The item's words are taken *after* subtracting the
+destination's, so an attraction named for its park is judged on what it adds:
+"Capitol Reef Visitor Center" is asked for "visitor" or "center", never for
+"capitol". And an item that adds nothing -- an attraction called simply "Capitol
+Reef" -- is exempt, because (2) would hold vacuously and the park's page is the
+right answer for it rather than the wrong one.
+
+Seeds are not exempt. A seed is a human saying *"I want to see this"*, which
+makes the link's correctness matter more rather than less; the item still
+survives verified-link-or-seed and renders with the free geocode fallback or no
+link, rather than with one pointing at the wrong thing. Same trade the
+trail-link fix made: a wrong page is worse than no page.
+
+### It reverses three tested behaviours, deliberately
+`test_search_attraction_direct_batch_authoritative_{uses_maps_link_from_snippet_text,
+rejects_snippet_maps_link_for_other_item, keeps_item_matching_generic_landing_page}`
+asserted that `visitutah.com/places-to-go/cities-and-towns/st-george` IS an
+acceptable link for "Snow Canyon State Park" and "Pioneer Park", on the strength
+of the batch row's snippet naming the item. That is #59's defect seen from the
+other side, and the snippet is not the evidence it appears to be -- see the
+Capitol Reef page above, which would furnish such a snippet for most of its own
+attractions. The three are kept with their assertions reversed rather than
+deleted: the cases are still the ones worth pinning, only the answer changed.
+
+Scoping around them was considered and refused. `direct_batch_authoritative` is
+`true` in the shipped `config.yaml`, so exempting that path would have produced
+a fix that does not fix.
+
+### Measured before shipping
+Run against the three published guides, comparing the rule to what they
+currently link: **2 of 118 attraction links change**, and both are true
+positives -- a *"best attractions in Timberline Lodge"* listing offered for
+Palmer Glacier Viewpoint, and a TripAdvisor *Private Portland Lighthouses*
+product page offered for Maine Coastal Botanical Gardens. Neither is a
+destination page in the Capitol Reef sense, which is the useful part: the rule
+generalises to *"this URL is about the surroundings, not the thing"*.
+
+**What that number does not measure**, and should not be read as: it counts
+links that change, not items that get *dropped*. An attraction whose only batch
+answer was its destination's page now falls to the free-geocode fallback
+(`_geocode_maps_url_for_item`) or, failing that, to verified-link-or-seed. The
+published pages cannot show that, because items already removed do not appear
+in them. A cold run is what would measure it.
+
 ## En-Route Stop Maps-Link Specificity
 Project owner: "several are GPS coordinates, others aren't good match (like
 Red Hollow Canyon, which falls back to a Map link for the primary, but not
