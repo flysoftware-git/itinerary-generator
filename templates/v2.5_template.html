@@ -604,7 +604,7 @@
       <div data-id="1110" style="background:#fff;border-radius:16px;max-width:640px;width:92%;max-height:85vh;overflow-y:auto;padding:28px;box-shadow:0 24px 64px rgba(0,0,0,0.25);position:relative;">
         <button data-id="1111" id="drive-modal-close" style="position:absolute;top:12px;right:16px;background:none;border:none;font-size:22px;cursor:pointer;color:#999;line-height:1;">✕</button>
         <h3 data-id="1112" id="drive-modal-title" style="font-family:Georgia,serif;font-size:20px;color:#8B2E0A;margin:0 0 14px;padding-right:30px;"></h3>
-        <div data-id="1113" id="drive-modal-body" style="font-size:14px;line-height:1.7;color:#2C1A0E;white-space:pre-line;"></div>
+        <div data-id="1113" id="drive-modal-body" style="font-size:14px;line-height:1.7;color:#2C1A0E;white-space:pre-line;"><!--DRIVE_MODAL_PANELS--></div>
     </div>
 
     <!-- LEAFLET OVERVIEW MAP INIT -->
@@ -661,7 +661,6 @@
 
     <script>
       // ── DRIVE DESCRIPTIONS (global) ─────────────────────────────────────────
-      var DRIVE_DESCRIPTIONS = {};
 
       // ── All DOM interactions wrapped in DOMContentLoaded ─────────────────────
       document.addEventListener('DOMContentLoaded', function () {
@@ -675,46 +674,28 @@
 
         // ── SCENIC DRIVE POPUP ─────────────────────────────────────────────────
         try {
+          // The panels are rendered into the page at generation time and this
+          // shows one of them. It used to assemble HTML from strings and assign
+          // innerHTML, which had three costs: the modal was empty with
+          // JavaScript disabled, every field was an injection point, and a
+          // page that builds markup at run time and appends a link is the
+          // shape mail scanners refuse as an attachment.
           window.openDriveInfo = function(title) {
             var cleanTitle = (title || '').replace(/&amp;/g, '&');
-            var desc = DRIVE_DESCRIPTIONS[cleanTitle] || DRIVE_DESCRIPTIONS[title];
-            if (!desc) { return; }
             var modal  = document.getElementById('drive-modal');
             var titleEl = document.getElementById('drive-modal-title');
             var bodyEl  = document.getElementById('drive-modal-body');
             var attributionBlock = document.getElementById('attribution-block');
             if (!modal || !titleEl || !bodyEl) { return; }
+            var panels = bodyEl.querySelectorAll('.drive-modal-panel');
+            var shown = null;
+            for (var i = 0; i < panels.length; i++) {
+              var match = panels[i].getAttribute('data-drive-title') === cleanTitle;
+              panels[i].hidden = !match;
+              if (match) { shown = panels[i]; }
+            }
+            if (!shown) { return; }
             titleEl.textContent = cleanTitle;
-            var meta = [];
-            if (desc.category) meta.push('<span class="badge badge-scenic">' + desc.category.replace(/_/g, ' ') + '</span>');
-            if (desc.distance_or_duration) meta.push('<span class="badge badge-duration">' + desc.distance_or_duration + '</span>');
-            var blocks = [];
-            if (meta.length) {
-              blocks.push('<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.9rem;">' + meta.join('') + '</div>');
-            }
-            if (desc.description) {
-              blocks.push('<p style="margin:0 0 0.9rem;line-height:1.75;">' + desc.description + '</p>');
-            }
-            if (desc.best_time) {
-              blocks.push('<p style="margin:0 0 0.65rem;"><strong>Best time:</strong> ' + desc.best_time + '</p>');
-            }
-            if (desc.vehicle_requirement) {
-              blocks.push('<p style="margin:0 0 0.65rem;"><strong>Vehicle:</strong> ' + desc.vehicle_requirement + '</p>');
-            }
-            var linkParts = [];
-            // Route Map is only worth a separate link/icon when it points
-            // somewhere distinct from the "More Info" source link below --
-            // otherwise it's a redundant second link to the same place.
-            if (desc.route_map_url && desc.route_map_url !== desc.url) {
-              linkParts.push('<a href="' + desc.route_map_url + '" target="_blank" rel="noopener" class="event-link drive-route-map-link">🗺️ Route Map</a>');
-            }
-            if (desc.url) {
-              linkParts.push('<a href="' + desc.url + '" target="_blank" rel="noopener" class="event-link">More Info</a>');
-            }
-            if (linkParts.length) {
-              blocks.push('<p style="margin:0.8rem 0 0;display:flex;justify-content:flex-end;gap:0.85rem;flex-wrap:wrap;">' + linkParts.join('') + '</p>');
-            }
-            bodyEl.innerHTML  = blocks.join('');
             modal.style.display = 'flex';
             if (attributionBlock) {
               attributionBlock.setAttribute('data-hidden-by-drive-modal', 'true');

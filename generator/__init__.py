@@ -7,4 +7,4 @@ and Wikimedia Commons.
 """
 
 __version__ = "3.2.0"
-__template_version__ = "2.5.8"
+__template_version__ = "2.5.9"
