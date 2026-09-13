@@ -52,3 +52,31 @@ def test_write_persists_llm_usage_records(tmp_path) -> None:
 
     assert payload["llm"]["records"] == report["llm_usage"]["records"]
     assert len(payload["llm"]["records"]) == 2
+
+
+def _minimal_report(**extra):
+    report = {"valid": True, "error_count": 0, "warning_count": 0, "meta": {}, "llm_usage": {},
+              "errors": [], "warnings": [], "html_path": "index.html"}
+    report.update(extra)
+    return report
+
+
+def test_the_written_report_says_when_search_credits_ran_out(tmp_path) -> None:
+    """#137 set report["search_quota_exhausted"] and the file never had it.
+
+    ReportWriter copies named keys only, so a key set on the dict and not
+    listed here is silently dropped -- and the tests that shipped with #137
+    read the dict, not the file. Measured on two real 3.2.1 builds: the run
+    ledger carried [] and validation_report.json had no such key.
+    """
+    writer = ReportWriter(output_dir=tmp_path)
+    path = writer.write(_minimal_report(search_quota_exhausted=["url_discovery_fallback"]))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["search_quota_exhausted"] == ["url_discovery_fallback"]
+
+
+def test_measured_clean_and_not_measured_stay_distinct_in_the_file(tmp_path) -> None:
+    clean = ReportWriter(output_dir=tmp_path / "clean").write(_minimal_report(search_quota_exhausted=[]))
+    unmeasured = ReportWriter(output_dir=tmp_path / "none").write(_minimal_report())
+    assert json.loads(clean.read_text(encoding="utf-8"))["search_quota_exhausted"] == []
+    assert json.loads(unmeasured.read_text(encoding="utf-8"))["search_quota_exhausted"] is None
