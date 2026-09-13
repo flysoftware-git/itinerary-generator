@@ -122,7 +122,7 @@ class ImageFetcher:
         force_refresh: bool = False,
     ) -> None:
         import yaml
-        with Path(config_path).open() as f:
+        with Path(config_path).open(encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
         self._nps_key = os.environ.get("NPS_API_KEY", "DEMO_KEY")
         images_cfg = cfg.get("images", {})

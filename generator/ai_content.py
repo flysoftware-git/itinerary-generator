@@ -591,7 +591,7 @@ class AIContentGenerator:
         llm_client: MultiLLMClient | None = None,
     ) -> None:
         import yaml
-        with Path(config_path).open() as f:
+        with Path(config_path).open(encoding="utf-8") as f:
             self._config = yaml.safe_load(f)
         self._llm = llm_client or MultiLLMClient(config_path)
         self._system_prompt = (PROMPTS_DIR / "system_prompt.txt").read_text(encoding="utf-8")
