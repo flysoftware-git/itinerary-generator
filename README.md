@@ -124,6 +124,9 @@ Schedule controls:
 Vehicle:
 - `trip.vehicle_range_miles` (optional, a positive number) states how far your vehicle goes on a tank or charge. With en-route stops enabled, a leg longer than the tank gets a fuel stop named from the verified en-route stops within reach; the range is converted at each leg's own speed. It overrides `en_route_stops.vehicle_range_miles` in `config.yaml`. Leave it out when you do not know the figure or are not driving: nothing is assumed, and no fuel guidance is given.
 
+Legs:
+- `destination.stretch_note` (optional, free text, up to 500 characters) is your own note on the leg arriving at that destination — which parts are on-road, where the day gets long, a pass that is slow in the wet. It is shown verbatim on that leg's getting-here card and is never rewritten by the model. A YAML comment saying the same thing is discarded by the parser and never reaches the guide.
+
 ### 5. Generate
 
 ```bash

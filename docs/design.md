@@ -816,6 +816,7 @@ trip
 │   ├── id, name, dates, planning_links[], seeds[], en_route_seeds[]      ← manifest
 │   ├── lodging { name?, location, checkin_time? }, group_with?, base_owned_categories?
 │   ├── schedule_start_time?, daily_activity_hours?, attractions_per_day?
+│   ├── stretch_note?                     ← arriving leg; rendered verbatim on getting-here
 │   ├── lat, lng, lodging.lat/lng, nps_park_code       ← stage 2
 │   ├── ai_content                                     ← stage 3 (one merged call)
 │   │   ├── expected_environment { summary, temperature_high_f, temperature_low_f, what_to_pack[] }

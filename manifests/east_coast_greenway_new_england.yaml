@@ -19,6 +19,11 @@
 # only on the five legs whose local trail genuinely has a page, verified
 # 2026-09-05, and omitted on the rest. A leg with no link is the honest
 # outcome; a guessed one would point a rider at the wrong path.
+#
+# ON THE STRETCH NOTES. Which parts of a leg are off-road and which are not is
+# the thing a rider most needs to know and the one thing the pipeline cannot
+# find out. `stretch_note` carries it onto the leg's card, where a comment here
+# would never reach the guide. Set only where the leg's surface is known.
 
 trip:
   title: East Coast Greenway — Portland to New Haven
@@ -45,8 +50,8 @@ destinations:
   - id: kennebunk
     name: Kennebunk, Maine
     dates: Sep 7, 2027
-    # ~28 mi. The Eastern Trail carries most of it traffic-free through the
-    # Scarborough Marsh; the last stretch is on-road.
+    # ~28 mi.
+    stretch_note: The Eastern Trail carries most of it traffic-free through the Scarborough Marsh; the last stretch is on-road.
     trail_section: Biddeford to Kennebunk via Eastern Trail
     trail_url: https://www.alltrails.com/trail/us/maine/biddeford-to-kennebunk-via-eastern-trail
     planning_links:
@@ -56,8 +61,8 @@ destinations:
   - id: portsmouth
     name: Portsmouth, New Hampshire
     dates: Sep 8, 2027
-    # ~28 mi, crossing into New Hampshire at the Piscataqua. Mostly on-road
-    # through York and Kittery.
+    # ~28 mi, crossing into New Hampshire at the Piscataqua.
+    stretch_note: Mostly on-road through York and Kittery.
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
@@ -85,8 +90,8 @@ destinations:
   - id: providence
     name: Providence, Rhode Island
     dates: Sep 13-14, 2027
-    # ~50 mi, the longest leg. Rest day earned. The Blackstone River
-    # Greenway carries the second half.
+    # ~50 mi. Rest day earned.
+    stretch_note: The longest leg of the trip. The Blackstone River Greenway carries the second half.
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
@@ -94,8 +99,8 @@ destinations:
   - id: narragansett
     name: Narragansett, Rhode Island
     dates: Sep 15, 2027
-    # ~32 mi. The Washington Secondary and South County paths take most of
-    # the day off the road.
+    # ~32 mi.
+    stretch_note: The Washington Secondary and South County paths take most of the day off the road.
     trail_section: Washington Secondary Rail Trail
     trail_url: https://www.alltrails.com/trail/us/rhode-island/washington-secondary-rail-trail
     planning_links:
@@ -124,7 +129,8 @@ destinations:
   - id: old_saybrook
     name: Old Saybrook, Connecticut
     dates: Sep 18, 2027
-    # ~30 mi around the Connecticut River mouth, on-road for most of it.
+    # ~30 mi around the Connecticut River mouth.
+    stretch_note: On-road for most of it, around the Connecticut River mouth.
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
@@ -132,8 +138,9 @@ destinations:
   - id: new_haven
     name: New Haven, Connecticut
     dates: Sep 19, 2027
-    # ~35 mi. The Shoreline Greenway carries the last stretch into the city,
-    # where the New England section ends and the route continues south.
+    # ~35 mi, to where the New England section ends and the route continues
+    # south.
+    stretch_note: The Shoreline Greenway carries the last stretch into the city.
     trail_section: Shoreline Greenway Trail
     trail_url: https://www.alltrails.com/trail/us/connecticut/shoreline-greenway-trail
     planning_links:

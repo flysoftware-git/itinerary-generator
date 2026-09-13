@@ -715,6 +715,22 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                        "default. An explicit empty list opts this entry out of any "
                                        "deferral. Only meaningful when group_with is also set.",
                     },
+                    "stretch_note": {
+                        "type": "string",
+                        "pattern": "\\S",
+                        "maxLength": 500,
+                        "description": "Optional author's note on the leg ARRIVING at this "
+                                       "destination, rendered verbatim (escaped) on its "
+                                       "getting-here card -- e.g. 'Half traffic-free rail-trail, "
+                                       "half on-road connector; the connectors are where the "
+                                       "day gets long.' Free text rather than a scale: effort "
+                                       "and surface do not reduce to one number (a flat on-road "
+                                       "connector is easy and long), and a judgement like that "
+                                       "loses most of its content as a level. Any mode. Attaches "
+                                       "to the arriving destination for the same reason "
+                                       "trail_section and transport_mode do. Omitted = no note, "
+                                       "and the card renders exactly as before.",
+                    },
                 },
             },
         },
