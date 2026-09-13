@@ -1970,6 +1970,27 @@ class HTMLAssembler:
         html += '  </div>\n'
         return html
 
+    @staticmethod
+    def _leg_stretch_note_html(dest: Any) -> str:
+        """The manifest author's own note on the leg arriving here, if any.
+
+        `destination.stretch_note` is a human judgement about the stretch --
+        which parts are on-road, where the day gets long -- that the author
+        could otherwise only write as a YAML comment, which the parser
+        discards. Rendered verbatim and escaped; never passed through the
+        model. Reuses the route-summary paragraph style so the frozen
+        template is untouched. No note, no row.
+        """
+        if not isinstance(dest, dict):
+            return ""
+        note = dest.get("stretch_note")
+        if not isinstance(note, str) or not note.strip():
+            return ""
+        return (
+            f'  <p class="route-summary leg-stretch-note">'
+            f'{html_escape.escape(note.strip())}</p>\n'
+        )
+
     def _build_leg_trail_link_html(self, getting_here: Any) -> str:
         """The AllTrails page for this leg's section, when discovery found one.
 
@@ -2563,6 +2584,7 @@ class HTMLAssembler:
             str(route_summary or "").strip(),
             visible_stops,
             gh.get("transit_options"),
+            self._leg_stretch_note_html(dest),
         )):
             return ""
 
@@ -2603,6 +2625,8 @@ class HTMLAssembler:
 
         if route_summary:
             html += f'  <p class="route-summary">{route_summary}</p>\n'
+
+        html += self._leg_stretch_note_html(dest)
 
         html += self._build_leg_trail_link_html(gh)
 
