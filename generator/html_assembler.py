@@ -569,6 +569,14 @@ class HTMLAssembler:
                 departure_source=last_dest,
             )
         sections_html += self._build_packing_summary(destinations)
+        # One image-error listener for the whole page, and only when some
+        # image opts in. It goes BEFORE the sections so it is registered before
+        # the parser reaches any `hide-on-error` <img>, so an image that fails
+        # while the rest of the page is still parsing is hidden too. (When each
+        # gallery carried its own copy after its images, the first gallery's
+        # images were not covered until that copy had run.)
+        if 'class="hide-on-error"' in sections_html:
+            sections_html = self._image_error_handler_script() + sections_html
         html = html.replace("<!--DESTINATION_SECTIONS-->", sections_html)
 
         # ── Trip-wide travel chips under the route overview map ──────────────
@@ -1463,7 +1471,11 @@ class HTMLAssembler:
             html += '  </div>\n'
         
         html += '</div>\n'
-        html += self._image_error_handler_script()
+        # The error handler is NOT appended here. It is one document-level
+        # capture-phase listener, so a single copy covers every gallery on the
+        # page; `assemble` emits it once, ahead of the first gallery. Emitting
+        # it per gallery put ten byte-identical inline scripts in a ten-stop
+        # guide, which is itself a signal mail heuristics count.
         return html
 
     @staticmethod
