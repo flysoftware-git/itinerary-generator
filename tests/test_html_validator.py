@@ -419,3 +419,36 @@ def test_orphan_script_inside_group_child_card_warns(tmp_path):
     v = _make_validator(tmp_path)
     report = v.validate(p, GROUP_CHILD_TRIP)
     assert any("arches" in w.lower() and "script" in w.lower() for w in report["warnings"])
+
+
+def test_a_citation_marker_in_the_visible_text_warns_with_its_count(tmp_path):
+    """Measured in generated guides: 4 to 8 descriptions per guide ended in
+    ".[[1]](" on the page, and nothing that reads a guide looked for it. A link
+    check never will: nothing fetches a fragment of prose."""
+    marked = VALID_HTML.replace(
+        '<div class="inner"></div>',
+        '<div class="inner"><span class="rest-desc">Cozy bistro with duck.[[1]](</span>'
+        '<span class="attr-desc">Harbour walk.[[11]]</span></div>',
+    )
+    p = _write_html(tmp_path, marked)
+    report = _make_validator(tmp_path).validate(p, SAMPLE_TRIP)
+    citation = [w for w in report["warnings"] if "citation marker" in w.lower()]
+    assert citation, report["warnings"]
+    assert "2 " in citation[0] and "[[1]]" in citation[0], citation[0]
+    assert report["valid"] is True, "a warning, not an error: it must not fail a paid run"
+
+
+def test_a_citation_shape_inside_a_script_or_attribute_is_not_visible_text(tmp_path):
+    hidden = VALID_HTML.replace(
+        "</body>",
+        '<script>var cites = "[[1]](x)";</script><a title="[[2]]" href="#">ok</a></body>',
+    )
+    p = _write_html(tmp_path, hidden)
+    report = _make_validator(tmp_path).validate(p, SAMPLE_TRIP)
+    assert not any("citation marker" in w.lower() for w in report["warnings"]), report["warnings"]
+
+
+def test_a_guide_with_no_citation_marker_is_silent(tmp_path):
+    p = _write_html(tmp_path, VALID_HTML)
+    report = _make_validator(tmp_path).validate(p, SAMPLE_TRIP)
+    assert not any("citation marker" in w.lower() for w in report["warnings"])

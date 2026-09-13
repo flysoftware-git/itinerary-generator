@@ -12,6 +12,7 @@ Checks:
   7. No duplicate URLs within a single destination's top_attractions
   8. Attraction/trail teaser (description) completeness above a configured
      minimum ratio
+  9. No model citation markers (`[[1]]`) in the page's visible text
 
 Checks 6-8 (added 2026-08-15) are content-quality checks, not structural
 HTML checks -- promoted from main.py's _run_quality_gate, which only ever
@@ -70,6 +71,7 @@ class HTMLValidator:
         self._check_orphan_content_rate(trip, warnings)
         self._check_duplicate_urls_within_destination(trip, warnings)
         self._check_teaser_completeness(trip, warnings)
+        self._check_citation_markers(html, warnings)
 
         report = {
             "html_path": str(html_path),
@@ -398,4 +400,29 @@ class HTMLValidator:
             warnings.append(
                 f"Attraction/trail teasers empty: {empty}/{total} "
                 f"({ratio:.0%}, threshold: {self._max_empty_teaser_ratio:.0%})"
+            )
+
+    # ── Check 9: No citation markers in visible text ─────────────────────────
+
+    _CITATION_MARKER = re.compile(r"\[\[\d+\]\]")
+
+    def _check_citation_markers(self, html: str, warnings: list[str]) -> None:
+        """A model's inline citation (`[[1]](url)`) must not reach a reader.
+
+        Measured in generated guides: descriptions ended in `.[[1]](` on the
+        page, 4 to 8 per guide, because the URL was stripped and the rest of
+        the citation was not. Nothing that reads a guide looked for it, and a
+        link check never would. Read from the visible text only -- scripts,
+        styles and attributes are not what a reader sees. A warning, like the
+        other content checks: it names a defect in the prose, and failing the
+        whole run for it would throw away everything else the run produced.
+        """
+        visible = re.sub(r"(?is)<(script|style)\b.*?</\1\s*>", " ", html)
+        visible = html_lib.unescape(re.sub(r"(?s)<[^>]+>", " ", visible))
+        found = self._CITATION_MARKER.findall(visible)
+        if found:
+            shown = ", ".join(sorted(set(found), key=lambda m: int(m[2:-2]))[:5])
+            warnings.append(
+                f"Citation markers in the page's visible text: {len(found)} ({shown}) "
+                "-- a model's inline citation reached the prose"
             )
