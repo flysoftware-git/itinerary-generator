@@ -826,6 +826,17 @@ def _cached_ok(value: Any) -> bool:
 
 
 class URLDiscoverer:
+    #: Guards the retention-exit counters. Class-level, like URLValidator's
+    #: _COUNTER_LOCK, so an instance built with __new__ has it too and no
+    #: lazily-created lock can race its own creation.
+    _RETENTION_EXIT_COUNT_LOCK = threading.Lock()
+    #: The destination the current thread's _retain_discovered_url call is
+    #: judging, so a refusal can be attributed without every exit passing it.
+    #: Thread-local because destinations and their categories run concurrently
+    #: on one instance: _last_retention_rejection is instance state and cannot
+    #: say which thread wrote it.
+    _RETENTION_EXIT_CONTEXT = threading.local()
+
     def __init__(
         self,
         config_path: str | Any = "config.yaml",
@@ -2492,6 +2503,7 @@ class URLDiscoverer:
                     kind="scenic_drive",
                     disposition_threads=disposition_threads,
                 ),
+                "retention_exit_counts": self.retention_exit_counts(name),
             }
 
             top_counts = sorted(decision_counts.items(), key=lambda row: row[1], reverse=True)
@@ -3545,6 +3557,15 @@ class URLDiscoverer:
             else "",
         )
 
+        # The audit re-runs the retention gate, after discovery took its
+        # snapshot of this destination's counts -- refresh it so the audit's
+        # refusals are counted in what the run reports.
+        for dest in trip.get("destinations", []) or []:
+            if isinstance(dest, dict) and isinstance(dest.get("_url_discovery"), dict):
+                dest["_url_discovery"]["retention_exit_counts"] = self.retention_exit_counts(
+                    dest.get("name", "")
+                )
+
     def _retain_discovered_url(
         self,
         url: str,
@@ -3578,6 +3599,7 @@ class URLDiscoverer:
         # that had nothing to do with it -- the first run reported exit 1
         # ("if not url") for items that plainly had URLs.
         self._last_retention_rejection = None
+        self._RETENTION_EXIT_CONTEXT.dest_name = dest_name
         if not url:
             return self._reject_retention(1)
         if self._is_url_domain_denied(url):
@@ -4795,7 +4817,55 @@ class URLDiscoverer:
             exit_id,
             _RETENTION_EXIT_LABELS.get(exit_id, "unknown"),
         )
+        self._count_retention_exit(exit_id)
         return ""
+
+    def _count_retention_exit(self, exit_id: int) -> None:
+        """Count one refusal by exit id, for the run and for its destination.
+
+        _last_retention_rejection names the exit that fired on the latest
+        call and is overwritten by the next one, so nothing could say which
+        gate refused links across a run, or how often -- the only answer
+        came from wrapping _reject_retention from outside. Counting here
+        changes no decision: it records, and the caller still returns "".
+
+        The destination comes from the thread-local context
+        _retain_discovered_url sets on entry. A refusal with no known
+        destination is counted in the run total only.
+        """
+        dest_name = str(getattr(self._RETENTION_EXIT_CONTEXT, "dest_name", "") or "").strip()
+        with self._RETENTION_EXIT_COUNT_LOCK:
+            if not hasattr(self, "_retention_exit_counts_total"):
+                self._retention_exit_counts_total: dict[int, int] = {}
+            if not hasattr(self, "_retention_exit_counts_by_destination"):
+                self._retention_exit_counts_by_destination: dict[str, dict[int, int]] = {}
+            total = self._retention_exit_counts_total
+            total[exit_id] = int(total.get(exit_id, 0) or 0) + 1
+            if dest_name:
+                bucket = self._retention_exit_counts_by_destination.setdefault(dest_name, {})
+                bucket[exit_id] = int(bucket.get(exit_id, 0) or 0) + 1
+
+    def retention_exit_counts(self, dest_name: str | None = None) -> dict[str, dict[str, Any]]:
+        """Refusals so far by retention exit, for one destination or the run.
+
+        Shape: ``{"<exit id>": {"label": <guarding condition>, "count": n}}``,
+        ordered by exit id. Keys are strings because the result is written to
+        JSON, where they would become strings anyway. Cumulative for this
+        instance, so a retry pass on the same discoverer adds to it.
+        """
+        with self._RETENTION_EXIT_COUNT_LOCK:
+            if dest_name is None:
+                counts = dict(getattr(self, "_retention_exit_counts_total", {}) or {})
+            else:
+                by_dest = getattr(self, "_retention_exit_counts_by_destination", {}) or {}
+                counts = dict(by_dest.get(str(dest_name or "").strip(), {}))
+        return {
+            str(exit_id): {
+                "label": _RETENTION_EXIT_LABELS.get(exit_id, "unknown"),
+                "count": count,
+            }
+            for exit_id, count in sorted(counts.items())
+        }
 
     def _log_rejected_url(self, kind: str, dest_name: str, item_name: str, url: str) -> None:
         """Log a URL thrown away after it had already been accepted.

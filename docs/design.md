@@ -834,6 +834,7 @@ trip
 │   ├── cultural_events  has_events ? { events[] } : { honest_assessment, local_tip? }
 │   ├── images[]         { url, local_path, title, credit, license, source }
 │   ├── _url_discovery   { reason_counts, source_counts, disposition_threads{…}, …}
+│   │                    …, retention_exit_counts{ "<exit id>": { label, count } }
 │   ├── _registry_decisions[]   ← tombstones for items removed entirely
 │   └── item._registry   { validation_status, rendered_url, rejection_reasons[],
 │                          ownership_type?, section_target? }
