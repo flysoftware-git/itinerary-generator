@@ -347,8 +347,72 @@ def test_image_gallery_uses_unified_tile_structure() -> None:
     # Trojan:HTML/Phish, which made the itinerary unattachable to an email.
     assert 'onerror=' not in html
     assert 'class="hide-on-error"' in html
-    assert "addEventListener('error'" in html
+    # The listener itself is emitted once per page by assemble(), not per
+    # gallery -- see test_image_error_handler_is_emitted_once_per_page.
+    assert "addEventListener('error'" not in html
     assert "<p class=\"photo-caption\">" not in html
+
+
+def _gallery_trip(image_count: int) -> dict:
+    def dest(dest_id: str, name: str, lat: float, lng: float) -> dict:
+        return {
+            "id": dest_id,
+            "name": name,
+            "dates": "October 7-9, 2026",
+            "lat": lat,
+            "lng": lng,
+            "images": [
+                {"local_path": f"output/images/{dest_id}-{i}.jpg", "credit": f"Photo {i}"}
+                for i in range(image_count)
+            ],
+            "planning_links": [],
+            "ai_content": {"top_attractions": [], "getting_here": {}, "possible_daily_schedule": [], "dinner_recommendations": []},
+            "cultural_events": {"has_events": False, "events": []},
+            "scenic_drives": [],
+        }
+
+    return {
+        "trip": {"title": "Test Trip", "theme_color": "#C0623E", "departure": "Las Vegas"},
+        "_meta": {
+            "generator_version": "9.9.9",
+            "template_version": "2.5",
+            "generated_at_utc": "2026-07-26T17:41:23+00:00",
+            "llm": {"provider": "openai", "model": "test", "usage": {"models": [], "total_estimated_cost_usd": 0.0}},
+        },
+        "destinations": [
+            dest("zion", "Zion National Park", 37.3, -113.0),
+            dest("bryce", "Bryce Canyon National Park", 37.6, -112.2),
+            dest("arches", "Arches National Park", 38.7, -109.6),
+        ],
+    }
+
+
+def test_image_error_handler_is_emitted_once_per_page() -> None:
+    """Every gallery used to append its own copy of the listener, so a ten-stop
+    guide carried ten byte-identical inline scripts. It is a document-level
+    capture-phase listener: one copy covers every image on the page."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+
+    html = assembler.assemble(_gallery_trip(image_count=3))
+
+    assert html.count('<div class="photo-gallery">') == 3
+    handler = HTMLAssembler._image_error_handler_script()
+    copies = html.count(handler)
+    assert copies == 1, (
+        f"image error handler emitted {copies} times for 3 galleries; "
+        "it is one document-level listener and must appear exactly once per page"
+    )
+    # Registered before the parser reaches the first image that relies on it.
+    assert html.index(handler) < html.index('class="hide-on-error"')
+
+
+def test_image_error_handler_is_absent_when_no_image_needs_it() -> None:
+    assembler = HTMLAssembler(config_path="config.yaml")
+
+    html = assembler.assemble(_gallery_trip(image_count=0))
+
+    assert 'class="hide-on-error"' not in html
+    assert HTMLAssembler._image_error_handler_script() not in html
 
 
 def test_weather_url_uses_weather_gov_for_us_coordinates() -> None:
