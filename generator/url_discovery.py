@@ -7865,6 +7865,13 @@ class URLDiscoverer:
         cleaned = str(text or "").strip()
         if not cleaned:
             return ""
+        # The search model cites inline as `[[1]](https://...)`. Removed whole,
+        # and before the URL strip below: `https?://\S+` also eats the closing
+        # parenthesis, so stripping the URL first left `[[1]](` in the visible
+        # description. A bare `[[1]]`, or one already truncated to `[[1]](`, goes
+        # the same way.
+        cleaned = re.sub(r"\[\[\d+\]\]\([^)\s]*\)", "", cleaned)
+        cleaned = re.sub(r"\[\[\d+\]\]\(?", "", cleaned)
         cleaned = re.sub(r"https?://\S+", "", cleaned)
         cleaned = re.sub(r"\bLinks?\s*:.*$", "", cleaned, flags=re.IGNORECASE)
         # "Source"/"Maps"/"AllTrails" are anchor-text artifacts from the harvest

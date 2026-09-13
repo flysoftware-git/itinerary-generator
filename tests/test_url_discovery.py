@@ -7030,6 +7030,50 @@ def test_direct_batch_rows_from_html_sanitizes_source_maps_description_noise():
     assert "maps" not in rows[0]["description"].lower()
 
 
+def test_a_markdown_citation_is_removed_whole_not_left_as_a_bracket_and_a_parenthesis():
+    """Measured in generated guides: descriptions ended in ".[[1]](" on the page.
+
+    The search model cites inline as `[[1]](https://...)`. The URL strip below
+    takes `https?://\\S+`, and `\\S+` runs through the closing parenthesis, so it
+    removed the URL and its `)` and left `[[1]](` in the visible description --
+    4 to 8 times per guide, in restaurant and attraction descriptions alike.
+    """
+    sanitize = URLDiscoverer._sanitize_direct_batch_description_text
+    text = (
+        "Cozy bistro shines with excellent duck, crab cakes, and short ribs in "
+        "welcoming atmosphere.[[1]](https://www.example.com/reviews/bistro?id=3)"
+    )
+    assert sanitize(text) == (
+        "Cozy bistro shines with excellent duck, crab cakes, and short ribs in "
+        "welcoming atmosphere."
+    )
+
+
+def test_a_bare_or_already_truncated_citation_marker_is_removed():
+    sanitize = URLDiscoverer._sanitize_direct_batch_description_text
+    assert sanitize("Rustic spot with house-made pasta.[[3]]") == "Rustic spot with house-made pasta."
+    assert sanitize("Spicy curries and momos.[[7]](") == "Spicy curries and momos."
+    assert sanitize("Wine bar [[2]](https://a.example/x) with French cheeses.[[11]]") == (
+        "Wine bar with French cheeses."
+    )
+
+
+def test_direct_batch_rows_from_html_removes_citations_from_the_description():
+    html = (
+        "<h2>Portsmouth</h2>"
+        "<ul>"
+        "<li>Cure - Rustic spot excels with house-made fresh pasta and charcuterie."
+        "[[3]](https://www.example.com/cure) "
+        "<a href=\"https://www.curerestaurantportsmouth.com/\">Source</a></li>"
+        "</ul>"
+    )
+    rows = URLDiscoverer._direct_batch_rows_from_html(html)
+    assert rows
+    for field in ("description", "practical_note"):
+        value = rows[0].get(field) or ""
+        assert "[[" not in value and "](" not in value, (field, value)
+
+
 def test_build_primary_items_from_direct_batch_carries_restaurant_metadata_fields() -> None:
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     rows = [
