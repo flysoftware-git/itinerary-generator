@@ -370,7 +370,11 @@ def _apply_privacy_redaction(trip: dict[str, Any]) -> dict[str, int]:
     return counts
 
 
-def _run_quality_gate(trip: dict[str, Any], html_path: "Path | None" = None) -> None:
+def _run_quality_gate(
+    trip: dict[str, Any],
+    html_path: "Path | None" = None,
+    search_quota_exhausted: list[str] | None = None,
+) -> None:
     """Emit warnings for known quality regressions so they're visible on every run.
 
     Verified-link-or-seed policy (project owner decision, 2026-08-17):
@@ -508,6 +512,19 @@ def _run_quality_gate(trip: dict[str, Any], html_path: "Path | None" = None) -> 
         except Exception:
             pass
 
+    if search_quota_exhausted:
+        # First, because it is the cause of the removal counts above it rather
+        # than one more of them: those items were not looked for and found
+        # missing, they were not looked for at all.
+        warnings.insert(
+            0,
+            "search credits exhausted ("
+            + ", ".join(search_quota_exhausted)
+            + "): later lookups returned nothing, so items removed for having "
+            "no verified URL were never searched for -- top up the balance "
+            "and re-run",
+        )
+
     import click as _click
     if warnings:
         _click.echo("  ⚠ Quality gate — issues detected:")
@@ -517,6 +534,32 @@ def _run_quality_gate(trip: dict[str, Any], html_path: "Path | None" = None) -> 
         _click.echo("  ✓ Quality gate passed")
     for line in info_lines:
         _click.echo(f"  ℹ {line}")
+
+
+def _search_quota_exhausted(url_discoverer: Any | None) -> list[str] | None:
+    """Which URL-discovery search clients ran out of credits during this run.
+
+    ``None`` when URL discovery never ran, and ``[]`` when it ran and nothing
+    was exhausted. Those two must stay distinct: an absent reading is not a
+    clean one.
+
+    A client reports this through a ``quota_exhausted`` attribute, read by
+    duck typing so any provider that learns to expose it is picked up without
+    a change here. It is deliberately not folded into
+    ``circuit_breaker_stats``: a breaker is transient trouble that reopens
+    after a cooldown, while an exhausted balance does not recover by itself
+    and needs a person.
+    """
+    if url_discoverer is None:
+        return None
+    exhausted: list[str] = []
+    for label, client in (
+        ("url_discovery_batch", getattr(url_discoverer, "_search", None)),
+        ("url_discovery_fallback", getattr(url_discoverer, "_search_fallback", None)),
+    ):
+        if client is not None and bool(getattr(client, "quota_exhausted", False)):
+            exhausted.append(label)
+    return exhausted
 
 
 def _build_gate_a_metrics(
@@ -2811,6 +2854,11 @@ def main(
         # None on a run that failed before URL discovery, or one that skipped
         # it -- which is honest. There was no harvesting to be warm or cold.
         record["route_freshness"] = runtime_metrics.get("route_freshness")
+        # Same reasoning, and the same placement: a run that ran out of search
+        # credits delivered less than its source data held, and anything
+        # reading this file for completeness needs that beside the cost rather
+        # than buried in runtime_metrics. None when discovery never ran.
+        record["search_quota_exhausted"] = runtime_metrics.get("search_quota_exhausted")
         try:
             _append_run_ledger(ledger_path, record)
         except Exception as exc:  # pragma: no cover - defensive only
@@ -3487,6 +3535,11 @@ def main(
         if circuit_breaker_stats:
             runtime_metrics["circuit_breaker_stats"] = circuit_breaker_stats
 
+        # Inside this block, so a run that skipped URL discovery has no key and
+        # every reader's `.get()` yields None -- "not measured" -- while a run
+        # that searched and exhausted nothing records [] -- "measured, clean".
+        runtime_metrics["search_quota_exhausted"] = _search_quota_exhausted(url_discoverer)
+
         # How much of this run's harvesting was already on disk when it started.
         # Recorded rather than left computable: the same cost means a different
         # thing on a cold route than on a warm one, and a run that did not say
@@ -3609,10 +3662,18 @@ def main(
     # LINK_LIVENESS_*). Attached here so the published artifact says how much
     # of itself the fail-closed gate was actually able to check.
     report["link_liveness"] = trip.get("_link_liveness", {}) or {}
+    # An exhausted search balance makes every later per-item lookup return
+    # nothing, and the verified-link-or-seed policy then drops those items. The
+    # run still completes, so without this the report reads as a trip where the
+    # web had little to offer rather than one that stopped looking.
+    report["search_quota_exhausted"] = runtime_metrics.get("search_quota_exhausted")
     report_path = ReportWriter(output_dir).write(report)
     click.echo(f"  ✓ Validation report: {report_path}")
 
-    _run_quality_gate(trip, output_file)
+    _run_quality_gate(
+        trip, output_file,
+        search_quota_exhausted=runtime_metrics.get("search_quota_exhausted"),
+    )
 
     llm_usage = trip.get("_meta", {}).get("llm", {}).get("usage", {})
     estimated_cost = summarize_from_usage(llm_usage)
