@@ -203,7 +203,7 @@ _GETTING_HERE_HEADING_BY_LEG_MODE: dict[str, str] = {
 class HTMLAssembler:
     def __init__(self, config_path: Path | str = "config.yaml") -> None:
         import yaml
-        with Path(config_path).open() as f:
+        with Path(config_path).open(encoding="utf-8") as f:
             self._config = yaml.safe_load(f)
         # GH #68 multi-site grouping default (see generator/multi_site_grouping.py
         # and generator/url_discovery.py, which independently loads the same

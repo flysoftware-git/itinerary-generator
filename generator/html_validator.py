@@ -47,7 +47,7 @@ def _format_removal_ratio(removed: int, kept: int) -> str:
 class HTMLValidator:
     def __init__(self, config_path: str | Path = "config.yaml") -> None:
         import yaml
-        with Path(config_path).open() as f:
+        with Path(config_path).open(encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
         self._min_images = cfg.get("images", {}).get("min_per_destination", MIN_PER_DESTINATION_DEFAULT)
         quality_cfg = cfg.get("quality_gate", {}) or {}
