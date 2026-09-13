@@ -523,7 +523,7 @@
       }
     </style>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script><!--TILE_RENDERER_SCRIPT-->
 <style>
 .photo-caption {
         font-size: 0.68rem;
@@ -626,8 +626,13 @@
            label problem and reverted on 09-05: its keyless raster endpoint now
            stamps "API KEY REQUIRED" across every tile. Both of those are
            reasons to point somewhere else, and neither is a reason to change
-           what this file defaults to. */
-        L.tileLayer('<!--TILE_URL-->',{attribution:'<!--TILE_ATTRIBUTION-->',maxZoom:<!--TILE_MAX_ZOOM-->}).addTo(map);
+           what this file defaults to.
+
+           The base-layer statement is built by html_assembler._tile_layer_js,
+           not written here, because `map.tiles.kind: pmtiles` makes it a
+           different call: a vector archive drawn by protomaps-leaflet inside
+           this same Leaflet map, so everything below it is unchanged. */
+        <!--TILE_LAYER-->
         L.polyline(stops.map(function(s){return s.c;}),{color:'<!--THEME_COLOR-->',weight:2.5,dashArray:'7,6',opacity:0.85}).addTo(map);
         stops.forEach(function(s){
           var stopIndex = s.stop_index || s.idx;

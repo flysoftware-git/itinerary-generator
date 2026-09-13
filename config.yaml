@@ -32,6 +32,31 @@ template:
 # `attribution` is a licence obligation rather than decoration: OSM-derived
 # tiles are ODbL and the credit travels with them. Change the source and this
 # almost certainly changes too. Check what your provider requires.
+#
+# `kind` chooses how the basemap is drawn, and defaults to `raster`:
+#
+#   raster   An image per tile from an XYZ server -- what the template has always
+#            done. `url` needs {z}, {x} and {y}.
+#   pmtiles  One PMTiles archive of vector tiles, drawn in the browser by
+#            protomaps-leaflet inside the same Leaflet map, so the route and the
+#            markers are unaffected. `url` is the archive itself, e.g.
+#            https://example.com/tiles/north-america.pmtiles, with no {z}/{x}/{y}.
+#            There is no tile server: the host only has to answer HTTP range
+#            requests, and send CORS headers that allow the `Range` header.
+#
+# For `pmtiles` only:
+#
+#   flavor   light (default), dark, white, grayscale or black.
+#   lang     The language labels are drawn in, default `en` -- which is the fix
+#            for the Japanese-labelled map above, where the archive carries
+#            English names. Codes are protomaps-leaflet 5.1.0's own: note
+#            `zh-Hans` and `zh-Hant` rather than `zh`. An unknown code is
+#            refused with a warning, because the renderer would not refuse it --
+#            it would quietly draw the labels as Latin script.
+#
+# If the renderer script fails to load, the route and markers still draw on no
+# basemap. It does not fall back to OpenStreetMap: a site that chose its own
+# archive has usually done so to stop sending traffic to OSMF.
 map:
   tiles:
     url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"

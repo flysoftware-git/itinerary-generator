@@ -77,6 +77,41 @@ DEFAULT_TILE_MAX_ZOOM = 13
 #: without these renders one broken image per tile and no error anywhere.
 _TILE_URL_PLACEHOLDERS = ("{z}", "{x}", "{y}")
 
+#: How the basemap is drawn. `raster` is an image per tile from an XYZ server,
+#: which is what this template has always done. `pmtiles` is a single PMTiles
+#: archive of vector tiles, read by HTTP range requests and drawn in the browser,
+#: which needs no tile server -- just a file on storage that answers ranges.
+TILE_KINDS = ("raster", "pmtiles")
+DEFAULT_TILE_KIND = "raster"
+
+#: The vector renderer, pinned. protomaps-leaflet draws vector tiles *inside*
+#: Leaflet, so the overview map's markers, route and bounds code are untouched and
+#: only the base layer changes. Pinned rather than floated because the two tables
+#: below are read from this exact release: another version may accept different
+#: flavors or languages, and a value it does not know fails in the browser rather
+#: than here.
+PMTILES_RENDERER_URL = (
+    "https://cdn.jsdelivr.net/npm/protomaps-leaflet@5.1.0/dist/protomaps-leaflet.js"
+)
+
+#: The colour themes protomaps-leaflet 5.1.0 ships.
+PMTILES_FLAVORS = ("light", "dark", "white", "grayscale", "black")
+DEFAULT_PMTILES_FLAVOR = "light"
+
+#: The label languages protomaps-leaflet 5.1.0 knows how to set, read from its
+#: bundled language table. A code outside this table is not an error to the
+#: renderer -- it quietly treats the labels as Latin script -- which is exactly why
+#: it is checked here and not left to it. Two of these are easy to lose when
+#: reading that table: Chinese is split into `zh-Hans` and `zh-Hant` rather than
+#: `zh`, and `ja` carries no script name at all.
+PMTILES_LANGS = frozenset({
+    "ar", "bg", "cs", "da", "de", "el", "en", "es", "et", "fa", "fi", "fr", "ga",
+    "he", "hi", "hr", "hu", "id", "it", "ja", "ko", "lt", "lv", "mr", "mt", "ne",
+    "nl", "no", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "tr", "uk", "ur", "vi",
+    "zh-Hans", "zh-Hant",
+})
+DEFAULT_PMTILES_LANG = "en"
+
 
 class TileSettings(NamedTuple):
     """What the overview map's tile layer is built from."""
@@ -84,6 +119,9 @@ class TileSettings(NamedTuple):
     url: str
     attribution: str
     max_zoom: int
+    kind: str = DEFAULT_TILE_KIND
+    flavor: str = DEFAULT_PMTILES_FLAVOR
+    lang: str = DEFAULT_PMTILES_LANG
 
 
 def _js_string(value: str) -> str:
@@ -124,6 +162,10 @@ def _tile_settings(config: dict[str, Any] | None) -> TileSettings:
     Every fallback is logged. A tile source is a licence obligation as much as a
     setting -- ODbL requires attribution to travel with the data -- so a config
     that is quietly ignored is exactly the case that must not be quiet.
+
+    `kind` decides what the rest mean. `raster` (the default) is an XYZ image
+    server and its URL must carry `{z}`, `{x}` and `{y}`. `pmtiles` is one vector
+    archive and its URL is just the file; `flavor` and `lang` are read only for it.
     """
     section = ((config or {}).get("map") or {}).get("tiles") or {}
     if not isinstance(section, dict):
@@ -133,8 +175,30 @@ def _tile_settings(config: dict[str, Any] | None) -> TileSettings:
         )
         section = {}
 
+    kind = str(section.get("kind", "") or "").strip().lower() or DEFAULT_TILE_KIND
+    if kind not in TILE_KINDS:
+        logger.warning(
+            "config `map.tiles.kind` (%r) is not one of %s; drawing the raster default",
+            section.get("kind"), ", ".join(TILE_KINDS),
+        )
+        kind = DEFAULT_TILE_KIND
+
     url = str(section.get("url", "") or "").strip()
-    if not url:
+    if kind == "pmtiles":
+        # An archive URL has no {z}/{x}/{y} -- it names one file, and the renderer
+        # computes byte ranges into it. So the raster check below must not run
+        # here: it would reject every archive URL and silently revert the map to
+        # OpenStreetMap, which is the quiet failure that check exists to prevent.
+        if not url.startswith(("https://", "http://")):
+            logger.warning(
+                "config `map.tiles.kind` is pmtiles but `url` (%r) is not an http(s) "
+                "address for the archive, so there is nothing to draw; using the raster "
+                "OpenStreetMap default instead",
+                url,
+            )
+            kind = DEFAULT_TILE_KIND
+            url = DEFAULT_TILE_URL
+    elif not url:
         url = DEFAULT_TILE_URL
     elif not all(token in url for token in _TILE_URL_PLACEHOLDERS):
         missing = ", ".join(t for t in _TILE_URL_PLACEHOLDERS if t not in url)
@@ -174,7 +238,81 @@ def _tile_settings(config: dict[str, Any] | None) -> TileSettings:
         )
         max_zoom = DEFAULT_TILE_MAX_ZOOM
 
-    return TileSettings(url=url, attribution=attribution, max_zoom=max_zoom)
+    # Flavor and lang mean something only to the vector renderer, so they are
+    # read only when it is the one drawing. Each falls back on its own, like
+    # every field above: a bad flavor should not cost the operator their lang.
+    flavor, lang = DEFAULT_PMTILES_FLAVOR, DEFAULT_PMTILES_LANG
+    if kind == "pmtiles":
+        raw_flavor = str(section.get("flavor", "") or "").strip().lower()
+        if raw_flavor and raw_flavor not in PMTILES_FLAVORS:
+            logger.warning(
+                "config `map.tiles.flavor` (%r) is not one of %s; using %s",
+                raw_flavor, ", ".join(PMTILES_FLAVORS), DEFAULT_PMTILES_FLAVOR,
+            )
+        elif raw_flavor:
+            flavor = raw_flavor
+        # Not lowercased: `zh-Hans` and `zh-Hant` are the renderer's own codes.
+        raw_lang = str(section.get("lang", "") or "").strip()
+        if raw_lang and raw_lang not in PMTILES_LANGS:
+            logger.warning(
+                "config `map.tiles.lang` (%r) is not a language the map renderer can "
+                "label in, and it would not say so -- it would draw the labels as Latin "
+                "script; using %s",
+                raw_lang, DEFAULT_PMTILES_LANG,
+            )
+        elif raw_lang:
+            lang = raw_lang
+
+    return TileSettings(
+        url=url, attribution=attribution, max_zoom=max_zoom,
+        kind=kind, flavor=flavor, lang=lang,
+    )
+
+
+def _tile_renderer_script(tiles: TileSettings) -> str:
+    """The extra <script> the vector renderer needs, or nothing for raster.
+
+    Nothing, not an empty tag: the placeholder sits at the end of Leaflet's own
+    script line, so a raster page's <head> is the same bytes it always was.
+    """
+    if tiles.kind != "pmtiles":
+        return ""
+    return f'\n    <script src="{PMTILES_RENDERER_URL}"></script>'
+
+
+def _tile_layer_js(tiles: TileSettings) -> str:
+    """The one statement that adds the base layer to the overview map.
+
+    **Raster** reproduces exactly what the template rendered before this existed,
+    so a page with no `map.tiles.kind` is unchanged.
+
+    **PMTiles** is guarded by `typeof protomapsL`, and deliberately does not wait.
+    Both scripts are synchronous in <head>, so by the time the map's init runs the
+    renderer has either loaded or failed for good; polling for it would never end
+    in the failure case, and the route and markers below this statement would
+    never draw. With the guard they still do, on no basemap -- the same thing a
+    reader sees offline today. It does **not** fall back to OpenStreetMap's raster
+    tiles: an operator who chose their own archive has usually done so to stop
+    sending traffic to donated infrastructure, and a quiet fallback would do it
+    anyway on exactly the day their archive broke.
+
+    `attribution` is passed to the renderer on purpose. Left unset, protomaps-leaflet
+    adds its own credit, and the page shows two.
+    """
+    url = _js_string(tiles.url)
+    attribution = _js_string(tiles.attribution)
+    if tiles.kind != "pmtiles":
+        return (
+            f"L.tileLayer({url},{{attribution:{attribution},"
+            f"maxZoom:{tiles.max_zoom}}}).addTo(map);"
+        )
+    return (
+        "if(typeof protomapsL!=='undefined'){"
+        f"protomapsL.leafletLayer({{url:{url},flavor:{_js_string(tiles.flavor)},"
+        f"lang:{_js_string(tiles.lang)},attribution:{attribution},"
+        f"maxZoom:{tiles.max_zoom}}}).addTo(map);"
+        "}"
+    )
 
 
 def _verify_checksum(template_text: str) -> None:
@@ -280,14 +418,15 @@ class HTMLAssembler:
         html = html.replace("'<!--MAP_MARKERS_JSON-->'", json.dumps(markers))
 
         # ── Tile layer ───────────────────────────────────────────────────────
-        # The quotes are part of the search string, as they are for the markers
-        # above: `_js_string` emits the whole JS literal, so a URL or an
-        # attribution containing a quote cannot break out of the string it is
-        # substituted into. `max_zoom` is a bare number and is already an int.
+        # The whole base-layer statement is built here rather than templated
+        # field by field, because a raster layer and a vector one are different
+        # calls with different options. Every string in it goes through
+        # `_js_string`, so a URL or an attribution containing a quote cannot break
+        # out of its literal. See `_tile_layer_js` for why a raster page renders
+        # byte-identical to before, and why the vector one is guarded.
         tiles = _tile_settings(self._config)
-        html = html.replace("'<!--TILE_URL-->'", _js_string(tiles.url))
-        html = html.replace("'<!--TILE_ATTRIBUTION-->'", _js_string(tiles.attribution))
-        html = html.replace("<!--TILE_MAX_ZOOM-->", str(tiles.max_zoom))
+        html = html.replace("<!--TILE_RENDERER_SCRIPT-->", _tile_renderer_script(tiles))
+        html = html.replace("<!--TILE_LAYER-->", _tile_layer_js(tiles))
 
         # ── Nav tabs ────────────────────────────────────────────────────────
         html = html.replace("<!--NAV_TABS-->", self._build_nav_tabs(trip["destinations"], meta))
