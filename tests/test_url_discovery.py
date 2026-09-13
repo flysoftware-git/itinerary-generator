@@ -3,6 +3,8 @@ import json
 import re
 import threading
 import time
+from pathlib import Path
+
 import pytest
 from unittest.mock import MagicMock, patch
 from threading import Lock
@@ -2121,8 +2123,42 @@ def test_save_persistent_caches_survives_concurrent_saves_from_multiple_threads(
     thread's own periodic checkpoint save could previously race another
     thread's save on the same fixed, shared tmp path. Fires several
     concurrent saves at the same URLDiscoverer instance and asserts none of
-    them raise and the final on-disk file is valid, complete JSON."""
+    them raise and the final on-disk file is valid, complete JSON.
+
+    The concurrency is forced rather than hoped for. Measured before it was:
+    with the save lock removed this stayed green 20 runs in 20, and with the
+    lock removed *and* the tmp path shared again -- the original defect -- it
+    went red once in 20. So each save's write to its tmp file waits for a
+    second save to arrive. The lock should make that impossible: the peak
+    number of saves inside the write is asserted to be one. And every thread's
+    tmp path is asserted distinct, which is the second defence and was not
+    checked at all."""
     cache_path = tmp_path / "persistent_cache.json"
+
+    inside = 0
+    peak = 0
+    tmp_names: set[str] = set()
+    count_guard = threading.Lock()
+    second_save = threading.Barrier(2, timeout=0.5)
+    real_write_text = Path.write_text
+
+    def _contended_write_text(self, *args, **kwargs):
+        nonlocal inside, peak
+        if self.suffix != ".tmp":
+            return real_write_text(self, *args, **kwargs)
+        with count_guard:
+            inside += 1
+            peak = max(peak, inside)
+            tmp_names.add(self.name)
+        try:
+            try:
+                second_save.wait()
+            except threading.BrokenBarrierError:
+                pass
+            return real_write_text(self, *args, **kwargs)
+        finally:
+            with count_guard:
+                inside -= 1
 
     writer = URLDiscoverer.__new__(URLDiscoverer)
     writer._persistent_cache_enabled = True
@@ -2141,13 +2177,18 @@ def test_save_persistent_caches_survives_concurrent_saves_from_multiple_threads(
             errors.append(exc)
 
     threads = [threading.Thread(target=_save) for _ in range(8)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=5.0)
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(Path, "write_text", _contended_write_text)
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10.0)
 
     assert not any(t.is_alive() for t in threads)
     assert not errors
+    assert peak == 1, f"{peak} saves were inside the tmp write at once -- the save lock did not serialise them"
+    assert len(tmp_names) == len(threads), (
+        f"{len(threads)} threads saved through {len(tmp_names)} tmp path(s) -- they are not unique per attempt")
     assert cache_path.exists()
     payload = json.loads(cache_path.read_text(encoding="utf-8"))
     assert len(payload["search_results"]) == 20

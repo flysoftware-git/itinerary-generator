@@ -193,9 +193,18 @@ class _PoolStats:
     once per destination. Reporting them separately would produce ten rows
     saying the same thing, so instances sharing a name accumulate into one row
     and ``instances`` records how many there were.
+
+    **Every mutation happens under the instance's own lock.** The pool's worker
+    threads all record into the same accumulator, so ``tasks += 1`` is a
+    read-modify-write shared by as many threads as the pool has workers. The
+    registry's lock guards only *finding* the accumulator, never *writing* to
+    it, and a lost update here does not fail anything: it under-counts tasks
+    and busy time and so reports a utilisation lower than the truth -- the
+    number this module exists to make trustworthy.
     """
 
     __slots__ = (
+        "_lock",
         "name",
         "instances",
         "max_workers",
@@ -210,6 +219,7 @@ class _PoolStats:
     )
 
     def __init__(self, name: str) -> None:
+        self._lock = threading.Lock()
         self.name = name
         self.instances = 0
         self.max_workers = 0
@@ -223,55 +233,61 @@ class _PoolStats:
         self.failures = 0
 
     def record_task(self, wait: float, service: float, failed: bool) -> None:
-        self.tasks += 1
-        self.busy_seconds += service
-        if failed:
-            self.failures += 1
-        if len(self.service_samples) < _MAX_SAMPLES_PER_POOL:
-            self.wait_samples.append(wait)
-            self.service_samples.append(service)
-        else:
-            self.samples_truncated = True
+        with self._lock:
+            self.tasks += 1
+            self.busy_seconds += service
+            if failed:
+                self.failures += 1
+            if len(self.service_samples) < _MAX_SAMPLES_PER_POOL:
+                self.wait_samples.append(wait)
+                self.service_samples.append(service)
+            else:
+                self.samples_truncated = True
 
     def record_instance(self, max_workers: int, wall: float) -> None:
-        self.instances += 1
-        self.max_workers = max(self.max_workers, int(max_workers))
-        self.wall_seconds += wall
-        self.capacity_seconds += max_workers * wall
+        with self._lock:
+            self.instances += 1
+            self.max_workers = max(self.max_workers, int(max_workers))
+            self.wall_seconds += wall
+            self.capacity_seconds += max_workers * wall
 
     def summary(self) -> dict[str, Any]:
-        waits = sorted(self.wait_samples)
-        services = sorted(self.service_samples)
-        utilisation = (
-            self.busy_seconds / self.capacity_seconds
-            if self.capacity_seconds > 0
-            else 0.0
-        )
-        return {
-            "instances": self.instances,
-            "max_workers": self.max_workers,
-            "tasks": self.tasks,
-            "failures": self.failures,
-            "wall_seconds": round(self.wall_seconds, 3),
-            "busy_worker_seconds": round(self.busy_seconds, 3),
-            "capacity_worker_seconds": round(self.capacity_seconds, 3),
-            # The number the worker caps have never been checked against.
-            "utilisation": round(utilisation, 4),
-            "queue_wait_seconds": {
-                "p50": round(_percentile(waits, 0.50), 3),
-                "p90": round(_percentile(waits, 0.90), 3),
-                "max": round(waits[-1], 3) if waits else 0.0,
-            },
-            "service_seconds": {
-                "p50": round(_percentile(services, 0.50), 3),
-                "p90": round(_percentile(services, 0.90), 3),
-                "max": round(services[-1], 3) if services else 0.0,
-            },
-            "samples_truncated": self.samples_truncated,
-            # Busy time cannot exceed capacity. If it does, max_workers was
-            # misreported or two pools are sharing a name.
-            "bounds_violated": bool(utilisation > 1.0001),
-        }
+        # One snapshot under the lock, so a summary taken while workers are
+        # still recording reports one consistent moment rather than tasks from
+        # one instant and busy seconds from the next.
+        with self._lock:
+            waits = sorted(self.wait_samples)
+            services = sorted(self.service_samples)
+            utilisation = (
+                self.busy_seconds / self.capacity_seconds
+                if self.capacity_seconds > 0
+                else 0.0
+            )
+            return {
+                "instances": self.instances,
+                "max_workers": self.max_workers,
+                "tasks": self.tasks,
+                "failures": self.failures,
+                "wall_seconds": round(self.wall_seconds, 3),
+                "busy_worker_seconds": round(self.busy_seconds, 3),
+                "capacity_worker_seconds": round(self.capacity_seconds, 3),
+                # The number the worker caps have never been checked against.
+                "utilisation": round(utilisation, 4),
+                "queue_wait_seconds": {
+                    "p50": round(_percentile(waits, 0.50), 3),
+                    "p90": round(_percentile(waits, 0.90), 3),
+                    "max": round(waits[-1], 3) if waits else 0.0,
+                },
+                "service_seconds": {
+                    "p50": round(_percentile(services, 0.50), 3),
+                    "p90": round(_percentile(services, 0.90), 3),
+                    "max": round(services[-1], 3) if services else 0.0,
+                },
+                "samples_truncated": self.samples_truncated,
+                # Busy time cannot exceed capacity. If it does, max_workers was
+                # misreported or two pools are sharing a name.
+                "bounds_violated": bool(utilisation > 1.0001),
+            }
 
 
 class PoolRegistry:

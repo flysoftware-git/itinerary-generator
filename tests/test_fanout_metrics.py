@@ -331,6 +331,55 @@ def test_concurrent_pools_do_not_corrupt_each_other():
         assert summary[f"test_concurrent_{i}"]["tasks"] == 4
 
 
+def test_two_workers_recording_at_once_do_not_lose_a_task():
+    """The race the test above is named for and cannot reach.
+
+    A pool's workers all record into one ``_PoolStats``, so ``tasks += 1`` is a
+    read-modify-write shared by every worker. Four threads of four 0.01s sleeps
+    each open a *differently named* pool, so they never share an accumulator,
+    and the two workers inside each pool contend only if the interpreter
+    happens to switch threads between the read and the write. Measured before
+    this test existed: with the registry's lock removed the test above stayed
+    green 20 runs in 20, and the accumulator itself had no lock to remove.
+
+    So the interleaving is forced. A read of ``tasks`` waits for a second
+    reader. With the accumulator's lock the second worker cannot reach its read
+    while the first holds the lock, the wait times out, and the two updates
+    land in order. Without it both read the same count and one update is lost,
+    every time rather than once in a while.
+    """
+    slot = fanout_metrics._PoolStats.__dict__["tasks"]
+    second_reader = threading.Barrier(2, timeout=0.5)
+
+    class _Contended(fanout_metrics._PoolStats):
+        @property
+        def tasks(self):
+            value = slot.__get__(self)
+            try:
+                second_reader.wait()
+            except threading.BrokenBarrierError:
+                pass
+            return value
+
+        @tasks.setter
+        def tasks(self, value):
+            slot.__set__(self, value)
+
+    stats = _Contended("contended")
+    workers = [
+        threading.Thread(target=stats.record_task, kwargs={"wait": 0.0, "service": 0.1, "failed": False})
+        for _ in range(2)
+    ]
+    for t in workers:
+        t.start()
+    for t in workers:
+        t.join(timeout=5.0)
+
+    assert not any(t.is_alive() for t in workers)
+    assert slot.__get__(stats) == 2, "two workers recorded a task and one update was lost"
+    assert stats.summary()["busy_worker_seconds"] == 0.2
+
+
 # ── Percentiles ──────────────────────────────────────────────────────────────
 
 
