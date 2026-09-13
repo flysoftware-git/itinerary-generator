@@ -829,6 +829,7 @@ def _build_destination_status_report(
     skip_images: bool,
     skip_url_discovery: bool,
     retry_policy: dict[str, Any] | None = None,
+    retention_exit_counts: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     def _compute_en_route_reliability(url_discovery_meta: dict[str, Any]) -> dict[str, Any]:
         threads = (
@@ -986,6 +987,11 @@ def _build_destination_status_report(
         url_source_counts = (
             url_discovery_meta.get("source_counts", {})
             if isinstance(url_discovery_meta.get("source_counts", {}), dict)
+            else {}
+        )
+        url_retention_exit_counts = (
+            url_discovery_meta.get("retention_exit_counts", {})
+            if isinstance(url_discovery_meta.get("retention_exit_counts", {}), dict)
             else {}
         )
         url_thread_count = int(url_discovery_meta.get("thread_count", 0) or 0)
@@ -1249,6 +1255,9 @@ def _build_destination_status_report(
                         "rendered_no_url_stops": rendered_no_url_stops,
                         "source_counts": url_source_counts,
                         "reason_counts": url_reason_counts,
+                        # Which retention gate refused, by exit id -- see
+                        # URLDiscoverer.retention_exit_counts for the shape.
+                        "retention_exit_counts": url_retention_exit_counts,
                         "disposition_thread_count": url_thread_count,
                         "disposition_event_count": url_event_count,
                         "en_route_reliability": en_route_reliability,
@@ -1284,6 +1293,8 @@ def _build_destination_status_report(
             "destination_count": len(destination_statuses),
             "status_counts": status_counts,
             "retry_recommended_count": sum(1 for item in destination_statuses if item.get("retry_recommended")),
+            # The run total, including refusals with no known destination.
+            "retention_exit_counts": dict(retention_exit_counts or {}),
         },
         "destinations": destination_statuses,
     }
@@ -3331,6 +3342,11 @@ def main(
         skip_images=skip_images,
         skip_url_discovery=skip_url_discovery,
         retry_policy=retry_policy,
+        retention_exit_counts=(
+            url_discoverer.retention_exit_counts()
+            if url_discoverer is not None and hasattr(url_discoverer, "retention_exit_counts")
+            else None
+        ),
     )
     max_retries_per_destination = max(
         0,
@@ -3408,6 +3424,11 @@ def main(
             skip_images=skip_images,
             skip_url_discovery=skip_url_discovery,
             retry_policy=retry_policy,
+            retention_exit_counts=(
+                url_discoverer.retention_exit_counts()
+                if url_discoverer is not None and hasattr(url_discoverer, "retention_exit_counts")
+                else None
+            ),
         )
     stage_timings["selective_retry"] = _elapsed_seconds(retry_started)
     # Read after BOTH possible normalize_trip_content() calls (the

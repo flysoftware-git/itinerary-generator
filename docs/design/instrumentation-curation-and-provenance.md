@@ -198,6 +198,16 @@ those caught a later mistake within the hour.
 
 Current instrumentation signals already exist in URL discovery logging and stats aggregation, including reason-code counting. Extend that surface to include transform-chain accounting and cache-hit accounting for discovery experiments.
 
+Retention refusals are counted by exit id. Every `_reject_retention` call
+increments a count for its exit, per destination and for the run, under a
+class-level lock; `destination_status_report.json` carries them as
+`stage_status.url_discovery.retention_exit_counts` per destination and
+`summary.retention_exit_counts` for the run, each shaped
+`{"<exit id>": {"label": <guarding condition>, "count": n}}`. Discovery-time
+and audit-pass refusals are both counted. Before this, the exit reached a run's
+output only as prose inside the audit-pass discard message, so "which gate is
+refusing links" could only be answered by wrapping the gate from outside.
+
 Related design docs:
 - provenance-control-and-scheduling-rationalization.md
 - url-discovery-and-audit.md
