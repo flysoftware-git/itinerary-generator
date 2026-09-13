@@ -13,6 +13,70 @@ published artifact; **patch** for fixes that leave behaviour unchanged.
 `__template_version__` tracks the frozen HTML template separately and does
 not move with this number.
 
+## 3.2.1 — 2026-09-13
+
+28 pull requests since 3.2.0 (#112–#139), from several sessions working the
+same mainline. `__template_version__` 2.5.7 -> 2.5.10 (#123, #126, #130).
+
+**Numbered as a patch release by the project owner**, because the bulk of
+it is correctness work. It is not only fixes: the items under *Added* are
+new optional manifest and configuration keys and one new statement on the
+published guide, which the policy above would call minor. None of them
+changes what an existing manifest or config produces unless it is used.
+
+### Fixed
+
+- **Attraction links about the destination rather than the attraction**
+  (#59, #120, #128). A generic page for the whole place -- Utah.com's Capitol
+  Reef page, a city's tourism page, an NPS park-wide trail list -- was
+  accepted as the link for individual attractions inside it. #120 added the
+  rule; #128 made it work beyond Utah (the state name had to appear in the
+  URL path, which it never does) and on nps.gov (which names parks by code).
+- **Link checking** (#112, #114, #116, #118): a published link's liveness
+  has three states -- live, dead, and could-not-check -- not one bit; a
+  redirect recorded by one fetch thread was read by another; a redirect
+  record conflated an unmeasured fact with a measured one; and a blocked
+  fetch was frozen into the cache and read back later as a measurement.
+- **Geocoding** (#115, #122): requests are spaced to Nominatim's policy,
+  coordinates persist across runs, the 429 backoff outlasts a real block,
+  and the cache no longer loses a write when two lookups overlap.
+- **Campground filter** (#113) read the whole page, so a park's own page was
+  rejected for naming its own campground.
+- **Reservation ingest** (#119, #124): a file that is not an email is
+  refused rather than read as latin-1 noise, and a hotel confirmation's
+  dates now reach the manifest.
+- **`config.yaml` read as UTF-8** (#129). On Windows it was read as cp1252,
+  so the map credited "Â© OpenStreetMap"; a place like Łódź would have
+  crashed all four readers.
+- **Scenic-drive modal** (#126) is built in the browser from data the page
+  already carries, and the image error listener is emitted once per page
+  rather than once per gallery (#133).
+- **Search credits running out is reported** (#137) in the validation
+  report, the run ledger and the console quality gate. Serper signals an
+  empty balance with the same HTTP 400 as a bad query, so exhausted runs
+  used to read as trips where the web had little to offer.
+- **East Coast Greenway manifest** (#139) now follows the Greenway's actual
+  route south of Boston. It had followed the coast from Providence, which
+  the Greenway does not.
+- **Tests that could pass while broken** (#127, #131, #132, #135): timing
+  tests drive a clock instead of sleeping, concurrency tests force the race
+  they name, and tile tests check defaults rather than local config.
+
+### Added
+
+- **`trip.vehicle_range_miles`** (#134) -- a manifest can state the tank's
+  range; it outranks `en_route_stops.vehicle_range_miles` in config.
+- **`destination.stretch_note`** (#136) -- the author's own note on the leg
+  arriving at a destination, rendered verbatim on its card.
+- **`access_notes` can name the question to answer** (#121).
+- **Booking cost and sailing times** are extracted from confirmations (#125).
+- **Configurable map tiles** (#123), and a **vector basemap** via
+  `map.tiles.kind: pmtiles` (#130), drawn inside the same Leaflet map.
+- **The guide says which of its links were actually checked** (#117) --
+  including how many could not be reached to check.
+- **Retention exit counts** (#138) -- a run records which link-retention gate
+  refused each link, by exit id.
+
 ## 3.2.0 — 2026-09-07
 
 9 commits since 3.1.0, most of them from other sessions working the same
