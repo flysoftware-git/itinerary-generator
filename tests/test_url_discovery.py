@@ -4939,10 +4939,46 @@ def test_direct_batch_html_failure_cooldown_expires_and_allows_retry():
 
 def test_direct_batch_html_coalesces_concurrent_callers_for_same_key():
     """Two threads asking for the same destination/kind/dates at the same
-    time must share one network call, not fire two."""
+    time must share one network call, not fire two.
+
+    Sequenced by gates, not sleeps. The old form started thread 2 after
+    `time.sleep(0.1)` and released the fetch after another. On a slow machine
+    that does not go red, it goes quietly weak: if thread 1 has already
+    finished when thread 2 looks, thread 2 is served from the cache, and the
+    test passes with the per-key lock deleted.
+
+    Here thread 2 starts only once thread 1 is provably inside the network
+    call (`in_flight`), and the fetch is released only once thread 2 is
+    provably about to block on the per-key lock -- or, if nothing makes it
+    wait, has made a second network call of its own (`second_caller_arrived`).
+    Either way it is observed while thread 1 still holds the fetch open.
+    """
+    in_flight = threading.Event()
+    second_caller_arrived = threading.Event()
+
+    class _ObservedLock:
+        """The per-key lock, reporting when a caller is about to wait on it."""
+
+        def __init__(self, lock):
+            self._lock = lock
+
+        def __enter__(self):
+            if not self._lock.acquire(blocking=False):
+                second_caller_arrived.set()
+                self._lock.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            self._lock.release()
+            return False
+
+    class _ObservedKeyLocks(dict):
+        def setdefault(self, key, default=None):
+            return _ObservedLock(super().setdefault(key, default))
+
     discoverer = URLDiscoverer.__new__(URLDiscoverer)
     discoverer._request_cache_lock = Lock()
-    discoverer._direct_batch_html_key_locks = {}
+    discoverer._direct_batch_html_key_locks = _ObservedKeyLocks()
     discoverer._direct_batch_html_failure_ts = {}
     discoverer._direct_batch_html_failure_cooldown_seconds = 180.0
     discoverer._direct_link_batch_limit = lambda: 3
@@ -4954,6 +4990,9 @@ def test_direct_batch_html_coalesces_concurrent_callers_for_same_key():
 
     def _slow_chat_completion(**kwargs):
         call_count["n"] += 1
+        if call_count["n"] > 1:
+            second_caller_arrived.set()
+        in_flight.set()
         release_event.wait(timeout=5)
         return '<h2>Zion</h2><ul><li>Angels Landing <a href="https://example.com">Source</a></li></ul>'
 
@@ -4976,17 +5015,18 @@ def test_direct_batch_html_coalesces_concurrent_callers_for_same_key():
     t1 = threading.Thread(target=_worker)
     t2 = threading.Thread(target=_worker)
     t1.start()
-    # Give thread 1 a moment to acquire the per-key lock and enter the fetch
-    # before starting thread 2, so it observes an in-flight fetch rather than
-    # racing to grab the lock first itself.
-    time.sleep(0.1)
+    assert in_flight.wait(timeout=5), "thread 1 never reached the network call"
     t2.start()
-    time.sleep(0.1)
+    assert second_caller_arrived.wait(timeout=5), (
+        "thread 2 neither waited on the per-key lock nor made a call of its own"
+    )
     release_event.set()
     t1.join(timeout=5)
     t2.join(timeout=5)
 
-    assert call_count["n"] == 1
+    assert call_count["n"] == 1, (
+        f"{call_count['n']} network calls for one key: concurrent callers were not coalesced"
+    )
     assert len(results) == 2
     assert all(r for r in results)
 
