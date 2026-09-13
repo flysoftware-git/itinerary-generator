@@ -1,29 +1,41 @@
 # East Coast Greenway — the New England run, Portland to New Haven by bike.
 #
-# Five states in about 305 miles: Maine, New Hampshire, Massachusetts, Rhode
-# Island, Connecticut. Ten riding days averaging ~30 miles, plus three rest
-# days in the cities worth stopping in. That pace is deliberate rather than
-# minimal — this route is roughly half traffic-free rail-trail and half
-# on-road connector, and the connectors are where the day gets long.
+# Five states in about 403 miles: Maine, New Hampshire, Massachusetts, Rhode
+# Island, Connecticut. Eleven riding days averaging ~37 miles, plus three rest
+# days in Boston, Providence and Hartford.
 #
-# September: the humidity has broken, the traffic has thinned, and the light
-# is good. Hurricane season is the risk you are accepting in exchange.
+# THIS FOLLOWS THE GREENWAY'S OWN ROUTE, checked 2026-09-13 against the
+# East Coast Greenway Alliance's state pages and its Southern New England Ride
+# itinerary. An earlier version of this manifest ran south from Providence
+# along the coast -- Narragansett, Westerly, Mystic, Old Saybrook -- and called
+# it the Greenway. It is not: from Providence the Greenway turns inland, west on
+# the Washington Secondary Trail and through Putnam, Willimantic and Hartford,
+# reaching New Haven on the Farmington Canal Heritage Trail. The Alliance puts
+# Boston to Providence at 80 miles and Providence to New Haven at 181; the legs
+# below route to 73 and 186.
+#
+# What to expect underfoot. The Alliance says more than 60% of the Greenway's
+# interim route is still on roads, and recommends long-distance travel on the
+# most developed stretch, New Haven to Boston, which it describes as about
+# two-thirds traffic-free. North of Boston is less built out: Maine south of
+# Kennebunk has no designated trail at all. The legs are routed in September,
+# when the humidity has broken and the traffic has thinned; hurricane season is
+# the risk accepted in exchange.
 #
 # Every leg is `bike`, so durations come from Routes with travelMode BICYCLE
 # rather than a driving estimate, map links open cycling directions, and no
 # public-transport options are generated for legs nobody operates.
 #
 # ON THE TRAIL LINKS. The East Coast Greenway is a ROUTE stitched from local
-# trails, not a trail with its own pages -- AllTrails' only "East Coast
-# Greenway" entries are in Florida and Pennsylvania. So `trail_url` is set
-# only on the five legs whose local trail genuinely has a page, verified
-# 2026-09-05, and omitted on the rest. A leg with no link is the honest
-# outcome; a guessed one would point a rider at the wrong path.
+# trails, not a trail with its own pages. `trail_url` names the AllTrails page
+# for a trail the leg actually rides, chosen for the section the leg covers
+# where AllTrails splits a trail into sections, and each was confirmed against
+# search results read in full. A leg with no designated trail has no link.
 #
-# ON THE STRETCH NOTES. Which parts of a leg are off-road and which are not is
-# the thing a rider most needs to know and the one thing the pipeline cannot
-# find out. `stretch_note` carries it onto the leg's card, where a comment here
-# would never reach the guide. Set only where the leg's surface is known.
+# ON THE STRETCH NOTES. `stretch_note` is what the Alliance itself says about
+# the leg's surface, not an impression: which named trails carry it and where
+# it is on roads. Directions in the Alliance's itinerary are written New Haven
+# to Providence; these notes describe the same ground ridden the other way.
 
 trip:
   title: East Coast Greenway — Portland to New Haven
@@ -39,7 +51,7 @@ trip:
   departure_datetime: "2027-09-06"
 
   return: New Haven, Connecticut
-  return_datetime: "2027-09-19"
+  return_datetime: "2027-09-20"
 
   # A riding day, not a sightseeing day. Feeds the leg durations: Routes
   # returns continuous pedalling time, and this is what it gets divided by.
@@ -50,8 +62,8 @@ destinations:
   - id: kennebunk
     name: Kennebunk, Maine
     dates: Sep 7, 2027
-    # ~28 mi.
-    stretch_note: The Eastern Trail carries most of it traffic-free through the Scarborough Marsh; the last stretch is on-road.
+    # ~32 mi via Scarborough, Saco and Biddeford.
+    stretch_note: The Eastern Trail carries most of this leg off-road, through the Scarborough Marsh and on into Kennebunk. It runs in two sections, joined on roads around Saco and Biddeford.
     trail_section: Biddeford to Kennebunk via Eastern Trail
     trail_url: https://www.alltrails.com/trail/us/maine/biddeford-to-kennebunk-via-eastern-trail
     planning_links:
@@ -61,17 +73,17 @@ destinations:
   - id: portsmouth
     name: Portsmouth, New Hampshire
     dates: Sep 8, 2027
-    # ~28 mi, crossing into New Hampshire at the Piscataqua.
-    stretch_note: Mostly on-road through York and Kittery.
+    # ~33 mi via Wells, Ogunquit, York and Kittery.
+    stretch_note: On roads the whole way. The Greenway has no designated trail in Maine south of Kennebunk; it crosses into Portsmouth on the Memorial Bridge's separated walkway.
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
 
   - id: newburyport
     name: Newburyport, Massachusetts
-    dates: Sep 9-10, 2027
-    # ~22 mi and the shortest day of the trip. Rest day: the Seacoast
-    # Greenway behind you, the Border to Boston trail ahead.
+    dates: Sep 9, 2027
+    # ~32 mi via Rye, Hampton, Seabrook and Salisbury.
+    stretch_note: New Hampshire's Greenway is mostly an interim coastal road route with ocean views. An alternate through Portsmouth uses eight miles of the Seacoast Greenway rail trail, opened in 2024, before rejoining it.
     trail_section: Hampton to Portsmouth via New Hampshire Seacoast Greenway
     trail_url: https://www.alltrails.com/trail/us/new-hampshire/hampton-to-portsmouth-via-the-new-hampshire-seacoast-greenway
     planning_links:
@@ -80,9 +92,23 @@ destinations:
 
   - id: boston
     name: Boston, Massachusetts
-    dates: Sep 11-12, 2027
-    # ~42 mi down the Border to Boston corridor and the Northern Strand into
-    # the city. Rest day.
+    dates: Sep 10-11, 2027
+    # ~48 mi down the Border to Boston corridor. Rest day.
+    stretch_note: Mostly on roads, joining short trail sections of the Border to Boston corridor, the Salem Bike Path and the Lynn Beach Promenade, then the Northern Strand Community Trail through Malden and Everett toward the city.
+    trail_section: Northern Strand Community Trail
+    trail_url: https://www.alltrails.com/trail/us/massachusetts/northern-strand-community-trail--3
+    planning_links:
+      - label: East Coast Greenway
+        url: https://www.greenway.org/
+
+  - id: milford
+    name: Milford, Massachusetts
+    dates: Sep 12, 2027
+    # ~42 mi, the first half of the Greenway's 80-mile inland spine to
+    # Providence, via Waltham, Weston and Holliston.
+    stretch_note: West out of Boston on the Charles River Bike Path, then the Mass Central Rail Trail and the Upper Charles Trail toward Milford, joined by roads. The Alliance notes this inland spine has more on-road riding than its coastal alternative via Cape Cod.
+    trail_section: Upper Charles Rail Trail
+    trail_url: https://www.alltrails.com/trail/us/massachusetts/upper-charles-rail-trail--2
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
@@ -90,59 +116,67 @@ destinations:
   - id: providence
     name: Providence, Rhode Island
     dates: Sep 13-14, 2027
-    # ~50 mi. Rest day earned.
-    stretch_note: The longest leg of the trip. The Blackstone River Greenway carries the second half.
+    # ~31 mi via Bellingham, Woonsocket, Lincoln and Pawtucket. Rest day.
+    stretch_note: Into Rhode Island on the Blackstone River Bikeway, including ten paved miles along the historic Blackstone Canal. From there to Pawtucket and on into Providence the route is on roads.
+    trail_section: Blackstone River Bikeway
+    trail_url: https://www.alltrails.com/trail/us/rhode-island/blackstone-river-bikeway
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
 
-  - id: narragansett
-    name: Narragansett, Rhode Island
+  - id: danielson
+    name: Danielson, Connecticut
     dates: Sep 15, 2027
-    # ~32 mi.
-    stretch_note: The Washington Secondary and South County paths take most of the day off the road.
+    # ~51 mi via Cranston, West Warwick, Coventry, Sterling and Plainfield.
+    # The longest day of the trip, and the most rural.
+    stretch_note: Through downtown Providence to Cranston, then 19 continuous off-road miles on the Washington Secondary Trail and on across Rhode Island on the Trestle Trail, parts of which are still awaiting resurfacing. In Connecticut, roads and the Moosup Valley State Park Trail lead to Danielson. The longest day of the trip.
     trail_section: Washington Secondary Rail Trail
     trail_url: https://www.alltrails.com/trail/us/rhode-island/washington-secondary-rail-trail
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
 
-  - id: westerly
-    name: Westerly, Rhode Island
+  - id: willimantic
+    name: Willimantic, Connecticut
     dates: Sep 16, 2027
-    # ~22 mi along the South County coast.
-    trail_section: South County Bike Path
-    trail_url: https://www.alltrails.com/trail/us/rhode-island/south-county-bike-path
+    # ~39 mi via Putnam and Pomfret Center.
+    stretch_note: North to Putnam on roads and the Quinebaug River Trail, then the stone-dust Air Line State Park Trail through Pomfret Center to Willimantic, with one small gap in Putnam. The trail is paved for its last stretch into town.
+    trail_section: "Air Line State Park Trail: North Windham to Hampton"
+    trail_url: https://www.alltrails.com/trail/us/connecticut/airline-state-park-trail-north-windham-to-hampton
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
 
-  - id: mystic
-    name: Mystic, Connecticut
-    dates: Sep 17, 2027
-    # ~16 mi, the shortest leg, crossing into Connecticut. A half day on
-    # purpose — the seaport is the reason to stop here.
+  - id: hartford
+    name: Hartford, Connecticut
+    dates: Sep 17-18, 2027
+    # ~30 mi via Andover, Bolton, Manchester and East Hartford. Rest day.
+    stretch_note: Nearly all on protected greenway. Ten miles of the Hop River Trail, mostly crushed stone through dramatic rock cuts, then the Charter Oak Greenway through Manchester, with a gap on roads in East Hartford before the Connecticut River bridge path into the city.
+    trail_section: Bolton Notch State Park to Willimantic River via Hop River Trail
+    trail_url: https://www.alltrails.com/trail/us/connecticut/bolton-notch-state-park-to-willimantic-river-via-hop-river-trail
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
 
-  - id: old_saybrook
-    name: Old Saybrook, Connecticut
-    dates: Sep 18, 2027
-    # ~30 mi around the Connecticut River mouth.
-    stretch_note: On-road for most of it, around the Connecticut River mouth.
+  - id: farmington
+    name: Farmington, Connecticut
+    dates: Sep 19, 2027
+    # ~29 mi via Bloomfield, Tariffville and Simsbury.
+    stretch_note: On roads from downtown Hartford to Bloomfield, then two miles of the Bloomfield Greenway and a new section to Tariffville. From Simsbury the Farmington Canal Heritage Trail carries the rest.
+    trail_section: "Farmington Canal Heritage Trail: Avon to Simsbury"
+    trail_url: https://www.alltrails.com/trail/us/connecticut/farmington-canal-heritage-trail-avon-to-simsbury
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
 
   - id: new_haven
     name: New Haven, Connecticut
-    dates: Sep 19, 2027
-    # ~35 mi, to where the New England section ends and the route continues
-    # south.
-    stretch_note: The Shoreline Greenway carries the last stretch into the city.
-    trail_section: Shoreline Greenway Trail
-    trail_url: https://www.alltrails.com/trail/us/connecticut/shoreline-greenway-trail
+    dates: Sep 20, 2027
+    # ~38 mi via Plainville, Southington, Cheshire and Hamden, to where the
+    # New England section ends and the Greenway continues south.
+    stretch_note: The Farmington Canal Heritage Trail almost the whole way, ending at the Canal Dock Boathouse on the harbor. A stretch of four-plus miles in Plainville and Southington is still on roads; its trail is funded and due by 2030.
+    trail_section: "Farmington Canal Heritage Trail: Southern"
+    trail_url: https://www.alltrails.com/trail/us/connecticut/farmington-canal-heritage-trail
     planning_links:
       - label: East Coast Greenway
         url: https://www.greenway.org/
