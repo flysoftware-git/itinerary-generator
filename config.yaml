@@ -304,6 +304,10 @@ en_route_stops:
   # put a fuel stop on a leg that never needed one. The range is converted at
   # each leg's own speed, so 350 miles is under five hours of interstate and
   # most of a day on a mountain road.
+  #
+  # A manifest's own `trip.vehicle_range_miles` takes precedence over this for
+  # that trip, and is usually the better place for it: the person writing the
+  # manifest knows the vehicle, and this file is shared by every trip.
   # vehicle_range_miles: 350
 
 cultural_events:
