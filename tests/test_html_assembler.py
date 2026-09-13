@@ -6025,9 +6025,24 @@ def _config_with_tiles(tmp_path, tiles) -> str:
     return str(path)
 
 
-def test_the_shipped_config_renders_the_url_the_template_used_to_hardcode() -> None:
+def _config_without_tiles(tmp_path) -> str:
+    """The repository's config with no `map` section: the defaults.
+
+    Not `config.yaml` itself. A deployment that points `map.tiles` at its own
+    source is doing exactly what the section exists for, and a test that reads
+    the file it just edited would fail it for that."""
+    import yaml
+
+    base = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    base.pop("map", None)
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    return str(path)
+
+
+def test_an_unconfigured_map_renders_the_url_the_template_used_to_hardcode(tmp_path) -> None:
     """The point of the change is that it changes nothing by default."""
-    html = HTMLAssembler(config_path="config.yaml").assemble(_tile_trip())
+    html = HTMLAssembler(config_path=_config_without_tiles(tmp_path)).assemble(_tile_trip())
 
     assert "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" in html
     assert "© OpenStreetMap contributors" in html
@@ -6201,7 +6216,7 @@ def test_a_pmtiles_config_draws_a_vector_layer_and_loads_its_renderer(tmp_path) 
     assert "L.tileLayer(" not in html
 
 
-def test_a_raster_page_does_not_load_the_vector_renderer() -> None:
+def test_a_raster_page_does_not_load_the_vector_renderer(tmp_path) -> None:
     """A dependency nobody configured is a script every reader downloads.
 
     Asserts the script and the call, not the word: the template's own comment
@@ -6209,7 +6224,7 @@ def test_a_raster_page_does_not_load_the_vector_renderer() -> None:
     is absent" was false on a page that loads nothing extra at all."""
     from generator.html_assembler import PMTILES_RENDERER_URL
 
-    html = HTMLAssembler(config_path="config.yaml").assemble(_tile_trip())
+    html = HTMLAssembler(config_path=_config_without_tiles(tmp_path)).assemble(_tile_trip())
 
     assert PMTILES_RENDERER_URL not in html
     assert "protomapsL" not in html
