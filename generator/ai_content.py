@@ -182,7 +182,9 @@ DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES = 180
 # the honest default**: not every trip is driven, not every car's range is
 # known, and a number invented here would put a fuel stop on a leg nobody
 # needed one for. Set it via `en_route_stops.vehicle_range_miles` and the stop
-# fires on whichever limit is reached first.
+# fires on whichever limit is reached first. A manifest's
+# `trip.vehicle_range_miles` takes precedence for its own trip; see
+# AIContentGenerator._resolve_vehicle_range_miles.
 #
 # Owner, 2026-09-06: *"en-route lunch / refuel stop should be the shortest of
 # continuous time driving parameter and vehicle range"*. That reframes the
@@ -2640,6 +2642,27 @@ class AIContentGenerator:
             origin.get("name", ""), trip_meta.get("return", ""), miles, time_str,
         )
 
+    def _resolve_vehicle_range_miles(self, trip: dict[str, Any]) -> float | None:
+        """How far this trip's vehicle goes on a tank, or None when nobody said.
+
+        The manifest's `trip.vehicle_range_miles` wins when it states one. It is
+        a fact about the trip -- the person who wrote the manifest knows which
+        car they are driving -- and config.yaml is shared by every trip run from
+        this checkout, so a config value is only ever a fallback for a manifest
+        that is silent. With neither, the answer stays None and the stop fires
+        on driving time alone, exactly as before the key existed.
+
+        Absent, zero, non-numeric and boolean manifest values all read as "not
+        stated" and fall through to config rather than being taken as a range.
+        The parser already refuses them; this is the same rule for a trip dict
+        that did not come through the parser.
+        """
+        trip_meta = trip.get("trip") if isinstance(trip.get("trip"), dict) else {}
+        stated = self._reported_number(trip_meta, "vehicle_range_miles")
+        if stated is not None:
+            return stated
+        return getattr(self, "_vehicle_range_miles", DEFAULT_VEHICLE_RANGE_MILES)
+
     def _inject_lunch_stop_suggestions(self, trip: dict[str, Any]) -> None:
         """Add a lunch-stop line to the arrival note on long driving legs.
 
@@ -2659,7 +2682,7 @@ class AIContentGenerator:
         threshold = getattr(
             self, "_lunch_stop_min_drive_minutes", DEFAULT_LUNCH_STOP_MIN_DRIVE_MINUTES
         )
-        range_miles = getattr(self, "_vehicle_range_miles", DEFAULT_VEHICLE_RANGE_MILES)
+        range_miles = self._resolve_vehicle_range_miles(trip)
         for dest in (trip.get("destinations", []) or []):
             if not isinstance(dest, dict):
                 continue

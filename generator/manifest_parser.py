@@ -424,6 +424,33 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                    "and an attraction reporting no elevation gain is never "
                                    "excluded.",
                 },
+                "vehicle_range_miles": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Optional. How far the vehicle this trip is driven in "
+                                   "goes on a tank (or a charge), in miles. The en-route "
+                                   "stop then fires on whichever limit a leg reaches "
+                                   "first -- continuous driving time or the tank -- and "
+                                   "on a leg longer than the tank the arrival note says "
+                                   "to stop for fuel, at a verified en-route stop within "
+                                   "reach. The range is converted at each leg's own "
+                                   "speed, so it bites sooner on an interstate than on a "
+                                   "mountain road.\n\n"
+                                   "Trip-level because range is a fact about the vehicle, "
+                                   "and one vehicle normally drives the whole trip; it "
+                                   "sits beside has_high_clearance_vehicle for the same "
+                                   "reason. When set it takes precedence over "
+                                   "config.yaml's en_route_stops.vehicle_range_miles, "
+                                   "which applies to every trip run from that config. "
+                                   "Omitted = current behaviour, unchanged: with neither "
+                                   "set, no fuel guidance is given, because a range "
+                                   "nobody stated would put a fuel stop on a leg that "
+                                   "never needed one. Zero or less is refused rather than "
+                                   "read as 'unknown' -- a tank of no miles is a mistake, "
+                                   "not a vehicle. Like every en-route suggestion it names "
+                                   "only stops the pipeline has verified, so it is silent "
+                                   "when en_route_stops is disabled.",
+                },
                 "llm_provider": {
                     "type": "string",
                     "enum": ["openai", "anthropic", "deepseek", "gemini", "grok", "azure_openai"],

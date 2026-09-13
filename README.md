@@ -121,6 +121,9 @@ Schedule controls:
 - `trip.default_daily_activity_hours` sets the default activity-time budget used for multi-activity schedule packing.
 - `destination.schedule_start_time` and `destination.daily_activity_hours` override those defaults for a specific stop.
 
+Vehicle:
+- `trip.vehicle_range_miles` (optional, a positive number) states how far your vehicle goes on a tank or charge. With en-route stops enabled, a leg longer than the tank gets a fuel stop named from the verified en-route stops within reach; the range is converted at each leg's own speed. It overrides `en_route_stops.vehicle_range_miles` in `config.yaml`. Leave it out when you do not know the figure or are not driving: nothing is assumed, and no fuel guidance is given.
+
 ### 5. Generate
 
 ```bash
