@@ -6040,9 +6040,12 @@ def test_no_tile_placeholder_survives_into_the_page() -> None:
     check in this generator passes."""
     html = HTMLAssembler(config_path="config.yaml").assemble(_tile_trip())
 
-    assert "TILE_URL" not in html
-    assert "TILE_ATTRIBUTION" not in html
-    assert "TILE_MAX_ZOOM" not in html
+    # The template's placeholders are TILE_LAYER and TILE_RENDERER_SCRIPT now.
+    # Asserting only the three older names would pass whether or not the new
+    # ones were substituted, so this test would stop testing anything. They are
+    # kept as well: a template edit that brought one back would otherwise pass.
+    for name in ("TILE_LAYER", "TILE_RENDERER_SCRIPT", "TILE_URL", "TILE_ATTRIBUTION", "TILE_MAX_ZOOM"):
+        assert name not in html, f"placeholder {name} survived into the page"
 
 
 def test_a_configured_tile_source_reaches_the_page(tmp_path) -> None:
@@ -6141,7 +6144,11 @@ def test_a_missing_or_malformed_section_is_the_old_behaviour(section) -> None:
 
     tiles = _tile_settings({"map": {"tiles": section}})
 
-    assert tiles == (DEFAULT_TILE_URL, DEFAULT_TILE_ATTRIBUTION, DEFAULT_TILE_MAX_ZOOM)
+    # "The old behaviour" now has to include the kind: a section too broken to
+    # read must not come out as a vector layer with no archive behind it.
+    assert (tiles.url, tiles.attribution, tiles.max_zoom, tiles.kind) == (
+        DEFAULT_TILE_URL, DEFAULT_TILE_ATTRIBUTION, DEFAULT_TILE_MAX_ZOOM, "raster",
+    )
 
 
 def test_no_config_at_all_is_the_old_behaviour() -> None:
@@ -6149,3 +6156,176 @@ def test_no_config_at_all_is_the_old_behaviour() -> None:
 
     assert _tile_settings(None).url == DEFAULT_TILE_URL
     assert _tile_settings({}).url == DEFAULT_TILE_URL
+
+
+# ─── a vector basemap: map.tiles.kind = pmtiles ──────────────────────────────
+#
+# Attributions below are ASCII on purpose. These tests are about which layer is
+# drawn and how, not about how config.yaml is decoded, and a "©" here would make
+# them depend on the machine's locale encoding as well.
+
+_ARCHIVE = "https://tiles.example.com/na-20260911.pmtiles"
+
+
+def _pmtiles(tmp_path, **extra):
+    return _config_with_tiles(tmp_path, {
+        "kind": "pmtiles", "url": _ARCHIVE, "attribution": "(c) Example contributors", **extra,
+    })
+
+
+def test_a_raster_layer_is_emitted_exactly_as_the_template_used_to_write_it() -> None:
+    """The change must be invisible to anyone who does not ask for it. Checked
+    against the literal statement, and through the pure builders rather than a
+    config file, so the comparison cannot be disturbed by how config is read."""
+    from generator.html_assembler import (
+        DEFAULT_TILE_ATTRIBUTION, DEFAULT_TILE_MAX_ZOOM, DEFAULT_TILE_URL,
+        TileSettings, _tile_layer_js, _tile_renderer_script,
+    )
+
+    raster = TileSettings(DEFAULT_TILE_URL, DEFAULT_TILE_ATTRIBUTION, DEFAULT_TILE_MAX_ZOOM)
+
+    assert _tile_layer_js(raster) == (
+        'L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",'
+        '{attribution:"© OpenStreetMap contributors",maxZoom:13}).addTo(map);'
+    )
+    assert _tile_renderer_script(raster) == ""
+
+
+def test_a_pmtiles_config_draws_a_vector_layer_and_loads_its_renderer(tmp_path) -> None:
+    from generator.html_assembler import PMTILES_RENDERER_URL
+
+    html = HTMLAssembler(config_path=_pmtiles(tmp_path)).assemble(_tile_trip())
+
+    assert f'<script src="{PMTILES_RENDERER_URL}"></script>' in html
+    assert f'protomapsL.leafletLayer({{url:"{_ARCHIVE}"' in html
+    assert "L.tileLayer(" not in html
+
+
+def test_a_raster_page_does_not_load_the_vector_renderer() -> None:
+    """A dependency nobody configured is a script every reader downloads.
+
+    Asserts the script and the call, not the word: the template's own comment
+    names protomaps-leaflet, and that comment ships in every page, so "the word
+    is absent" was false on a page that loads nothing extra at all."""
+    from generator.html_assembler import PMTILES_RENDERER_URL
+
+    html = HTMLAssembler(config_path="config.yaml").assemble(_tile_trip())
+
+    assert PMTILES_RENDERER_URL not in html
+    assert "protomapsL" not in html
+
+
+def test_the_route_still_draws_when_the_vector_renderer_never_loads(tmp_path) -> None:
+    """The renderer is a second script from a CDN, so it can fail on its own --
+    offline, blocked, or down. The layer call is guarded and does not wait, and
+    the guard has to *close* before the route: a route drawn inside the guard
+    would vanish together with the basemap."""
+    html = HTMLAssembler(config_path=_pmtiles(tmp_path)).assemble(_tile_trip())
+
+    guard = html.find("if(typeof protomapsL!=='undefined'){")
+    assert guard != -1, "the vector layer is not guarded: a renderer that fails to load throws, and the route never draws"
+    layer = html.find("protomapsL.leafletLayer(", guard)
+    assert layer != -1, "no vector layer inside the guard"
+    closed = html.find(".addTo(map);}", layer)
+    # The first route statement after the layer. Were it inside the guard it
+    # would sit between `layer` and the guard's closing brace.
+    route = html.find("L.polyline(", layer)
+    assert closed != -1 and route != -1 and closed < route, (
+        "the route is drawn inside the renderer guard, so it disappears whenever the basemap does"
+    )
+
+
+def test_an_archive_url_is_not_rejected_for_lacking_leaflet_placeholders() -> None:
+    """A .pmtiles URL names one file and has no {z}/{x}/{y}. The raster check
+    must not run on it, or every archive silently reverts to OpenStreetMap --
+    the quiet failure that check was written to make loud."""
+    from generator.html_assembler import _tile_settings
+
+    tiles = _tile_settings({"map": {"tiles": {"kind": "pmtiles", "url": _ARCHIVE}}})
+
+    assert (tiles.kind, tiles.url) == ("pmtiles", _ARCHIVE)
+
+
+@pytest.mark.parametrize("url", ["", "na.pmtiles", "s3://bucket/na.pmtiles"])
+def test_pmtiles_with_nothing_fetchable_falls_back_to_the_raster_default(url, caplog) -> None:
+    from generator.html_assembler import DEFAULT_TILE_URL, _tile_settings
+
+    with caplog.at_level(logging.WARNING):
+        tiles = _tile_settings({"map": {"tiles": {"kind": "pmtiles", "url": url}}})
+
+    assert (tiles.kind, tiles.url) == ("raster", DEFAULT_TILE_URL)
+    assert "pmtiles" in caplog.text
+
+
+def test_an_unknown_kind_is_the_raster_default_and_is_named(caplog) -> None:
+    from generator.html_assembler import _tile_settings
+
+    with caplog.at_level(logging.WARNING):
+        tiles = _tile_settings({"map": {"tiles": {"kind": "vector", "url": _ARCHIVE}}})
+
+    assert tiles.kind == "raster"
+    assert "vector" in caplog.text
+
+
+def test_a_bad_flavor_does_not_cost_the_operator_their_lang(caplog) -> None:
+    from generator.html_assembler import _tile_settings
+
+    with caplog.at_level(logging.WARNING):
+        tiles = _tile_settings({"map": {"tiles": {
+            "kind": "pmtiles", "url": _ARCHIVE, "flavor": "sepia", "lang": "fr",
+        }}})
+
+    assert (tiles.flavor, tiles.lang) == ("light", "fr")
+    assert "sepia" in caplog.text
+
+
+def test_a_language_the_renderer_cannot_label_in_is_refused_here(caplog) -> None:
+    """protomaps-leaflet does not reject an unknown code; it quietly draws the
+    labels as Latin script. So this is the only place the mistake can be said."""
+    from generator.html_assembler import _tile_settings
+
+    with caplog.at_level(logging.WARNING):
+        tiles = _tile_settings({"map": {"tiles": {
+            "kind": "pmtiles", "url": _ARCHIVE, "flavor": "dark", "lang": "tlh",
+        }}})
+
+    assert (tiles.flavor, tiles.lang) == ("dark", "en")
+    assert "tlh" in caplog.text
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh-Hans", "zh-Hant"])
+def test_the_codes_easy_to_misread_in_the_renderers_table_are_accepted(lang) -> None:
+    """Chinese is `zh-Hans` and `zh-Hant`, not `zh`, and Japanese carries no
+    script name in the table. A first reading of that table missed all three."""
+    from generator.html_assembler import _tile_settings
+
+    tiles = _tile_settings({"map": {"tiles": {"kind": "pmtiles", "url": _ARCHIVE, "lang": lang}}})
+
+    assert tiles.lang == lang
+
+
+def test_the_vector_layer_carries_the_configured_credit(tmp_path) -> None:
+    """Left unset, the renderer adds its own attribution and the map shows two."""
+    html = HTMLAssembler(config_path=_pmtiles(tmp_path)).assemble(_tile_trip())
+
+    layer = html[html.index("protomapsL.leafletLayer("):]
+    options = layer[:layer.index(".addTo(map);")]
+    assert 'attribution:"(c) Example contributors"' in options
+
+
+def test_a_quote_in_a_vector_attribution_cannot_break_out_of_the_script(tmp_path) -> None:
+    config = _pmtiles(tmp_path, attribution="Bob's Tiles </script>")
+
+    html = HTMLAssembler(config_path=config).assemble(_tile_trip())
+
+    assert "attribution:\"Bob's Tiles <\\/script>\"" in html
+
+
+def test_flavor_and_lang_on_a_raster_layer_are_neither_used_nor_complained_about(caplog) -> None:
+    from generator.html_assembler import _tile_settings
+
+    with caplog.at_level(logging.WARNING):
+        tiles = _tile_settings({"map": {"tiles": {"flavor": "sepia", "lang": "tlh"}}})
+
+    assert tiles.kind == "raster"
+    assert caplog.text == ""
