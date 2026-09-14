@@ -582,6 +582,16 @@ url_discovery:
   alltrails_min_confidence_for_publish: "medium"
   alltrails_request_delay_seconds: 0.8
   alltrails_block_cooldown_seconds: 8
+  # A published link whose host refused the fetch (401/403/429, a block
+  # cooldown, a reset connection) stays "unchecked". If this run's per-item
+  # searches already returned that exact URL from a search-engine index
+  # (Serper), the report records corroborated_by: search_index at no extra
+  # cost. `enabled: true` additionally spends one site-restricted search per
+  # still-uncorroborated refused link, up to max_searches_per_run, billed like
+  # any other per-item search. Off by default. See generator/link_corroboration.py.
+  link_corroboration_search:
+    enabled: false
+    max_searches_per_run: 10
   # Wayback Machine fallback for AllTrails trailhead geo extraction (fires
   # when the direct AllTrails fetch above is bot-blocked -- see
   # docs/design/url-discovery-and-audit.md's "AllTrails Trailhead Geo Maps

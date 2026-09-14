@@ -83,7 +83,8 @@ def test_the_stylesheet_naming_the_class_does_not_count_as_an_icon():
 def test_the_card_icon_keeps_its_class():
     card = _card_with_link_icon(_assembler())
 
-    assert '<span class="attr-external-link" title="opens the source page">' in card
+    # A trail card: the title is the legend's own words for 🥾.
+    assert '<span class="attr-external-link" title="opens a trail page">' in card
 
 
 def test_the_legend_never_claims_a_link_was_verified():

@@ -93,7 +93,7 @@ def test_an_unchecked_card_link_carries_the_mark_with_readable_text():
     assert re.sub(r"<[^>]+>", "", mark) == "not checked"
     assert 'title="This link could not be checked before publishing, usually because the site blocks automated checks"' in mark
     # Beside the icon, which is left exactly as it was.
-    assert card.index('<span class="attr-external-link" title="opens the source page">') < card.index(_MARK)
+    assert card.index('<span class="attr-external-link" title="opens a trail page">') < card.index(_MARK)
 
 
 def test_a_live_card_link_renders_exactly_as_before():

@@ -887,7 +887,10 @@ where a link goes, not whether it was checked; how many links could be checked i
 ```
 
 The closing clause is written only when the liveness statement is there to point at; without
-it the line ends at "checked." The icon's `title` reads "opens the source page". The legend
+it the line ends at "checked." The icon's `title` is the legend's own words for that icon —
+"opens the source page" for 🔗, "opens a trail page" for 🥾, "opens a map" for 🗺️ — on every card
+type (`_link_source_title`, derived from the same URL test as the icon, so a map link in a card's
+primary slot is never titled "opens the source page"). The legend
 never uses "verified", "confirmed" or "working" — those belong to the statement, which has the
 counts to back them.
 
@@ -922,6 +925,46 @@ assembled, so its published set is the page's card links and its `dead` count is
 construction; what was withheld is recorded as `withheld_dead`. Blocked and timed-out links,
 and a resolver's temporary failure, are `unchecked`, not dead, and still publish. See `docs/design/url-discovery-and-audit.md`,
 "Dead Links at the Assembly Boundary".
+
+**A card's two links are two links.** An attraction, restaurant, en-route stop or route option
+can carry a direct link (the name, with its icon) and a separate Maps badge (`.badge-map`,
+titled "Open in Google Maps"). Only links a fetch can say something about are counted. A Maps or
+search link the engine builds (`SAFE_FALLBACK_URL_PREFIXES`) is never fetched, so it is left out
+of the report whether it sits in the badge or in the primary slot, and how many were left out is
+recorded as `engine_built_not_counted`. It therefore never carries "not checked", and google.com
+is never named as a site that refuses automated requests. The mark belongs to whichever link is
+`unchecked`, never to the card.
+
+**A refused link a search index returned this run says so, and is still not checked.** When a
+link is `unchecked` because its host refused the fetch — a 401, 403 or 429, a per-domain block
+cooldown, a reset connection, or the `.gov` connection carve-out — and the exact URL (compared
+without scheme, `www.`, default port, trailing slash, fragment or tracking parameters) was
+returned as a result by a search this run made through a provider whose results are
+search-engine index rows (`RESULTS_ARE_SEARCH_INDEX_ROWS`: Serper), the report records
+`corroborated_by` (URL → `search_index`) and `corroborated_count`. The state stays `unchecked`:
+`corroborated_count` is a subset of that count and `counts` still sums to `published_count`.
+Excluded, each for a stated reason: a timeout or a resolver's temporary failure (the host said
+nothing), a never-fetched link (nothing refused), rows a model-backed search wrote down (a
+transcribed URL is not an index row), rows served from an earlier run's search cache (not this
+run), and a card's Maps link (a different URL — it is no evidence for the direct link). The
+statement adds one sentence after the unchecked sentence, and before the promise:
+
+```
+… and nothing has been guessed in place of checking. 19 of those 28 were among this run's web
+search results, so a search engine lists them; they were still not fetched here. No link that
+failed a check was published.
+```
+
+It states a recorded fact and what it does not establish; it never says verified, confirmed or
+working. Nothing is added when nothing was corroborated. The "not checked" mark stays on a
+corroborated link, and its `title` gains "It was among this run's web search results, so a
+search engine lists it". The legend is unchanged and stays true.
+
+`url_discovery.link_corroboration_search` (`enabled: false`, `max_searches_per_run: 10`) is an
+opt-in that spends one site-restricted search per refused, still-uncorroborated card link, up to
+the cap per run, through `_search_cached` (so it is cached and billed like any other per-item
+search, and attributed as `link_corroboration_search` in the fallback call-site counts). It is
+a no-op when the per-item search provider does not return index rows. It never changes a state.
 
 ---
 

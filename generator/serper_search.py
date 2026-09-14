@@ -70,6 +70,11 @@ _DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 30.0
 
 
 class SerperSearch:
+    # `search()` returns Google's organic result rows as Serper relays them: a
+    # URL here is one a search-engine index returned, not one a model wrote
+    # down. generator/link_corroboration.py reads this, and only this.
+    RESULTS_ARE_SEARCH_INDEX_ROWS = True
+
     def __init__(
         self,
         model: str | None = None,

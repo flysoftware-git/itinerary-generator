@@ -1374,7 +1374,7 @@ class HTMLAssembler:
                 source_icon = self._link_source_icon(url)
                 name_html = (
                     f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{html_escape.escape(title)}</a>'
-                    f' <span class="attr-external-link" title="opens the source page">{source_icon}</span>'
+                    f' <span class="attr-external-link" title="{self._link_source_title(url)}">{source_icon}</span>'
                     f'{self._link_unchecked_mark(url)}'
                 )
                 maps_corner_html = self._maps_corner_link_html(opt, url)
@@ -2011,7 +2011,7 @@ class HTMLAssembler:
             '  <div class="leg-trail-link">\n'
             f'    \U0001f97e <a href="{self._safe_href(url)}" class="attr-link" '
             f'target="_blank" rel="noopener">{html_escape.escape(label)}</a>'
-            f' <span class="attr-external-link" title="opens the source page">'
+            f' <span class="attr-external-link" title="{self._link_source_title(url)}">'
             f'{self._link_source_icon(url)}</span>'
             f'{self._link_unchecked_mark(url)}\n'
             '  </div>\n'
@@ -2654,7 +2654,7 @@ class HTMLAssembler:
                     source_icon = self._link_source_icon(url)
                     name_html = (
                         f'<a href="{self._safe_href(url)}" class="attr-link" target="_blank" rel="noopener">{stop_name}</a>'
-                        f' <span class="attr-external-link" title="opens the source page">{source_icon}</span>'
+                        f' <span class="attr-external-link" title="{self._link_source_title(url)}">{source_icon}</span>'
                         f'{self._link_unchecked_mark(url)}'
                     )
                 else:
@@ -2929,7 +2929,7 @@ class HTMLAssembler:
                 source_icon = self._link_source_icon(url)
                 name_html = (
                     f'<a href="{self._safe_href(url)}" class="attr-link" target="_blank" rel="noopener">{attr_name}</a>'
-                    f'<span class="attr-external-link" title="opens the source page">{source_icon}</span>'
+                    f'<span class="attr-external-link" title="{self._link_source_title(url)}">{source_icon}</span>'
                     f'{self._link_unchecked_mark(url)}'
                 )
             else:
@@ -3444,7 +3444,7 @@ class HTMLAssembler:
                 source_icon = self._link_source_icon(url)
                 name_html = (
                     f'<a href="{self._safe_href(url)}" class="rest-link" target="_blank" rel="noopener">{rest_name}</a>'
-                    f' <span class="attr-external-link" title="opens the source page">{source_icon}</span>'
+                    f' <span class="attr-external-link" title="{self._link_source_title(url)}">{source_icon}</span>'
                     f'{self._link_unchecked_mark(url)}'
                 )
             else:
@@ -3675,6 +3675,20 @@ class HTMLAssembler:
             return "🗺️"
         return "🔗"
 
+    # The icon's hover text, in the legend's own words for that icon. It was
+    # "opens the source page" on every icon, so a map link read 🗺️ "opens the
+    # source page" beside a legend saying 🗺️ is a map. The same URL tests as
+    # `_link_source_icon`, so the two cannot disagree on any card type.
+    _LINK_SOURCE_TITLES = {
+        "🥾": "opens a trail page",
+        "🗺️": "opens a map",
+        "🔗": "opens the source page",
+    }
+
+    @classmethod
+    def _link_source_title(cls, url: str) -> str:
+        return cls._LINK_SOURCE_TITLES[cls._link_source_icon(url)]
+
     # The per-link half of the liveness statement. The class is what the
     # footer legend looks for, matched as an attribute for the same reason as
     # `_LINK_ICON_MARKUP`.
@@ -3682,6 +3696,9 @@ class HTMLAssembler:
     _LINK_UNCHECKED_MARK_TITLE = (
         "This link could not be checked before publishing, "
         "usually because the site blocks automated checks"
+    )
+    _LINK_UNCHECKED_MARK_TITLE_SEARCH_INDEX = (
+        ". It was among this run's web search results, so a search engine lists it"
     )
 
     def _set_link_liveness_states(self, trip: dict[str, Any]) -> None:
@@ -3705,6 +3722,21 @@ class HTMLAssembler:
                 if normalized:
                     lookup.setdefault(normalized, str(state))
         self._link_liveness_states = lookup
+        # Same keying for the links this run's search index returned. Each URL
+        # carries its own entry: a card's Maps badge is a different URL and is
+        # never evidence for the card's direct link.
+        corroborated = report.get("corroborated_by") if isinstance(report, dict) else None
+        corroborated_lookup: dict[str, str] = {}
+        if isinstance(corroborated, dict):
+            for url, evidence in corroborated.items():
+                raw = str(url or "").strip()
+                if not raw:
+                    continue
+                corroborated_lookup.setdefault(raw, str(evidence))
+                normalized = self._normalize_external_url(raw)
+                if normalized:
+                    corroborated_lookup.setdefault(normalized, str(evidence))
+        self._link_corroborated_by = corroborated_lookup
 
     def _link_unchecked_mark(self, url: str) -> str:
         """A quiet "not checked" beside a card link the run could not check.
@@ -3720,11 +3752,18 @@ class HTMLAssembler:
         states = getattr(self, "_link_liveness_states", None) or {}
         if not states:
             return ""
-        if states.get(str(url or "").strip()) != "unchecked":
+        key = str(url or "").strip()
+        if states.get(key) != "unchecked":
             return ""
+        # A link this run's search index returned is still not checked -- it
+        # was not fetched -- so the visible text does not change. The title
+        # adds the one thing that is known about it.
+        title = self._LINK_UNCHECKED_MARK_TITLE
+        if (getattr(self, "_link_corroborated_by", None) or {}).get(key) == "search_index":
+            title += self._LINK_UNCHECKED_MARK_TITLE_SEARCH_INDEX
         return (
             f' <span {self._LINK_UNCHECKED_MARK_MARKUP} '
-            f'title="{html_escape.escape(self._LINK_UNCHECKED_MARK_TITLE, quote=True)}" '
+            f'title="{html_escape.escape(title, quote=True)}" '
             'style="font-size:0.72rem;color:#8a7a66;opacity:0.85;margin-left:0.2rem;'
             'white-space:nowrap;font-weight:400;">not checked</span>'
         )
@@ -3966,6 +4005,7 @@ class HTMLAssembler:
             return ""
         if total <= 0:
             return ""
+        corroboration = self._link_corroboration_sentence(report, unchecked)
 
         by_domain = report.get("unchecked_by_domain")
         by_domain = by_domain if isinstance(by_domain, dict) else {}
@@ -4011,7 +4051,7 @@ class HTMLAssembler:
                 else ", and "
             )
             body += "nothing has been guessed in place of checking."
-            return f"About the links. {body}{promise}"
+            return f"About the links. {body}{corroboration}{promise}"
 
         checked = (
             f"{live} of the {total} {links} in this guide "
@@ -4042,7 +4082,33 @@ class HTMLAssembler:
                 f"{checked} {rest} could not be reached to check from here, and "
                 "nothing has been guessed in place of checking."
             )
-        return f"About the links. {body}{promise}"
+        return f"About the links. {body}{corroboration}{promise}"
+
+    @staticmethod
+    def _link_corroboration_sentence(report: dict[str, Any], unchecked: int) -> str:
+        """How many of the unreached links this run's search index returned.
+
+        A recorded fact, not a verdict: a search engine listing a page says the
+        page exists, not that it answers, so the sentence never says verified,
+        confirmed or working, and it closes by saying the links were still not
+        fetched. `corroborated_count` is a subset of `unchecked`; a report that
+        claims more is not repeated, because a count larger than the thing it
+        counts would be a false statement on the page.
+        """
+        try:
+            count = int(report.get("corroborated_count") or 0)
+        except (TypeError, ValueError):
+            return ""
+        if count <= 0 or unchecked <= 0 or count > unchecked:
+            return ""
+        among = "among this run's web search results, so a search engine lists"
+        if unchecked == 1:
+            return f" That one was {among} it; it was still not fetched here."
+        if count == unchecked:
+            return f" All {count} were {among} them; they were still not fetched here."
+        if count == 1:
+            return f" One of those {unchecked} was {among} it; it was still not fetched here."
+        return f" {count} of those {unchecked} were {among} them; they were still not fetched here."
 
     def _build_link_liveness_note(self, trip: dict[str, Any]) -> str:
         text = self._link_liveness_note_text(trip)

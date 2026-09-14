@@ -244,8 +244,22 @@ def withhold_dead_card_links(trip: dict[str, Any], discoverer: Any) -> dict[str,
 
         reconcile_schedule_from_registry(trip, build_entity_registry(trip))
 
+    # Opt-in and off by default: one site-restricted search per refused link
+    # this run's searches never returned. Evidence only -- it cannot change a
+    # state, so it runs after every removal decision has been made.
+    from generator.link_corroboration import search_for_uncorroborated
+
+    corroboration_searches = search_for_uncorroborated(
+        discoverer, [link for link in links if link.holder.get(link.field) == link.url]
+    )
+
     report = discoverer.link_liveness_report(trip)
     report["withheld_dead"] = dict(sorted(withheld.items()))
     report["withheld_dead_count"] = len(withheld)
     trip["_link_liveness"] = report
-    return {"checked_at_assembly": checked_here, "withheld": len(withheld), "items_removed": removed}
+    return {
+        "checked_at_assembly": checked_here,
+        "withheld": len(withheld),
+        "items_removed": removed,
+        "corroboration_searches": corroboration_searches,
+    }

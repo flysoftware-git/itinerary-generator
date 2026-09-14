@@ -1396,6 +1396,34 @@ as `withheld_dead` (URL to the failure detail).
 It adds no classification of its own: `classify_link_liveness` still decides, so 401/403
 blocks, timeouts and the `.gov` connection carve-out stay `unchecked` and publish.
 
+### Search-index corroboration for refused links
+
+A refused fetch leaves a link `unchecked` and the pipeline learning nothing about it, while
+the same run has often already paid for a search whose organic results contained that exact
+URL. `generator/link_corroboration.py` records that fact without touching the state:
+
+- `_search_cached` hands every *fresh* result set to `record_search_results`, which keeps the
+  normalised URLs only when the client declares `RESULTS_ARE_SEARCH_INDEX_ROWS = True`
+  (`SerperSearch`). Model-backed providers (Grok, Claude, OpenAI) return URLs a model wrote
+  after searching; they do not declare it, and a mock's truthy attribute is not read as one.
+  Persistent-cache hits are not recorded: those rows belong to an earlier run.
+- `link_liveness_report` lists `corroborated_by` / `corroborated_count` for `unchecked` links
+  whose ledger detail is a refusal (`is_refused_fetch`: 401/403/429, `domain_cooldown`, a reset
+  or refused connection, the `.gov` carve-out) and whose normalised URL is in that set. Timeouts
+  and temporary DNS failures are excluded by the same markers `_is_definitively_dead_status`
+  uses.
+- The report also stops listing engine-built Maps/search links (`SAFE_FALLBACK_URL_PREFIXES`) —
+  the gate and the prewarm never fetch them, so they were `unchecked / never_fetched` and put
+  google.com into `unchecked_by_domain` — and records `engine_built_not_counted`.
+- Opt-in, off by default: `url_discovery.link_corroboration_search` spends at most
+  `max_searches_per_run` site-restricted searches (`site:<host> <item> <destination>`) on refused
+  links still uncorroborated, after every removal decision at the assembly gate.
+
+Not done here, and why: Google Places `business_status` is not fetched today (the resolver's
+field mask is `places.id` only, and the price filter's is id/name/price level), so a closed-place
+signal would be a new paid field; candidate selection has no host-checkability tie-break; and
+citation URLs from model-backed searches are not yet separated from model-written ones.
+
 ## Provenance-Controlled Publication
 
 Discovery and audit must produce decisioned outcomes that control final publication.

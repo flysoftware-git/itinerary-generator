@@ -1136,6 +1136,24 @@ class URLDiscoverer:
             allow_blocked = url_cfg.get("allow_blocked_alltrails", DEFAULT_ALLOW_BLOCKED_ALLTRAILS)
             self._allow_blocked_alltrails = bool(allow_blocked)
 
+            # Opt-in extra search for refused links (generator/link_corroboration.py).
+            # Off unless the config says exactly `enabled: true`.
+            from generator.link_corroboration import (
+                DEFAULT_LINK_CORROBORATION_SEARCH_MAX_PER_RUN,
+            )
+
+            corroboration_cfg = url_cfg.get("link_corroboration_search", {}) or {}
+            if not isinstance(corroboration_cfg, dict):
+                corroboration_cfg = {}
+            self._link_corroboration_search_enabled = corroboration_cfg.get("enabled", False) is True
+            try:
+                self._link_corroboration_search_max = max(
+                    0,
+                    int(corroboration_cfg.get("max_searches_per_run", DEFAULT_LINK_CORROBORATION_SEARCH_MAX_PER_RUN)),
+                )
+            except (TypeError, ValueError):
+                self._link_corroboration_search_max = DEFAULT_LINK_CORROBORATION_SEARCH_MAX_PER_RUN
+
             min_conf = str(
                 url_cfg.get(
                     "alltrails_min_confidence_for_publish",
@@ -14083,6 +14101,11 @@ class URLDiscoverer:
 
         results = search_client.search(query_key, count=count)
         normalized = [dict(item) for item in results if isinstance(item, dict)]
+        # A fresh search, not a cache hit: this run's index rows are evidence a
+        # refused link exists (generator/link_corroboration.py). Recording only.
+        from generator.link_corroboration import record_search_results
+
+        record_search_results(self, search_client, normalized)
 
         with self._request_cache_lock:
             if normalized:
@@ -14870,7 +14893,19 @@ class URLDiscoverer:
         # is one a reader cannot tell was never checked.
         from generator.link_liveness_gate import card_links
 
-        published = self._collect_discovered_urls(trip) | {link.url for link in card_links(trip)}
+        candidates = self._collect_discovered_urls(trip) | {link.url for link in card_links(trip)}
+        # A Maps or search link the engine builds from a name is navigation,
+        # not a source: it is never fetched (the gate and the prewarm both skip
+        # SAFE_FALLBACK_URL_PREFIXES), so listing it made it `unchecked /
+        # never_fetched`, put "not checked" beside a map icon and named
+        # google.com as a site that refuses automated requests. It is left out
+        # of the count, as the separate Maps badge on the same card always was,
+        # and how many were left out is recorded rather than silently dropped.
+        published = {
+            url for url in candidates
+            if not url.lower().startswith(SAFE_FALLBACK_URL_PREFIXES)
+        }
+        engine_built_not_counted = len(candidates) - len(published)
         recorded = dict(getattr(self, "_link_liveness", {}) or {})
         states: dict[str, str] = {}
         details: dict[str, str] = {}
@@ -14887,6 +14922,12 @@ class URLDiscoverer:
                 if domain:
                     unchecked_by_domain[domain] = unchecked_by_domain.get(domain, 0) + 1
         total = len(states)
+        # Refused links this run's search index returned. Still `unchecked`
+        # (they were not fetched), so this is a subset of that count and
+        # `counts` still sums to `published_count`.
+        from generator.link_corroboration import corroborated_by
+
+        corroborated = corroborated_by(self, states, details)
         return {
             "states": states,
             "details": details,
@@ -14896,6 +14937,9 @@ class URLDiscoverer:
             "unchecked_by_domain": dict(
                 sorted(unchecked_by_domain.items(), key=lambda row: (-row[1], row[0]))
             ),
+            "corroborated_by": corroborated,
+            "corroborated_count": len(corroborated),
+            "engine_built_not_counted": engine_built_not_counted,
         }
 
     # ------------------------------------------------------------------
