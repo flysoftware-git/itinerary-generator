@@ -448,6 +448,8 @@ class HTMLAssembler:
         # the URL-survival filter). Sections are built before the JS is
         # injected, so by the time descriptions are built this set is complete.
         self._rendered_drive_titles: set[str] = set()
+        # Which card links get a "not checked" mark; empty without a report.
+        self._set_link_liveness_states(trip)
         sections_html = ""
         destinations = trip.get("destinations", [])
         # GH #68 multi-site grouping: id -> destination lookup so a grouped
@@ -1373,6 +1375,7 @@ class HTMLAssembler:
                 name_html = (
                     f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{html_escape.escape(title)}</a>'
                     f' <span class="attr-external-link" title="opens the source page">{source_icon}</span>'
+                    f'{self._link_unchecked_mark(url)}'
                 )
                 maps_corner_html = self._maps_corner_link_html(opt, url)
                 dist = str(opt.get("distance_or_duration", "") or "").strip()
@@ -2009,7 +2012,8 @@ class HTMLAssembler:
             f'    \U0001f97e <a href="{self._safe_href(url)}" class="attr-link" '
             f'target="_blank" rel="noopener">{html_escape.escape(label)}</a>'
             f' <span class="attr-external-link" title="opens the source page">'
-            f'{self._link_source_icon(url)}</span>\n'
+            f'{self._link_source_icon(url)}</span>'
+            f'{self._link_unchecked_mark(url)}\n'
             '  </div>\n'
         )
 
@@ -2651,6 +2655,7 @@ class HTMLAssembler:
                     name_html = (
                         f'<a href="{self._safe_href(url)}" class="attr-link" target="_blank" rel="noopener">{stop_name}</a>'
                         f' <span class="attr-external-link" title="opens the source page">{source_icon}</span>'
+                        f'{self._link_unchecked_mark(url)}'
                     )
                 else:
                     name_html = stop_name
@@ -2925,6 +2930,7 @@ class HTMLAssembler:
                 name_html = (
                     f'<a href="{self._safe_href(url)}" class="attr-link" target="_blank" rel="noopener">{attr_name}</a>'
                     f'<span class="attr-external-link" title="opens the source page">{source_icon}</span>'
+                    f'{self._link_unchecked_mark(url)}'
                 )
             else:
                 name_html = attr_name
@@ -3439,6 +3445,7 @@ class HTMLAssembler:
                 name_html = (
                     f'<a href="{self._safe_href(url)}" class="rest-link" target="_blank" rel="noopener">{rest_name}</a>'
                     f' <span class="attr-external-link" title="opens the source page">{source_icon}</span>'
+                    f'{self._link_unchecked_mark(url)}'
                 )
             else:
                 name_html = rest_name
@@ -3667,6 +3674,60 @@ class HTMLAssembler:
         if "google.com/maps" in lower or "maps.google.com" in lower or "maps.app.goo.gl" in lower:
             return "🗺️"
         return "🔗"
+
+    # The per-link half of the liveness statement. The class is what the
+    # footer legend looks for, matched as an attribute for the same reason as
+    # `_LINK_ICON_MARKUP`.
+    _LINK_UNCHECKED_MARK_MARKUP = 'class="link-unchecked-mark"'
+    _LINK_UNCHECKED_MARK_TITLE = (
+        "This link could not be checked before publishing, "
+        "usually because the site blocks automated checks"
+    )
+
+    def _set_link_liveness_states(self, trip: dict[str, Any]) -> None:
+        """Remember each card link's liveness state for the cards about to render.
+
+        Keyed by the URL exactly as the report recorded it and by its
+        normalised form, because a card renders the normalised one. A trip
+        with no report leaves the lookup empty, so no link is marked either
+        way: absent is not a state.
+        """
+        report = trip.get("_link_liveness") if isinstance(trip, dict) else None
+        states = report.get("states") if isinstance(report, dict) else None
+        lookup: dict[str, str] = {}
+        if isinstance(states, dict):
+            for url, state in states.items():
+                raw = str(url or "").strip()
+                if not raw:
+                    continue
+                lookup.setdefault(raw, str(state))
+                normalized = self._normalize_external_url(raw)
+                if normalized:
+                    lookup.setdefault(normalized, str(state))
+        self._link_liveness_states = lookup
+
+    def _link_unchecked_mark(self, url: str) -> str:
+        """A quiet "not checked" beside a card link the run could not check.
+
+        Only the `unchecked` state is marked. A live link renders as it always
+        has, and a link with no record -- a guide built without a report, or a
+        URL the report never listed -- gets no mark at all, because rendering
+        nothing is the one thing that does not claim it was checked or not.
+        The text is visible, not a colour or a symbol alone, and the `title`
+        says "usually" because unchecked also covers timeouts and a resolver's
+        temporary failure, not only a blocking site.
+        """
+        states = getattr(self, "_link_liveness_states", None) or {}
+        if not states:
+            return ""
+        if states.get(str(url or "").strip()) != "unchecked":
+            return ""
+        return (
+            f' <span {self._LINK_UNCHECKED_MARK_MARKUP} '
+            f'title="{html_escape.escape(self._LINK_UNCHECKED_MARK_TITLE, quote=True)}" '
+            'style="font-size:0.72rem;color:#8a7a66;opacity:0.85;margin-left:0.2rem;'
+            'white-space:nowrap;font-weight:400;">not checked</span>'
+        )
 
     @staticmethod
     def _looks_like_maps_url(url: str) -> bool:
@@ -3996,7 +4057,7 @@ class HTMLAssembler:
             "</div>"
         )
 
-    def _build_link_icon_legend(self, has_liveness_note: bool) -> str:
+    def _build_link_icon_legend(self, has_liveness_note: bool, has_unchecked_marks: bool = False) -> str:
         """One line saying what the small icon after a card's link means.
 
         `_link_source_icon` says what KIND of page a link opens -- a trail page,
@@ -4010,11 +4071,22 @@ class HTMLAssembler:
         guide built before the liveness ledger existed has no statement, and a
         sentence sending the reader "below" to nothing would be a small false
         claim of exactly the kind this line exists to prevent.
+
+        The "not checked" mark (`_link_unchecked_mark`) is explained only on a
+        page that shows one. The sentence about the icon stays either way: an
+        unmarked link is not thereby a checked one -- a guide built without a
+        liveness report marks nothing -- so the legend never lets the absence
+        of a mark read as a confirmation.
         """
         text = (
             "🔗 opens the source page, 🥾 a trail page, 🗺️ a map. "
             "The icon shows where a link goes, not whether it was checked"
         )
+        if has_unchecked_marks:
+            text += (
+                ". A link marked “not checked” could not be checked before "
+                "publishing, usually because its site blocks automated checks"
+            )
         text += "; how many links could be checked is stated below." if has_liveness_note else "."
         return (
             '<div class="link-icon-legend" '
@@ -4023,7 +4095,12 @@ class HTMLAssembler:
             "</div>"
         )
 
-    def _build_generator_footer(self, trip: dict[str, Any], has_link_icons: bool = False) -> str:
+    def _build_generator_footer(
+        self,
+        trip: dict[str, Any],
+        has_link_icons: bool = False,
+        has_unchecked_marks: bool = False,
+    ) -> str:
         """Provenance, then support routing -- two jobs, two rules (§8.2, §8.3).
 
         Provenance says what built this page, which version, from which
@@ -4046,7 +4123,11 @@ class HTMLAssembler:
         liveness = self._build_link_liveness_note(trip)
         # The icon legend sits directly above the statement it points at, and
         # only on a guide that shows at least one icon to explain.
-        legend = self._build_link_icon_legend(bool(liveness)) if has_link_icons else ""
+        legend = (
+            self._build_link_icon_legend(bool(liveness), has_unchecked_marks)
+            if has_link_icons
+            else ""
+        )
         broken_link_issue_link = (
             f"{self._REPO_URL}/issues/new"
             "?template=broken-link-report.yml&labels=bug"
@@ -4124,7 +4205,9 @@ class HTMLAssembler:
 
     def _inject_generator_footer(self, html: str, trip: dict[str, Any]) -> str:
         footer_html = self._build_generator_footer(
-            trip, has_link_icons=self._LINK_ICON_MARKUP in html
+            trip,
+            has_link_icons=self._LINK_ICON_MARKUP in html,
+            has_unchecked_marks=self._LINK_UNCHECKED_MARK_MARKUP in html,
         )
         if "<!--GENERATOR_FOOTER-->" in html:
             return html.replace("<!--GENERATOR_FOOTER-->", footer_html)

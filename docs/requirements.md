@@ -834,8 +834,9 @@ conflation the tri-state liveness ledger records (`url_discovery.link_liveness_r
 reached the validation report and stopped there. This section carries it the last hop.
 
 `html_assembler._build_link_liveness_note` renders **one statement**, in the footer, between
-the provenance line and the support line. No per-link marks: the fact is about the page, and
-a badge on every link is a different, noisier claim.
+the provenance line and the support line. It carries the totals. A badge on every link would be
+a different, noisier claim, so the only per-link mark is the quiet "not checked" on the links
+that could not be checked (below), and the statement stays the source of the counts.
 
 ```
 About the links. 81 of the 115 links in this guide were fetched and found working. The
@@ -889,6 +890,27 @@ The closing clause is written only when the liveness statement is there to point
 it the line ends at "checked." The icon's `title` reads "opens the source page". The legend
 never uses "verified", "confirmed" or "working" — those belong to the statement, which has the
 counts to back them.
+
+**A card link that could not be checked says so, beside its icon.** `_link_unchecked_mark`
+renders a small, subdued, visible "not checked" after the icon of a card link whose state in
+`trip["_link_liveness"]["states"]` is `unchecked`, with the `title` "This link could not be
+checked before publishing, usually because the site blocks automated checks". "Usually",
+because `unchecked` also covers timeouts and a resolver's temporary failure. A `live` link
+renders exactly as before. A link with **no record** — a guide built without a report, or a URL
+the report does not list — renders with no mark either way: absent is not a state. On a page
+that shows at least one mark, the legend adds one sentence:
+
+```
+About the link icons. 🔗 opens the source page, 🥾 a trail page, 🗺️ a map. The icon shows
+where a link goes, not whether it was checked. A link marked “not checked” could not be
+checked before publishing, usually because its site blocks automated checks; how many links
+could be checked is stated below.
+```
+
+The "not whether it was checked" clause stays, so an unmarked link never reads as a checked
+one. The marks cover the links that carry an icon; the statement's unchecked count also
+includes links rendered without one (a scenic drive, an event, a local tip), so the two agree
+only on a guide whose every reported link has an icon.
 
 **The promise is enforced where it is printed.** Immediately before assembly, every link a
 card renders (item links, route options, a leg's trail link, a local tip) is checked against
