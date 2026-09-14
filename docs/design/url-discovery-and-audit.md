@@ -1366,6 +1366,36 @@ Consequences:
 	- explicit `maps_url` fallback may be rendered as secondary fallback,
 	- items with neither canonical nor fallback link are hidden.
 
+## Dead Links at the Assembly Boundary
+
+The liveness ledger (`LINK_LIVENESS_*`) records what every fetch in a run learned, and
+the retention gate is meant to refuse a link a fetch found definitively dead. The two
+were separate, and a guide measured on engine 3.2.0 showed where they disagreed:
+
+- **A retention shortcut that never fetches.** `_retain_discovered_url` returns a
+  restaurant URL whose host names the restaurant (`_looks_like_item_specific_homepage`),
+  and a remembered authoritative direct-batch URL, before any fetch. The audit's prewarm
+  had already fetched two such homepages and recorded DNS failures (`dead`), and the gate
+  kept both; they rendered on cards with the ordinary link icon.
+- **Card links outside the report.** The report listed the item `url` fields the audit
+  collects. A leg's `getting_here.trail_url` (manifest-authored) and a route option's
+  link are rendered with the same icon and were in neither. A selective retry re-audits a
+  subset trip, and the report it computes was written to that subset and discarded.
+- **Edits after the audit.** The retry, registry reconciliation and the restaurant
+  per-day cap all change the trip after the report was taken.
+
+So `generator/link_liveness_gate.py` applies the rule once more immediately before
+`HTMLAssembler.assemble`, where links are final. It enumerates every card link
+(`card_links`), fetches any the run never observed (through `_fetch_page_text`, so the
+same cooldowns and caches apply), drops every link whose ledger state is `dead`, applies
+the verified-link-or-seed rule to attractions, restaurants and en-route stops left without
+a verified link, strips schedule mentions of removed items via the registry, and
+recomputes `_link_liveness` over the final trip. What it withheld is kept in the report
+as `withheld_dead` (URL to the failure detail).
+
+It adds no classification of its own: `classify_link_liveness` still decides, so 401/403
+blocks, timeouts and the `.gov` connection carve-out stay `unchecked` and publish.
+
 ## Provenance-Controlled Publication
 
 Discovery and audit must produce decisioned outcomes that control final publication.
@@ -1972,5 +2002,6 @@ data availability, not just destination quality.
 
 ## Key Files
 - `generator/url_discovery.py`
+- `generator/link_liveness_gate.py`
 - `generator/url_validator.py`
 - `generator/grok_search.py`

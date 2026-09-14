@@ -14864,7 +14864,13 @@ class URLDiscoverer:
         hosts account for nearly all of it, and a per-domain count is what
         turns the number into something actionable.
         """
-        published = self._collect_discovered_urls(trip)
+        # Every link a card renders, not only the item `url` fields the audit
+        # collects for its prewarm: a leg's trail link and a route option's
+        # link carry the same link icon, and a link the report does not list
+        # is one a reader cannot tell was never checked.
+        from generator.link_liveness_gate import card_links
+
+        published = self._collect_discovered_urls(trip) | {link.url for link in card_links(trip)}
         recorded = dict(getattr(self, "_link_liveness", {}) or {})
         states: dict[str, str] = {}
         details: dict[str, str] = {}
