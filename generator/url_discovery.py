@@ -14709,10 +14709,31 @@ class URLDiscoverer:
         status code. Other failure modes (timeouts, 401/403/500/503, SSL errors)
         are deliberately NOT included: those can be transient or bot-blocking
         false positives and must keep failing open.
+
+        **A resolver that says "try again" has not said the host is gone.** The
+        DNS markers below match the resolver's temporary failure as readily as
+        its authoritative one: Windows reports both as "getaddrinfo failed"
+        (errno 11002 WSATRY_AGAIN vs 11001 WSAHOST_NOT_FOUND), and urllib3
+        wraps Linux's EAI_AGAIN ("[Errno -3] Temporary failure in name
+        resolution") in the same NameResolutionError as a nonexistent host.
+        A brief resolver outage mid-run therefore read as every host it
+        touched being dead. That was a mislabelled report while dead links
+        were only counted; once a dead link is withheld from the page and its
+        non-seed item removed, it is a guide quietly stripped of good links by
+        a network blip. Temporary failures fail open, like a timeout.
         """
         if isinstance(status, int):
             return status in (404, 410)
         text = str(status or "").lower()
+        if any(
+            marker in text
+            for marker in (
+                "errno 11002",
+                "temporary failure in name resolution",
+                "errno -3]",
+            )
+        ):
+            return False
         return any(
             marker in text
             for marker in (

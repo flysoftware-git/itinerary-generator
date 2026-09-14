@@ -874,6 +874,22 @@ Degenerate cases, and what each renders:
 The last row is the common case for every guide produced before the ledger shipped, and it
 is the one that must not be got wrong.
 
+**The link icon is explained directly above the statement.** The small icon after a card's
+link (`_link_source_icon`: 🥾 a trail page, 🗺️ a map, 🔗 anything else) says what kind of page
+the link opens. Live, unchecked and dead links render the same icon, so it cannot mean the link
+was confirmed — yet nothing on the page said what it did mean. `_build_link_icon_legend` renders
+one line, only when the page shows at least one icon:
+
+```
+About the link icons. 🔗 opens the source page, 🥾 a trail page, 🗺️ a map. The icon shows
+where a link goes, not whether it was checked; how many links could be checked is stated below.
+```
+
+The closing clause is written only when the liveness statement is there to point at; without
+it the line ends at "checked." The icon's `title` reads "opens the source page". The legend
+never uses "verified", "confirmed" or "working" — those belong to the statement, which has the
+counts to back them.
+
 **The promise is enforced where it is printed.** Immediately before assembly, every link a
 card renders (item links, route options, a leg's trail link, a local tip) is checked against
 the run's liveness ledger; one the run never fetched is fetched then. A link whose state is
@@ -881,8 +897,8 @@ the run's liveness ledger; one the run never fetched is fetched then. A link who
 a verified link is then handled by the verified-link-or-seed rule — removed, unless it is the
 traveller's own seed, which stays unlinked. The report is recomputed over the trip actually
 assembled, so its published set is the page's card links and its `dead` count is zero by
-construction; what was withheld is recorded as `withheld_dead`. Blocked and timed-out links
-are `unchecked`, not dead, and still publish. See `docs/design/url-discovery-and-audit.md`,
+construction; what was withheld is recorded as `withheld_dead`. Blocked and timed-out links,
+and a resolver's temporary failure, are `unchecked`, not dead, and still publish. See `docs/design/url-discovery-and-audit.md`,
 "Dead Links at the Assembly Boundary".
 
 ---

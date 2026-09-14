@@ -1372,7 +1372,7 @@ class HTMLAssembler:
                 source_icon = self._link_source_icon(url)
                 name_html = (
                     f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{html_escape.escape(title)}</a>'
-                    f' <span class="attr-external-link" title="link source">{source_icon}</span>'
+                    f' <span class="attr-external-link" title="opens the source page">{source_icon}</span>'
                 )
                 maps_corner_html = self._maps_corner_link_html(opt, url)
                 dist = str(opt.get("distance_or_duration", "") or "").strip()
@@ -2008,7 +2008,7 @@ class HTMLAssembler:
             '  <div class="leg-trail-link">\n'
             f'    \U0001f97e <a href="{self._safe_href(url)}" class="attr-link" '
             f'target="_blank" rel="noopener">{html_escape.escape(label)}</a>'
-            f' <span class="attr-external-link" title="link source">'
+            f' <span class="attr-external-link" title="opens the source page">'
             f'{self._link_source_icon(url)}</span>\n'
             '  </div>\n'
         )
@@ -2650,7 +2650,7 @@ class HTMLAssembler:
                     source_icon = self._link_source_icon(url)
                     name_html = (
                         f'<a href="{self._safe_href(url)}" class="attr-link" target="_blank" rel="noopener">{stop_name}</a>'
-                        f' <span class="attr-external-link" title="link source">{source_icon}</span>'
+                        f' <span class="attr-external-link" title="opens the source page">{source_icon}</span>'
                     )
                 else:
                     name_html = stop_name
@@ -2924,7 +2924,7 @@ class HTMLAssembler:
                 source_icon = self._link_source_icon(url)
                 name_html = (
                     f'<a href="{self._safe_href(url)}" class="attr-link" target="_blank" rel="noopener">{attr_name}</a>'
-                    f'<span class="attr-external-link" title="link source">{source_icon}</span>'
+                    f'<span class="attr-external-link" title="opens the source page">{source_icon}</span>'
                 )
             else:
                 name_html = attr_name
@@ -3438,7 +3438,7 @@ class HTMLAssembler:
                 source_icon = self._link_source_icon(url)
                 name_html = (
                     f'<a href="{self._safe_href(url)}" class="rest-link" target="_blank" rel="noopener">{rest_name}</a>'
-                    f' <span class="attr-external-link" title="link source">{source_icon}</span>'
+                    f' <span class="attr-external-link" title="opens the source page">{source_icon}</span>'
                 )
             else:
                 name_html = rest_name
@@ -3653,6 +3653,11 @@ class HTMLAssembler:
         """
         match = re.search(r"place_id:([A-Za-z0-9_\-]+)", str(url or ""))
         return match.group(1) if match else ""
+
+    # The attribute every rendered link icon carries. The legend in the footer
+    # is written only when this appears in the page, so it is matched as an
+    # attribute: the stylesheet names the class too, as a selector.
+    _LINK_ICON_MARKUP = 'class="attr-external-link"'
 
     @staticmethod
     def _link_source_icon(url: str) -> str:
@@ -3991,7 +3996,34 @@ class HTMLAssembler:
             "</div>"
         )
 
-    def _build_generator_footer(self, trip: dict[str, Any]) -> str:
+    def _build_link_icon_legend(self, has_liveness_note: bool) -> str:
+        """One line saying what the small icon after a card's link means.
+
+        `_link_source_icon` says what KIND of page a link opens -- a trail page,
+        a map, anything else -- and nothing more. Live, unchecked and dead links
+        render with the same icon, so a reader who takes it as a mark that the
+        link was confirmed working is reading something the page never said.
+        This line says what it does mean, and points at the one place the page
+        does report checking: the liveness statement rendered directly below.
+
+        That pointer is only written when the statement is there to point at. A
+        guide built before the liveness ledger existed has no statement, and a
+        sentence sending the reader "below" to nothing would be a small false
+        claim of exactly the kind this line exists to prevent.
+        """
+        text = (
+            "🔗 opens the source page, 🥾 a trail page, 🗺️ a map. "
+            "The icon shows where a link goes, not whether it was checked"
+        )
+        text += "; how many links could be checked is stated below." if has_liveness_note else "."
+        return (
+            '<div class="link-icon-legend" '
+            'style="margin:0.45rem auto 0;max-width:46rem;">'
+            f"<strong>About the link icons.</strong> {html_escape.escape(text)}"
+            "</div>"
+        )
+
+    def _build_generator_footer(self, trip: dict[str, Any], has_link_icons: bool = False) -> str:
         """Provenance, then support routing -- two jobs, two rules (§8.2, §8.3).
 
         Provenance says what built this page, which version, from which
@@ -4012,6 +4044,9 @@ class HTMLAssembler:
         # below what built the page, above where a reader takes a problem.
         # Empty for a guide whose run recorded no liveness at all.
         liveness = self._build_link_liveness_note(trip)
+        # The icon legend sits directly above the statement it points at, and
+        # only on a guide that shows at least one icon to explain.
+        legend = self._build_link_icon_legend(bool(liveness)) if has_link_icons else ""
         broken_link_issue_link = (
             f"{self._REPO_URL}/issues/new"
             "?template=broken-link-report.yml&labels=bug"
@@ -4080,6 +4115,7 @@ class HTMLAssembler:
             '>Itinerary Generator</a>'
             f' v{html_escape.escape(str(version))}{manifest_segment}'
             f' · Itinerary output: {html_escape.escape(shown_time)}'
+            f'{legend}'
             f'{liveness}'
             f'{support}'
             '</div>'
@@ -4087,7 +4123,9 @@ class HTMLAssembler:
         )
 
     def _inject_generator_footer(self, html: str, trip: dict[str, Any]) -> str:
-        footer_html = self._build_generator_footer(trip)
+        footer_html = self._build_generator_footer(
+            trip, has_link_icons=self._LINK_ICON_MARKUP in html
+        )
         if "<!--GENERATOR_FOOTER-->" in html:
             return html.replace("<!--GENERATOR_FOOTER-->", footer_html)
         if "<!-- DRIVE INFO MODAL -->" in html:
