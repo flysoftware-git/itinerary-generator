@@ -48,6 +48,13 @@ class ReportWriter:
             # check?" is a property of the artifact, and a log line is gone by
             # the time anyone asks.
             "link_liveness": report.get("link_liveness", {}),
+            # Which search clients ran out of credits (#137). Copied as-is,
+            # not defaulted: None means URL discovery never ran, [] means it
+            # ran and nothing was exhausted, and a default of [] would turn
+            # "not measured" into "measured, clean". The first version of
+            # #137 set this on the report dict and never listed it here, so
+            # the file never carried it -- this writer copies named keys only.
+            "search_quota_exhausted": report.get("search_quota_exhausted"),
             "html_path": report.get("html_path", ""),
         }
         report_path = self._output_dir / "validation_report.json"
