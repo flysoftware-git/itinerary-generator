@@ -8416,6 +8416,51 @@ def test_is_definitively_dead_status_recognizes_dns_and_connection_failures() ->
     assert discoverer._is_definitively_dead_status(refused) is True
 
 
+@pytest.mark.parametrize(
+    "temporary",
+    [
+        # Windows WSATRY_AGAIN: same "getaddrinfo failed" text as a missing host.
+        "HTTPSConnectionPool(host='example.com', port=443): Max retries exceeded "
+        "with url: / (Caused by NameResolutionError(\"Failed to resolve 'example.com' "
+        "([Errno 11002] getaddrinfo failed)\"))",
+        # Linux EAI_AGAIN, wrapped by urllib3 in the same NameResolutionError.
+        "HTTPSConnectionPool(host='example.com', port=443): Max retries exceeded "
+        "with url: / (Caused by NameResolutionError(\"Failed to resolve 'example.com' "
+        "([Errno -3] Temporary failure in name resolution)\"))",
+        "[Errno 11002] getaddrinfo failed",
+    ],
+)
+def test_a_temporary_resolver_failure_is_not_a_dead_host(temporary) -> None:
+    """The resolver saying "try again" is not the resolver saying "no such host".
+
+    Both errors matched the DNS markers, so a resolver blip during a run read
+    as every host it touched being dead. Measured on this machine: Windows
+    reports a genuinely missing host as errno 11001 and a temporary failure
+    as 11002, both with the text "getaddrinfo failed". With dead links
+    withheld from the page and their non-seed items removed, that blip would
+    strip good links from a guide. A temporary failure fails open, like a
+    timeout.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    assert discoverer._is_definitively_dead_status(temporary) is False
+
+
+@pytest.mark.parametrize(
+    "authoritative",
+    [
+        "[Errno 11001] getaddrinfo failed",
+        "NameResolutionError(\"Failed to resolve 'gone.example' ([Errno -2] Name or service not known)\")",
+        "[Errno 8] nodename nor servname provided, or not known",
+    ],
+)
+def test_an_authoritative_no_such_host_is_still_dead(authoritative) -> None:
+    """Only the temporary case changes: two restaurant homepages whose domains
+    no longer exist (errno 11001, confirmed on 2026-09-13) must still read as
+    dead."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    assert discoverer._is_definitively_dead_status(authoritative) is True
+
+
 def test_is_bot_block_false_negative_dead_status_scoped_to_gov_connection_refused() -> None:
     """`_is_definitively_dead_status` alone can't tell a genuinely nonexistent
     host apart from a live .gov host that TCP-refused/reset an automated
