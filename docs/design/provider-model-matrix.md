@@ -15,9 +15,10 @@ today, what model id backs it, and what evidence justifies that.
 
 | Provider | Content generation | Search / harvest (batch) | Search / harvest (non-batch) |
 |---|---|---|---|
-| **Grok (xAI)** | ✅ Default (`ai.provider: grok`). Model: `grok-latest` (env `XAI_MODEL`, `llm_client.py` `_provider_default_model`). | ✅ **Primary role.** Model: `grok-latest` (env `XAI_MODEL`, `grok_search.py`). Evidence: 21/21 (100%) citation-matched URLs, real API validation. `url_discovery.search_provider: grok` (default). | ✅ Works (same client), but not the production default for this shape — Claude is (see below). |
-| **Claude (Anthropic)** | ✅ Available, opt-in via `ai.provider`/`ai.fallback_provider: anthropic`. Model default: `claude-3-5-sonnet-latest` — **⚠ stale, see §3**. | ✅ Available (`ClaudeSearch`), not selected as the batch default. | ✅ **Primary role for this shape.** Model: `claude-sonnet-5` (env `ANTHROPIC_MODEL`, `claude_search.py`). Evidence: 14/15 (93%) citation-matched. `url_discovery.nonbatch_search_provider: claude` and `cultural_events.search_provider: claude` (both default). |
-| **OpenAI** | ✅ Available, opt-in via `ai.provider`/`ai.fallback_provider: openai`. Model default: `gpt-4o-mini`. | ❌ **Disqualified.** Probed with `gpt-5-search-api` (the current search-capable model — `gpt-4o-*-search-preview` deprecated 2026-07-23): 0/21 (0%) citation-matched — genuine search tool invoked, but returned URLs don't correspond to what was actually retrieved. Not wired into `search_provider.py` at all. | ❌ Same disqualification — no non-batch OpenAI search path exists in production. |
+| **Grok (xAI)** | ✅ Default (`ai.provider: grok`). Model: `grok-latest` (env `XAI_MODEL`, `llm_client.py` `_provider_default_model`). | ✅ **Primary role.** Model: `grok-latest` (env `XAI_MODEL`, `grok_search.py`). Evidence: 21/21 (100%) citation-matched URLs, real API validation. `url_discovery.search_provider: grok` (default). | ✅ **Cultural events** (`cultural_events.search_provider: grok`, since 2026-08-15; the module is off by default). Not the per-item fallback — Serper is (see below). |
+| **Claude (Anthropic)** | ✅ Available, opt-in via `ai.provider`/`ai.fallback_provider: anthropic`. Model default: `claude-3-5-sonnet-latest` — **⚠ stale, see §3**. | ✅ Available (`ClaudeSearch`), not selected as the batch default. | ✅ Available, **no longer a default for either non-batch shape.** Model: `claude-sonnet-5` (env `ANTHROPIC_MODEL`, `claude_search.py`). Evidence: 14/15 (93%) citation-matched. Was the default for both `url_discovery.nonbatch_search_provider` and `cultural_events.search_provider` until 2026-08-15, when both moved to grok: a same-shape real run cost ~4.6x Grok for equivalent output, and the account is no longer funded (`config.yaml`, `cultural_events` comment). |
+| **Serper** | Not applicable — a SERP API, no model. | Not applicable — the direct batch also *invents* the item list, which a SERP API cannot do. | ✅ **Primary role: the per-item fallback** (`url_discovery.nonbatch_search_provider: serper`, since 2026-08-24, `7abd28e`; `serper_search.py`). Evidence: on the 55 items run 7's paid LLM fallback handled, Serper returned a result for 55/55 (LLM 52/55), 53 passed `_retain_discovered_url` unmodified, 28 official `.gov` hits against the LLM's 2 and 2 travel-content-farm hits against 11. $1.00 per 1,000 queries against xAI's $5.00. Not a citation-fidelity measurement: Serper returns search results, not model-cited URLs. |
+| **OpenAI** | ✅ Available, opt-in via `ai.provider`/`ai.fallback_provider: openai`. Model default: `gpt-4o-mini`. | ❌ **Disqualified.** Probed with `gpt-5-search-api` (the current search-capable model — `gpt-4o-*-search-preview` deprecated 2026-07-23): 0/21 (0%) citation-matched — genuine search tool invoked, but returned URLs don't correspond to what was actually retrieved. Selectable in `search_provider.py` since 2026-08-15 (`94a5e56`, `openai_search.py`); no default uses it. | ❌ Same disqualification — selectable, and no default uses it. |
 | **Gemini** | ✅ Available, opt-in via `ai.provider`/`ai.fallback_provider: gemini`. Model default: `gemini-1.5-flash` — note this is a different, older alias family than the `gemini-flash-latest` used in search probing; not verified live this session. | ❌ **Disqualified.** Probed with `google_search` grounding + `gemini-flash-latest`: 4/21 (19%) citation-matched. Same failure mode as OpenAI — real grounding tool, unreliable provenance. Not wired into `search_provider.py`. | ❌ Same disqualification. |
 | **DeepSeek** | ✅ Available, opt-in via `ai.provider`/`ai.fallback_provider: deepseek`. Model default: `deepseek-chat`. OpenAI-compatible API. | Not evaluated. No search/grounding capability integrated or probed — out of scope for the 2026-08-14/15 investigation, which only covered the four providers with grounding tools this codebase could exercise. | Not evaluated. |
 | **Azure OpenAI** | ✅ Legacy-compatibility path only (`ai.provider: azure_openai`), env-driven deployment name (`AZURE_OPENAI_DEPLOYMENT`), no independent default model constant. | Not applicable — never had a search role. | Not applicable. |
@@ -32,8 +33,11 @@ first API call, not deep into a run.
 
 **Search/harvest**: no equivalent normalization exists, and it's a
 different, weaker mechanism — `search_provider.py`'s valid-provider set
-(`{"grok", "claude"}`) enforces compatibility *by omission*: OpenAI and
-Gemini simply aren't wireable as search providers, but there's no explicit
+(`{"grok", "claude", "openai", "serper"}` since 2026-08-24; it was
+`{"grok", "claude"}` when this matrix was written) enforces compatibility
+*by omission*. Gemini is not wireable as a search provider. OpenAI now is,
+despite its disqualification in §1, so for OpenAI the set no longer
+enforces anything, and there's no explicit
 "this is disqualified, here's why" signal if someone tries (an unknown
 `search_provider` value just falls back to `grok` with a warning — see
 `_read_search_provider`). This is two separate mechanisms, not truly "one
@@ -68,12 +72,15 @@ These are now real defaults in code, not just documented intent:
 1. **Batch search/harvest → Grok.** Highest citation fidelity (100%),
    lowest latency of the working options, primary path for all four
    direct-batch categories (trail/attraction/restaurant/en-route).
-2. **Non-batch search fallback + cultural events → Claude.** Used when
-   (a) the batch harvest returns empty (automatic fallback within
-   `url_discovery.py`) or (b) the call is inherently single-query
-   (`cultural_events.py`). 93% citation fidelity — second-best, and this
-   role's lower volume tolerates its higher latency budget (150s vs
-   Grok's ~25-90s).
+2. **Non-batch search fallback → Serper; cultural events → Grok.**
+   (a) The per-item fallback, used when the batch harvest returns empty
+   (automatic fallback within `url_discovery.py`), is Serper since
+   2026-08-24 — better coverage and sources on run 7's fallback items and
+   a fifth of the per-query price (§1). (b) The inherently single-query
+   `cultural_events.py` is Grok since 2026-08-15. Both were Claude when
+   this matrix was written (93% citation fidelity, second-best); both left
+   it on 2026-08-15 on cost, ~4.6x Grok for equivalent output, and an
+   account no longer funded.
 3. **OpenAI and Gemini are not eligible for search in production**, on
    direct evidence, regardless of how well either performs at content
    generation — the two capabilities don't track together (see
@@ -101,3 +108,10 @@ expected to shift as every provider "evolves their capabilities and seeks
 differentiation over time." Re-run `scripts/probe_multi_provider_search_2026.py`
 periodically (see that doc's §5) and update this table's search columns
 when citation-fidelity numbers move enough to change a role assignment.
+
+**A role assignment also changes when `config.yaml` does**, and that is the
+path this table missed: the non-batch column still said Claude on
+2026-09-13, four weeks after the config moved to Grok (2026-08-15) and three
+after it moved the fallback to Serper (2026-08-24), with the reasons written
+in the config's own comments. When a `*search_provider` value changes, change
+this table in the same commit.
