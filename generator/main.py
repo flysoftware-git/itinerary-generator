@@ -3589,6 +3589,22 @@ def main(
             "usage": _record_observed_models(llm_client, llm_effective),
         },
     }
+    if url_discoverer is not None:
+        # Links are final here and nowhere earlier: the retry pass, registry
+        # reconciliation and the restaurant cap all edit the trip after the
+        # audit. So this is where "a link a check found dead is not published"
+        # is enforced over every card link, and where the liveness report is
+        # recomputed to describe the page actually assembled. See
+        # generator/link_liveness_gate.py for the measured gaps it closes.
+        from generator.link_liveness_gate import withhold_dead_card_links
+
+        _gate = withhold_dead_card_links(trip, url_discoverer)
+        if _gate["withheld"] or _gate["checked_at_assembly"]:
+            click.echo(
+                f"  ✓ Link liveness at assembly: {_gate['withheld']} dead link(s) withheld, "
+                f"{_gate['items_removed']} item(s) removed, "
+                f"{_gate['checked_at_assembly']} link(s) checked for the first time"
+            )
     assembler = HTMLAssembler(config_path)
     html = assembler.assemble(trip)
 

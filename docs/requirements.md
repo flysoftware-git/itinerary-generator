@@ -874,6 +874,17 @@ Degenerate cases, and what each renders:
 The last row is the common case for every guide produced before the ledger shipped, and it
 is the one that must not be got wrong.
 
+**The promise is enforced where it is printed.** Immediately before assembly, every link a
+card renders (item links, route options, a leg's trail link, a local tip) is checked against
+the run's liveness ledger; one the run never fetched is fetched then. A link whose state is
+`dead` is removed from the card, and an attraction, restaurant or en-route stop left without
+a verified link is then handled by the verified-link-or-seed rule — removed, unless it is the
+traveller's own seed, which stays unlinked. The report is recomputed over the trip actually
+assembled, so its published set is the page's card links and its `dead` count is zero by
+construction; what was withheld is recorded as `withheld_dead`. Blocked and timed-out links
+are `unchecked`, not dead, and still publish. See `docs/design/url-discovery-and-audit.md`,
+"Dead Links at the Assembly Boundary".
+
 ---
 
 ## 9. CLI Interface
