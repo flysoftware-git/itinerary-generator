@@ -1371,11 +1371,9 @@ class HTMLAssembler:
                 title = item["title"]
                 url = item["url"]
                 opt = item["opt"]
-                source_icon = self._link_source_icon(url)
                 name_html = (
                     f'<a href="{self._safe_href(url)}" target="_blank" rel="noopener">{html_escape.escape(title)}</a>'
-                    f' <span class="attr-external-link" title="opens the source page">{source_icon}</span>'
-                    f'{self._link_unchecked_mark(url)}'
+                    f' {self._link_icon_html(url)}'
                 )
                 maps_corner_html = self._maps_corner_link_html(opt, url)
                 dist = str(opt.get("distance_or_duration", "") or "").strip()
@@ -2011,9 +2009,7 @@ class HTMLAssembler:
             '  <div class="leg-trail-link">\n'
             f'    \U0001f97e <a href="{self._safe_href(url)}" class="attr-link" '
             f'target="_blank" rel="noopener">{html_escape.escape(label)}</a>'
-            f' <span class="attr-external-link" title="opens the source page">'
-            f'{self._link_source_icon(url)}</span>'
-            f'{self._link_unchecked_mark(url)}\n'
+            f' {self._link_icon_html(url)}\n'
             '  </div>\n'
         )
 
@@ -2651,11 +2647,9 @@ class HTMLAssembler:
                 icon = stop_icons.get(stop_type, "📍")
                 stop_name = html_escape.escape(str(stop.get("name", "") or ""))
                 if url:
-                    source_icon = self._link_source_icon(url)
-                    name_html = (
+                        name_html = (
                         f'<a href="{self._safe_href(url)}" class="attr-link" target="_blank" rel="noopener">{stop_name}</a>'
-                        f' <span class="attr-external-link" title="opens the source page">{source_icon}</span>'
-                        f'{self._link_unchecked_mark(url)}'
+                        f' {self._link_icon_html(url)}'
                     )
                 else:
                     name_html = stop_name
@@ -2926,11 +2920,9 @@ class HTMLAssembler:
             icon = type_icons.get(attr_type, "📍")
             attr_name = html_escape.escape(str(attr.get("name", "") or ""))
             if url:
-                source_icon = self._link_source_icon(url)
                 name_html = (
                     f'<a href="{self._safe_href(url)}" class="attr-link" target="_blank" rel="noopener">{attr_name}</a>'
-                    f'<span class="attr-external-link" title="opens the source page">{source_icon}</span>'
-                    f'{self._link_unchecked_mark(url)}'
+                    f'{self._link_icon_html(url)}'
                 )
             else:
                 name_html = attr_name
@@ -3441,11 +3433,9 @@ class HTMLAssembler:
             )
             rest_name = html_escape.escape(display_name or rest_name_raw)
             if url:
-                source_icon = self._link_source_icon(url)
                 name_html = (
                     f'<a href="{self._safe_href(url)}" class="rest-link" target="_blank" rel="noopener">{rest_name}</a>'
-                    f' <span class="attr-external-link" title="opens the source page">{source_icon}</span>'
-                    f'{self._link_unchecked_mark(url)}'
+                    f' {self._link_icon_html(url)}'
                 )
             else:
                 name_html = rest_name
@@ -3675,13 +3665,21 @@ class HTMLAssembler:
             return "🗺️"
         return "🔗"
 
-    # The per-link half of the liveness statement. The class is what the
-    # footer legend looks for, matched as an attribute for the same reason as
-    # `_LINK_ICON_MARKUP`.
+    # What each source icon opens, as its hover text. Every icon used to say
+    # "opens the source page", the 🗺️ and 🥾 included.
+    _LINK_ICON_TITLES = {
+        "🥾": "opens the trail page",
+        "🗺️": "opens in Google Maps",
+        "🔗": "opens the source page",
+    }
+    # Class of the per-link note, matched as an attribute for the same reason
+    # as `_LINK_ICON_MARKUP`: the legend explains the faded icon only on a page
+    # that shows one.
     _LINK_UNCHECKED_MARK_MARKUP = 'class="link-unchecked-mark"'
-    _LINK_UNCHECKED_MARK_TITLE = (
-        "This link could not be checked before publishing, "
-        "usually because the site blocks automated checks"
+    _LINK_UNCHECKED_TITLE_SUFFIX = " — could not be checked before publishing"
+    _VISUALLY_HIDDEN_STYLE = (
+        "position:absolute;width:1px;height:1px;padding:0;margin:-1px;"
+        "overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;"
     )
 
     def _set_link_liveness_states(self, trip: dict[str, Any]) -> None:
@@ -3706,27 +3704,43 @@ class HTMLAssembler:
                     lookup.setdefault(normalized, str(state))
         self._link_liveness_states = lookup
 
-    def _link_unchecked_mark(self, url: str) -> str:
-        """A quiet "not checked" beside a card link the run could not check.
-
-        Only the `unchecked` state is marked. A live link renders as it always
-        has, and a link with no record -- a guide built without a report, or a
-        URL the report never listed -- gets no mark at all, because rendering
-        nothing is the one thing that does not claim it was checked or not.
-        The text is visible, not a colour or a symbol alone, and the `title`
-        says "usually" because unchecked also covers timeouts and a resolver's
-        temporary failure, not only a blocking site.
-        """
+    def _link_is_unchecked(self, url: str) -> bool:
         states = getattr(self, "_link_liveness_states", None) or {}
-        if not states:
-            return ""
-        if states.get(str(url or "").strip()) != "unchecked":
+        return bool(states) and states.get(str(url or "").strip()) == "unchecked"
+
+    def _link_unchecked_mark(self, url: str) -> str:
+        """Screen-reader text for a card link the run could not check.
+
+        Owner direction, 2026-09-14: tone the mark down. It was the visible
+        words "not checked", and on a Nashville build they sat beside 55 of 120
+        card links -- 7 of 10 in one attractions list -- for a distinction the
+        owner was not sure buys a reader anything. Sighted readers now get a
+        faded icon (`_link_icon_html`) with the reason in its hover text; this
+        span carries the same fact for anyone not reading the page visually,
+        so the distinction is quieter rather than gone.
+
+        Only the `unchecked` state is marked. A live link, a Google Maps link
+        (`map`, designated by its own icon) and a link with no liveness record
+        get nothing: absent is not a state.
+        """
+        if not self._link_is_unchecked(url):
             return ""
         return (
-            f' <span {self._LINK_UNCHECKED_MARK_MARKUP} '
-            f'title="{html_escape.escape(self._LINK_UNCHECKED_MARK_TITLE, quote=True)}" '
-            'style="font-size:0.72rem;color:#8a7a66;opacity:0.85;margin-left:0.2rem;'
-            'white-space:nowrap;font-weight:400;">not checked</span>'
+            f'<span {self._LINK_UNCHECKED_MARK_MARKUP} '
+            f'style="{self._VISUALLY_HIDDEN_STYLE}">(not checked before publishing)</span>'
+        )
+
+    def _link_icon_html(self, url: str) -> str:
+        """The small source icon after a card's link, faded when unchecked."""
+        icon = self._link_source_icon(url)
+        title = self._LINK_ICON_TITLES.get(icon, "opens the source page")
+        style = ""
+        if self._link_is_unchecked(url):
+            title += self._LINK_UNCHECKED_TITLE_SUFFIX
+            style = ' style="opacity:0.45;"'
+        return (
+            f'<span class="attr-external-link" title="{html_escape.escape(title, quote=True)}"{style}>'
+            f"{icon}</span>{self._link_unchecked_mark(url)}"
         )
 
     @staticmethod
@@ -4050,48 +4064,41 @@ class HTMLAssembler:
             return ""
         lead = "About the links."
         rest = text[len(lead):].lstrip()
+        # No lead of its own: it renders inside the "About the links"
+        # disclosure, whose summary already says so.
         return (
-            '<div class="link-liveness-note" '
-            'style="margin:0.45rem auto 0;max-width:46rem;">'
-            f"<strong>{lead}</strong> {html_escape.escape(rest)}"
+            '<div class="link-liveness-note" style="margin:0.35rem 0 0;">'
+            f"{html_escape.escape(rest)}"
             "</div>"
         )
 
     def _build_link_icon_legend(self, has_liveness_note: bool, has_unchecked_marks: bool = False) -> str:
-        """One line saying what the small icon after a card's link means.
+        """What the small icon after a card's link means.
 
-        `_link_source_icon` says what KIND of page a link opens -- a trail page,
-        a map, anything else -- and nothing more. Live, unchecked and dead links
-        render with the same icon, so a reader who takes it as a mark that the
-        link was confirmed working is reading something the page never said.
-        This line says what it does mean, and points at the one place the page
-        does report checking: the liveness statement rendered directly below.
+        `_link_source_icon` says what KIND of page a link opens and nothing
+        more, so the legend says that, and that the icon is not a claim the
+        link was checked. 🗺️ is described as what it usually is on a card: the
+        link a place gets when no page of its own was found. Owner direction,
+        2026-09-14: that is fine, "just so designate via icon".
 
-        That pointer is only written when the statement is there to point at. A
-        guide built before the liveness ledger existed has no statement, and a
-        sentence sending the reader "below" to nothing would be a small false
-        claim of exactly the kind this line exists to prevent.
-
-        The "not checked" mark (`_link_unchecked_mark`) is explained only on a
-        page that shows one. The sentence about the icon stays either way: an
-        unmarked link is not thereby a checked one -- a guide built without a
-        liveness report marks nothing -- so the legend never lets the absence
-        of a mark read as a confirmation.
+        The faded icon is explained only on a page that shows one, and the
+        pointer to the counts only when the statement is there to point at.
         """
         text = (
-            "🔗 opens the source page, 🥾 a trail page, 🗺️ a map. "
-            "The icon shows where a link goes, not whether it was checked"
+            "🔗 opens the source page, 🥾 a trail page, 🗺️ a location in Google "
+            "Maps, used when a place has no page of its own. The icon shows where "
+            "a link goes, not whether it was checked."
         )
         if has_unchecked_marks:
             text += (
-                ". A link marked “not checked” could not be checked before "
-                "publishing, usually because its site blocks automated checks"
+                " A faded icon means that link could not be checked before "
+                "publishing, usually because its site blocks automated checks."
             )
-        text += "; how many links could be checked is stated below." if has_liveness_note else "."
+        if has_liveness_note:
+            text += " How many links could be checked is below."
         return (
-            '<div class="link-icon-legend" '
-            'style="margin:0.45rem auto 0;max-width:46rem;">'
-            f"<strong>About the link icons.</strong> {html_escape.escape(text)}"
+            '<div class="link-icon-legend" style="margin:0.35rem 0 0;">'
+            f"{html_escape.escape(text)}"
             "</div>"
         )
 
@@ -4126,6 +4133,21 @@ class HTMLAssembler:
         legend = (
             self._build_link_icon_legend(bool(liveness), has_unchecked_marks)
             if has_link_icons
+            else ""
+        )
+        # Owner direction, 2026-09-14: link-check detail is "not recommended on
+        # the guide footer itself, perhaps another link accessible to the user
+        # could provide that info if needed". So it sits behind one quiet
+        # "About the links" -- a native <details>, collapsed, no script, so it
+        # works offline in the PWA -- rather than as two paragraphs every
+        # reader scrolls past.
+        link_notes = (
+            '<details class="link-notes" style="margin:0.35rem auto 0;max-width:46rem;">'
+            '<summary style="cursor:pointer;display:inline;text-decoration:underline;'
+            'text-underline-offset:2px;">About the links</summary>'
+            f'{legend}{liveness}'
+            '</details>'
+            if (legend or liveness)
             else ""
         )
         broken_link_issue_link = (
@@ -4196,8 +4218,7 @@ class HTMLAssembler:
             '>Itinerary Generator</a>'
             f' v{html_escape.escape(str(version))}{manifest_segment}'
             f' · Itinerary output: {html_escape.escape(shown_time)}'
-            f'{legend}'
-            f'{liveness}'
+            f'{link_notes}'
             f'{support}'
             '</div>'
             '</footer>'

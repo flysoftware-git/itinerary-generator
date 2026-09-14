@@ -83,17 +83,68 @@ def _rendered_with(trip: dict[str, Any] | None, url: str = TRAIL) -> str:
 # --- the mark ----------------------------------------------------------------
 
 
-def test_an_unchecked_card_link_carries_the_mark_with_readable_text():
+def test_an_unchecked_card_link_is_marked_quietly():
+    """Owner direction, 2026-09-14: "tone down the marks".
+
+    The visible words "not checked" sat beside 55 of 120 card links on a
+    Nashville build. Now the icon fades, its hover text gives the reason, and
+    the words survive only as screen-reader text -- quieter, not gone.
+    """
     card = _rendered_with({"_link_liveness": _report({TRAIL: "unchecked"})})
+
+    icon = re.search(r'<span class="attr-external-link"([^>]*)>', card).group(1)
+    assert 'style="opacity:0.45;"' in icon
+    assert 'title="opens the trail page — could not be checked before publishing"' in icon
 
     assert _MARK in card
     mark = card[card.index(_MARK):]
     mark = mark[: mark.index("</span>") + len("</span>")]
-    # Visible words, not a colour or a symbol alone.
-    assert re.sub(r"<[^>]+>", "", mark) == "not checked"
-    assert 'title="This link could not be checked before publishing, usually because the site blocks automated checks"' in mark
-    # Beside the icon, which is left exactly as it was.
-    assert card.index('<span class="attr-external-link" title="opens the source page">') < card.index(_MARK)
+    assert re.sub(r"<[^>]+>", "", mark) == "(not checked before publishing)"
+    assert "position:absolute" in mark and "clip:rect(0 0 0 0)" in mark, "must be visually hidden"
+    assert card.index('<span class="attr-external-link"') < card.index(_MARK)
+
+
+def test_a_google_maps_link_is_never_marked():
+    """A Maps link is its own state, designated by 🗺️, never "not checked".
+
+    On a Nashville build 15 of 62 unchecked links were geocode-built Maps
+    links recorded `never_fetched`; they were marked on 11 cards.
+    """
+    maps = "https://www.google.com/maps/search/?api=1&query=36.2883133%2C-86.6623429"
+    card = _rendered_with({"_link_liveness": {"states": {maps: "map"}}}, url=maps)
+    icon = re.search(r'<span class="attr-external-link"([^>]*)>', card).group(1)
+
+    assert _MARK not in card
+    assert "opacity" not in icon
+    assert 'title="opens in Google Maps"' in icon
+
+
+def test_the_report_puts_maps_links_in_their_own_state():
+    from generator.url_discovery import LINK_LIVENESS_MAP
+
+    d = URLDiscoverer.__new__(URLDiscoverer)
+    d._link_liveness = {LIVE_HOMEPAGE: ("live", "200")}
+    maps = "https://www.google.com/maps/search/?api=1&query=36.2883133%2C-86.6623429"
+    trip = {
+        "destinations": [{
+            "name": "Old Hickory, Tennessee",
+            "ai_content": {
+                "dinner_recommendations": [
+                    {"name": "Harbour Grill", "url": LIVE_HOMEPAGE},
+                    {"name": "No Website Diner", "url": maps},
+                ],
+                "getting_here": {},
+            },
+        }],
+    }
+    report = d.link_liveness_report(trip)
+
+    assert report["states"][maps] == LINK_LIVENESS_MAP
+    assert report["map_count"] == 1
+    assert report["published_count"] == 1, "only links that could be checked are counted"
+    assert report["counts"] == {"live": 1, "dead": 0, "unchecked": 0}
+    assert "www.google.com" not in report["unchecked_by_domain"]
+    assert report["unchecked_share"] == 0.0
 
 
 def test_a_live_card_link_renders_exactly_as_before():
@@ -251,11 +302,12 @@ def test_a_page_with_a_mark_explains_it_and_still_points_at_the_count():
     text = _legend_text(html)
 
     assert text == (
-        "About the link icons. 🔗 opens the source page, 🥾 a trail page, 🗺️ a map. "
+        "🔗 opens the source page, 🥾 a trail page, 🗺️ a location in Google Maps, "
+        "used when a place has no page of its own. "
         "The icon shows where a link goes, not whether it was checked. "
-        "A link marked “not checked” could not be checked before publishing, "
-        "usually because its site blocks automated checks; "
-        "how many links could be checked is stated below."
+        "A faded icon means that link could not be checked before publishing, "
+        "usually because its site blocks automated checks. "
+        "How many links could be checked is below."
     )
 
 

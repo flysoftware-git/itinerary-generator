@@ -6041,7 +6041,10 @@ def test_the_statement_lands_in_the_footer_provenance_block():
     footer = assembler._build_generator_footer(trip)
 
     assert '<div class="link-liveness-note"' in footer
-    assert "<strong>About the links.</strong>" in footer
+    # Behind the collapsed "About the links" disclosure (owner direction,
+    # 2026-09-14), whose summary is the statement's only lead.
+    assert ">About the links</summary>" in footer
+    assert footer.index("<summary") < footer.index("link-liveness-note") < footer.index("</details>")
     # Below what built the page, above where a reader takes a problem.
     assert footer.index("Itinerary output:") < footer.index("link-liveness-note")
     assert footer.index("link-liveness-note") < footer.index("Issue reporting:")
