@@ -874,6 +874,22 @@ Degenerate cases, and what each renders:
 The last row is the common case for every guide produced before the ledger shipped, and it
 is the one that must not be got wrong.
 
+**The link icon is explained directly above the statement.** The small icon after a card's
+link (`_link_source_icon`: 🥾 a trail page, 🗺️ a map, 🔗 anything else) says what kind of page
+the link opens. Live, unchecked and dead links render the same icon, so it cannot mean the link
+was confirmed — yet nothing on the page said what it did mean. `_build_link_icon_legend` renders
+one line, only when the page shows at least one icon:
+
+```
+About the link icons. 🔗 opens the source page, 🥾 a trail page, 🗺️ a map. The icon shows
+where a link goes, not whether it was checked; how many links could be checked is stated below.
+```
+
+The closing clause is written only when the liveness statement is there to point at; without
+it the line ends at "checked." The icon's `title` reads "opens the source page". The legend
+never uses "verified", "confirmed" or "working" — those belong to the statement, which has the
+counts to back them.
+
 ---
 
 ## 9. CLI Interface
