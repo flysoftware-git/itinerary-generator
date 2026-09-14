@@ -833,13 +833,32 @@ ordinary rather than exotic, and on the page the two were indistinguishable. Tha
 conflation the tri-state liveness ledger records (`url_discovery.link_liveness_report`); it
 reached the validation report and stopped there. This section carries it the last hop.
 
-`html_assembler._build_link_liveness_note` renders **one statement**, in the footer, between
-the provenance line and the support line. It carries the totals. A badge on every link would be
-a different, noisier claim, so the only per-link mark is the quiet "not checked" on the links
-that could not be checked (below), and the statement stays the source of the counts.
+`html_assembler._build_link_liveness_note` renders **one statement**. It carries the totals. A
+badge on every link would be a different, noisier claim, so the only per-link mark is a faded
+icon on the links that could not be checked (below), and the statement stays the source of the
+counts.
+
+**It is not on the footer face.** Owner direction, 2026-09-14: link-check detail "is not
+recommended on the guide footer itself, perhaps another link accessible to the user could
+provide that info if needed". The icon legend and this statement render inside one collapsed
+native `<details class="link-notes">` between the provenance line and the support line, whose
+summary reads "About the links". No script, so it works offline; no `open` attribute, so the
+footer face shows only that one quiet link. Nothing is rendered when there is neither a legend
+nor a statement to disclose.
+
+**Google Maps links are not part of any count.** `url_discovery.is_maps_link` — the same test
+that gives a card the 🗺️ icon — puts a Maps link in its own state, `map`, with detail
+`maps_link`. It is listed in `states`, so a card can tell what it renders, but it is kept out of
+`counts`, `published_count`, `unchecked_share` and `unchecked_by_domain`; the report carries
+`map_count` instead. A Maps link is a location the engine points at, usually because a place had
+no page of its own, and "a link that resolves to Google maps is fine if the restaurant link
+(for example) can't otherwise be found, just so designate via icon". Counted as `unchecked` it
+was marked on its card and put google.com first among "sites that refuse automated requests"
+on a guide where Google had refused nothing: the assembly gate skips it as engine-built, so it
+was recorded `never_fetched`. Measured on a Nashville build: 15 of 62 unchecked links.
 
 ```
-About the links. 81 of the 115 links in this guide were fetched and found working. The
+81 of the 115 links in this guide were fetched and found working. The
 other 34 could not be reached to check from here — mostly sites that refuse automated
 requests: TripAdvisor, OpenTable, AllTrails, Yelp — and nothing has been guessed in place of
 checking. No link that failed a check was published.
@@ -876,39 +895,43 @@ The last row is the common case for every guide produced before the ledger shipp
 is the one that must not be got wrong.
 
 **The link icon is explained directly above the statement.** The small icon after a card's
-link (`_link_source_icon`: 🥾 a trail page, 🗺️ a map, 🔗 anything else) says what kind of page
-the link opens. Live, unchecked and dead links render the same icon, so it cannot mean the link
-was confirmed — yet nothing on the page said what it did mean. `_build_link_icon_legend` renders
-one line, only when the page shows at least one icon:
+link (`_link_source_icon`: 🥾 a trail page, 🗺️ a Google Maps location, 🔗 anything else) says
+what kind of page the link opens. Live, unchecked and dead links render the same icon, so it
+cannot mean the link was confirmed. `_build_link_icon_legend` renders one line inside the
+disclosure, only when the page shows at least one icon:
 
 ```
-About the link icons. 🔗 opens the source page, 🥾 a trail page, 🗺️ a map. The icon shows
-where a link goes, not whether it was checked; how many links could be checked is stated below.
+🔗 opens the source page, 🥾 a trail page, 🗺️ a location in Google Maps, used when a place
+has no page of its own. The icon shows where a link goes, not whether it was checked. How many
+links could be checked is below.
 ```
 
-The closing clause is written only when the liveness statement is there to point at; without
-it the line ends at "checked." The icon's `title` reads "opens the source page". The legend
-never uses "verified", "confirmed" or "working" — those belong to the statement, which has the
-counts to back them.
+The last sentence is written only when the liveness statement is there to point at. Each icon's
+`title` says what it opens: "opens the source page", "opens the trail page", "opens in Google
+Maps" (every icon used to read "opens the source page", 🗺️ and 🥾 included). The legend never
+uses "verified", "confirmed" or "working" — those belong to the statement, which has the counts
+to back them.
 
-**A card link that could not be checked says so, beside its icon.** `_link_unchecked_mark`
-renders a small, subdued, visible "not checked" after the icon of a card link whose state in
-`trip["_link_liveness"]["states"]` is `unchecked`, with the `title` "This link could not be
-checked before publishing, usually because the site blocks automated checks". "Usually",
-because `unchecked` also covers timeouts and a resolver's temporary failure. A `live` link
-renders exactly as before. A link with **no record** — a guide built without a report, or a URL
-the report does not list — renders with no mark either way: absent is not a state. On a page
-that shows at least one mark, the legend adds one sentence:
+**A card link that could not be checked is marked quietly.** Owner direction, 2026-09-14: "tone
+down the marks". The visible words "not checked" stood beside 55 of 120 card links on a Nashville
+build, 7 of 10 in one attractions list. A card link whose state is `unchecked` now renders its
+usual icon at reduced opacity, with " — could not be checked before publishing" appended to its
+`title`, and `_link_unchecked_mark` adds the words "(not checked before publishing)" as
+visually hidden text, so the fact is quieter rather than gone for anyone not reading the page
+visually. A `live` link, a `map` link, and a link with **no record** — a guide built without a
+report, or a URL the report does not list — render the icon at full strength with no mark:
+absent is not a state. On a page that shows at least one faded icon, the legend adds one
+sentence:
 
 ```
-About the link icons. 🔗 opens the source page, 🥾 a trail page, 🗺️ a map. The icon shows
-where a link goes, not whether it was checked. A link marked “not checked” could not be
-checked before publishing, usually because its site blocks automated checks; how many links
-could be checked is stated below.
+🔗 opens the source page, 🥾 a trail page, 🗺️ a location in Google Maps, used when a place
+has no page of its own. The icon shows where a link goes, not whether it was checked. A faded
+icon means that link could not be checked before publishing, usually because its site blocks
+automated checks. How many links could be checked is below.
 ```
 
-The "not whether it was checked" clause stays, so an unmarked link never reads as a checked
-one. The marks cover the links that carry an icon; the statement's unchecked count also
+The "not whether it was checked" clause stays, so a full-strength icon never reads as a checked
+link. The marks cover the links that carry an icon; the statement's unchecked count also
 includes links rendered without one (a scenic drive, an event, a local tip), so the two agree
 only on a guide whose every reported link has an icon.
 

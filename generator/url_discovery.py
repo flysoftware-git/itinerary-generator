@@ -391,6 +391,21 @@ DEFAULT_DOMAIN_BLOCK_COOLDOWN_SECONDS = 8.0
 LINK_LIVENESS_LIVE = "live"
 LINK_LIVENESS_DEAD = "dead"
 LINK_LIVENESS_UNCHECKED = "unchecked"
+# A Google Maps link is not a page anyone could find dead: it is a location the
+# engine points at, most often because a place had no page of its own to link.
+# It is reported under its own state rather than `unchecked` because it was
+# never a candidate for checking -- the assembly gate skips it as engine-built,
+# so it read as `never_fetched`, was marked "not checked" on its card, and put
+# google.com first among "sites that refuse automated requests" in the footer
+# of a guide where Google had refused nothing. Measured on a Nashville build:
+# 15 of 62 unchecked links. The 🗺️ icon designates it on the card.
+LINK_LIVENESS_MAP = "map"
+
+
+def is_maps_link(url: str | None) -> bool:
+    """True for a Google Maps link, by the same test the card's 🗺️ icon uses."""
+    lower = str(url or "").lower()
+    return "google.com/maps" in lower or "maps.google." in lower or "maps.app.goo.gl" in lower
 # Precedence when one URL is observed more than once in a run. Fail-closed
 # ordering, and order-independent by construction: a dead observation is never
 # laundered by a later live one, and a live observation always beats "we never
@@ -14876,7 +14891,16 @@ class URLDiscoverer:
         details: dict[str, str] = {}
         counts = {LINK_LIVENESS_LIVE: 0, LINK_LIVENESS_DEAD: 0, LINK_LIVENESS_UNCHECKED: 0}
         unchecked_by_domain: dict[str, int] = {}
+        map_count = 0
         for url in sorted(published):
+            # Maps links are listed, so a card can tell what it is rendering,
+            # and counted apart: `published_count` and every share below stay
+            # about links that could be checked at all.
+            if is_maps_link(url):
+                states[url] = LINK_LIVENESS_MAP
+                details[url] = "maps_link"
+                map_count += 1
+                continue
             entry = recorded.get(url)
             state, detail = entry if entry else (LINK_LIVENESS_UNCHECKED, "never_fetched")
             states[url] = state
@@ -14886,12 +14910,13 @@ class URLDiscoverer:
                 domain = urlparse(url).netloc.lower()
                 if domain:
                     unchecked_by_domain[domain] = unchecked_by_domain.get(domain, 0) + 1
-        total = len(states)
+        total = len(states) - map_count
         return {
             "states": states,
             "details": details,
             "counts": counts,
             "published_count": total,
+            "map_count": map_count,
             "unchecked_share": (counts[LINK_LIVENESS_UNCHECKED] / total) if total else 0.0,
             "unchecked_by_domain": dict(
                 sorted(unchecked_by_domain.items(), key=lambda row: (-row[1], row[0]))

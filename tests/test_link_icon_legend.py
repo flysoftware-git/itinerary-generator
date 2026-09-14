@@ -56,8 +56,10 @@ def test_a_guide_with_a_link_icon_explains_it():
     html = assembler._inject_generator_footer(_page(card), _trip())
 
     assert _LEGEND in html
-    assert "<strong>About the link icons.</strong>" in html
     assert "not whether it was checked" in html
+    # Inside the collapsed "About the links" disclosure, not on the footer face.
+    notes = html[html.index('<details class="link-notes"'):]
+    assert notes.index("<summary") < notes.index(_LEGEND) < notes.index("</details>")
 
 
 def test_a_guide_without_a_link_icon_has_no_legend():
@@ -83,7 +85,17 @@ def test_the_stylesheet_naming_the_class_does_not_count_as_an_icon():
 def test_the_card_icon_keeps_its_class():
     card = _card_with_link_icon(_assembler())
 
-    assert '<span class="attr-external-link" title="opens the source page">' in card
+    assert '<span class="attr-external-link" title="opens the trail page">' in card
+
+
+def test_each_icon_says_what_it_opens():
+    """Every icon's hover text said "opens the source page", the 🗺️ and 🥾 included."""
+    a = _assembler()
+    assert 'title="opens the trail page">🥾<' in a._link_icon_html("https://www.alltrails.com/trail/us/utah/x")
+    assert 'title="opens in Google Maps">🗺️<' in a._link_icon_html(
+        "https://www.google.com/maps/search/?api=1&query=36.28%2C-86.66"
+    )
+    assert 'title="opens the source page">🔗<' in a._link_icon_html("https://www.example-grill.com/")
 
 
 def test_the_legend_never_claims_a_link_was_verified():
@@ -102,7 +114,7 @@ def test_the_legend_points_below_only_when_the_statement_is_there():
     assembler = _assembler()
 
     with_report = assembler._build_generator_footer(_trip(_REPORT), has_link_icons=True)
-    assert "how many links could be checked is stated below" in with_report
+    assert "How many links could be checked is below." in with_report
     # Directly above the statement it points at.
     assert with_report.index(_LEGEND) < with_report.index('<div class="link-liveness-note"')
 
@@ -118,3 +130,34 @@ def test_the_footer_is_unchanged_when_no_icon_is_shown():
         assembler._build_generator_footer(_trip(_REPORT), has_link_icons=False)
     )
     assert _LEGEND not in assembler._build_generator_footer(_trip(_REPORT))
+
+
+# ── Owner direction, 2026-09-14: link detail off the footer face ────────────
+
+
+def test_link_detail_is_behind_a_collapsed_disclosure():
+    """"Showing this detail is not recommended on the guide footer itself,
+    perhaps another link accessible to the user could provide that info."
+
+    A native <details>: no script, so it works offline, and collapsed by
+    default -- no `open` attribute -- so the footer face shows one quiet
+    "About the links" and nothing else about link checking.
+    """
+    footer = _assembler()._build_generator_footer(_trip(_REPORT), has_link_icons=True)
+
+    assert '<details class="link-notes"' in footer
+    details = footer[footer.index('<details class="link-notes"'):footer.index("</details>")]
+    assert " open" not in details.split(">", 1)[0]
+    assert "<summary" in details and ">About the links</summary>" in details
+    assert '<div class="link-liveness-note"' in details
+    # Nothing about link checking outside it.
+    outside = footer.replace(footer[footer.index('<details class="link-notes"'):footer.index("</details>") + len("</details>")], "")
+    for phrase in ("fetched and found working", "could not be reached", "not whether it was checked"):
+        assert phrase not in outside
+
+
+def test_no_disclosure_when_there_is_nothing_to_disclose():
+    footer = _assembler()._build_generator_footer(_trip(), has_link_icons=False)
+
+    assert "link-notes" not in footer
+    assert "About the links" not in footer
