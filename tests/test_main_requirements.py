@@ -2458,3 +2458,21 @@ def test_every_duplicate_reason_the_engine_emits_is_recognised() -> None:
 
     for reason in ("no_verified_url_removed", "closure_removed", "audit_url_rejected", ""):
         assert not _is_duplicate_rejection(reason), reason
+
+
+def test_no_mail_safe_copy_is_written() -> None:
+    """The script-free `index-email.html` copy is gone (owner, 2026-09-15).
+
+    It existed because Gmail rejected `index.html` as a virus. The causes were
+    removed instead -- the scenic-drive modal built in the browser (#126), and
+    the download button and file:// manifest that assembled files there (#156)
+    -- and the owner confirmed an `index.html` built after those fixes sent
+    "without virus complaints", so the second artifact has no job left.
+    """
+    import inspect
+
+    source = inspect.getsource(main_mod)
+    assert "index-email" not in source
+    assert "email_safe" not in source
+    with pytest.raises(ImportError):
+        __import__("generator.email_safe")
