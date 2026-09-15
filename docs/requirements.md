@@ -386,6 +386,7 @@ The manifest is intentionally minimal. All geocoding, NPS detection, URL discove
 | `seeds[]` | ❌ optional | Attraction/hike/experience **name hints only** — things the user specifically intends to include. No URLs. No scenic drive titles (AI discovers those). |
 | `lodging.confirmation_number` | ❌ optional | Booking code for the stay. Rendered in the lodging card; **redacted** in privacy-redacted builds (§11.1) — on most booking sites this code plus a surname is enough to view, change or cancel a reservation |
 | `lodging.website` | ❌ optional | Public URL for the lodging property. **Redacted** alongside `lodging.name`: the URL identifies the property just as precisely as the name, so exempting it would leak the same where-the-traveler-sleeps-on-which-dates fact |
+| `lodging.locality` | ❌ optional | `{city, region, country}` — the town the stay is in, as distinct from `lodging.location`, which ingestion fills with the street address (§3.4). Not redacted: a town is what the destination name already publishes |
 | `transportation[]` | ❌ optional | Booked travel legs **arriving at this destination**, each `{type, provider, label, confirmation_number, depart, arrive, website}` with `type` one of `plane`/`train`/`car`/`other`. Attaches to the arriving destination, mirroring `en_route_seeds`. Rendered as header pills. **Cleared entirely** in privacy-redacted builds |
 
 ### 3.4 Reservation Sidecar (generated, not hand-authored)
@@ -419,6 +420,14 @@ Requirements:
   left unread in the mailbox for a manifest that may not exist yet.
 - With no sidecar present the build is valid and simply renders no booking
   cards or travel chips.
+- An ingested lodging fragment carries the property's name as `lodging.name`
+  (the extraction prompt's documented key; `property_name`, `hotel_name`,
+  `hotel`, `property` and `provider` are accepted in that order when the model
+  uses one of them instead), the street address as printed in
+  `lodging.location`, and the place as `lodging.locality` —
+  `{city, region, country}`, each part present only when stated. A stay whose
+  confirmation states no name carries no `name`: none is derived from the
+  address, the room type or the subject line.
 
 Full behaviour, matching signals and security posture:
 [`docs/design/reservation-email-ingestion.md`](design/reservation-email-ingestion.md).

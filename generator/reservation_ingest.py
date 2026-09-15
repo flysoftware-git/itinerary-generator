@@ -80,6 +80,7 @@ Return STRICT JSON with this shape:
 {
   "kind": "lodging" | "transportation" | "none",
   "type": {TRANSPORT_TYPES},
+  "name": string,
   "provider": string,
   "label": string,
   "confirmation_number": string,
@@ -94,6 +95,7 @@ Return STRICT JSON with this shape:
   "checkin_time": string,
   "dates": string,
   "city": string,
+  "locality": { "city": string, "region": string, "country": string },
   "stops": [ { "place": string, "date": string,
                "arrive_time": string, "depart_time": string } ]
 }
@@ -108,6 +110,15 @@ Rules:
 - "city" must be the destination city or park the booking is FOR, as plainly
   as possible (e.g. "Springdale, UT"), since it is used to match the booking
   to an itinerary stop.
+- "name" is the lodging property's own name exactly as the email prints it
+  (e.g. "Candlewood Suites Oak Harbor"), for kind "lodging". Never a street
+  address, a room type or the booking site. Use "" for transportation: the
+  company operating a journey goes in "provider".
+- "location" is the street address as the email prints it.
+- "locality" is where the booking is, split into its parts: "city" is the town
+  or city alone ("Oak Harbor"), "region" the state, province or county
+  ("WA"), "country" the country ("United States"). Never a street address or
+  postcode. Leave any part "" that the email does not state.
 - "stops" is the itinerary of a multi-stop booked leg, in the order the
   traveler reaches them: the ports of a cruise, the cities of a multi-city rail
   fare. Include the embarkation port as the first entry when the email names
@@ -481,7 +492,10 @@ def score_destination_match(reservation: dict[str, Any], dest: dict[str, Any]) -
     #  - Fixing that by scoring flights on `arrive` alone then broke the
     #    outbound flight home, which DEPARTS the return gateway and arrives
     #    somewhere that is not on the itinerary at all.
-    base_fields = ("city", "location", "label", "provider")
+    # `name` joined these when the prompt began asking for it: the hotel's name
+    # used to arrive under `provider`, and moving it must not take its tokens
+    # out of the match.
+    base_fields = ("city", "location", "label", "provider", "name")
     base_text = " ".join(str(reservation.get(k, "") or "") for k in base_fields)
 
     kind = str(reservation.get("type", "") or "").strip().lower()
@@ -666,6 +680,89 @@ def _currency_code(value: Any) -> str:
     return _UNAMBIGUOUS_CURRENCY_SYMBOLS.get(said, said)
 
 
+#: Where a lodging property's name may arrive, in the order they are trusted.
+#: `name` is the key the extraction prompt documents. The rest are what models
+#: have been seen to use instead, or plausibly will: before `name` was in the
+#: prompt at all, every lodging extraction put the hotel under `provider` --
+#: the only name-shaped key it offered -- and the fragment kept only `name`, so
+#: every ingested stay arrived with no property name and a consumer looking
+#: for the place had nothing but the street address. `provider` is last
+#: because for a stay booked through an agency it can name the agency rather
+#: than the property; it is still better than nothing when nothing else is set.
+LODGING_NAME_KEYS = ("name", "property_name", "hotel_name", "hotel", "property", "provider")
+
+#: Aliases accepted inside a `locality` object, per part.
+_LOCALITY_PART_KEYS = {
+    "city": ("city", "town"),
+    "region": ("region", "state", "province"),
+    "country": ("country",),
+}
+
+
+def _lodging_name(reservation: dict[str, Any]) -> str:
+    """The property's name, from whichever key the extraction put it under.
+
+    Never derived from anything else. A stay with no stated name has none: the
+    street address is not a name, the room type is not a name, and the subject
+    line is a sentence about a name. An empty result is the honest one.
+    """
+    for key in LODGING_NAME_KEYS:
+        value = reservation.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _locality(reservation: dict[str, Any]) -> dict[str, str]:
+    """Town, region and country, each on its own, never a street address.
+
+    Prefers the structured `locality` object the prompt asks for. Where the
+    model returned only the flat `city` matching string ("Oak Harbor, WA") --
+    which every extraction made before `locality` existed does -- that string
+    is split, conservatively:
+
+    * one part is the city;
+    * three parts are city, region, country;
+    * two parts are city and region only when the second is a two-letter
+      upper-case code ("UT", "WA", "NSW" is three and is left out). "Split,
+      Croatia" names a country and "Kanab, Utah" a state, and nothing in the
+      string says which, so the second part is dropped rather than filed under
+      the wrong one.
+
+    A part containing a digit is a street number or a postcode, not a place,
+    and is refused -- a city that is one means no city at all.
+    """
+    def _part(value: Any) -> str:
+        text = str(value or "").strip() if isinstance(value, (str, int, float)) else ""
+        return "" if any(ch.isdigit() for ch in text) else text
+
+    out: dict[str, str] = {}
+    structured = reservation.get("locality")
+    if isinstance(structured, dict):
+        for part, keys in _LOCALITY_PART_KEYS.items():
+            for key in keys:
+                value = _part(structured.get(key))
+                if value:
+                    out[part] = value
+                    break
+
+    if not out.get("city"):
+        pieces = [p.strip() for p in str(reservation.get("city", "") or "").split(",")]
+        pieces = [p for p in pieces if p]
+        if pieces and _part(pieces[0]):
+            out["city"] = pieces[0]
+            if len(pieces) == 3:
+                if _part(pieces[1]):
+                    out.setdefault("region", pieces[1])
+                if _part(pieces[2]):
+                    out.setdefault("country", pieces[2])
+            elif len(pieces) == 2:
+                second = pieces[1]
+                if len(second) == 2 and second.isalpha() and second.isupper():
+                    out.setdefault("region", second)
+    return {k: out[k] for k in ("city", "region", "country") if out.get(k)}
+
+
 def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """Convert an extraction into the manifest shape it belongs in.
 
@@ -701,10 +798,22 @@ def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, 
         # stating what the stay costs reached the manifest without it, and a
         # consumer adding up a trip could only estimate a price the document
         # had already given.
+        #
+        # `name` is read through `_lodging_name` rather than `_clean`, because
+        # the prompt never asked for it until it did and the model put the
+        # hotel under `provider` instead: every ingested stay lost its name,
+        # and the only place-shaped thing left on it was the street address.
+        # `location` stays exactly what the email printed -- it is the routing
+        # anchor -- and `locality` says which town that address is in, so no
+        # consumer has to treat a street address as a place.
         lodging = _clean(
-            ("name", "location", "dates", "checkin_time", "confirmation_number", "website",
+            ("location", "dates", "checkin_time", "confirmation_number", "website",
              "total_cost")
         )
+        if (name := _lodging_name(reservation)):
+            lodging = {"name": name, **lodging}
+        if (where := _locality(reservation)):
+            lodging["locality"] = where
         if lodging.get("total_cost") and (money := _currency_code(reservation.get("currency"))):
             lodging["currency"] = money
         return "lodging", lodging

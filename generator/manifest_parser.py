@@ -549,6 +549,25 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                         "properties": {
                             "name": {"type": "string"},
                             "location": {"type": "string", "minLength": 2},
+                            "locality": {
+                                "type": "object",
+                                "description": "Optional: the town, region and country the "
+                                               "stay is in, each as its own part -- the place, "
+                                               "as distinct from `location`, which reservation "
+                                               "ingestion fills with the street address exactly "
+                                               "as the confirmation prints it. Written by "
+                                               "ingestion so a consumer asking 'which town' "
+                                               "never has to parse an address. NOT redacted in "
+                                               "privacy-redacted builds: a town is what "
+                                               "destination.name already publishes, and it is "
+                                               "the property name that identifies a stay.",
+                                "properties": {
+                                    "city": {"type": "string"},
+                                    "region": {"type": "string"},
+                                    "country": {"type": "string"},
+                                },
+                                "additionalProperties": False,
+                            },
                             "dates": {
                                 "type": "string",
                                 "description": "Optional free text for when the stay itself "
