@@ -210,6 +210,56 @@ def test_a_lodging_stay_window_survives_the_merge_into_a_manifest() -> None:
     assert trip["destinations"][0]["lodging"]["dates"] == "October 17-19, 2026"
 
 
+def test_a_lodging_fragment_keeps_what_the_stay_costs() -> None:
+    """The extraction prompt asks every booking for `total_cost` and `currency`,
+    and a transportation leg keeps them; the lodging branch dropped them, so a
+    confirmation stating the price of a stay reached the manifest without it.
+    Red with `total_cost` taken back out of the lodging keys."""
+    _, fragment = reservation_to_manifest_fragment(
+        {"kind": "lodging", "name": "The Swan Hotel", "location": "Port Townsend, WA",
+         "dates": "October 17-19, 2026", "total_cost": "412.00", "currency": "usd"}
+    )
+    assert fragment["total_cost"] == "412.00"
+    assert fragment["currency"] == "USD"
+
+    _, unpriced = reservation_to_manifest_fragment(
+        {"kind": "lodging", "location": "Port Townsend, WA", "currency": "USD"}
+    )
+    assert "total_cost" not in unpriced and "currency" not in unpriced, (
+        "a currency with no amount says nothing")
+
+
+def test_a_priced_stay_is_a_valid_manifest_and_merges() -> None:
+    """The schema accepts what ingestion now writes, so a merged manifest does
+    not fail validation on it."""
+    import jsonschema
+
+    from generator.manifest_parser import MANIFEST_SCHEMA
+
+    lodging_schema = (MANIFEST_SCHEMA["properties"]["destinations"]["items"]
+                      ["properties"]["lodging"])
+    jsonschema.validate({"location": "Port Townsend, WA", "total_cost": "412.00",
+                         "currency": "USD"}, lodging_schema)
+
+    trip = {"destinations": [{"id": "pt", "name": "Port Townsend",
+                              "lodging": {"location": "Port Townsend, WA"}}]}
+    merge_sidecar_into_trip(
+        trip, {"destinations": {"pt": {"lodging": {"total_cost": "412.00", "currency": "USD"}}}}
+    )
+    assert trip["destinations"][0]["lodging"]["total_cost"] == "412.00"
+
+
+def test_a_privacy_redacted_build_clears_what_a_stay_cost() -> None:
+    import generator.main as main_mod
+
+    trip = {"destinations": [{"name": "Port Townsend", "lodging": {
+        "location": "Port Townsend, WA", "total_cost": "412.00", "currency": "USD"}}]}
+    main_mod._apply_privacy_redaction(trip)
+    lodging = trip["destinations"][0]["lodging"]
+    assert "total_cost" not in lodging and "currency" not in lodging
+    assert lodging["location"] == "Port Townsend, WA"
+
+
 def test_fragment_drops_fields_the_email_never_stated() -> None:
     """A partial extraction must fill only what it knows, so the manifest's own
     values survive for everything else."""

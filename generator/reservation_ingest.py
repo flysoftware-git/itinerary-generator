@@ -694,9 +694,20 @@ def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, 
         # *"arriving around {checkin_time}"* -- so a date written there comes
         # out of the generator as prose about arriving around a date. The two
         # answer different questions and the prompt asks for both.
-        return "lodging", _clean(
-            ("name", "location", "dates", "checkin_time", "confirmation_number", "website")
+        #
+        # `total_cost` and `currency` are the same hole a second time. The
+        # extraction prompt asks every booking for both, a transportation leg
+        # keeps them, and this branch dropped them -- so a hotel confirmation
+        # stating what the stay costs reached the manifest without it, and a
+        # consumer adding up a trip could only estimate a price the document
+        # had already given.
+        lodging = _clean(
+            ("name", "location", "dates", "checkin_time", "confirmation_number", "website",
+             "total_cost")
         )
+        if lodging.get("total_cost") and (money := _currency_code(reservation.get("currency"))):
+            lodging["currency"] = money
+        return "lodging", lodging
 
     fragment = _clean((
         "provider", "label", "confirmation_number", "depart", "arrive",
