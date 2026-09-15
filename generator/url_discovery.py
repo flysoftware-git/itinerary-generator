@@ -553,7 +553,29 @@ _RETENTION_EXIT_LABELS = {
     29: 'if not self._is_relevant_result(url, item_name, dest_name, candidate=candidate, deep_check=deep_check, item_description=',
     30: "if allow_google_maps_search and policy_class in {'google_maps_search', 'google_maps_dir'}",
     31: "if kind in {'generic', 'attraction'} and self._is_the_destinations_own_page(url, item_name, dest_name)",
+    32: 'if self._is_not_a_visitor_page(url)',
 }
+
+#: Path segments naming a page of a business's own site that is not the page a
+#: reader is sent to for that business: jobs, legal, FAQ, gallery, company
+#: history, blog furniture. Measured 2026-09-13 on two builds of one ten-stop
+#: route: about 1 restaurant link in 7 upgraded from an aggregator to the
+#: official domain landed on one of these (a job listing, a privacy policy, a
+#: 2019 blog post), because the homepage check accepted any one-segment path
+#: on a name-matching host and the relevance gate accepts any page that names
+#: the restaurant. Matched as whole segments, so /menu, /visit or /locations
+#: are untouched.
+NOT_A_VISITOR_PAGE_SEGMENTS = frozenset({
+    "careers", "career", "jobs", "job", "job-opportunities", "employment",
+    "join-our-team", "join-the-team", "work-with-us", "hiring",
+    "privacy", "privacypolicy", "privacy-policy", "terms", "terms-of-use",
+    "terms-of-service", "terms-and-conditions", "cookie-policy",
+    "faq", "faqs", "gallery", "photos", "our-story", "our-history",
+    "history", "community", "weddings", "catering",
+    "blog", "news", "press", "category", "tag", "author",
+})
+#: Host labels of a business's recruiting site (careers.example.com).
+NOT_A_VISITOR_PAGE_HOST_LABELS = frozenset({"careers", "jobs", "employment", "hiring"})
 
 DEFAULT_FALLBACK_MODE = "search"
 DEFAULT_DIRECT_LINK_BATCH_COUNT = 20
@@ -3817,6 +3839,14 @@ class URLDiscoverer:
                 )
                 return self._reject_retention(15)
             _rest_tokens = self._restaurant_significant_tokens(item_name)
+            if self._is_not_a_visitor_page(url):
+                logger.info(
+                    "URL rejected not a visitor page for %s '%s': %s",
+                    kind,
+                    item_name,
+                    url,
+                )
+                return self._reject_retention(32)
             if self._looks_like_item_specific_homepage(url, item_name, item_tokens=_rest_tokens):
                 return url
             if self._is_generic_restaurant_landing_url(url, item_name, dest_name, item_tokens=_rest_tokens):
@@ -14325,6 +14355,29 @@ class URLDiscoverer:
             return True
 
         return True
+
+    @staticmethod
+    def _is_not_a_visitor_page(url: str) -> bool:
+        """True for a page of a site that is not the one to send a reader to.
+
+        A recruiting host, a path segment in NOT_A_VISITOR_PAGE_SEGMENTS, or a
+        dated blog path (/2019/10/15/...). Deliberately says nothing about
+        whether the host is the right business: it answers only "is this the
+        page", which neither the homepage check nor the relevance gate asks.
+        """
+        parsed = urlparse(str(url or "").strip())
+        host = (parsed.netloc or "").lower().split(":", 1)[0]
+        if not host:
+            return False
+        if host.split(".", 1)[0] in NOT_A_VISITOR_PAGE_HOST_LABELS:
+            return True
+        segments = [s.lower() for s in unquote(parsed.path or "").split("/") if s]
+        if any(s in NOT_A_VISITOR_PAGE_SEGMENTS for s in segments):
+            return True
+        for a, b in zip(segments, segments[1:]):
+            if len(a) == 4 and a.isdigit() and 1990 <= int(a) <= 2100 and len(b) <= 2 and b.isdigit():
+                return True
+        return False
 
     def _looks_like_item_specific_homepage(self, url: str, item_name: str, *, item_tokens: list[str] | None = None) -> bool:
         candidate = str(url or "").strip()
