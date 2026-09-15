@@ -565,9 +565,9 @@
             <button data-id="8" id="pwa-install-btn" style="display:none;" class="no-print bg-white text-terracotta border-2 border-terracotta px-4 py-2 rounded-lg font-semibold text-sm flex items-center gap-2 hover:bg-terracotta hover:text-white transition min-h-[44px]">
               ⬇️ Install App
             </button>
-            <button data-id="9" id="print-btn-a1b2" class="no-print bg-terracotta text-white px-4 py-2 rounded-lg font-semibold text-sm flex items-center gap-2 hover:bg-canyon transition min-h-[44px]">
-              <span data-id="10">⬇️</span> Download to Print
-            </button>
+            <a data-id="9" id="print-btn-a1b2" href="" download="<!--DOWNLOAD_FILENAME-->" title="Download this itinerary" aria-label="Download this itinerary" class="no-print text-terracotta border border-terracotta rounded-lg flex items-center justify-center hover:bg-terracotta hover:text-white transition min-h-[44px] min-w-[44px]">
+              <svg data-id="10" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </a>
           </div>
       </div>
     </header>
@@ -800,23 +800,6 @@
           });
         } catch(e) { console.error('Tab nav error:', e); }
 
-        // ── DOWNLOAD / PRINT BUTTON ────────────────────────────────────────────
-        try {
-          var printBtn = document.getElementById('print-btn-a1b2');
-          if (printBtn) {
-            printBtn.addEventListener('click', function() {
-              try {
-                var blob = new Blob([document.documentElement.outerHTML], {type: 'text/html'});
-                var url  = URL.createObjectURL(blob);
-                var a    = document.createElement('a');
-                a.href   = url; a.download = 'southwest-road-trip-itinerary.html';
-                document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
-              } catch(e2) { window.print(); }
-            });
-          }
-        } catch(e) { console.error('Print button error:', e); }
-
         // ── LEAFLET RESIZE ─────────────────────────────────────────────────────
         try {
           setTimeout(function() {
@@ -831,40 +814,10 @@
 
     <script>
     (function() {
-      var manifestLink = document.getElementById('pwa-manifest-link');
-
-      // Standalone file fallback: keep the HTML self-contained when opened via file://.
-      if (manifestLink && window.location.protocol === 'file:') {
-        try {
-          var inlineManifest = {
-            name: document.title || 'Road Trip Itinerary',
-            short_name: 'Road Trip',
-            description: 'Interactive road trip itinerary',
-            start_url: './index.html',
-            scope: './',
-            display: 'standalone',
-            background_color: '#FAFAF7',
-            theme_color: '<!--THEME_COLOR-->',
-            orientation: 'portrait-primary',
-            icons: [
-              {
-                src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='36' fill='%23<!--THEME_COLOR_HEX-->'/%3E%3Ctext x='50%25' y='54%25' font-size='110' text-anchor='middle' dominant-baseline='middle'%3E%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E",
-                sizes: '192x192',
-                type: 'image/svg+xml',
-                purpose: 'any maskable'
-              },
-              {
-                src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%23<!--THEME_COLOR_HEX-->'/%3E%3Ctext x='50%25' y='54%25' font-size='300' text-anchor='middle' dominant-baseline='middle'%3E%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E",
-                sizes: '512x512',
-                type: 'image/svg+xml',
-                purpose: 'any maskable'
-              }
-            ]
-          };
-          var inlineBlob = new Blob([JSON.stringify(inlineManifest)], {type: 'application/manifest+json'});
-          manifestLink.href = URL.createObjectURL(inlineBlob);
-        } catch (e) {}
-      }
+      // No inline manifest for file://. It used to build one as a Blob and
+      // point the manifest <link> at it, which installs nothing -- an app
+      // cannot be installed from a file -- and reads to a mail scanner as a
+      // file assembled in the browser.
 
       // Register service worker only on secure origins (https or localhost).
       var isSecureLike =
