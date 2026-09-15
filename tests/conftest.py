@@ -47,3 +47,21 @@ def isolate_persistent_url_cache(tmp_path_factory, monkeypatch):
         "DEFAULT_PERSISTENT_CACHE_PATH",
         str(cache_dir / "persistent_cache.json"),
     )
+
+
+@pytest.fixture(autouse=True)
+def no_live_routing(tmp_path_factory, monkeypatch):
+    """No test reaches OpenRouteService, and none rewrites a real routing cache.
+
+    `generator.routing` routes whenever `OPENROUTESERVICE_API_KEY` is set, and a
+    developer with a key in their environment would otherwise send a request
+    from every test that computes a leg -- spending their daily quota, and
+    making leg figures depend on the network. The cache path is relative for
+    the same reason the URL-discovery one is, and is moved for the same reason.
+    Tests of routing itself pass a key and a transport explicitly.
+    """
+    import generator.routing as routing_mod
+
+    monkeypatch.delenv(routing_mod.API_KEY_ENV, raising=False)
+    monkeypatch.setattr(routing_mod, "DEFAULT_CACHE_PATH",
+                        str(tmp_path_factory.mktemp("routing_cache") / "routes.json"))
