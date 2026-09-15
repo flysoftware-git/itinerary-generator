@@ -126,6 +126,12 @@ class LegEstimate:
     minutes: float
     routed: bool
     ferry_share: float = 0.0
+    #: The routed road as `(lat, lng)` points, origin to destination -- see
+    #: `generator.routing.RoutedLeg.geometry`. None for an estimate, and for a
+    #: routed leg whose shape is not available; a map draws a straight line.
+    geometry: tuple[tuple[float, float], ...] | None = None
+    #: Ferry crossings as inclusive `(from, to)` index ranges into `geometry`.
+    ferry_spans: tuple[tuple[int, int], ...] = ()
 
     @property
     def has_ferry(self) -> bool:
@@ -171,7 +177,11 @@ def leg_estimate(
         router = routing.route_leg
     routed = router(origin, dest)
     if routed is not None:
+        geometry = getattr(routed, "geometry", None)
         return LegEstimate(miles=float(routed.miles), minutes=float(routed.minutes),
-                           routed=True, ferry_share=float(getattr(routed, "ferry_share", 0.0)))
+                           routed=True, ferry_share=float(getattr(routed, "ferry_share", 0.0)),
+                           geometry=tuple(geometry) if geometry else None,
+                           ferry_spans=tuple(getattr(routed, "ferry_spans", ()) or ())
+                           if geometry else ())
     miles = road_distance_miles(straight)
     return LegEstimate(miles=round(miles, 1), minutes=round(drive_minutes(miles), 1), routed=False)
