@@ -1,0 +1,115 @@
+{
+ "bbox": [
+  -77.035581,
+  34.879102,
+  -76.69064,
+  35.139272
+ ],
+ "routes": [
+  {
+   "summary": {
+    "distance": 47.048,
+    "duration": 4018.5
+   },
+   "bbox": [
+    -77.035581,
+    34.879102,
+    -76.69064,
+    35.139272
+   ],
+   "geometry": "ki{sEbxjtMQG_@QgCu@eBWcAIs@CgGBClJGxH?pDGdDAtAKjFGfBEtAAd@?r@?nAChCu@nAiG`LuMnVuKdSqBjDuAvBmBfC{@`A_BbBw@x@sD|D}DdEwC|CkCdCc@\\yItFLZTh@qM`ImCbB]TmPzJoAv@{N~Iw[`SqIhFgBhA{BtAyCjBcAl@Sk@M]yBrAkFdDuJ`GiBbA_CdAcGrCeXnMwKfFmBv@o@Vo@Te@PuBn@_Cn@}Dz@aEl@cEb@qGd@}D\\wAHgTT{A?oJ[wAIwY_C{BOeCIeEAwCFsU~@eEVcEh@sATkB^}Bj@_Cr@mBj@wBp@yBz@uBdAsBlAeBpAsBdBcBfBsIzJo@v@y@lAuA`Co@rAy@pBeE`L_E~KiFjNsIjU}ApD[l@eBtC_@j@uKjNgAjAe@b@iAdAiAz@}BbBuAt@wAr@{tAbn@oDxAsDnAkCp@g\\xG_Cj@cBh@eBr@aHxCmZ~Mig@|T}XbMyAl@YNkB|@{PtHoV|KaBp@uShJ_QxHiSzIgEnB}Aj@qAr@kLdFyQnIKDGB{i@xWqJtEcCfAiRfJ_A^kVlLgD|AoD|AsUpKgCfAqZfN}j@dW}G`D_GhCqIxDuFjCaFnBeGpBsIjBoQ~DoAb@oA`@q@ZcAh@yCfByAdAgA|@wFzEeD~Am@Jk@Dq@?o@C}AUk@M_GcBuBu@_B{@eBqAwA}Ay@kAYi@q@_B{AsE_DuR{Fi^kKgp@k@oCu@oC_@iAc@eAmAkCwAcCm@}@_BqBq@s@aB}A}AmAqCeBq@]oDkAeCk@cAOkCUmCGgA?uCLgC^mDz@{Ah@oBh@qAn@aB~@gGdEmBnAw@b@}@\\}@V_APaAHaABcAAaAG}@Mw@OcCq@mBsA_Aw@oAmA{AeBs@aA{AiCi@eAqBkFgAoCoAaD{KeY}C{H{AaCiBmBqBgBq@[mCaCqAeAi`@s]_JyH_AaAk@u@Wa@i@kAq@yBmF}QaEoN_@uAa@iBc@uCIoAQgGUcNa@qYQ{L[y\\A{CFgBRcBh@eCt@wBxBgF~AsDz@yCX}APwA@a@HsBRaZFaEF{DHiGPiEFeBd@{L~@kTNkBPaBj@wDbAsEZoAzAkGb@{BNeANmAFkADcAXkGj@mMXkG^{L@mAC}ACgAu@mPOaEcAyUa@{Jg@yKMuD?eBLcCL}@ZiBh@oBh@eB`JoXlAgFJw@JoADcCr@Et@]RObFmORm@zHaVt@kDd@mCVw@Xe@VQ\\MbG}@~Ci@vBm@rEcChEiClByAfBgBdBoBbAmA|@mA`@o@\\y@vC{It@cBfAkBb@m@x@g@tCm@jBW~YaFn@PbAd@vAjAdLdKzApAdAv@jAr@nAd@tBn@zErAfARv@Dh@?xIy@x@KdDy@nJ}CnAo@nA_Ax@cAp@gAh@kA|F}QhFiPd@{AdDmJdAgCP_@n@iAn@y@\\_@h@g@f@_@tAq@v@WpAUf@EpACh@@`@DhBNhBPhWvBhCRbUl@tAJbARzHhC`ErA^JLBr@DdGZvDf@|@Tz@VvLtGRLz@XfARj@B|@?|@GhAUnNiDjB_@^E~@M~Ea@`Ig@v@Md@KnBgAtCeBtAw@h@ONEl@E~@An@BhABbETtI`@|A@t@ExFs@|De@l@INAXE|@KzBQ~@E|@Cx@CRA|O_@`GSvFWjAGnDQhBEzZs@r@Of@YfAuAxAaC\\u@\\eAdEkP|@iDVkA\\_BdDcQHg@d@gC`@aEX{Cf@sFJgATyB~Dka@v@gHD[PoAVqAR}@HU~BkH^mAZyAh@iC|AiJ@EhAyGl@yD`@wDJkC@{B@eHAeM?cJDgBF{@b@qDlAqIhB}KtBoMxAeLRoAJc@^iAhAmBnAsB`AyAZ[v@m@\\WFENK^U|@m@f@]XSNK`BeAZWjA}@|AsAt@q@LOv@w@DEb@_@p@QVAFS@S?OCSH{A@SB[?MBc@Bk@JsBD{@D}@Di@Bq@@KBi@NgDBo@BqA?I?s@CiAGy@W}C[eDIaACOWwCmAaMY_Bq@yCo@oB]s@q@kAg@s@}A{AyBoBuNmK_JwG}AqAECiAoAwAqBsB}Cu@mA}@aBy@gC[kB{@gIE]OwAAIQcBGm@YyCGm@[oDAWGi@KoACc@e@gFWwBYkCCoA@c@PwBR}@HYh@eBXs@JYlA}BbAsBzBaE^q@R]FMJQlA}Bz@}AxFoKtBwDx@{Ar@wAPc@LYZeAPy@L_AFm@Bg@JmE@oBCqAK_BGi@aAeGc@gCG[[uBG_ACkA?gG?gDDuBDaAhA{Lb@eFt@_IDkBCc@{@{Di@oBeB_FcDaHuEqJsBwE_@cA}@qCgAqDgBqEwDyIiGwN_@{AS_Bk@yGGa@eBwJmHk`@Qu@Wq@Yq@w@uAeCyDkAiBsFsI_AeBeBsDk@sAiD_Ik@sA]w@eEqJSe@_@w@Ui@O]m@}Ag@sBIe@MgAEk@CeCB}n@@yC?kCKiE]sCYoAIWq@oBi@eA}BcEg@mA_@iAe@oBWkBMmBCgC?wGA}C?gBGkCGmAG_AIgAUkBYyAq@aDq@cCO{@yAgL[_Bl@c@b@c@l@u@d@{@b@iA^aB\\oB~DgYpCmSrAiJTcAb@mAP_@Zc@j@u@n@m@`@Wp@a@v@[r@Or@Kz@GTCnKo@bAIfCOr@Ch@?nAFdDZ|Ef@pCVv@Hh@DJ@L@t@HvANdCTf@DRBRBVBh@FpALbAJdAJL@f@DLBH?`@Dv@HVBrCXl@FlBPv@H`ALF@H@HBx@PB@`@NHD~@f@DBVPFDLLn@l@UZMO",
+   "way_points": [
+    0,
+    789
+   ],
+   "extras": {
+    "waytype": {
+     "values": [
+      [
+       0,
+       7,
+       3
+      ],
+      [
+       7,
+       35,
+       1
+      ],
+      [
+       35,
+       37,
+       3
+      ],
+      [
+       37,
+       51,
+       2
+      ],
+      [
+       51,
+       322,
+       1
+      ],
+      [
+       322,
+       787,
+       2
+      ],
+      [
+       787,
+       789,
+       3
+      ]
+     ],
+     "summary": [
+      {
+       "value": 1.0,
+       "distance": 0.016,
+       "amount": 53.36
+      },
+      {
+       "value": 2.0,
+       "distance": 0.013,
+       "amount": 46.05
+      },
+      {
+       "value": 3.0,
+       "distance": 0.0,
+       "amount": 0.59
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "metadata": {
+  "attribution": "openrouteservice.org | OpenStreetMap contributors",
+  "service": "routing",
+  "timestamp": 1789452268757,
+  "query": {
+   "coordinates": [
+    [
+     -76.9013,
+     34.8791
+    ],
+    [
+     -76.6933,
+     35.031
+    ]
+   ],
+   "profile": "driving-car",
+   "profileName": "driving-car",
+   "format": "json",
+   "units": "mi",
+   "extra_info": [
+    "waytype"
+   ]
+  },
+  "engine": {
+   "version": "9.10.0",
+   "build_date": "2026-08-13T11:53:14Z",
+   "graph_date": "2026-09-12T17:48:32Z",
+   "osm_date": "2026-08-30T23:59:56Z"
+  }
+ }
+}

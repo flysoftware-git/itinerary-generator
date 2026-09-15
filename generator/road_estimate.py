@@ -132,10 +132,32 @@ class LegEstimate:
     geometry: tuple[tuple[float, float], ...] | None = None
     #: Ferry crossings as inclusive `(from, to)` index ranges into `geometry`.
     ferry_spans: tuple[tuple[int, int], ...] = ()
+    #: For a leg whose route takes a ferry: that route, as a
+    #: `generator.routing.RoutedLeg` (miles, minutes, geometry, ferry_spans,
+    #: `crossings`). None for a leg with no ferry, and for an estimate.
+    ferry: Any = None
+    #: The same leg with ferries avoided, or None when no land route exists --
+    #: or when there is no ferry route to be an alternative to.
+    land: Any = None
+    #: `"ferry"` or `"land"`: which of the two the fields above describe.
+    #: None when the leg has no ferry and so nothing was chosen.
+    chosen: str | None = None
+    #: A `generator.routing.FerryChoiceReason`: the numbers the choice was
+    #: made on, and its `summary` sentence. None when `chosen` is None.
+    chosen_reason: Any = None
 
     @property
     def has_ferry(self) -> bool:
         return self.ferry_share > 0.0
+
+    @property
+    def alternative(self) -> Any:
+        """The route not chosen, or None."""
+        if self.chosen == "ferry":
+            return self.land
+        if self.chosen == "land":
+            return self.ferry
+        return None
 
 
 def straight_line_miles(origin: tuple[float, float], dest: tuple[float, float]) -> float:
@@ -147,11 +169,24 @@ def straight_line_miles(origin: tuple[float, float], dest: tuple[float, float]) 
     return 2.0 * 3958.8 * asin(sqrt(min(1.0, max(0.0, h))))
 
 
+def _routed_estimate(routed: Any, **choice: Any) -> LegEstimate:
+    geometry = getattr(routed, "geometry", None)
+    return LegEstimate(miles=float(routed.miles), minutes=float(routed.minutes),
+                       routed=True, ferry_share=float(getattr(routed, "ferry_share", 0.0) or 0.0),
+                       geometry=tuple(geometry) if geometry else None,
+                       ferry_spans=tuple(getattr(routed, "ferry_spans", ()) or ())
+                       if geometry else (),
+                       **choice)
+
+
 def leg_estimate(
     origin: tuple[float, float],
     dest: tuple[float, float],
     *,
     router: Callable[[tuple[float, float], tuple[float, float]], Any] | None = None,
+    land_router: Callable[[tuple[float, float], tuple[float, float]], Any] | None = None,
+    ferry_policy: Any = None,
+    ferry_preference: str = "auto",
 ) -> LegEstimate | None:
     """The one answer to *how far, and how long, by road* for a leg.
 
@@ -161,8 +196,22 @@ def leg_estimate(
     routing existed. None for two points under half a mile apart, where
     neither number means anything.
 
-    `router` is injectable for tests; the default is the real one.
+    When the route takes a ferry, the same leg is asked again with ferries
+    avoided (`land_router`), and `generator.routing.choose_ferry_or_land`
+    picks one under `ferry_policy` (default: `routing.ferry` in config.yaml)
+    and `ferry_preference` (`auto`, `avoid` or `prefer`). Both routes are kept
+    on `ferry` and `land`; the top-level miles, minutes, ferry share and
+    geometry are the chosen route's, so a caller reading only those gets the
+    chosen leg.
+
+    `router` and `land_router` are injectable for tests; the defaults are the
+    real ones.
     """
+    from generator import routing
+
+    if ferry_preference not in routing.FERRY_PREFERENCES:
+        raise ValueError(f"ferry_preference must be one of {routing.FERRY_PREFERENCES}, "
+                         f"not {ferry_preference!r}")
     try:
         origin = (float(origin[0]), float(origin[1]))
         dest = (float(dest[0]), float(dest[1]))
@@ -172,16 +221,21 @@ def leg_estimate(
     if straight <= 0.5:
         return None
     if router is None:
-        from generator import routing
-
         router = routing.route_leg
     routed = router(origin, dest)
     if routed is not None:
-        geometry = getattr(routed, "geometry", None)
-        return LegEstimate(miles=float(routed.miles), minutes=float(routed.minutes),
-                           routed=True, ferry_share=float(getattr(routed, "ferry_share", 0.0)),
-                           geometry=tuple(geometry) if geometry else None,
-                           ferry_spans=tuple(getattr(routed, "ferry_spans", ()) or ())
-                           if geometry else ())
+        has_ferry = float(getattr(routed, "ferry_share", 0.0) or 0.0) > 0.0 \
+            or bool(getattr(routed, "ferry_spans", ()))
+        if not has_ferry:
+            return _routed_estimate(routed)
+        if land_router is None:
+            def land_router(a, b):
+                return routing.route_leg(a, b, avoid_ferries=True)
+        land = land_router(origin, dest)
+        policy = ferry_policy if ferry_policy is not None else routing.configured_ferry_policy()
+        chosen, reason = routing.choose_ferry_or_land(routed, land, policy=policy,
+                                                      preference=ferry_preference)
+        return _routed_estimate(land if chosen == "land" else routed,
+                                ferry=routed, land=land, chosen=chosen, chosen_reason=reason)
     miles = road_distance_miles(straight)
     return LegEstimate(miles=round(miles, 1), minutes=round(drive_minutes(miles), 1), routed=False)

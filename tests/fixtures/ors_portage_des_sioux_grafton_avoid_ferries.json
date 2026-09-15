@@ -1,0 +1,105 @@
+{
+ "bbox": [
+  -90.431597,
+  38.861559,
+  -90.172354,
+  38.969818
+ ],
+ "routes": [
+  {
+   "summary": {
+    "distance": 29.873,
+    "duration": 2870.6
+   },
+   "bbox": [
+    -90.431597,
+    38.861559,
+    -90.172354,
+    38.969818
+   ],
+   "geometry": "g|qlFrfkfPc@lCv@TpBh@PF~DfA|DdAzDfAJm@LOT@dIjDR@LQpByIPSR?XJ|t@h[nEjBbFvB~Ar@EwBAuA?oB?gi@\\y]JqJRcQ@gC?oAGeAMmBGiAGaBNaDn@qMh@qKF_BFiANiCJwBp@gLX{Fp@qQ\\sLFcBt@_WXiJh@oXf@}ODmAzAc_@z@gWRgDLuBPuBj@eFd@qDdBgKnCeNd@mCTgCvAyXhDse@XcDf@mEPs@Te@\\_@b@[f@Mb@AT?lCVp@JxCZrP`BhGZxE`@pANp@?NAj@QZUZc@Ra@H]Jo@RqDl@wKrBa`@f@aKnEm}@XuFtD_u@lAeW`Bk\\N{CHw@Hc@Ra@T]\\Y\\M`@Cd@@pANbYxCbYtCvXrClIt@J@x@Jp@Hf@DlALhBRdGj@dGl@@?RBr@HvBTTBrCTPDXRNDP@\\Ip@w@l@o@dAaAp@g@pAu@bBs@vAa@fBU^E|AC\\CPGJMJQRk@\\oALe@V{@p@}Bo@_@eEcCgBiA}AqA{A_BgBwBiB}CsJ_VeOaa@sEyLcCwGwByG{DqMiA_Fm@oEcFm`@cDuS{@sEk@_Cq@wBa@gAc@gAcDsH}@yBkHoQwNw^aKyVu@uAgBiC}A_BeAgAo@k@{@c@iAe@}@WcB_@iAUc@IeAOUGAVoAbMK`BEd@Ej@Q|AM|CInAElAItCCrAMhFObFMvE[xLMfDCd@Ot@IX_@t@OR]\\o@XSN_@zAIX]rBMbAE^Ez@K`DSrGKlAMr@a@tAaAbCyA|Cw@zAmAtB_FjH]`@q@n@eCjBoA`AsEjD}AtAaBnBu@lAe@~@qA`C}AbDqCvGaA~By@hBqBpEgBpD{BlEoC|E}C`Fs_@|j@eDdFuAtCiCtGiAbCoIrOmFbLcE`I]z@_A~BaL|Z}GpSeAtCaGrNkP`b@eDdHaGpKaApB}@bCyBvHcBtEwApDe@nAy@lCm@jCWvA}@rFOvAa@jD_AjFuMbk@mA~EqAzEuIjYgBpGo@hCe@lC_AtGs@tDeArDmAvCgA|BeFrH{BbEc@lA_ApDi@hCc@|C]dDStECdA@jDJfDVpDVvB^xBrBhIjAzCxCnFVh@d@bAvAtDvA`FrCjLhA`Gf@lEjAtQl@jLVbRDxGQnHW`Ek@rE_F|^sB|MiG`^uEfVkEzRsGxWqCnMiGnVcDjL_Pxg@yEnMeM|\\kG~Qm@jBmA~DIT{AdF}BjHsGzRcCnGmCjGoApDeAhEe@pCcBbIiWjx@wExOm@|B]tAwAhHeI`f@iBbM_BpPiAbKeCdOqBtKo@zDi@pFYtEGvE@~Ez@fVF~FMpFSzBKfAm@|Dm@rC}@zCmC|H_AhE[pBKz@SrBEv@Cx@?b@B\\AnFAzFhA?hA?pA?n@B\\LJDV@",
+   "way_points": [
+    0,
+    388
+   ],
+   "extras": {
+    "waytype": {
+     "values": [
+      [
+       0,
+       7,
+       3
+      ],
+      [
+       7,
+       21,
+       2
+      ],
+      [
+       21,
+       381,
+       1
+      ],
+      [
+       381,
+       388,
+       3
+      ]
+     ],
+     "summary": [
+      {
+       "value": 1.0,
+       "distance": 0.018,
+       "amount": 94.77
+      },
+      {
+       "value": 2.0,
+       "distance": 0.001,
+       "amount": 3.79
+      },
+      {
+       "value": 3.0,
+       "distance": 0.0,
+       "amount": 1.45
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "metadata": {
+  "attribution": "openrouteservice.org | OpenStreetMap contributors",
+  "service": "routing",
+  "timestamp": 1789452301485,
+  "query": {
+   "coordinates": [
+    [
+     -90.3374,
+     38.9267
+    ],
+    [
+     -90.4318,
+     38.9681
+    ]
+   ],
+   "profile": "driving-car",
+   "profileName": "driving-car",
+   "format": "json",
+   "units": "mi",
+   "extra_info": [
+    "waytype"
+   ],
+   "options": {
+    "avoid_features": [
+     "ferries"
+    ]
+   }
+  },
+  "engine": {
+   "version": "9.10.0",
+   "build_date": "2026-08-13T11:53:14Z",
+   "graph_date": "2026-09-12T17:48:32Z",
+   "osm_date": "2026-08-30T23:59:56Z"
+  }
+ }
+}

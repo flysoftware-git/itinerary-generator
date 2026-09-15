@@ -403,6 +403,23 @@ transit_routing:
   provider: "ai"
 
 
+# ── Road routing ──────────────────────────────────────────────────────────────
+# Used only when OPENROUTESERVICE_API_KEY is set (generator/routing.py). A leg
+# whose route takes a ferry is also routed with ferries avoided, and both are
+# kept on the leg (road_estimate.LegEstimate.ferry / .land). These keys decide
+# which one the leg's miles and minutes describe. A caller can override the
+# choice per leg with ferry_preference: auto | avoid | prefer.
+routing:
+  ferry:
+    # Waiting and boarding for each crossing, added to the routed sailing
+    # time. No router knows a sailing schedule, and a ferry every forty
+    # minutes can cost most of an hour at the terminal.
+    wait_minutes_per_crossing: 45
+    # Take the land route unless the ferry route, allowance included, is MORE
+    # than this many minutes faster. Exactly this many faster is still land.
+    prefer_land_within_minutes: 15
+
+
 # ── URL discovery ─────────────────────────────────────────────────────────────
 url_discovery:
   # Two independent search-provider knobs for two different clients this
