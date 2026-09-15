@@ -1,0 +1,125 @@
+{
+ "bbox": [
+  -122.760848,
+  48.108459,
+  -122.6432,
+  48.293248
+ ],
+ "routes": [
+  {
+   "summary": {
+    "distance": 21.246,
+    "duration": 5064.5
+   },
+   "bbox": [
+    -122.760848,
+    48.108459,
+    -122.6432,
+    48.293248
+   ],
+   "geometry": "kztdHdsglV|@u@fC{BxBoBFS?KCQgAmDgC}HOg@E]BWHQlBeBj@g@xAwA^lAr@|BtAhErAlEtAjEb@rAn@pB`@rA`@nAh@~ARQJ@LM@GNQj@e@NGHo@DMhBcBOg@LMr@o@pIqH|CkG`@cJeBoLqEsMsf@gmAocEisKuIyIuLsB_W`G{TvEQAq@DU?u@e@G`@w@`DWp@Uf@_@f@]\\qAv@kC`AgDhBqAdAy@rAiAtEYhBSlACLQjAMl@SdA[fAi@x@k@b@cAXk@Bi@I_Ag@kCeCwE{D}@o@}BcAk@OcAi@sAi@S?SVRp@@RoBhAeE`EyH|HmGzHcE|EaInHeDdD_BbCcB|Ca@j@a@d@}@l@k@Vo@N{@Bk[?uNAuBDaEReC]uBaBuCwD]e@k@SkA_@{q@DyZOcE?mF?K?oD?uB@}AAY?eHAw@@oA?k@?g@@S?qA?iB?qB@Bnb@ArF@pNAzo@BpKDzBN`E`@xE`@|Cb@jChA|EnDdMXlAz@lEl@~Eb@tHLfGEfDWfHEh@_@rD{@`G{@zDcBhF}BfFeAlBsAlB}BjCmAhAiCpBGJUHmIdGyVdQ_N~JyPpMyFjEwEdCaBl@kB^aBXiBNsBBwBGmA]w@e@k@u@e@{@}BsG}AyDs@_BiBsDeB}Ce@kAWqAKuA?_F@qBFqAZkDLeBNqEL_H@}BKkBYaCc@yCOo@Qi@Ug@k@}@_@_@k@q@s@eAs@kAYg@iJwOcE_Hi@_AeAqB_@gAc@iBW{A_@sA_@cAw@qAi@o@aAy@s@Y}@SeDGoACuTH{K?s@Ai@IiAUe@Qe@W{@m@{@y@y@eAyEoHiEyGwFqImEaHqCwD}@iBWw@a@kAoDoKAEy@yBqAqDo@oAcAiAMKeDcCoBuBy@_BeAoC{@iDs@oCkAiFuEgS[eBOcAMwAwAuXUuB_Hy\\[{BMcBSuD_@aFOiAo@iC{H_Ty@}A{AqBo@q@eAy@wAk@{KaDoFaA_KaBgLoAsBM}EUcHEmCGaB?gA?}@A_DB_GG]Ea@Iw@e@o@s@c@mAQyA?_@?_@?{HGsAQwAmA}EoAiFM_AaAiDs@aCCGo@uB]gAYkA[kAOm@m@wCc@qBEQOAo@AaBAmB?QFW{BE_@Q}AYuBWyBQyAKy@K{@Q{AY{B_@cDEc@Iy@[oC_@}Co@gFWwBUoBO{@Og@q@_CSm@SUUM_A?U?kA@?wC?cC@_C?oA?qBYc@[QeAAO?_@?sB??S",
+   "way_points": [
+    0,
+    357
+   ],
+   "extras": {
+    "waytype": {
+     "values": [
+      [
+       0,
+       25,
+       2
+      ],
+      [
+       25,
+       38,
+       1
+      ],
+      [
+       38,
+       50,
+       9
+      ],
+      [
+       50,
+       53,
+       1
+      ],
+      [
+       53,
+       132,
+       2
+      ],
+      [
+       132,
+       318,
+       1
+      ],
+      [
+       318,
+       356,
+       2
+      ],
+      [
+       356,
+       357,
+       3
+      ]
+     ],
+     "summary": [
+      {
+       "value": 1.0,
+       "distance": 0.006,
+       "amount": 46.22
+      },
+      {
+       "value": 9.0,
+       "distance": 0.004,
+       "amount": 27.18
+      },
+      {
+       "value": 2.0,
+       "distance": 0.004,
+       "amount": 26.59
+      },
+      {
+       "value": 3.0,
+       "distance": 0.0,
+       "amount": 0.02
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "metadata": {
+  "attribution": "openrouteservice.org | OpenStreetMap contributors",
+  "service": "routing",
+  "timestamp": 1789449882898,
+  "query": {
+   "coordinates": [
+    [
+     -122.7604,
+     48.117
+    ],
+    [
+     -122.6432,
+     48.2932
+    ]
+   ],
+   "profile": "driving-car",
+   "profileName": "driving-car",
+   "format": "json",
+   "units": "mi",
+   "extra_info": [
+    "waytype"
+   ]
+  },
+  "engine": {
+   "version": "9.10.0",
+   "build_date": "2026-08-13T11:53:14Z",
+   "graph_date": "2026-09-12T17:48:32Z",
+   "osm_date": "2026-08-30T23:59:56Z"
+  }
+ }
+}
