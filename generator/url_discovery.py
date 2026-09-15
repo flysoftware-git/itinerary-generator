@@ -571,7 +571,7 @@ NOT_A_VISITOR_PAGE_SEGMENTS = frozenset({
     "privacy", "privacypolicy", "privacy-policy", "terms", "terms-of-use",
     "terms-of-service", "terms-and-conditions", "cookie-policy",
     "faq", "faqs", "gallery", "photos", "our-story", "our-history",
-    "history", "community", "weddings", "catering",
+    "history", "community", "weddings",
     "blog", "news", "press", "category", "tag", "author",
 })
 #: Host labels of a business's recruiting site (careers.example.com).

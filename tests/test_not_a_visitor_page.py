@@ -26,7 +26,6 @@ SHIPPED_WRONG_PAGES = [
     ("Rosella", "https://www.rosellakpt.com/faqs"),
     ("Ultramar Restaurant", "https://ultramar.restaurant/gallery"),
     ("The Clam Shack", "https://www.theclamshack.net/our-story"),
-    ("Los Andes Restaurant", "https://losandesri.com/catering/"),
     ("Depot Street Tavern", "https://depotsttavern.com/community"),
 ]
 
@@ -36,6 +35,8 @@ PAGES_A_READER_IS_SENT_TO = [
     "https://www.rosellakpt.com/menu",
     "https://www.thecapitalgrille.com/locations/ct/hartford/hartford/8010",
     "https://losandesri.com/reservations/",
+    # Kept on purpose: a restaurant's catering page is still the restaurant.
+    "https://losandesri.com/catering/",
     "https://ultramar.restaurant/contact",
     "https://www.fengchophouse.com/hours",
     "https://www.historicinnkennebunk.com/",  # "history" inside a host is not a segment
