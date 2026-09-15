@@ -357,6 +357,12 @@ def _apply_privacy_redaction(trip: dict[str, Any]) -> dict[str, int]:
         if isinstance(lodging, dict) and str(lodging.get("confirmation_number", "") or "").strip():
             counts["lodging_confirmations"] += 1
             lodging["confirmation_number"] = ""
+        # What the stay cost. Not identifying on its own, and cleared anyway: it
+        # is a fact from the traveler's receipt, the booked legs it sits beside
+        # are dropped wholesale, and a published guide has no use for it.
+        if isinstance(lodging, dict):
+            lodging.pop("total_cost", None)
+            lodging.pop("currency", None)
         # Dropped wholesale rather than field-by-field like lodging above.
         # There is no routing or scheduling consumer downstream to keep alive
         # (unlike lodging.location/checkin_time), and no useful redacted

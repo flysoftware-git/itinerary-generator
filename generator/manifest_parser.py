@@ -568,6 +568,25 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                                "turns a date into where-they-sleep.",
                             },
                             "checkin_time": {"type": "string"},
+                            "total_cost": {
+                                "type": "string",
+                                "description": "Optional: what the confirmation says the stay "
+                                               "costs, as digits ('412.00'). The same field and "
+                                               "the same rules as a transportation leg's "
+                                               "total_cost -- transcribed, never summed out of "
+                                               "per-night amounts, never converted, and "
+                                               "meaningless to add to anything without "
+                                               "`currency`. Absent when the confirmation states "
+                                               "no total. Cleared in privacy-redacted builds "
+                                               "(main._apply_privacy_redaction).",
+                            },
+                            "currency": {
+                                "type": "string",
+                                "description": "ISO 4217 code `total_cost` is in ('USD', 'EUR'), "
+                                               "or whatever the document said when that cannot "
+                                               "be resolved to a code. Present only beside a "
+                                               "total_cost.",
+                            },
                             "confirmation_number": {
                                 "type": "string",
                                 "description": "Optional booking/confirmation code for the stay. "
