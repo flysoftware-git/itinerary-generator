@@ -29,6 +29,7 @@ from generator.road_estimate import (
     ROAD_DISTANCE_FACTOR,
     drive_minutes,
     format_drive_time,
+    leg_estimate,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,15 @@ def _estimate_haversine_route(
     straight = 2.0 * r * asin(sqrt(h))
     if straight <= 0.5:
         return None, None
+
+    # Routed where a key is configured, through the one function every leg
+    # figure uses (road_estimate.leg_estimate). Only for a caller asking for the
+    # ordinary estimate: one passing its own factor or speed has said what model
+    # it wants, and a route would silently answer a different question.
+    if road_factor == ROAD_DISTANCE_FACTOR and avg_speed_mph is None:
+        leg = leg_estimate((lat1, lng1), (lat2, lng2))
+        if leg is not None and leg.routed:
+            return round(leg.miles), format_drive_time(leg.minutes)
 
     driving = straight * road_factor
     time_str = format_drive_time(drive_minutes(driving, avg_speed_mph=avg_speed_mph))

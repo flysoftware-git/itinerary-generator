@@ -43,6 +43,7 @@ from generator.road_estimate import (
     ROAD_DISTANCE_FACTOR,
     drive_minutes,
     format_drive_time,
+    leg_estimate,
 )
 from generator.place_resolver import PlaceResolutionRefused, PlaceResolver
 from generator.multi_site_grouping import DEFAULT_BASE_OWNED_CATEGORIES, category_deferred_to_base
@@ -15946,9 +15947,29 @@ class URLDiscoverer:
                 dest_name, leg_mode(dest).declared,
             )
             return
+        # One answer for a road leg, shared with every caller of
+        # `road_estimate.leg_estimate`: routed when OPENROUTESERVICE_API_KEY is
+        # configured. When it routes, neither the Maps page scrape nor the
+        # straight-line estimate below is asked -- they are what an install
+        # without a key falls back to, unchanged. A routed leg knows the road
+        # and any ferry on it, which is the case the scrape and the estimate
+        # both get wrong (road_estimate.py, "a bay driven around").
+        routed_leg = None
+        origin_point = self._parse_lat_lng(origin_lat, origin_lng)
+        dest_point = self._parse_lat_lng(dest_lat, dest_lng)
+        if origin_point and dest_point:
+            leg = leg_estimate(origin_point, dest_point)
+            if leg is not None and leg.routed:
+                routed_leg = leg
+                if leg.has_ferry:
+                    logger.info("  Route to '%s' includes a ferry crossing (%.0f%% of the distance)",
+                                dest_name, leg.ferry_share * 100)
         fetched_miles: float | None = None
         fetched_time: str | None = None
-        if bool(
+        if routed_leg is not None:
+            fetched_miles = routed_leg.miles
+            fetched_time = format_drive_time(routed_leg.minutes)
+        elif bool(
             getattr(self, "_route_distance_live_fetch_enabled", DEFAULT_ROUTE_DISTANCE_LIVE_FETCH_ENABLED)
         ):
             # Build the same route URL the assembler will render so we fetch the real data.
