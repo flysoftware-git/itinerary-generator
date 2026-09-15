@@ -55,6 +55,36 @@ A cache entry written before geometry was kept has none. It loads as it always
 did, with `geometry` None: the leg is not asked again just to fetch a shape, so
 an existing cache never turns into a burst of requests against the quota.
 Removing the cache file is how an install opts into re-routing for shapes.
+
+## A leg that crosses water: the ferry, or the long way round
+
+A router returns the fastest route it knows, and it does not know the wait at
+the terminal. So a leg whose route takes a ferry is asked a second time with
+ferries avoided (`options.avoid_features: ["ferries"]`), and both answers are
+kept: `road_estimate.LegEstimate.ferry` and `.land`. `choose_ferry_or_land`
+then picks one under a `FerryPolicy`:
+
+- each crossing (one `ferry_spans` entry) costs `wait_minutes_per_crossing`
+  (default 45) of waiting and boarding on top of the routed sailing time;
+- the land route is chosen unless the ferry route, with that allowance, is
+  **more than** `prefer_land_within_minutes` (default 15) faster -- exactly 15
+  faster is still land;
+- a per-call `ferry_preference` of `avoid` takes land whenever a land route
+  exists, and `prefer` takes the ferry;
+- with no land route (an island without a bridge), the ferry is chosen and the
+  reason says so.
+
+The defaults live in `config.yaml` under `routing.ferry`. The engine's job is
+the two candidates and the numbers; a caller that wants to show the choice, or
+let a reader switch it, reads `chosen`, `chosen_reason` and the route it did
+not choose.
+
+The ferry-avoiding answer is cached under its own key. A 404 from that request
+means no land route exists; unlike a refusal of the ordinary route it is
+remembered (as `{"no_route": true}`), because an island does not grow a bridge
+between runs and asking again would spend quota on every build. A leg without
+a ferry makes no second request. A cache entry written before alternatives
+existed is still an ordinary routed leg.
 """
 
 from __future__ import annotations
@@ -133,15 +163,193 @@ class RoutedLeg:
     def has_ferry(self) -> bool:
         return self.ferry_share > 0.0
 
+    @property
+    def crossings(self) -> int:
+        """Ferry crossings on the route: one per `ferry_spans` entry.
+
+        A leg with a ferry share but no spans (a reply or cache entry without
+        geometry) still crosses at least once, and counts as one.
+        """
+        if self.ferry_spans:
+            return len(self.ferry_spans)
+        return 1 if self.has_ferry else 0
+
+
+# ── The ferry, or the land route ─────────────────────────────────────────────
+
+#: Per-call override values for `choose_ferry_or_land`.
+FERRY_PREFERENCES = ("auto", "avoid", "prefer")
+
+#: Defaults, mirrored by `routing.ferry` in config.yaml.
+DEFAULT_WAIT_MINUTES_PER_CROSSING = 45.0
+DEFAULT_PREFER_LAND_WITHIN_MINUTES = 15.0
+
+#: The config file `configured_ferry_policy` reads when not given one: the
+#: repository's own, so the answer does not depend on the working directory.
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
+
+
+@dataclass(frozen=True)
+class FerryPolicy:
+    """How a leg with a ferry chooses between the ferry and the land route."""
+
+    #: Waiting and boarding per crossing, on top of the routed sailing time.
+    wait_minutes_per_crossing: float = DEFAULT_WAIT_MINUTES_PER_CROSSING
+    #: Land wins unless the ferry route, allowance included, is faster by
+    #: more than this many minutes.
+    prefer_land_within_minutes: float = DEFAULT_PREFER_LAND_WITHIN_MINUTES
+
+
+def ferry_policy_from_config(config: Any) -> FerryPolicy:
+    """A `FerryPolicy` from a parsed config.yaml mapping (`routing.ferry`).
+
+    A missing section or key is the default. A value that is not a
+    non-negative number is logged and replaced by the default, so a typo in
+    the config changes nothing rather than failing the build.
+    """
+    routing_section = config.get("routing") if isinstance(config, dict) else None
+    section = routing_section.get("ferry") if isinstance(routing_section, dict) else None
+    if not isinstance(section, dict):
+        section = {}
+
+    def _number(name: str, default: float) -> float:
+        raw = section.get(name)
+        if raw is None:
+            return default
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = -1.0
+        if value < 0 or value != value:
+            logger.warning("routing.ferry.%s=%r is not a non-negative number; using %s.",
+                           name, raw, default)
+            return default
+        return value
+
+    return FerryPolicy(
+        wait_minutes_per_crossing=_number("wait_minutes_per_crossing",
+                                          DEFAULT_WAIT_MINUTES_PER_CROSSING),
+        prefer_land_within_minutes=_number("prefer_land_within_minutes",
+                                           DEFAULT_PREFER_LAND_WITHIN_MINUTES),
+    )
+
+
+_policy_cache: dict[str, FerryPolicy] = {}
+
+
+def configured_ferry_policy(config_path: str | os.PathLike[str] | None = None) -> FerryPolicy:
+    """The `FerryPolicy` config.yaml sets, read once per path. The defaults when
+    the file is missing or unreadable."""
+    path = str(DEFAULT_CONFIG_PATH if config_path is None else config_path)
+    with _lock:
+        cached = _policy_cache.get(path)
+    if cached is not None:
+        return cached
+    try:
+        import yaml
+
+        with open(path, "r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle) or {}
+    except Exception:  # noqa: BLE001 -- a config problem must not stop routing
+        config = {}
+    policy = ferry_policy_from_config(config)
+    with _lock:
+        _policy_cache[path] = policy
+    return policy
+
+
+@dataclass(frozen=True)
+class FerryChoiceReason:
+    """The numbers a ferry-or-land choice was made on.
+
+    `rule` is what decided: `auto` (the timing rule), `avoid` or `prefer` (a
+    per-call override), or `no_land_route` (there was nothing to choose).
+    """
+
+    rule: str
+    crossings: int
+    wait_minutes_per_crossing: float
+    prefer_land_within_minutes: float
+    #: The ferry route's routed minutes, sailing included, waiting not.
+    ferry_minutes: float
+    #: `ferry_minutes` plus the allowance for every crossing.
+    ferry_minutes_with_wait: float
+    #: None when no land route exists.
+    land_minutes: float | None
+    #: `land_minutes - ferry_minutes_with_wait`: how much faster the ferry is,
+    #: allowance included. Negative when land is faster. None with no land.
+    difference_minutes: float | None
+
+    @property
+    def summary(self) -> str:
+        wait = (f"{self.ferry_minutes:.0f} min by ferry + {self.wait_minutes_per_crossing:.0f} min "
+                f"wait x {self.crossings} crossing{'s' if self.crossings != 1 else ''} "
+                f"= {self.ferry_minutes_with_wait:.0f} min")
+        if self.land_minutes is None:
+            return f"{wait}; no land route was found, so the ferry"
+        compare = f"{wait}, against {self.land_minutes:.0f} min by land"
+        if self.rule == "avoid":
+            return f"{compare}; ferries avoided by request, so land"
+        if self.rule == "prefer":
+            return f"{compare}; the ferry preferred by request"
+        if self.difference_minutes is not None and self.difference_minutes > self.prefer_land_within_minutes:
+            return (f"{compare}; the ferry is {self.difference_minutes:.0f} min faster, more than "
+                    f"{self.prefer_land_within_minutes:.0f}, so the ferry")
+        return (f"{compare}; the ferry is not more than {self.prefer_land_within_minutes:.0f} min "
+                f"faster, so land")
+
+
+def choose_ferry_or_land(
+    ferry: RoutedLeg,
+    land: RoutedLeg | None,
+    *,
+    policy: FerryPolicy | None = None,
+    preference: str = "auto",
+) -> tuple[str, FerryChoiceReason]:
+    """`("ferry" | "land", reason)` for a leg whose route crosses water.
+
+    See the module docstring for the rule. Raises ValueError for a
+    `preference` not in `FERRY_PREFERENCES`: a caller's typo is a bug, not a
+    choice to be guessed at.
+    """
+    if preference not in FERRY_PREFERENCES:
+        raise ValueError(f"ferry_preference must be one of {FERRY_PREFERENCES}, not {preference!r}")
+    policy = policy or FerryPolicy()
+    crossings = ferry.crossings
+    with_wait = round(float(ferry.minutes) + policy.wait_minutes_per_crossing * crossings, 1)
+    land_minutes = None if land is None else float(land.minutes)
+    difference = None if land_minutes is None else round(land_minutes - with_wait, 1)
+
+    if land is None:
+        rule, chosen = "no_land_route", "ferry"
+    elif preference == "avoid":
+        rule, chosen = "avoid", "land"
+    elif preference == "prefer":
+        rule, chosen = "prefer", "ferry"
+    else:
+        rule = "auto"
+        chosen = "ferry" if difference > policy.prefer_land_within_minutes else "land"
+    return chosen, FerryChoiceReason(
+        rule=rule, crossings=crossings,
+        wait_minutes_per_crossing=policy.wait_minutes_per_crossing,
+        prefer_land_within_minutes=policy.prefer_land_within_minutes,
+        ferry_minutes=float(ferry.minutes), ferry_minutes_with_wait=with_wait,
+        land_minutes=land_minutes, difference_minutes=difference,
+    )
+
 
 def api_key() -> str:
     return str(os.environ.get(API_KEY_ENV) or "").strip()
 
 
-def _cache_key(origin: tuple[float, float], dest: tuple[float, float]) -> str:
+def _cache_key(origin: tuple[float, float], dest: tuple[float, float],
+               *, avoid_ferries: bool = False) -> str:
     # Four decimal places is about eleven metres: the same town centre geocoded
     # twice lands in one key, and two different towns never share one.
-    return f"{origin[0]:.4f},{origin[1]:.4f}>{dest[0]:.4f},{dest[1]:.4f}"
+    key = f"{origin[0]:.4f},{origin[1]:.4f}>{dest[0]:.4f},{dest[1]:.4f}"
+    # The ferry-avoiding answer is a different question about the same pair,
+    # so it has its own entry; the ordinary key is unchanged.
+    return key + " avoid=ferries" if avoid_ferries else key
 
 
 def _load_cache(path: str | os.PathLike[str]) -> dict[str, Any]:
@@ -356,39 +564,57 @@ def _leg_from_cache(entry: dict[str, Any]) -> RoutedLeg:
                      geometry=geometry, ferry_spans=spans)
 
 
+def _remember_no_route(path: str | os.PathLike[str], cache_key: str) -> None:
+    with _lock:
+        cache = _load_cache(path)
+        cache[cache_key] = {"no_route": True}
+        _save_cache(path, cache)
+
+
 def route_leg(
     origin: tuple[float, float],
     dest: tuple[float, float],
     *,
     key: str | None = None,
     cache_path: str | os.PathLike[str] | None = None,
+    avoid_ferries: bool = False,
 ) -> RoutedLeg | None:
     """Route one driving leg between two `(lat, lng)` points, or None.
 
     None whenever there is no key, or the router did not give a usable answer;
     see the module docstring. Cached by rounded coordinates at `cache_path`
     (default `DEFAULT_CACHE_PATH`), successful answers only.
+
+    `avoid_ferries` asks for the land route instead, under its own cache key.
+    None then also means no land route exists: a 404, or a reply that crosses
+    by ferry anyway. That answer is cached as `{"no_route": true}` so an
+    island is not asked again every run; a refusal or timeout is not.
     """
     key = api_key() if key is None else str(key).strip()
     if not key:
         return None
     path = DEFAULT_CACHE_PATH if cache_path is None else cache_path
-    cache_key = _cache_key(origin, dest)
+    cache_key = _cache_key(origin, dest, avoid_ferries=avoid_ferries)
     with _lock:
         cached = _load_cache(path).get(cache_key)
     if isinstance(cached, dict):
+        if avoid_ferries and cached.get("no_route") is True:
+            return None
         try:
             return _leg_from_cache(cached)
         except (KeyError, TypeError, ValueError):
             pass
 
-    body = json.dumps({
+    request_body: dict[str, Any] = {
         # OpenRouteService takes [lng, lat].
         "coordinates": [[origin[1], origin[0]], [dest[1], dest[0]]],
         "units": "mi",
         "instructions": False,
         "extra_info": ["waytype"],
-    }).encode("utf-8")
+    }
+    if avoid_ferries:
+        request_body["options"] = {"avoid_features": ["ferries"]}
+    body = json.dumps(request_body).encode("utf-8")
     request = urllib.request.Request(ENDPOINT, data=body, headers={
         "Authorization": key,
         "Content-Type": "application/json",
@@ -398,6 +624,10 @@ def route_leg(
         with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
             payload = json.load(response)
     except urllib.error.HTTPError as exc:
+        if avoid_ferries and exc.code == 404:
+            logger.info("No land route for %s; the ferry is the only way.", cache_key)
+            _remember_no_route(path, cache_key)
+            return None
         logger.info("Routing refused %s (HTTP %s); estimating instead.", cache_key, exc.code)
         return None
     except (urllib.error.URLError, OSError, ValueError) as exc:
@@ -407,6 +637,11 @@ def route_leg(
     routed = parse_route(payload)
     if routed is None:
         logger.info("Routing reply for %s did not parse; estimating instead.", cache_key)
+        return None
+    if avoid_ferries and (routed.has_ferry or routed.ferry_spans):
+        # Asked to avoid ferries and crossed by one anyway: not a land route.
+        logger.info("Land route for %s still takes a ferry; treating as none.", cache_key)
+        _remember_no_route(path, cache_key)
         return None
     with _lock:
         cache = _load_cache(path)

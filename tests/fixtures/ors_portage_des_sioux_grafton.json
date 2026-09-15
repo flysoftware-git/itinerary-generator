@@ -1,0 +1,125 @@
+{
+ "bbox": [
+  -90.436745,
+  38.923987,
+  -90.338504,
+  38.969815
+ ],
+ "routes": [
+  {
+   "summary": {
+    "distance": 8.451,
+    "duration": 1710.8
+   },
+   "bbox": [
+    -90.436745,
+    38.923987,
+    -90.338504,
+    38.969815
+   ],
+   "geometry": "g|qlFrfkfPc@lCv@TpBh@PF~DfAk@bEm@~Dm@dEzDbA|DdAg@jDEXSvAWfBcAlHSxAO|@_@bC_@`CM~@g@nDBZHV`DnAPHNP@HAP_CzJu@hDoA~FeFlUqBtI_A`EgGjX{EzTOXYX]hAqFlWaDfOuEvW]|A{Gl][lCEnGFf^?tA@rDF|m@Ld^b@vy@@~KCz_@A~V?nGAr^?~Gq^Q_m@e@g}@_@GtC?~@Ut@G^C`@@n@APEDIHWB_c@j@mEyFwRFQPI@a@IWKoCGE_AG?_AFiA@A{FAkBAgC?{FhA?hA?pA?n@B\\LJDV@",
+   "way_points": [
+    0,
+    94
+   ],
+   "extras": {
+    "waytype": {
+     "values": [
+      [
+       0,
+       10,
+       3
+      ],
+      [
+       10,
+       61,
+       2
+      ],
+      [
+       61,
+       71,
+       3
+      ],
+      [
+       71,
+       74,
+       9
+      ],
+      [
+       74,
+       80,
+       3
+      ],
+      [
+       80,
+       83,
+       2
+      ],
+      [
+       83,
+       87,
+       1
+      ],
+      [
+       87,
+       94,
+       3
+      ]
+     ],
+     "summary": [
+      {
+       "value": 2.0,
+       "distance": 0.004,
+       "amount": 79.46
+      },
+      {
+       "value": 3.0,
+       "distance": 0.001,
+       "amount": 9.72
+      },
+      {
+       "value": 9.0,
+       "distance": 0.0,
+       "amount": 8.45
+      },
+      {
+       "value": 1.0,
+       "distance": 0.0,
+       "amount": 2.37
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "metadata": {
+  "attribution": "openrouteservice.org | OpenStreetMap contributors",
+  "service": "routing",
+  "timestamp": 1789452295363,
+  "query": {
+   "coordinates": [
+    [
+     -90.3374,
+     38.9267
+    ],
+    [
+     -90.4318,
+     38.9681
+    ]
+   ],
+   "profile": "driving-car",
+   "profileName": "driving-car",
+   "format": "json",
+   "units": "mi",
+   "extra_info": [
+    "waytype"
+   ]
+  },
+  "engine": {
+   "version": "9.10.0",
+   "build_date": "2026-08-13T11:53:14Z",
+   "graph_date": "2026-09-12T17:48:32Z",
+   "osm_date": "2026-08-30T23:59:56Z"
+  }
+ }
+}
