@@ -1496,3 +1496,144 @@ def test_the_prompt_forbids_moving_a_time_into_another_zone() -> None:
     # And the per-call pair, which is a different fact: when the ship docks
     # here, and when it leaves here.
     assert '"arrive_time": string, "depart_time": string' in EXTRACTION_SYSTEM_PROMPT
+
+
+# --- A stay's name and its town ---------------------------------------------
+#
+# The extraction prompt offered `provider` and never `name`, and the lodging
+# fragment kept `name` and never `provider`. So the model put the hotel where
+# it was asked to, the fragment threw it away, and every ingested stay arrived
+# with no property name -- its only place-shaped field the street address. The
+# response below has the shape a model returned for a hotel confirmation
+# before the fix; the property and address are invented.
+
+_A_HOTEL_ANSWER_BEFORE_NAME_WAS_ASKED_FOR = {
+    "kind": "lodging", "type": "",
+    "provider": "Harbor Crest Suites Anacortes",
+    "label": "Studio Suite 1 King Bed",
+    "confirmation_number": "HC-550193",
+    "depart": "", "arrive": "", "depart_time": "", "arrive_time": "",
+    "total_cost": "", "currency": "", "website": "",
+    "location": "1402 Commercial Ave, Anacortes, WA 98221 United States",
+    "checkin_time": "3:00 PM",
+    "dates": "2027-06-08 to 2027-06-09",
+    "city": "Anacortes, WA",
+    "stops": [],
+}
+
+
+def test_a_hotel_under_provider_keeps_its_name_and_its_town() -> None:
+    """Red with `provider` taken out of LODGING_NAME_KEYS (no name), and red
+    with the locality line removed from the lodging branch (no town)."""
+    section, fragment = reservation_to_manifest_fragment(
+        dict(_A_HOTEL_ANSWER_BEFORE_NAME_WAS_ASKED_FOR))
+
+    assert section == "lodging"
+    assert fragment["name"] == "Harbor Crest Suites Anacortes"
+    assert fragment["locality"] == {"city": "Anacortes", "region": "WA"}
+    # The street address is kept, whole and separate -- it is the routing
+    # anchor -- and is not what the town was taken from.
+    assert fragment["location"] == "1402 Commercial Ave, Anacortes, WA 98221 United States"
+    assert "provider" not in fragment and "label" not in fragment
+
+
+def test_the_documented_keys_win_over_the_aliases() -> None:
+    """With the prompt's own keys set, a `provider` naming a booking agency
+    does not become the property's name, and the structured locality is used
+    as given -- country included -- rather than re-split out of `city`."""
+    answer = dict(_A_HOTEL_ANSWER_BEFORE_NAME_WAS_ASKED_FOR,
+                  name="Harbor Crest Suites Anacortes",
+                  provider="Example Travel Agency",
+                  locality={"city": "Anacortes", "region": "Washington",
+                            "country": "United States"})
+    _, fragment = reservation_to_manifest_fragment(answer)
+
+    assert fragment["name"] == "Harbor Crest Suites Anacortes"
+    assert fragment["locality"] == {"city": "Anacortes", "region": "Washington",
+                                    "country": "United States"}
+
+
+@pytest.mark.parametrize("key", ["property_name", "hotel_name", "hotel", "property"])
+def test_the_other_names_a_model_uses_for_a_property_are_accepted(key) -> None:
+    _, fragment = reservation_to_manifest_fragment(
+        {"kind": "lodging", key: "Tidewater Lodge", "city": "Coupeville, WA"})
+    assert fragment["name"] == "Tidewater Lodge"
+
+
+def test_a_stay_with_no_stated_name_is_given_none() -> None:
+    """Red with `_lodging_name` falling back to the address, the room type or
+    the city: none of those is a name, and a consumer shown one would present
+    a street as a hotel. The town is still carried."""
+    answer = dict(_A_HOTEL_ANSWER_BEFORE_NAME_WAS_ASKED_FOR, provider="", label="Studio Suite")
+    _, fragment = reservation_to_manifest_fragment(answer)
+
+    assert "name" not in fragment
+    assert fragment["locality"] == {"city": "Anacortes", "region": "WA"}
+    assert fragment["location"].startswith("1402 Commercial Ave")
+
+
+@pytest.mark.parametrize("city, expected", [
+    ("Moab", {"city": "Moab"}),
+    ("Springdale, UT", {"city": "Springdale", "region": "UT"}),
+    ("Split, Croatia", {"city": "Split"}),          # state or country? unsaid
+    ("Kanab, Utah", {"city": "Kanab"}),
+    ("Hvar, Split-Dalmatia, Croatia",
+     {"city": "Hvar", "region": "Split-Dalmatia", "country": "Croatia"}),
+    ("33221 State Road 20, Oak Harbor, WA", {}),    # an address is not a town
+    ("", {}),
+])
+def test_a_flat_city_is_split_only_as_far_as_it_says(city, expected) -> None:
+    _, fragment = reservation_to_manifest_fragment({"kind": "lodging", "city": city})
+    assert fragment.get("locality", {}) == expected
+
+
+def test_a_named_stay_with_its_town_survives_the_sidecar_and_the_parser(tmp_path) -> None:
+    """Fragment -> sidecar file -> manifest load -> schema re-validation.
+    Red with `locality` taken out of the lodging schema: the parser refuses the
+    merged manifest, which is the failure a consumer would otherwise meet."""
+    import shutil
+
+    from generator.reservation_ingest import load_sidecar
+
+    manifest = tmp_path / "trip_manifest.yaml"
+    shutil.copy("trip_manifest.yaml", manifest)
+    trip_before = ManifestParser().parse(manifest)
+    target = trip_before["destinations"][0]
+
+    section, fragment = reservation_to_manifest_fragment(
+        dict(_A_HOTEL_ANSWER_BEFORE_NAME_WAS_ASKED_FOR))
+    assert section == "lodging"
+    path = ManifestParser.reservations_sidecar_path(manifest)
+    write_sidecar(path, {"destinations": {target["id"]: {"lodging": fragment}}})
+    assert load_sidecar(path)["destinations"][target["id"]]["lodging"] == fragment
+
+    trip = ManifestParser().parse(manifest)
+    lodging = next(d for d in trip["destinations"] if d["id"] == target["id"])["lodging"]
+    assert lodging["locality"] == {"city": "Anacortes", "region": "WA"}
+    # The name reached the file (asserted above); on this stop the manifest
+    # already states one, and ingestion fills, never overwrites.
+    assert lodging["name"] == target["lodging"]["name"]
+
+
+def test_moving_the_hotel_into_name_does_not_weaken_the_match() -> None:
+    """The name's tokens used to reach matching through `provider`. Red with
+    `name` taken back out of the scored fields."""
+    dest = {"id": "zion", "name": "Zion National Park", "dates": "October 7-9, 2026"}
+    as_provider = score_destination_match(
+        {"kind": "lodging", "provider": "Zion Canyon Lodge"}, dest)
+    as_name = score_destination_match(
+        {"kind": "lodging", "name": "Zion Canyon Lodge"}, dest)
+    assert as_provider > 0
+    assert as_name == as_provider
+
+
+def test_the_prompt_asks_for_the_name_and_the_parts_of_the_place() -> None:
+    """Red with either line removed from the JSON shape: a key the prompt does
+    not offer is a key the model does not fill, which is how `name` went
+    missing in the first place."""
+    from generator.reservation_ingest import EXTRACTION_SYSTEM_PROMPT, LODGING_NAME_KEYS
+
+    assert '\n  "name": string,\n' in EXTRACTION_SYSTEM_PROMPT
+    assert ('"locality": { "city": string, "region": string, "country": string }'
+            in EXTRACTION_SYSTEM_PROMPT)
+    assert LODGING_NAME_KEYS[0] == "name", "the documented key must be trusted first"
