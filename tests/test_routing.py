@@ -256,3 +256,140 @@ def test_a_reply_without_geometry_still_routes(monkeypatch, cache):
 def test_an_estimated_leg_has_no_geometry():
     leg = road_estimate.leg_estimate(ISSAQUAH, PORT_TOWNSEND, router=lambda a, b: None)
     assert not leg.routed and leg.geometry is None and leg.ferry_spans == ()
+
+
+# ── A place that is not on a road, and a leg that is not driven ──────────────
+
+SIEBERT_CREEK = (48.0733, -123.2035)
+HOLLYWOOD_BEACH = (48.1204, -123.4290)
+
+
+def _refusal(code, message="", status=404):
+    """An OpenRouteService refusal, body and all.
+
+    The body is where the router says *which* refusal this is; a 404 with no
+    code is *these two points do not connect*, and a 404 with 2010 is *I found
+    no road near one of them*.
+    """
+    body = json.dumps({"error": {"code": code, "message": message}}).encode() if code else b""
+    return urllib.error.HTTPError("u", status, "refused", {}, io.BytesIO(body))
+
+
+class Sequence:
+    """A transport answering each call from a list, in order."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.requests = []
+        self.urls = []
+
+    def __call__(self, request, timeout=None):
+        self.requests.append(json.loads(request.data.decode()))
+        self.urls.append(request.full_url)
+        answer = self.answers.pop(0) if self.answers else self.requests and None
+        if isinstance(answer, BaseException):
+            raise answer
+        return io.BytesIO(json.dumps(answer).encode())
+
+
+def test_every_request_allows_the_router_to_snap_to_a_road(monkeypatch, cache):
+    """A geocoded creek is a stream, not a road. Both coordinates carry an
+    allowance, in metres, in the order they were given."""
+    transport = Sequence(_reply(57.0, 4284.0))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    routing.route_leg(ISSAQUAH, SIEBERT_CREEK, key="k", cache_path=cache)
+    assert transport.requests[0]["radiuses"] == [routing.SNAP_RADIUS_M,
+                                                 routing.SNAP_RADIUS_M]
+
+
+def test_a_point_with_no_road_near_it_is_asked_again_further_out(monkeypatch, cache):
+    """OpenRouteService's 2010: asked again once, wider, and that answer is the
+    leg. Without it the drive to a creek is a straight line."""
+    transport = Sequence(
+        _refusal(routing.NO_ROUTABLE_POINT,
+                 "Could not find routable point within a radius of 350.0 meters "
+                 "of specified coordinate 1: 48.073300 -123.203500."),
+        _reply(57.0, 4284.0))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    leg = routing.route_leg(ISSAQUAH, SIEBERT_CREEK, key="k", cache_path=cache)
+    assert leg is not None and leg.miles == 57.0, "the wider ask was not made or not used"
+    assert [r["radiuses"] for r in transport.requests] == [
+        [routing.SNAP_RADIUS_M] * 2, [routing.WIDE_SNAP_RADIUS_M] * 2]
+
+
+def test_the_wider_ask_is_made_once_and_then_cached(monkeypatch, cache):
+    transport = Sequence(_refusal(routing.NO_ROUTABLE_POINT), _reply(57.0, 4284.0))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    first = routing.route_leg(ISSAQUAH, SIEBERT_CREEK, key="k", cache_path=cache)
+    second = routing.route_leg(ISSAQUAH, SIEBERT_CREEK, key="k", cache_path=cache)
+    assert first == second and len(transport.requests) == 2, (
+        "the snapped answer was not cached under the ordinary key")
+
+
+def test_a_point_no_radius_reaches_is_still_a_fallback(monkeypatch, cache):
+    """Refused twice is refused: the straight line is then the honest answer,
+    and nothing is remembered so tomorrow's run asks again."""
+    transport = Sequence(_refusal(routing.NO_ROUTABLE_POINT),
+                         _refusal(routing.NO_ROUTABLE_POINT))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    assert routing.route_leg(ISSAQUAH, SIEBERT_CREEK, key="k", cache_path=cache) is None
+    assert len(transport.requests) == 2
+    assert not cache.exists() or json.loads(cache.read_text()) == {}
+
+
+def test_a_404_that_is_not_about_a_radius_is_not_asked_again(monkeypatch, cache):
+    """Two points that do not connect are two points that do not connect: only
+    2010 means *look further out*."""
+    transport = Sequence(_refusal(2009, "Route could not be found"), _reply(1.0, 1.0))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    assert routing.route_leg(ISSAQUAH, SIEBERT_CREEK, key="k", cache_path=cache) is None
+    assert len(transport.requests) == 1, "a refusal that was not about a radius was retried"
+
+
+def test_a_leg_can_be_routed_as_a_ride(monkeypatch, cache):
+    """A bike leg asks the cycling profile, and gets the cycling endpoint."""
+    transport = Sequence(_reply(11.4, 3600.0))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    leg = routing.route_leg(SIEBERT_CREEK, HOLLYWOOD_BEACH, key="k", cache_path=cache,
+                            profile="cycling-regular")
+    assert leg.miles == 11.4
+    assert transport.urls == [f"{routing.ENDPOINT_BASE}/cycling-regular"]
+
+
+def test_the_driving_answer_and_the_cycling_answer_are_different_entries(monkeypatch, cache):
+    """One pair, two questions. Sharing a key would serve a car's road as the
+    ride, which is the number the traveller would plan their day on."""
+    transport = Sequence(_reply(18.0, 1500.0), _reply(11.4, 3600.0))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    drive = routing.route_leg(SIEBERT_CREEK, HOLLYWOOD_BEACH, key="k", cache_path=cache)
+    ride = routing.route_leg(SIEBERT_CREEK, HOLLYWOOD_BEACH, key="k", cache_path=cache,
+                             profile="cycling-regular")
+    assert (drive.miles, ride.miles) == (18.0, 11.4)
+    assert len(transport.requests) == 2
+    keys = set(json.loads(cache.read_text()))
+    assert len(keys) == 2 and any("cycling-regular" in k for k in keys)
+
+
+def test_a_driving_leg_keeps_the_cache_key_it_always_had(monkeypatch, cache):
+    """An existing cache still hits: profiles did not move the driving entry."""
+    assert routing._cache_key(ISSAQUAH, PORT_TOWNSEND) == (
+        f"{ISSAQUAH[0]:.4f},{ISSAQUAH[1]:.4f}>{PORT_TOWNSEND[0]:.4f},{PORT_TOWNSEND[1]:.4f}")
+
+
+@pytest.mark.parametrize("bad", ["bicycle", "cycling", "", "driving-car "])
+def test_a_profile_nobody_offers_is_refused(bad, cache):
+    with pytest.raises(ValueError):
+        routing.route_leg(ISSAQUAH, PORT_TOWNSEND, key="k", cache_path=cache, profile=bad)
+    with pytest.raises(ValueError):
+        road_estimate.leg_estimate(ISSAQUAH, PORT_TOWNSEND, profile=bad)
+
+
+def test_leg_estimate_carries_the_profile_to_the_router(monkeypatch, cache):
+    transport = Sequence(_reply(11.4, 3600.0))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    monkeypatch.setattr(routing, "DEFAULT_CACHE_PATH", str(cache))
+    monkeypatch.setenv(routing.API_KEY_ENV, "k")
+    leg = road_estimate.leg_estimate(SIEBERT_CREEK, HOLLYWOOD_BEACH,
+                                     profile="cycling-regular")
+    assert leg.routed and leg.miles == 11.4
+    assert transport.urls == [f"{routing.ENDPOINT_BASE}/cycling-regular"]

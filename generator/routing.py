@@ -29,6 +29,31 @@ sailing every forty minutes can add most of an hour, and no routing engine
 knows the schedule. `ferry_share` is returned so a caller can say a leg
 includes a crossing rather than let the number imply it is door to door.
 
+## A place is not always on a road
+
+A geocoder answers with the *place*, and plenty of places are not on roads: a
+creek is its stream, a trailhead its car park, a lake its middle. Asked to
+route from such a point, OpenRouteService refuses the whole leg with HTTP 404
+and its own code 2010, *"Could not find routable point within a radius of N
+metres"* -- and the leg then falls back to a straight line, which is a far
+worse answer than the road three hundred metres away.
+
+So every request carries a `radiuses` allowance per coordinate
+(`SNAP_RADIUS_M`), letting the router start from the nearest road; and a leg
+still refused for that one reason is asked **once** more at
+`WIDE_SNAP_RADIUS_M`, because a rural point is exactly where the nearest road
+is furthest. Only then is it a straight line. The snapped answer is cached
+under the ordinary key, so the wider ask happens once per pair, ever.
+
+## Not every leg is driven
+
+`profile` selects the OpenRouteService profile (`PROFILES`), `driving-car`
+unless a caller names another. A cycling leg routed as `cycling-regular`
+follows the trail a car cannot and returns the ride's minutes, not a car's on
+the highway beside it. Each profile has its own cache key -- the driving key
+is unchanged, so an existing cache still hits -- and an unknown profile raises
+rather than building a URL nobody meant.
+
 ## Failure is a fallback, never an error
 
 No key, a timeout, a quota refusal (HTTP 429), an unroutable pair (HTTP 404) or
@@ -106,11 +131,46 @@ logger = logging.getLogger(__name__)
 #: The environment variable holding the key. Unset means no routing.
 API_KEY_ENV = "OPENROUTESERVICE_API_KEY"
 
-ENDPOINT = "https://api.openrouteservice.org/v2/directions/driving-car"
+#: Every directions endpoint, less the profile. The profile is the last path
+#: segment, and the only thing that differs between them.
+ENDPOINT_BASE = "https://api.openrouteservice.org/v2/directions"
+
+#: The profile a caller that names none gets, which is what every caller got
+#: before profiles were an option.
+DEFAULT_PROFILE = "driving-car"
+
+#: The profiles this module will ask OpenRouteService for. Named rather than
+#: passed through, so a typo is refused here instead of becoming a 404 from a
+#: URL nobody meant to build.
+PROFILES = ("driving-car", "driving-hgv",
+            "cycling-regular", "cycling-road", "cycling-mountain",
+            "foot-walking", "foot-hiking")
+
+#: The driving endpoint, unchanged, for callers that import it.
+ENDPOINT = f"{ENDPOINT_BASE}/{DEFAULT_PROFILE}"
 
 #: Seconds for one request. A leg that cannot be routed in this long is
 #: estimated instead; a slow router must not become a slow build.
 TIMEOUT_S = 15
+
+#: How far either side of a given coordinate OpenRouteService may look for a
+#: road to start or finish on, in metres. A geocoder answers with the *place*,
+#: and a place is not always on a road: a creek is its stream, a trailhead its
+#: car park, a lake its middle. Without this the router refuses the pair and
+#: the whole leg falls back to a straight line, which is a worse answer than
+#: the road a few hundred metres away.
+SNAP_RADIUS_M = 350
+
+#: The second ask, once, for a point nothing was found near. Rural coordinates
+#: -- the ones a creek or a trailhead produces -- are exactly where the nearest
+#: road is furthest, so one wider try is worth a request. Beyond this the point
+#: really is not near a road and the straight line is the honest answer.
+WIDE_SNAP_RADIUS_M = 3000
+
+#: OpenRouteService's own code for *"Could not find routable point within a
+#: radius of N metres of specified coordinate"*, returned with HTTP 404. It is
+#: the one refusal that says *ask again, further out* rather than *no*.
+NO_ROUTABLE_POINT = 2010
 
 #: OpenRouteService's `waytype` value for a ferry.
 FERRY_WAYTYPE = 9
@@ -343,13 +403,41 @@ def api_key() -> str:
 
 
 def _cache_key(origin: tuple[float, float], dest: tuple[float, float],
-               *, avoid_ferries: bool = False) -> str:
+               *, avoid_ferries: bool = False,
+               profile: str = DEFAULT_PROFILE) -> str:
     # Four decimal places is about eleven metres: the same town centre geocoded
     # twice lands in one key, and two different towns never share one.
     key = f"{origin[0]:.4f},{origin[1]:.4f}>{dest[0]:.4f},{dest[1]:.4f}"
     # The ferry-avoiding answer is a different question about the same pair,
     # so it has its own entry; the ordinary key is unchanged.
-    return key + " avoid=ferries" if avoid_ferries else key
+    if avoid_ferries:
+        key += " avoid=ferries"
+    # Likewise a different profile: a bike does not take the road a car does,
+    # and the two answers must not share a key. The driving key is unchanged,
+    # so every cache written before profiles existed still hits.
+    if profile != DEFAULT_PROFILE:
+        key += f" profile={profile}"
+    return key
+
+
+def _error_code(exc: urllib.error.HTTPError) -> int | None:
+    """OpenRouteService's own error code in a refusal's body, or None.
+
+    The body is JSON (`{"error": {"code": 2010, "message": ...}}`), and it is
+    the only place the router says *which* refusal this is: HTTP 404 is both
+    *these two points do not connect* and *I could not find a road near one of
+    them*, and only the second is worth asking again. Never raises: a refusal
+    with no readable body is simply a refusal.
+    """
+    try:
+        body = exc.read()
+    except Exception:  # noqa: BLE001 -- an unreadable body is not an error here
+        return None
+    try:
+        code = json.loads(body or b"{}").get("error", {}).get("code")
+        return int(code)
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def _load_cache(path: str | os.PathLike[str]) -> dict[str, Any]:
@@ -578,8 +666,9 @@ def route_leg(
     key: str | None = None,
     cache_path: str | os.PathLike[str] | None = None,
     avoid_ferries: bool = False,
+    profile: str = DEFAULT_PROFILE,
 ) -> RoutedLeg | None:
-    """Route one driving leg between two `(lat, lng)` points, or None.
+    """Route one leg between two `(lat, lng)` points, or None.
 
     None whenever there is no key, or the router did not give a usable answer;
     see the module docstring. Cached by rounded coordinates at `cache_path`
@@ -589,12 +678,30 @@ def route_leg(
     None then also means no land route exists: a 404, or a reply that crosses
     by ferry anyway. That answer is cached as `{"no_route": true}` so an
     island is not asked again every run; a refusal or timeout is not.
+
+    `profile` is one of `PROFILES`, and `driving-car` unless a caller names
+    another -- a bike leg routed as a bike leg takes the trail the car cannot,
+    and a car's road is not the answer to *how long is the ride*. It has its
+    own cache key, so the two answers about one pair never overwrite each
+    other. A profile not in `PROFILES` raises ValueError: a caller's typo is a
+    bug, not a URL to be built and refused.
+
+    **A coordinate need not be on a road.** A geocoder answers with the place,
+    and a creek, a trailhead or a lake is a point in water or in a field. Both
+    coordinates are sent with a `radiuses` allowance (`SNAP_RADIUS_M`) so the
+    router may start from the nearest road; where it still says it found none
+    (`NO_ROUTABLE_POINT`), the leg is asked once more at `WIDE_SNAP_RADIUS_M`,
+    which is where a rural point's nearest road actually is. Only then is it
+    a straight-line fallback. The snapped answer is cached under the ordinary
+    key, so the second ask happens once per pair and never again.
     """
+    if profile not in PROFILES:
+        raise ValueError(f"profile must be one of {PROFILES}, not {profile!r}")
     key = api_key() if key is None else str(key).strip()
     if not key:
         return None
     path = DEFAULT_CACHE_PATH if cache_path is None else cache_path
-    cache_key = _cache_key(origin, dest, avoid_ferries=avoid_ferries)
+    cache_key = _cache_key(origin, dest, avoid_ferries=avoid_ferries, profile=profile)
     with _lock:
         cached = _load_cache(path).get(cache_key)
     if isinstance(cached, dict):
@@ -611,18 +718,36 @@ def route_leg(
         "units": "mi",
         "instructions": False,
         "extra_info": ["waytype"],
+        # One allowance per coordinate, in metres, in the same order.
+        "radiuses": [SNAP_RADIUS_M, SNAP_RADIUS_M],
     }
     if avoid_ferries:
         request_body["options"] = {"avoid_features": ["ferries"]}
-    body = json.dumps(request_body).encode("utf-8")
-    request = urllib.request.Request(ENDPOINT, data=body, headers={
-        "Authorization": key,
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    })
-    try:
+    endpoint = f"{ENDPOINT_BASE}/{profile}"
+
+    def _ask(body_dict: dict[str, Any]) -> Any:
+        request = urllib.request.Request(
+            endpoint, data=json.dumps(body_dict).encode("utf-8"), headers={
+                "Authorization": key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            })
         with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
-            payload = json.load(response)
+            return json.load(response)
+
+    try:
+        try:
+            payload = _ask(request_body)
+        except urllib.error.HTTPError as exc:
+            # The one refusal that means *look further out*, and it is asked
+            # again exactly once. Every other refusal falls through unchanged.
+            if exc.code != 404 or _error_code(exc) != NO_ROUTABLE_POINT:
+                raise
+            logger.info("No road within %sm of an end of %s; asking again at %sm.",
+                        SNAP_RADIUS_M, cache_key, WIDE_SNAP_RADIUS_M)
+            wider = dict(request_body)
+            wider["radiuses"] = [WIDE_SNAP_RADIUS_M, WIDE_SNAP_RADIUS_M]
+            payload = _ask(wider)
     except urllib.error.HTTPError as exc:
         if avoid_ferries and exc.code == 404:
             logger.info("No land route for %s; the ferry is the only way.", cache_key)
