@@ -12,9 +12,12 @@
     <meta name="application-name" content="<!--APP_SHORT_NAME-->" />
     <meta name="description" content="<!--TRIP_DESCRIPTION-->" />
 
-    <!-- PWA: Apple touch icon (terracotta map pin SVG as data URI) -->
-    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='36' fill='%23<!--THEME_COLOR_HEX-->'/%3E%3Ctext x='50%25' y='54%25' font-size='110' text-anchor='middle' dominant-baseline='middle'%3E🗺️%3C/text%3E%3C/svg%3E" />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='36' fill='%23<!--THEME_COLOR_HEX-->'/%3E%3Ctext x='50%25' y='54%25' font-size='110' text-anchor='middle' dominant-baseline='middle'%3E🗺️%3C/text%3E%3C/svg%3E" type="image/svg+xml" />
+    <!-- PWA and tab icon: the manifest's own (trip.brand.icon) or the map
+         icon in the trip's theme colour. Written by the assembler, which
+         takes it from generator/app_icon.py -- the same answer the web
+         manifest gets, so the tab and the installed app cannot disagree. -->
+    <link rel="apple-touch-icon" href="<!--APP_ICON-->" />
+    <link rel="icon" href="<!--APP_ICON-->" type="image/svg+xml" />
 
     <link id="pwa-manifest-link" rel="manifest" href="./manifest.webmanifest" />
     <title><!--DOCUMENT_TITLE--></title>

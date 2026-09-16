@@ -252,6 +252,15 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                         # injection through a YAML file.
                         "support_url": {"type": "string", "pattern": "^(https://|mailto:)"},
                         "support_label": {"type": "string", "minLength": 1, "maxLength": 80},
+                        # The icon an installed guide shows on a home screen.
+                        # An `.svg` beside the manifest, or a
+                        # `data:image/svg+xml` URI. Absent -- the ordinary
+                        # case -- the guide installs with the map icon in the
+                        # trip's theme colour, exactly as before. Checked
+                        # properly in `_resolve_brand_icon`, which can say
+                        # which file and why; a regex here would only be able
+                        # to say the manifest is invalid.
+                        "icon": {"type": "string", "minLength": 1},
                     },
                     "additionalProperties": False,
                 },
@@ -789,6 +798,7 @@ class ManifestParser:
             raise ValueError(self._format_yaml_error(manifest_path, exc)) from exc
         self._validate_schema(data)
         self._merge_reservations_sidecar(data, manifest_path)
+        self._resolve_brand_icon(data, manifest_path)
         self._validate_seeds(data)
         self._validate_en_route_seeds(data)
         self._validate_en_route_exclude(data)
@@ -807,6 +817,96 @@ class ManifestParser:
     def load(self, manifest_path: Path | str) -> dict[str, Any]:
         """Backward-compatible alias used by CLI/tests."""
         return self.parse(manifest_path)
+
+    #: An icon is inlined into every page of the guide's head, so it is
+    #: carried in full by each build. 256 KB is generous for a logo and small
+    #: enough that a file picked by mistake -- a photograph, an export nobody
+    #: optimised -- is refused while somebody can still see why.
+    MAX_ICON_BYTES = 256 * 1024
+
+    def _resolve_brand_icon(self, data: dict[str, Any], manifest_path: Path) -> None:
+        """Turn `trip.brand.icon` into a `data:` URI, or refuse it here.
+
+        Here rather than at render time, for the reason the schema is checked
+        before anything is generated: an icon that does not exist should cost
+        a sentence at parse, not a finished guide with a missing face. And
+        here rather than in the schema, because the useful message names the
+        file that is missing and the directory it was looked for in.
+
+        **SVG only.** One file answers for the 192 and 512 manifest entries
+        and the favicon; a raster image cannot, and an icon declared at a size
+        it is not is worse than none (`generator/app_icon.py`).
+        """
+        from urllib.parse import quote
+
+        trip = data.get("trip") if isinstance(data, dict) else None
+        brand = trip.get("brand") if isinstance(trip, dict) and isinstance(trip.get("brand"), dict) else None
+        if not brand:
+            return
+        raw = str(brand.get("icon", "") or "").strip()
+        if not raw:
+            return
+
+        if raw.startswith("data:"):
+            if not raw.startswith("data:image/svg+xml"):
+                raise ValueError(
+                    "trip.brand.icon: a data: URI must be data:image/svg+xml -- one file has to "
+                    "serve the 192 and 512 icons and the favicon, which only a vector can do."
+                )
+            if len(raw.encode("utf-8")) > self.MAX_ICON_BYTES:
+                raise ValueError(
+                    f"trip.brand.icon is {len(raw.encode('utf-8')) // 1024} KB; the limit is "
+                    f"{self.MAX_ICON_BYTES // 1024} KB. It is inlined into the guide's head."
+                )
+            self._refuse_scripted_icon(raw)
+            return
+
+        if not raw.lower().endswith(".svg"):
+            raise ValueError(
+                f"trip.brand.icon: {raw!r} -- give an .svg file beside the manifest, or a "
+                "data:image/svg+xml URI. One file serves the 192 and 512 icons and the "
+                "favicon, so it has to be a vector."
+            )
+
+        path = Path(raw)
+        if not path.is_absolute():
+            path = manifest_path.parent / path
+        if not path.is_file():
+            raise ValueError(
+                f"trip.brand.icon: no file at {path}. A relative path is read from the "
+                f"manifest's own directory ({manifest_path.parent})."
+            )
+        size = path.stat().st_size
+        if size > self.MAX_ICON_BYTES:
+            raise ValueError(
+                f"trip.brand.icon: {path} is {size // 1024} KB; the limit is "
+                f"{self.MAX_ICON_BYTES // 1024} KB. It is inlined into the guide's head."
+            )
+        svg = path.read_text(encoding="utf-8")
+        if "<svg" not in svg.lower():
+            raise ValueError(f"trip.brand.icon: {path} does not contain an <svg> element.")
+        self._refuse_scripted_icon(svg)
+        # Percent-encoded rather than base64: it stays readable in the built
+        # page, and `#` inside a fill has to be escaped in a data: URI anyway.
+        brand["icon"] = "data:image/svg+xml," + quote(svg.strip(), safe="")
+        logger.info("Brand icon: %s (%d bytes)", path, size)
+
+    @staticmethod
+    def _refuse_scripted_icon(svg: str) -> None:
+        """An icon is artwork, and artwork does not need a script in it.
+
+        A manifest is a file somebody may have been sent. SVG can carry script
+        and external references, and this one is inlined into the head of a
+        page that is then published; refusing the two obvious carriers costs an
+        author nothing and removes the interesting case entirely.
+        """
+        lowered = svg.lower()
+        for marker in ("<script", "javascript:", "<foreignobject"):
+            if marker in lowered:
+                raise ValueError(
+                    f"trip.brand.icon contains {marker!r}. An icon is artwork: script and "
+                    "embedded HTML are refused, because it is inlined into the published page."
+                )
 
     @staticmethod
     def reservations_sidecar_path(manifest_path: Path | str) -> Path:
