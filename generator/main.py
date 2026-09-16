@@ -39,6 +39,7 @@ from time import perf_counter
 from typing import Any
 import click
 from generator import __version__, __template_version__
+from generator import app_icon
 from generator.environments import ENVIRONMENTS, UnknownEnvironment, resolve_environment
 from generator.entity_registry import build_entity_registry, reconcile_schedule_from_registry, reconcile_trip_from_registry
 from generator import date_span
@@ -2004,12 +2005,6 @@ def _write_pwa_assets(output_dir: Path, trip: dict, build_id: str = "") -> None:
         title = str(trip_meta.get("title", "Road Trip Itinerary") or "Road Trip Itinerary").strip()
         subtitle = str(trip_meta.get("subtitle", "Interactive road trip itinerary") or "Interactive road trip itinerary").strip()
         theme_color = str(trip_meta.get("theme_color", "#C0623E") or "#C0623E").strip()
-        # The icons below are SVG data: URIs where "#" must stay percent-encoded
-        # as %23, so they take the bare hex. Both were hard-coded to the
-        # Southwest terracotta, which meant every installed itinerary -- Europe,
-        # Croatia, Japan -- got a terracotta home-screen icon whatever its
-        # manifest said. Same defect as the head metadata, one file over.
-        theme_hex = theme_color.lstrip("#") or "C0623E"
 
         # Image URLs the page will actually load. The HTML now points at the
         # SOURCE url rather than the local ./images cache (see
@@ -2033,18 +2028,11 @@ def _write_pwa_assets(output_dir: Path, trip: dict, build_id: str = "") -> None:
                     image_urls.append(u)
         images_json = json.dumps(image_urls)
 
-        icon_192 = (
-                "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E"
-                f"%3Crect width='192' height='192' rx='36' fill='%23{theme_hex}'/%3E"
-                "%3Ctext x='50%25' y='54%25' font-size='110' text-anchor='middle' dominant-baseline='middle'%3E"
-                "%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E"
-        )
-        icon_512 = (
-                "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E"
-                f"%3Crect width='512' height='512' rx='96' fill='%23{theme_hex}'/%3E"
-                "%3Ctext x='50%25' y='54%25' font-size='300' text-anchor='middle' dominant-baseline='middle'%3E"
-                "%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E"
-        )
+        # The icon, and the manifest's own if it names one (`trip.brand.icon`).
+        # Drawn in `generator/app_icon.py` rather than here, because the head's
+        # favicon needs the same answer and two copies of an icon drift.
+        icon_192 = app_icon.icon_for(trip, 192)
+        icon_512 = app_icon.icon_for(trip, 512)
 
         # An installed PWA shows short_name under the icon, and platforms
         # truncate it hard -- iOS around 12 characters. title[:24] cut

@@ -15,6 +15,7 @@ Template placeholders use the pattern <!--PLACEHOLDER_NAME-->.
 """
 from __future__ import annotations
 import html as html_escape
+from generator import app_icon
 import hashlib, json, logging
 from datetime import datetime
 from pathlib import Path
@@ -383,6 +384,11 @@ class HTMLAssembler:
         # The favicon and PWA icons are SVG data: URIs, where the leading
         # "#" must stay percent-encoded as %23 -- so they take the bare hex.
         html = html.replace("<!--THEME_COLOR_HEX-->", theme_color.lstrip("#"))
+        # The head's icon and the web manifest's have to be the same icon. They
+        # were the same emoji written out twice, one inline in the template and
+        # one in `main._write_pwa_assets`, so a manifest naming its own icon
+        # would have changed the installed app and left the browser tab behind.
+        html = html.replace("<!--APP_ICON-->", app_icon.icon_for(trip, 192))
 
         # ── Head metadata ────────────────────────────────────────────────────
         # The <head> carried four hard-coded Southwest strings -- the <title>,
