@@ -13,6 +13,80 @@ published artifact; **patch** for fixes that leave behaviour unchanged.
 `__template_version__` tracks the frozen HTML template separately and does
 not move with this number.
 
+## 3.3.0 — 2026-09-15
+
+16 pull requests since 3.2.1 (#141–#157). `__template_version__` 2.5.10 ->
+2.5.11 (#156).
+
+**Minor**: road routing is new capability with a new configuration surface
+(`routing.ferry`, and `OPENROUTESERVICE_API_KEY`), booked lodging carries a
+price, and the shape of the published artifact changed — a guide now ships as
+one file rather than two, and its link-check detail moved off the footer face.
+
+### Added
+
+- **Road legs are routed** (#150, #154, #155). With `OPENROUTESERVICE_API_KEY`
+  set, a leg's miles and minutes come from a real route rather than a straight
+  line at a banded speed — the ferry time is in the route and in no speed model.
+  A routed leg keeps the road it follows and where its ferry crosses (#154), so
+  a map can draw the route instead of a line across the water; nothing draws it
+  yet. Where a route takes a ferry, the same leg is routed again with ferries
+  avoided and both are kept (#155): `routing.ferry.wait_minutes_per_crossing`
+  (45) is added to the ferry route, and land wins unless the ferry is still
+  more than `prefer_land_within_minutes` (15) faster. A caller can force
+  `avoid` or `prefer`; with no land route the ferry is chosen and says so.
+- **A booked hotel keeps its price** (#151): `total_cost` and `currency` on the
+  lodging fragment.
+
+### Changed
+
+- **Link-check detail recedes** (#149, owner direction). Google Maps links are
+  their own state, `map`: a location the engine points at because a place had
+  no page of its own, designated by its 🗺️ icon and kept out of every count.
+  Counted as `unchecked` they were marked on cards and put google.com first
+  among "sites that refuse automated requests" on a guide where Google refused
+  nothing — 15 of 62 unchecked links on a Nashville build. An unchecked link's
+  icon now fades instead of carrying the words "not checked" (55 of 120 card
+  links on that build), and the icon legend and liveness statement moved into a
+  collapsed "About the links" disclosure — native `<details>`, no script, so it
+  works offline.
+- **A guide is one file again** (#156, #157). The header's download button
+  built a Blob of the whole page and clicked a synthesised link, and the
+  template built a second Blob for a `file://` app manifest that can install
+  nothing. Both are the construction mail scanners read as HTML smuggling, and
+  an attachment opened from an email is a `file://` page. They are gone; the
+  download control is a plain link to the page itself, named from the trip's
+  title (it saved every guide as `southwest-road-trip-itinerary.html`) and
+  rendered as the standard download icon rather than a text button. An
+  `index.html` built this way was confirmed by the owner to send **without
+  virus complaints**, so the script-free `index-email.html` copy written beside
+  every guide since 2.x is removed (#157).
+- **Each link icon says what it opens** (#149): "opens the trail page", "opens
+  in Google Maps", "opens the source page" — every icon used to claim the last.
+
+### Fixed
+
+- **A dead link is not published on a card** (#145), whatever attached it. Two
+  restaurant links whose domains no longer exist were rendered on the East
+  Coast Greenway guide while the report counted them dead; 14 card links were
+  in no report at all. Every card link is now checked against the ledger
+  immediately before assembly, and one the run never fetched is fetched then.
+- **A resolver saying "try again" is not a host that is gone** (#146). Windows
+  reports a temporary DNS failure with the same text as a missing host
+  (11002 vs 11001), and urllib3 wraps Linux's EAI_AGAIN in the same error. With
+  #145 acting on the verdict, a resolver blip would have stripped good links
+  and dropped the places attached to them.
+- **A restaurant link on the right domain must also be the right page** (#152).
+- **A model's inline citation is removed whole** (#142), and a guide that shows
+  one says so.
+- **An ingested hotel keeps its name and its town** (#153). The extraction
+  prompt offered `provider` and never `name`, so the property name was dropped
+  and the only place-like field left was the street address.
+- **The search-credit reading reaches the report** (#141). #137 set it on the
+  report dict; `ReportWriter` copies named keys only and this one was not among
+  them, so `validation_report.json` never carried it while the run ledger did.
+- **The provider matrix matches config again** (#143).
+
 ## 3.2.1 — 2026-09-13
 
 28 pull requests since 3.2.0 (#112–#139), from several sessions working the
