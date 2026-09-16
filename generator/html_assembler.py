@@ -389,6 +389,9 @@ class HTMLAssembler:
         # one in `main._write_pwa_assets`, so a manifest naming its own icon
         # would have changed the installed app and left the browser tab behind.
         html = html.replace("<!--APP_ICON-->", app_icon.icon_for(trip, 192))
+        # iOS reads this one and will not take an SVG, so it is the manifest's
+        # PNG where there is one. Same artwork, one raster, one platform.
+        html = html.replace("<!--APP_TOUCH_ICON-->", app_icon.touch_icon_for(trip))
 
         # ── Head metadata ────────────────────────────────────────────────────
         # The <head> carried four hard-coded Southwest strings -- the <title>,

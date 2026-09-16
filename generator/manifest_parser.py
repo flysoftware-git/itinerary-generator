@@ -261,6 +261,13 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                         # which file and why; a regex here would only be able
                         # to say the manifest is invalid.
                         "icon": {"type": "string", "minLength": 1},
+                        # iOS has never supported SVG in `apple-touch-icon`, so
+                        # `icon` above reaches every platform except the one
+                        # where a home-screen icon matters most. This is the
+                        # same artwork as a 180x180 PNG, used there and nowhere
+                        # else. Optional: without it an iPhone shows what it has
+                        # always shown, a screenshot of the page.
+                        "icon_png": {"type": "string", "minLength": 1},
                     },
                     "additionalProperties": False,
                 },
@@ -799,6 +806,7 @@ class ManifestParser:
         self._validate_schema(data)
         self._merge_reservations_sidecar(data, manifest_path)
         self._resolve_brand_icon(data, manifest_path)
+        self._resolve_brand_touch_icon(data, manifest_path)
         self._validate_seeds(data)
         self._validate_en_route_seeds(data)
         self._validate_en_route_exclude(data)
@@ -891,6 +899,94 @@ class ManifestParser:
         brand["icon"] = "data:image/svg+xml," + quote(svg.strip(), safe="")
         logger.info("Brand icon: %s (%d bytes)", path, size)
 
+    #: What Apple asks for, and what this refuses anything else for. A single
+    #: size rather than a set: an iPhone downscales one icon cleanly, and a
+    #: manifest that may name any size is a manifest that will name a 1024px
+    #: export nobody looks at again.
+    TOUCH_ICON_PX = 180
+
+    def _resolve_brand_touch_icon(self, data: dict[str, Any], manifest_path: Path) -> None:
+        """Turn `trip.brand.icon_png` into a `data:` URI, or refuse it here.
+
+        **Why a second key at all.** `icon` is an SVG because one vector
+        answers for the 192 and 512 manifest entries and the favicon. iOS does
+        not take an SVG in `apple-touch-icon` and never has: Safari ignores the
+        link and an added-to-home-screen guide gets a screenshot of the page.
+        So the one platform where a home-screen icon matters most is the one
+        `icon` cannot reach, and the fix is a raster of a known size rather
+        than a guess made at render time.
+
+        Nothing is rasterised here. The author exports the PNG; this checks it
+        is a PNG, that it is square at `TOUCH_ICON_PX`, and inlines it.
+        """
+        import base64
+
+        trip = data.get("trip") if isinstance(data, dict) else None
+        brand = trip.get("brand") if isinstance(trip, dict) and isinstance(trip.get("brand"), dict) else None
+        if not brand:
+            return
+        raw = str(brand.get("icon_png", "") or "").strip()
+        if not raw:
+            return
+
+        if raw.startswith("data:"):
+            if not raw.startswith("data:image/png;base64,"):
+                raise ValueError(
+                    "trip.brand.icon_png: a data: URI must be data:image/png;base64 -- iOS takes "
+                    "a raster here, which is the whole reason this key is separate from `icon`."
+                )
+            try:
+                blob = base64.b64decode(raw.split(",", 1)[1], validate=True)
+            except Exception as exc:  # noqa: BLE001 -- the message has to name the key
+                raise ValueError(f"trip.brand.icon_png: the base64 payload could not be read ({exc}).") from exc
+            self._check_touch_icon(blob, "trip.brand.icon_png")
+            return
+
+        if not raw.lower().endswith(".png"):
+            raise ValueError(
+                f"trip.brand.icon_png: {raw!r} -- give a .png file beside the manifest, or a "
+                "data:image/png;base64 URI. It exists because iOS will not take the SVG."
+            )
+        path = Path(raw)
+        if not path.is_absolute():
+            path = manifest_path.parent / path
+        if not path.is_file():
+            raise ValueError(
+                f"trip.brand.icon_png: no file at {path}. A relative path is read from the "
+                f"manifest's own directory ({manifest_path.parent})."
+            )
+        blob = path.read_bytes()
+        self._check_touch_icon(blob, f"trip.brand.icon_png ({path})")
+        brand["icon_png"] = "data:image/png;base64," + base64.b64encode(blob).decode("ascii")
+        logger.info("Brand touch icon: %s (%d bytes)", path, len(blob))
+
+    def _check_touch_icon(self, blob: bytes, what: str) -> None:
+        """A PNG, square, at the size iOS is given. Refused here or never.
+
+        The dimensions are in the IHDR chunk, the first thing after the
+        signature, so reading them needs no image library -- and a wrong size
+        has to fail at parse like every other icon fault, because on the far
+        side of this is a phone nobody is holding.
+        """
+        import struct
+
+        if len(blob) > self.MAX_ICON_BYTES:
+            raise ValueError(
+                f"{what} is {len(blob) // 1024} KB; the limit is "
+                f"{self.MAX_ICON_BYTES // 1024} KB. It is inlined into the guide's head."
+            )
+        if not blob.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError(f"{what} is not a PNG -- its first bytes are not a PNG signature.")
+        if len(blob) < 24 or blob[12:16] != b"IHDR":
+            raise ValueError(f"{what} is a PNG with no readable header, so its size cannot be checked.")
+        width, height = struct.unpack(">II", blob[16:24])
+        if (width, height) != (self.TOUCH_ICON_PX, self.TOUCH_ICON_PX):
+            raise ValueError(
+                f"{what} is {width}x{height}; it has to be exactly "
+                f"{self.TOUCH_ICON_PX}x{self.TOUCH_ICON_PX}. That is what iOS asks for, and a "
+                "size declared and not met is the defect this key exists to avoid."
+            )
+
     @staticmethod
     def _refuse_scripted_icon(svg: str) -> None:
         """An icon is artwork, and artwork does not need a script in it.
@@ -901,11 +997,18 @@ class ManifestParser:
         author nothing and removes the interesting case entirely.
         """
         lowered = svg.lower()
-        for marker in ("<script", "javascript:", "<foreignobject"):
+        # A browser runs none of these in an icon slot today. The list is what
+        # the reasoning above implies rather than what is exploitable now: the
+        # reason given is that the artwork is inlined into a published page,
+        # and that reason carries to the day somebody renders the same file in
+        # the document body, where every one of these does run.
+        for marker in ("<script", "javascript:", "<foreignobject", "onload=", "onerror=",
+                       "onclick=", "<use", "@import", "<image"):
             if marker in lowered:
                 raise ValueError(
-                    f"trip.brand.icon contains {marker!r}. An icon is artwork: script and "
-                    "embedded HTML are refused, because it is inlined into the published page."
+                    f"trip.brand.icon contains {marker!r}. An icon is artwork: script, embedded "
+                    "HTML and references to anything outside the file are refused, because it is "
+                    "inlined into the published page."
                 )
 
     @staticmethod
