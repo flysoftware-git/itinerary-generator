@@ -109,9 +109,12 @@ def test_the_head_and_the_web_manifest_get_the_same_icon(tmp_path):
     trip = ManifestParser().parse(_manifest(tmp_path, _icon_block("logo.svg")))
     head = Path("templates/v2.5_template.html").read_text(encoding="utf-8")
 
-    assert head.count("<!--APP_ICON-->") == 2, "the head no longer draws its own icon"
+    # Two placeholders rather than one: `apple-touch-icon` is iOS's, and takes
+    # the PNG when a manifest carries one (`tests/test_touch_icon.py`).
+    assert head.count("<!--APP_ICON-->") == 1, "the head no longer draws its own icon"
     links = [line for line in head.splitlines() if "rel=\"icon\"" in line or "apple-touch-icon" in line]
-    assert len(links) == 2 and all("<!--APP_ICON-->" in line for line in links), links
+    assert len(links) == 2, links
+    assert all("<!--APP_ICON-->" in line or "<!--APP_TOUCH_ICON-->" in line for line in links), links
     assert not any("svg" in line and "%23" in line for line in links), "an icon is still drawn inline"
     assert app_icon.icon_for(trip, 192) == app_icon.icon_for(trip, 512)
 

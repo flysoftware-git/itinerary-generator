@@ -73,6 +73,20 @@ def icon_for(trip: dict[str, Any], size: int) -> str:
     return default_icon(theme_hex(trip), size)
 
 
+def touch_icon_for(trip: dict[str, Any]) -> str:
+    """The icon for `apple-touch-icon`, which is the one iOS reads.
+
+    `trip.brand.icon_png` when the manifest carries one, because iOS ignores
+    an SVG here and shows a screenshot of the page instead. Otherwise the same
+    answer as everywhere else: what a guide has always installed with on that
+    platform, which is nothing on iOS and the SVG everywhere else.
+    """
+    meta = trip.get("trip", {}) if isinstance(trip, dict) else {}
+    brand = meta.get("brand") if isinstance(meta.get("brand"), dict) else {}
+    png = str((brand or {}).get("icon_png", "") or "").strip()
+    return png or icon_for(trip, 192)
+
+
 def is_default(trip: dict[str, Any]) -> bool:
     """Whether this trip installs with the stock icon."""
     meta = trip.get("trip", {}) if isinstance(trip, dict) else {}
