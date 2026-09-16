@@ -399,6 +399,14 @@ class HTMLAssembler:
         html = html.replace(
             "<!--DOCUMENT_TITLE-->", html_escape.escape(f"{trip_title} — Full")
         )
+        # The download link's file name, from the same title. The template's
+        # download script hardcoded "southwest-road-trip-itinerary.html", so
+        # every guide saved under the first trip's name -- the head-metadata
+        # failure above, one element further down the page.
+        html = html.replace(
+            "<!--DOWNLOAD_FILENAME-->",
+            html_escape.escape(self._download_filename(trip_title), quote=True),
+        )
         # iOS truncates a home-screen label at roughly 12 characters, so a long
         # title is cut mid-word there. Prefer an explicit short_name when the
         # manifest gives one.
@@ -1505,6 +1513,21 @@ class HTMLAssembler:
             "}, true);\n"
             "</script>\n"
         )
+
+    @staticmethod
+    def _download_filename(trip_title: str) -> str:
+        """A file name for the guide's download link: the trip's title, as a slug.
+
+        "Old Hickory & Asheville" -> "old-hickory-asheville-itinerary.html".
+        Accents fold to plain letters and anything else that is not a letter
+        or digit becomes one hyphen, so the name is safe on every file system a
+        reader might save to. Capped so a long title stays a usable name.
+        """
+        import unicodedata
+
+        folded = unicodedata.normalize("NFKD", str(trip_title or "")).encode("ascii", "ignore").decode("ascii")
+        slug = re.sub(r"[^a-z0-9]+", "-", folded.lower()).strip("-")[:60].strip("-")
+        return f"{slug}-itinerary.html" if slug else "itinerary.html"
 
     @staticmethod
     def _build_trip_description(trip: dict[str, Any]) -> str:
