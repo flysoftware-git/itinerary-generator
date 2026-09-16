@@ -187,6 +187,7 @@ def leg_estimate(
     land_router: Callable[[tuple[float, float], tuple[float, float]], Any] | None = None,
     ferry_policy: Any = None,
     ferry_preference: str = "auto",
+    profile: str | None = None,
 ) -> LegEstimate | None:
     """The one answer to *how far, and how long, by road* for a leg.
 
@@ -204,11 +205,22 @@ def leg_estimate(
     geometry are the chosen route's, so a caller reading only those gets the
     chosen leg.
 
+    `profile` is a `routing.PROFILES` value, and `driving-car` when None -- the
+    answer every caller got before it existed. A leg taken some other way is
+    routed that way: `cycling-regular` follows the trail a car cannot, and its
+    minutes are the ride's rather than a car's on the parallel highway. The
+    straight-line fallback below is a *driving* estimate whatever the profile,
+    and says so by returning `routed=False`; a caller with its own model for
+    the mode uses that flag to keep its own answer.
+
     `router` and `land_router` are injectable for tests; the defaults are the
-    real ones.
+    real ones, and they carry the profile.
     """
     from generator import routing
 
+    profile = routing.DEFAULT_PROFILE if profile is None else profile
+    if profile not in routing.PROFILES:
+        raise ValueError(f"profile must be one of {routing.PROFILES}, not {profile!r}")
     if ferry_preference not in routing.FERRY_PREFERENCES:
         raise ValueError(f"ferry_preference must be one of {routing.FERRY_PREFERENCES}, "
                          f"not {ferry_preference!r}")
@@ -221,7 +233,8 @@ def leg_estimate(
     if straight <= 0.5:
         return None
     if router is None:
-        router = routing.route_leg
+        def router(a, b):
+            return routing.route_leg(a, b, profile=profile)
     routed = router(origin, dest)
     if routed is not None:
         has_ferry = float(getattr(routed, "ferry_share", 0.0) or 0.0) > 0.0 \
@@ -230,7 +243,7 @@ def leg_estimate(
             return _routed_estimate(routed)
         if land_router is None:
             def land_router(a, b):
-                return routing.route_leg(a, b, avoid_ferries=True)
+                return routing.route_leg(a, b, avoid_ferries=True, profile=profile)
         land = land_router(origin, dest)
         policy = ferry_policy if ferry_policy is not None else routing.configured_ferry_policy()
         chosen, reason = routing.choose_ferry_or_land(routed, land, policy=policy,
