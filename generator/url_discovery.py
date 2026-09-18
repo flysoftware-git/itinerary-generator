@@ -22,6 +22,7 @@ Search API history:
         generator/search_provider.py for Claude/OpenAI alternatives.
 """
 from __future__ import annotations
+import hashlib
 import html as html_lib
 import json
 import logging
@@ -667,6 +668,50 @@ DEFAULT_EN_ROUTE_REQUIRE_DETOUR_METADATA = True
 MAX_PLAUSIBLE_EN_ROUTE_DETOUR_MPH = 70.0
 DEFAULT_DIRECT_BATCH_HTML_CAPTURE_ENABLED = True
 DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR = "dev/url_discovery_direct_batch_html"
+
+#: How long a capture file's name may get, before `.html` or `.meta.json`.
+#:
+#: Windows still resolves paths against a 260-character limit unless long paths
+#: are enabled, which they are not by default. The capture lives several levels
+#: under the run's output directory, so the name is the only part of the path
+#: this module controls -- and when the limit is passed the write raises, the
+#: caller logs a warning, and the capture silently does not happen. An operator
+#: reading the run sees no capture and no error.
+#:
+#: 96 leaves room for an output directory around 130 characters deep, which is
+#: an ordinary `C:\\Users\\<name>\\...` path, and still shows the destination,
+#: the kind and the dates in full.
+CAPTURE_NAME_MAX_CHARS = 96
+
+
+def _capture_base_name(dest_slug: str, kind_slug: str, dates_slug: str,
+                       key_slug: str, stamp: str) -> str:
+    """The capture's file name, bounded so the path can be written.
+
+    **The key repeats the rest.** It is built from the destination, the dates
+    and the kind, so the full name states each of them twice --
+    `zion-national-park.attraction.october-18-2026.`
+    `zion-national-park-october-18-2026-html-attraction.<stamp>` is 122
+    characters carrying about 60 characters of information. The readable prefix
+    is kept and the key is what gives way, because the prefix is what an
+    operator scans the directory for.
+
+    A truncated key keeps a short digest of the whole, so two requests that
+    differ only past the cut still get different files rather than one
+    overwriting the other.
+    """
+    full = f"{dest_slug}.{kind_slug}.{dates_slug}.{key_slug}.{stamp}"
+    if len(full) <= CAPTURE_NAME_MAX_CHARS:
+        return full
+
+    digest = hashlib.sha1(key_slug.encode("utf-8")).hexdigest()[:8]
+    fixed = f"{dest_slug}.{kind_slug}.{dates_slug}..{digest}.{stamp}"
+    room = CAPTURE_NAME_MAX_CHARS - len(fixed)
+    if room <= 0:
+        # Even without the key it does not fit: the destination or the dates
+        # are extraordinary. Keep the tail, which is what makes it unique.
+        return f"{digest}.{stamp}"
+    return f"{dest_slug}.{kind_slug}.{dates_slug}.{key_slug[:room]}.{digest}.{stamp}"
 DEFAULT_URL_POLICY_BLOCKED_CLASSES = (
     "google_search",
     "google_maps_search",
@@ -6402,7 +6447,7 @@ class URLDiscoverer:
         kind_slug = self._capture_slug(kind)
         key_slug = self._capture_slug(key)
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        base_name = f"{dest_slug}.{kind_slug}.{dates_slug}.{key_slug}.{stamp}"
+        base_name = _capture_base_name(dest_slug, kind_slug, dates_slug, key_slug, stamp)
         html_path = capture_dir / f"{base_name}.html"
         meta_path = capture_dir / f"{base_name}.meta.json"
 

@@ -18906,3 +18906,62 @@ class TestTheDestinationsOwnPageIsNotAnItemsLink:
     def test_park_codes_are_only_read_on_nps(self):
         assert not URLDiscoverer._is_nps_park_scoped_path("example.com", "/care/planyourvisit/hiking.htm")
         assert not URLDiscoverer._is_nps_park_scoped_path("notnps.gov", "/care/hiking.htm")
+
+
+# -- a capture name that fits the path it is written to ------------------------
+
+
+def test_a_capture_name_is_bounded_so_the_write_can_happen():
+    """Windows resolves paths against 260 characters unless long paths are
+    enabled, which by default they are not.
+
+    Found by running this suite under parallel workers: xdist nests each
+    worker's temporary directory one level deeper (`popen-gw0`, ten characters),
+    and that was enough to take a capture path from 254 characters to 264. The
+    write then raised, the caller logged a warning, and the capture silently did
+    not happen -- which is the failure this bound exists to prevent, and which
+    an operator with a slightly deeper output directory would have hit without
+    any parallel workers at all.
+    """
+    from generator.url_discovery import CAPTURE_NAME_MAX_CHARS, _capture_base_name
+
+    name = _capture_base_name(
+        "zion-national-park", "attraction", "october-18-2026",
+        "zion-national-park-october-18-2026-html-attraction", "20260918T003857Z")
+
+    assert len(name) <= CAPTURE_NAME_MAX_CHARS, (
+        f"a capture name of {len(name)} characters leaves too little of the "
+        "260-character path for the output directory it is written under")
+    assert name.startswith("zion-national-park.attraction.october-18-2026."), (
+        "the readable prefix is what an operator scans the directory for, so "
+        "it is the key that gives way rather than the destination")
+
+
+def test_a_short_capture_name_is_left_exactly_as_it_was():
+    """The bound is a bound, not a reformatting. Most captures are already
+    short, and their names must not change -- an operator matching a file by
+    eye against an older run should still find it."""
+    from generator.url_discovery import _capture_base_name
+
+    name = _capture_base_name("bend", "food", "no-dates", "bend-food",
+                              "20260918T003857Z")
+
+    assert name == "bend.food.no-dates.bend-food.20260918T003857Z"
+
+
+def test_two_keys_that_differ_past_the_cut_do_not_share_a_file():
+    """Truncation without a digest is a silent overwrite: two requests whose
+    keys agree for the first sixty characters would write the same file, and
+    the second capture would replace the first with no error anywhere."""
+    from generator.url_discovery import _capture_base_name
+
+    common = ("zion-national-park", "attraction", "october-18-2026")
+    stamp = "20260918T003857Z"
+    long_key = "zion-national-park-october-18-2026-html-attraction"
+
+    first = _capture_base_name(*common, long_key + "-alpha", stamp)
+    second = _capture_base_name(*common, long_key + "-beta", stamp)
+
+    assert first != second, (
+        "two captures that differ only past the truncation point share one "
+        "file name, so one silently overwrites the other")
