@@ -457,12 +457,16 @@ class MultiLLMClient:
         llm_cfg = llm_overrides or {}
 
         self.provider = (llm_cfg.get("provider") or ai_cfg.get("provider") or "azure_openai").lower()
+        # With no model named anywhere, the provider's own default. A fixed
+        # "gpt-4o" here was the wrong family for every provider but two, and
+        # was then corrected with an "incompatible with provider" warning on
+        # every run that had deliberately left ai.model unset.
         self.model = (
             llm_cfg.get("model")
             or ai_cfg.get("model")
             or os.environ.get("OPENAI_MODEL")
             or os.environ.get("AZURE_OPENAI_DEPLOYMENT")
-            or "gpt-4o"
+            or self._provider_default_model(self.provider)
         )
         self.model = self._normalize_model_for_provider(self.provider, str(self.model or "").strip())
         self.temperature = float(llm_cfg.get("temperature", ai_cfg.get("temperature", legacy_cfg.get("temperature", 0.7))))

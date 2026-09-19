@@ -505,6 +505,23 @@ def test_the_fallback_is_built_quietly_with_its_own_providers_model(tmp_path, mo
     assert caplog.records == []
 
 
+def test_no_model_named_takes_the_providers_default_without_a_warning(tmp_path, monkeypatch, caplog) -> None:
+    """Leaving ai.model unset is a supported choice (the provider's default,
+    or its model env var). It used to start from a fixed "gpt-4o" and then
+    warn that gpt-4o is incompatible with the provider -- on every run."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT", raising=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("ai:\n  provider: anthropic\n", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="generator.llm_client"):
+        client = MultiLLMClient(config_path=str(config_path))
+
+    assert client.model == MultiLLMClient._provider_default_model("anthropic")
+    assert caplog.records == []
+
+
 def test_construct_ignores_fallback_provider_matching_primary(tmp_path, monkeypatch) -> None:
     """A fallback_provider equal to the primary provider is nonsensical
     (and would recurse into constructing itself as its own fallback via the
