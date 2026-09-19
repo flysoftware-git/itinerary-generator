@@ -56,6 +56,33 @@ def test_drive_descriptions_include_popup_url_when_available() -> None:
     assert payload["Zion Canyon Scenic Drive"].get("route_map_url", "").startswith("https://www.google.com/maps/dir/?api=1&destination=")
 
 
+def test_a_drive_route_link_names_the_drive_and_its_region_not_the_stop() -> None:
+    """A named drive joined to a small town it does not run through -- the
+    stop the drive was listed under -- is a destination Google Maps cannot
+    find: "Olympic Peninsula Scenic Byway Siebert Creek" answers "can't find",
+    and so does the same with commas. The drive with the stop's region resolves,
+    and so does the drive alone."""
+    from urllib.parse import unquote
+
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    drive = {"title": "Olympic Peninsula Scenic Byway"}
+
+    qualified = assembler._build_scenic_drive_route_map_url(drive, "Siebert Creek, Washington")
+    bare = assembler._build_scenic_drive_route_map_url(drive, "Siebert Creek")
+
+    assert unquote(qualified).endswith("destination=Olympic Peninsula Scenic Byway, Washington&travelmode=driving")
+    assert unquote(bare).endswith("destination=Olympic Peninsula Scenic Byway&travelmode=driving")
+    assert "Siebert" not in unquote(qualified) + unquote(bare)
+
+
+def test_a_drive_with_no_title_still_links_to_its_stop() -> None:
+    from urllib.parse import unquote
+
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    url = assembler._build_scenic_drive_route_map_url({"title": ""}, "Zion National Park, Utah")
+    assert unquote(url).endswith("destination=Zion National Park, Utah&travelmode=driving")
+
+
 def test_drive_descriptions_omit_popup_url_when_unsafe() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     destinations = [

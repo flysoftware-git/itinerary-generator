@@ -4429,7 +4429,18 @@ class HTMLAssembler:
             return drive_url
 
         drive_title = str(drive.get("title", "") or "").strip()
-        destination = " ".join(part for part in (drive_title, dest_name) if part).strip()
+        # The drive's own name, placed by the region part of the stop's name
+        # ("Siebert Creek, Washington" -> "Washington") when there is one. The
+        # stop's town itself is left out: a named drive plus a small town that
+        # is not on it ("Olympic Peninsula Scenic Byway Siebert Creek") is a
+        # search Google Maps answers with "can't find", while the drive's name
+        # with its state, or alone, resolves to a route.
+        region = ", ".join(part.strip() for part in str(dest_name or "").split(",")[1:]
+                           if part.strip())
+        if drive_title:
+            destination = f"{drive_title}, {region}" if region else drive_title
+        else:
+            destination = str(dest_name or "").strip()
         if not destination:
             return ""
 
