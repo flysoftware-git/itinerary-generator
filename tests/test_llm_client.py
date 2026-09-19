@@ -249,9 +249,10 @@ def test_generate_json_fails_over_to_fallback_when_primary_circuit_open() -> Non
         requests.exceptions.ConnectionError("refused")
     )
 
-    # Trip the primary's breaker (threshold=1).
-    with pytest.raises(requests.exceptions.ConnectionError):
-        primary.generate_json(system_prompt="s", user_prompt="u", operation="op")
+    # Trip the primary's breaker (threshold=1). The failing call itself is
+    # retried on the fallback, so it answers rather than raising.
+    out = primary.generate_json(system_prompt="s", user_prompt="u", operation="op")
+    assert out == {"answer": "from-fallback"}
     assert primary.is_circuit_open() is True
 
     # Next call must transparently use the fallback, not raise.
@@ -293,13 +294,74 @@ def test_generate_json_failover_shares_usage_tracker_with_primary() -> None:
         requests.exceptions.ConnectionError("refused")
     )
 
-    with pytest.raises(requests.exceptions.ConnectionError):
-        primary.generate_json(system_prompt="s", user_prompt="u", operation="op")
+    primary.generate_json(system_prompt="s", user_prompt="u", operation="op")
     primary.generate_json(system_prompt="s", user_prompt="u2", operation="op")
 
     summary = shared_tracker.summary()
-    assert summary["total_calls"] == 1
+    assert summary["total_calls"] == 2
     assert summary["models"][0]["provider"] == "anthropic"
+
+
+def test_a_failed_call_is_retried_on_the_fallback_before_the_breaker_opens() -> None:
+    """A fallback used to be reached only once the primary's breaker was open,
+    so the calls that opened it -- three by default, each a destination's
+    content -- failed outright with a working fallback configured. The call
+    that fails is the one to retry."""
+    fallback = _make_client(provider="anthropic")
+    fallback._call_anthropic = lambda *a, **k: (
+        '{"answer": "from-fallback"}',
+        {"prompt_tokens": 2, "completion_tokens": 2, "model": "claude-sonnet-5"},
+    )
+    primary = _make_client(provider="openai", threshold=3, cooldown=60.0)
+    primary._fallback_client = fallback
+    primary._call_openai = lambda *a, **k: (_ for _ in ()).throw(
+        requests.exceptions.ReadTimeout("read timed out")
+    )
+
+    out = primary.generate_json(system_prompt="s", user_prompt="u", operation="op")
+
+    assert out == {"answer": "from-fallback"}
+    # One failure, well short of the threshold: the breaker is not what
+    # sent this call to the fallback.
+    assert primary.is_circuit_open() is False
+
+
+def test_a_non_transient_failure_is_retried_on_the_fallback_too() -> None:
+    """A request one provider refuses (a 400, a model it no longer serves) is
+    not an outage and does not count toward the breaker, but another provider
+    may well answer it -- which is what a fallback is configured for."""
+    fallback = _make_client(provider="anthropic")
+    fallback._call_anthropic = lambda *a, **k: (
+        '{"ok": true}',
+        {"prompt_tokens": 1, "completion_tokens": 1, "model": "claude-sonnet-5"},
+    )
+    response = MagicMock()
+    response.status_code = 400
+    primary = _make_client(provider="openai", threshold=1, cooldown=60.0)
+    primary._fallback_client = fallback
+    primary._call_openai = lambda *a, **k: (_ for _ in ()).throw(
+        requests.exceptions.HTTPError("bad request", response=response)
+    )
+
+    assert primary.generate_json(system_prompt="s", user_prompt="u", operation="op") == {"ok": True}
+    assert primary.is_circuit_open() is False
+
+
+def test_a_failure_on_the_fallback_is_raised_not_retried_again() -> None:
+    """The fallback has no fallback of its own, so when both fail the caller
+    sees the fallback's error rather than a loop."""
+    fallback = _make_client(provider="anthropic")
+    fallback._call_anthropic = lambda *a, **k: (_ for _ in ()).throw(
+        requests.exceptions.ConnectionError("fallback refused")
+    )
+    primary = _make_client(provider="openai")
+    primary._fallback_client = fallback
+    primary._call_openai = lambda *a, **k: (_ for _ in ()).throw(
+        requests.exceptions.ConnectionError("primary refused")
+    )
+
+    with pytest.raises(requests.exceptions.ConnectionError, match="fallback refused"):
+        primary.generate_json(system_prompt="s", user_prompt="u", operation="op")
 
 
 @pytest.mark.parametrize(
@@ -418,6 +480,29 @@ def test_construct_builds_fallback_client_from_config_and_fails_fast_on_missing_
     assert client._fallback_client.provider == "anthropic"
     assert client._fallback_client.model == "claude-3-5-sonnet-latest"
     assert client._fallback_client.usage_tracker is client.usage_tracker
+
+
+def test_the_fallback_is_built_quietly_with_its_own_providers_model(tmp_path, monkeypatch, caplog) -> None:
+    """With no fallback_model, the fallback used to inherit ai.model -- the
+    primary's model, always the wrong family -- and log "incompatible with
+    provider" on construction; then, re-reading ai.fallback_provider as its
+    own, log that it "is the same as ai.provider". Both warnings described a
+    configuration that was correct."""
+    monkeypatch.setenv("OPENAI_API_KEY", "primary-test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fallback-test-key")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "ai:\n  provider: openai\n  model: gpt-4o-mini\n  fallback_provider: anthropic\n",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="generator.llm_client"):
+        client = MultiLLMClient(config_path=str(config_path))
+
+    assert client._fallback_client is not None
+    assert client._fallback_client.model == MultiLLMClient._provider_default_model("anthropic")
+    assert client._fallback_client._fallback_client is None
+    assert caplog.records == []
 
 
 def test_construct_ignores_fallback_provider_matching_primary(tmp_path, monkeypatch) -> None:
