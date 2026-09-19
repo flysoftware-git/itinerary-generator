@@ -1316,7 +1316,7 @@ def test_build_restaurants_omits_items_without_a_usable_url() -> None:
     )
 
     assert "No Link Diner" not in html
-    assert "Dinner Recommendations" in html
+    assert "Places to eat" in html
     assert "google.com/search?q=No%20Link%20Diner" not in html
 
 
@@ -1336,7 +1336,7 @@ def test_build_restaurants_omits_items_when_only_maps_search_fallback_exists() -
     )
 
     assert "Fallback Grill" not in html
-    assert "Dinner Recommendations" in html
+    assert "Places to eat" in html
     assert "google.com/maps/search" not in html
     assert "google.com/search?q=Fallback%20Grill" not in html
 
@@ -1574,7 +1574,7 @@ def test_last_destination_departure_route_card_renders_after_restaurants() -> No
 
     html = assembler._build_single_section(dest, trip_meta, previous_name="Pagosa Springs", is_last=True)
 
-    restaurants_idx = html.find("Dinner Recommendations")
+    restaurants_idx = html.find("Places to eat")
     departure_idx = html.find("Departure Route Options")
     assert restaurants_idx != -1
     assert departure_idx != -1
@@ -1816,7 +1816,7 @@ def test_build_restaurants_omits_maps_only_restaurant_when_no_direct_link_exists
     )
 
     assert "Fallback Grill" not in html
-    assert "Dinner Recommendations" in html
+    assert "Places to eat" in html
 
 
 def test_build_restaurants_uses_metadata_summary_when_description_is_synthetic() -> None:
@@ -3358,7 +3358,7 @@ def test_build_restaurants_omits_items_with_no_usable_url_even_when_maps_fallbac
     html = assembler._build_restaurants(ai, dest_name="St. George, Utah")
 
     assert "Tandoor Indian Cuisine" not in html
-    assert "Dinner Recommendations" in html
+    assert "Places to eat" in html
     assert "google.com/maps/search/?api=1" not in html
     assert "google.com/search?q=Tandoor%20Indian%20Cuisine" not in html
 
@@ -3661,7 +3661,7 @@ def test_build_restaurants_renders_see_base_pointer_when_deferred() -> None:
 
     html = assembler._build_restaurants({"dinner_recommendations": []}, "Arches National Park", dest=arches, dest_by_id=dest_by_id)
 
-    assert "Dinner recommendations: see " in html
+    assert "Places to eat: see " in html
     # dipstick60 Bug 3: only the destination name itself is the clickable
     # anchor, not the whole "see Moab" phrase.
     assert '<a href="#section-moab">Moab</a>' in html
@@ -3669,7 +3669,7 @@ def test_build_restaurants_renders_see_base_pointer_when_deferred() -> None:
 
 def test_group_base_pointer_html_styles_and_links_only_the_destination_name() -> None:
     """dipstick60 Bug 3: the owner reported the "see base" pointer (e.g.
-    "Dinner recommendations: see Moab") as plain, unstyled/uncentered text.
+    "Places to eat: see Moab") as plain, unstyled/uncentered text.
     _group_base_pointer_html now (a) carries the .group-base-pointer CSS
     class the template styles with padding/centering (see
     templates/v2.5_template.html), and (b) wraps only the destination name
@@ -3680,10 +3680,10 @@ def test_group_base_pointer_html_styles_and_links_only_the_destination_name() ->
     dest_by_id = {"moab": {"id": "moab", "name": "Moab"}}
     dest = {"id": "arches", "name": "Arches National Park", "group_with": "moab"}
 
-    html = assembler._group_base_pointer_html(dest, dest_by_id, "Dinner recommendations", icon="\U0001f37d️")
+    html = assembler._group_base_pointer_html(dest, dest_by_id, "Places to eat", icon="\U0001f37d️")
 
     assert html == (
-        '<p class="group-base-pointer">\U0001f37d️ Dinner recommendations: see '
+        '<p class="group-base-pointer">\U0001f37d️ Places to eat: see '
         '<a href="#section-moab">Moab</a></p>\n'
     )
 
@@ -3973,7 +3973,7 @@ def test_assemble_full_moab_group_manifest_renders_expected_pointers_and_cluster
     assert "class=\"group-lodging-pointer\"" not in html
     # Restaurant deferral pointer on both grouped children, base keeps its own card
     # -- only the destination name itself is the anchor (dipstick60 Bug 3).
-    assert html.count("Dinner recommendations: see ") == 2
+    assert html.count("Places to eat: see ") == 2
     assert html.count('<a href="#section-moab">Moab</a>') >= 2
     assert "Moab Diner" in html
     # Each grouped entry keeps its own genuinely distinct attractions
