@@ -579,7 +579,7 @@ def test_restaurant_discovery_uses_ai_url_candidates_before_search_passes():
             {
                 "name": "The Spotted Dog Cafe",
                 "url_candidates": [
-                    "https://www.tripadvisor.com/Restaurant_Review-g57119-d123456-Reviews-The_Spotted_Dog_Cafe-Springdale_Utah.html"
+                    "https://www.tripadvisor.com/Restaurant_Review-g57119-d104782-Reviews-The_Spotted_Dog_Cafe-Springdale_Utah.html"
                 ],
             }
         ],
@@ -1117,7 +1117,7 @@ def test_discover_restaurants_can_use_direct_batch_source():
         with patch.object(
             discoverer,
             "_search_restaurant_from_direct_batch",
-            return_value="https://www.tripadvisor.com/Restaurant_Review-g57119-d123456-Reviews-The_Spotted_Dog_Cafe-Springdale_Utah.html",
+            return_value="https://www.tripadvisor.com/Restaurant_Review-g57119-d104782-Reviews-The_Spotted_Dog_Cafe-Springdale_Utah.html",
         ):
             discoverer._discover_restaurants(ai, dest_name="Zion National Park")
 
@@ -3713,7 +3713,7 @@ def test_search_restaurant_direct_batch_authoritative_prefers_official_over_trip
 
     rows = [
         {
-            "url": "https://www.tripadvisor.com/Restaurant_Review-g60771-d123456-Spotted_Dog_Cafe-Springdale_Utah.html",
+            "url": "https://www.tripadvisor.com/Restaurant_Review-g60771-d104782-Spotted_Dog_Cafe-Springdale_Utah.html",
             "title": "Spotted Dog Cafe",
             "snippet": "Tripadvisor listing",
         },
@@ -3746,7 +3746,7 @@ def test_search_restaurant_direct_batch_authoritative_prefers_tripadvisor_over_m
             "snippet": "Google Maps search result",
         },
         {
-            "url": "https://www.tripadvisor.com/Restaurant_Review-g60771-d123456-Spotted_Dog_Cafe-Springdale_Utah.html",
+            "url": "https://www.tripadvisor.com/Restaurant_Review-g60771-d104782-Spotted_Dog_Cafe-Springdale_Utah.html",
             "title": "Spotted Dog Cafe",
             "snippet": "Tripadvisor listing",
         },
@@ -3760,7 +3760,7 @@ def test_search_restaurant_direct_batch_authoritative_prefers_tripadvisor_over_m
                 "October 18, 2026",
             )
 
-    assert out == "https://www.tripadvisor.com/Restaurant_Review-g60771-d123456-Spotted_Dog_Cafe-Springdale_Utah.html"
+    assert out == "https://www.tripadvisor.com/Restaurant_Review-g60771-d104782-Spotted_Dog_Cafe-Springdale_Utah.html"
 
 
 def test_search_attraction_direct_batch_authoritative_prefers_official_over_tripadvisor_when_both_match():
@@ -3769,7 +3769,7 @@ def test_search_attraction_direct_batch_authoritative_prefers_official_over_trip
 
     rows = [
         {
-            "url": "https://www.tripadvisor.com/Attraction_Review-g60771-d123456-Reviews-Observation_Point-Zion_National_Park_Utah.html",
+            "url": "https://www.tripadvisor.com/Attraction_Review-g60771-d104782-Reviews-Observation_Point-Zion_National_Park_Utah.html",
             "title": "Observation Point",
             "snippet": "TripAdvisor attraction page",
         },
@@ -3818,7 +3818,7 @@ def test_discover_restaurants_direct_batch_takes_precedence_over_ai_candidate_ur
     with patch.object(
         discoverer,
         "_search_restaurant_from_direct_batch",
-        return_value="https://www.tripadvisor.com/Restaurant_Review-g60771-d123456-Reviews-The_Spotted_Dog_Cafe-Springdale_Utah.html",
+        return_value="https://www.tripadvisor.com/Restaurant_Review-g60771-d104782-Reviews-The_Spotted_Dog_Cafe-Springdale_Utah.html",
     ), patch.object(
         discoverer,
         "_resolve_ai_candidate_url",
@@ -5233,7 +5233,7 @@ def test_is_generic_restaurant_landing_url_distinguishes_specific_vs_area_pages(
         "St. George, Utah",
     )
     assert not discoverer._is_generic_restaurant_landing_url(
-        "https://www.tripadvisor.com/Restaurant_Review-g28964-d1234567-Reviews-Benja_Thai_Sushi-St_George_Utah.html",
+        "https://www.tripadvisor.com/Restaurant_Review-g28964-d1047826-Reviews-Benja_Thai_Sushi-St_George_Utah.html",
         "Benja Thai & Sushi",
         "St. George, Utah",
     )
@@ -5304,7 +5304,7 @@ def test_generic_section_landing_page_catches_tripadvisor_things_to_do_listing()
     )
     # A genuinely specific TripAdvisor attraction review page must not be caught.
     assert not URLDiscoverer._is_generic_section_landing_page(
-        "https://www.tripadvisor.com/Attraction_Review-g33584-d123456-Reviews-"
+        "https://www.tripadvisor.com/Attraction_Review-g33584-d104782-Reviews-"
         "Chimney_Rock_National_Monument-Pagosa_Springs_Colorado.html"
     )
 
@@ -5399,7 +5399,7 @@ def test_retain_discovered_url_rejects_tripadvisor_listing_for_en_route_stop_kin
     # A genuinely specific attraction review page for this kind must still be
     # preserved -- the fix must not over-reject real content.
     specific_url = (
-        "https://www.tripadvisor.com/Attraction_Review-g33584-d123456-Reviews-"
+        "https://www.tripadvisor.com/Attraction_Review-g33584-d104782-Reviews-"
         "Chimney_Rock_National_Monument-Pagosa_Springs_Colorado.html"
     )
     assert (
@@ -5441,7 +5441,7 @@ def test_discover_en_route_stops_direct_batch_discards_stale_tripadvisor_listing
     with patch.object(
         discoverer,
         "_search_en_route_stop_from_direct_batch",
-        return_value="https://www.tripadvisor.com/Attraction_Review-g33584-d123456-Reviews-"
+        return_value="https://www.tripadvisor.com/Attraction_Review-g33584-d104782-Reviews-"
         "Chimney_Rock_National_Monument-Pagosa_Springs_Colorado.html",
     ) as batch_search:
         with patch.object(discoverer, "_search_first") as fallback_search:
@@ -5450,7 +5450,7 @@ def test_discover_en_route_stops_direct_batch_discards_stale_tripadvisor_listing
     stop = ai["getting_here"]["en_route_stops"][0]
     assert stop["url"] != "https://www.tripadvisor.com/Attractions-g33584-Activities-Pagosa_Springs_Colorado.html"
     assert stop["url"] == (
-        "https://www.tripadvisor.com/Attraction_Review-g33584-d123456-Reviews-"
+        "https://www.tripadvisor.com/Attraction_Review-g33584-d104782-Reviews-"
         "Chimney_Rock_National_Monument-Pagosa_Springs_Colorado.html"
     )
     batch_search.assert_called_once()
@@ -6654,8 +6654,8 @@ def test_search_restaurant_direct_batch_authoritative_keeps_tripadvisor_match_fo
     rows = [
         {
             "name": "Benja Thai & Sushi",
-            "url": "https://www.tripadvisor.com/Restaurant_Review-g28964-d1234567-Reviews-Benja_Thai_Sushi-St_George_Utah.html",
-            "snippet": "Benja Thai & Sushi Source Maps Links: https://www.tripadvisor.com/Restaurant_Review-g28964-d1234567-Reviews-Benja_Thai_Sushi-St_George_Utah.html https://www.google.com/maps/search/?api=1&query=Benja+Thai+Sushi+St+George+UT",
+            "url": "https://www.tripadvisor.com/Restaurant_Review-g28964-d1047826-Reviews-Benja_Thai_Sushi-St_George_Utah.html",
+            "snippet": "Benja Thai & Sushi Source Maps Links: https://www.tripadvisor.com/Restaurant_Review-g28964-d1047826-Reviews-Benja_Thai_Sushi-St_George_Utah.html https://www.google.com/maps/search/?api=1&query=Benja+Thai+Sushi+St+George+UT",
         }
     ]
 
@@ -6667,7 +6667,7 @@ def test_search_restaurant_direct_batch_authoritative_keeps_tripadvisor_match_fo
                 "October 17, 2026",
             )
 
-    assert out == "https://www.tripadvisor.com/Restaurant_Review-g28964-d1234567-Reviews-Benja_Thai_Sushi-St_George_Utah.html"
+    assert out == "https://www.tripadvisor.com/Restaurant_Review-g28964-d1047826-Reviews-Benja_Thai_Sushi-St_George_Utah.html"
 
 
 def test_direct_batch_rows_from_html_prefers_source_over_maps_url():
@@ -10753,7 +10753,7 @@ def test_is_relevant_result_generic_branch_accepts_blocked_fetch_with_matching_c
         discoverer, "_verify_url_cached", return_value=(False, 403)
     ):
         ok = discoverer._is_relevant_result(
-            "https://www.tripadvisor.com/Restaurant_Review-g60899-d123456-Reviews-Bit_Spur.html",
+            "https://www.tripadvisor.com/Restaurant_Review-g60899-d104782-Reviews-Bit_Spur.html",
             "Bit & Spur",
             "Springdale",
             candidate={"name": "Bit & Spur Restaurant & Saloon", "snippet": "Southwestern dining in Springdale"},
@@ -10769,7 +10769,7 @@ def test_is_relevant_result_generic_branch_accepts_blocked_fetch_with_no_candida
         discoverer, "_verify_url_cached", return_value=(False, 403)
     ):
         ok = discoverer._is_relevant_result(
-            "https://www.tripadvisor.com/Restaurant_Review-g60899-d123456-Reviews-Bit_Spur.html",
+            "https://www.tripadvisor.com/Restaurant_Review-g60899-d104782-Reviews-Bit_Spur.html",
             "Bit & Spur",
             "Springdale",
         )
@@ -18965,3 +18965,71 @@ def test_two_keys_that_differ_past_the_cut_do_not_share_a_file():
     assert first != second, (
         "two captures that differ only past the truncation point share one "
         "file name, so one silently overwrites the other")
+
+
+# -- a listing ID a model wrote as a placeholder ------------------------------
+#
+# Every placeholder below was published or built by this generator; every real
+# ID below sat beside them in the same guides. Scanning all 4761 links across
+# the published guides and the local builds, the rule flagged 51, and every one
+# of the 51 was a placeholder.
+
+PLACEHOLDER_LISTINGS = [
+    # 2026-09-18 Old Hickory build, eight in one guide.
+    "https://www.tripadvisor.com/Attraction_Review-g55222-d12345678-Reviews-Charlie_Daniels_Park-Mount_Juliet_Tennessee.html",
+    "https://www.tripadvisor.com/Attraction_Review-g55222-d23456789-Reviews-Breedens_Orchard-Mount_Juliet_Tennessee.html",
+    "https://www.tripadvisor.com/Attraction_Review-g55222-d34567890-Reviews-Eagle_Park-Mount_Juliet_Tennessee.html",
+    "https://www.tripadvisor.com/Restaurant_Review-g60742-d12345680-Reviews-Little_Chango-Asheville_North_Carolina.html",
+    # Live on the published Europe guide.
+    "https://www.tripadvisor.com/Restaurant_Review-g274707-d5678901-Reviews-Kafe_Houska-Prague_Bohemia.html",
+    "https://www.tripadvisor.com/Restaurant_Review-g187323-d6789012-Reviews-Mervan_Bistro-Berlin.html",
+    # A run of one digit, and an invented Google place ID.
+    "https://www.google.com/maps/place/Bryce+Point/@37.6039,-112.1561,17z/data=!3m1!4b1!4m6!3m5!1s0x87356f5555555555:0x6666666666666666",
+]
+
+REAL_LISTINGS = [
+    "https://www.tripadvisor.com/Attraction_Review-g55095-d4749982-Reviews-Hendersonville_Memory_Gardens-Hendersonville_Sumner_County_Tennessee.html",
+    "https://www.tripadvisor.com/Attraction_Review-g55248-d12633574-Reviews-Lakewood_Theatre_Company-Old_Hickory_Tennessee.html",
+    "https://www.tripadvisor.com/Attraction_Review-g55248-d33675510-Reviews-Old_Hickory_Beach-Old_Hickory_Tennessee.html",
+    "https://www.tripadvisor.com/Restaurant_Review-g55248-d435091-Reviews-Sir_Pizza-Old_Hickory_Tennessee.html",
+    "https://allevents.in/lebanon/32nd-annual-christmas-train-show/200030347843955",
+    "https://www.recreation.gov/camping/shutes-branch/r/campgroundDetails.do?contractCode=NRSO&parkId=71418",
+    "https://www.lebanonroute66.com/yesterday_66/memories-of-route-66/article_13f18662-b901-11e7-8bff-0b4243b273a2.html",
+]
+
+
+@pytest.mark.parametrize("url", PLACEHOLDER_LISTINGS)
+def test_a_placeholder_listing_id_is_not_a_page_about_the_item(url):
+    """Each names a real place in its slug, and TripAdvisor answers every
+    automated fetch with 403 -- so the liveness check could only ever call these
+    "unchecked", and the reader followed them to a listing that does not
+    exist."""
+    assert URLDiscoverer._is_obviously_generic_url(url.lower()), url
+
+
+@pytest.mark.parametrize("url", REAL_LISTINGS)
+def test_a_real_listing_id_is_left_alone(url):
+    assert not URLDiscoverer._has_placeholder_listing_id(url.lower()), url
+
+
+def test_the_query_string_is_not_read_for_ids():
+    """Coordinates and dates live in the query string. 35.123456 is a latitude,
+    not a listing, and the generator's own fallback links are built this way."""
+    url = "https://www.google.com/maps/search/?api=1&query=35.123456%2C-83.456789"
+    assert not URLDiscoverer._has_placeholder_listing_id(url)
+
+
+def test_the_retention_chokepoint_refuses_a_placeholder_listing():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._url_policy_mode = "enforce"
+
+    out = discoverer._retain_discovered_url(
+        PLACEHOLDER_LISTINGS[0],
+        "Charlie Daniels Park",
+        "Old Hickory, Tennessee",
+        allow_alltrails=False,
+        kind="attraction",
+    )
+
+    assert out == ""
+    assert discoverer._last_retention_rejection[0] == 3
