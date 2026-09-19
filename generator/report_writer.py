@@ -55,6 +55,10 @@ class ReportWriter:
             # #137 set this on the report dict and never listed it here, so
             # the file never carried it -- this writer copies named keys only.
             "search_quota_exhausted": report.get("search_quota_exhausted"),
+            # Routing's own counts (routing.STAT_NAMES), for the same reason as
+            # the line above: the straight lines on the map are explained here
+            # or nowhere. None when routing never asked for a leg.
+            "routing": report.get("routing"),
             "html_path": report.get("html_path", ""),
         }
         report_path = self._output_dir / "validation_report.json"

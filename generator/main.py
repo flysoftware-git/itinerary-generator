@@ -381,6 +381,7 @@ def _run_quality_gate(
     trip: dict[str, Any],
     html_path: "Path | None" = None,
     search_quota_exhausted: list[str] | None = None,
+    routing: dict[str, float] | None = None,
 ) -> None:
     """Emit warnings for known quality regressions so they're visible on every run.
 
@@ -519,6 +520,10 @@ def _run_quality_gate(
         except Exception:
             pass
 
+    # Beside the search-credit sentence and for the same reason: the run
+    # delivered less than the sources held, and the page does not say so.
+    warnings.extend(_routing_gate_warnings(routing))
+
     if search_quota_exhausted:
         # First, because it is the cause of the removal counts above it rather
         # than one more of them: those items were not looked for and found
@@ -541,6 +546,56 @@ def _run_quality_gate(
         _click.echo("  ✓ Quality gate passed")
     for line in info_lines:
         _click.echo(f"  ℹ {line}")
+
+
+def _routing_outcome() -> dict[str, float] | None:
+    """What routing did this run, or ``None`` when it never asked.
+
+    ``None`` and a run of zeroes must stay distinct, the same way
+    ``_search_quota_exhausted`` separates them: no key configured means no leg
+    was ever routed and none could be, while zeros beside a cache-hit count
+    mean the run was answered from the cache.
+
+    The counts exist so a straight line on the map can be explained. Without
+    this they stayed in memory and no artifact carried them -- which is #137's
+    failure, where a value was set on a dict and the written file never had it.
+    """
+    from generator import routing
+
+    counts = routing.stats()
+    if not any(counts.values()):
+        return None
+    return counts
+
+
+def _routing_gate_warnings(counts: dict[str, float] | None) -> list[str]:
+    """The sentences a reader of the run needs about estimated legs.
+
+    A leg refused on the rate limit or the daily quota is drawn as a straight
+    line between its ends, with estimated miles and hours. That is a fact about
+    the run, not about the road, and the map does not say which it is.
+    """
+    if not counts:
+        return []
+    warnings: list[str] = []
+    gave_up = int(counts.get("rate_limited_gave_up", 0) or 0)
+    quota = int(counts.get("quota_refused", 0) or 0)
+    failed = int(counts.get("failed", 0) or 0)
+    if quota:
+        warnings.append(
+            f"routing quota spent: {quota} leg(s) are straight-line estimates, not roads "
+            "-- the daily OpenRouteService allowance ran out, so re-run tomorrow or "
+            "raise the plan to draw them")
+    if gave_up:
+        warnings.append(
+            f"routing rate-limited: {gave_up} leg(s) are straight-line estimates after "
+            "waiting and asking again -- lower OPENROUTESERVICE_MAX_PER_MINUTE if this "
+            "keeps happening")
+    if failed:
+        warnings.append(
+            f"routing unavailable for {failed} leg(s): straight-line estimates "
+            "(timeout, unreadable reply, or the service was down)")
+    return warnings
 
 
 def _search_quota_exhausted(url_discoverer: Any | None) -> list[str] | None:
@@ -2726,6 +2781,11 @@ def main(
     finalized = False
     stage_timings: dict[str, float] = {}
     runtime_metrics: dict[str, Any] = {}
+    # Routing's counts are module-level and live as long as the process, so a
+    # second run in one process would report the first run's legs as well.
+    from generator import routing as _routing
+
+    _routing.reset_stats()
     # Bound here rather than at construction, because _finalize_run reads it
     # and runs on paths that fail long before the client exists.
     llm_client = None
@@ -2853,6 +2913,10 @@ def main(
         # reading this file for completeness needs that beside the cost rather
         # than buried in runtime_metrics. None when discovery never ran.
         record["search_quota_exhausted"] = runtime_metrics.get("search_quota_exhausted")
+        # Same placement, same reason: a run whose legs were estimated because
+        # the routing allowance ran out is not the same run as one whose legs
+        # were drawn, and the ledger is where runs are compared.
+        record["routing"] = runtime_metrics.get("routing")
         try:
             _append_run_ledger(ledger_path, record)
         except Exception as exc:  # pragma: no cover - defensive only
@@ -3657,12 +3721,18 @@ def main(
     # run still completes, so without this the report reads as a trip where the
     # web had little to offer rather than one that stopped looking.
     report["search_quota_exhausted"] = runtime_metrics.get("search_quota_exhausted")
+    # What routing managed, and what it could not: a leg refused on the rate
+    # limit or the quota is a straight line on the map with estimated miles,
+    # and the map cannot say which of its lines those are.
+    runtime_metrics["routing"] = _routing_outcome()
+    report["routing"] = runtime_metrics["routing"]
     report_path = ReportWriter(output_dir).write(report)
     click.echo(f"  ✓ Validation report: {report_path}")
 
     _run_quality_gate(
         trip, output_file,
         search_quota_exhausted=runtime_metrics.get("search_quota_exhausted"),
+        routing=runtime_metrics.get("routing"),
     )
 
     llm_usage = trip.get("_meta", {}).get("llm", {}).get("usage", {})
