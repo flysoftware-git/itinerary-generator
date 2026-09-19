@@ -444,6 +444,8 @@ class MultiLLMClient:
         config_path: str | Path = "config.yaml",
         llm_overrides: dict[str, Any] | None = None,
         usage_tracker: "UsageTracker | None" = None,
+        *,
+        allow_fallback: bool = True,
     ) -> None:
         import yaml
 
@@ -455,12 +457,16 @@ class MultiLLMClient:
         llm_cfg = llm_overrides or {}
 
         self.provider = (llm_cfg.get("provider") or ai_cfg.get("provider") or "azure_openai").lower()
+        # With no model named anywhere, the provider's own default. A fixed
+        # "gpt-4o" here was the wrong family for every provider but two, and
+        # was then corrected with an "incompatible with provider" warning on
+        # every run that had deliberately left ai.model unset.
         self.model = (
             llm_cfg.get("model")
             or ai_cfg.get("model")
             or os.environ.get("OPENAI_MODEL")
             or os.environ.get("AZURE_OPENAI_DEPLOYMENT")
-            or "gpt-4o"
+            or self._provider_default_model(self.provider)
         )
         self.model = self._normalize_model_for_provider(self.provider, str(self.model or "").strip())
         self.temperature = float(llm_cfg.get("temperature", ai_cfg.get("temperature", legacy_cfg.get("temperature", 0.7))))
@@ -477,8 +483,22 @@ class MultiLLMClient:
         fallback_provider = str(
             llm_cfg.get("fallback_provider") or ai_cfg.get("fallback_provider") or ""
         ).strip().lower()
-        if fallback_provider and fallback_provider != self.provider:
-            fallback_model = llm_cfg.get("fallback_model") or ai_cfg.get("fallback_model")
+        if not allow_fallback:
+            # This instance IS a fallback. It must not read ai.fallback_provider
+            # again: that names this instance's own provider, which used to log
+            # "is the same as ai.provider; ignoring" -- a warning about a
+            # configuration that was correct.
+            pass
+        elif fallback_provider and fallback_provider != self.provider:
+            # Without an explicit fallback_model the fallback takes its own
+            # provider's default. Inheriting ai.model would hand it the
+            # primary's model name, which is always the wrong family and logs
+            # an "incompatible with provider" warning on every construction.
+            fallback_model = (
+                llm_cfg.get("fallback_model")
+                or ai_cfg.get("fallback_model")
+                or self._provider_default_model(fallback_provider)
+            )
             # Constructed eagerly (not on first failover) so a misconfigured
             # or missing fallback API key fails loudly at startup, matching
             # the eager-key-check philosophy already used for anthropic/
@@ -488,6 +508,7 @@ class MultiLLMClient:
                 config_path,
                 llm_overrides={"provider": fallback_provider, "model": fallback_model},
                 usage_tracker=self.usage_tracker,
+                allow_fallback=False,
             )
         elif fallback_provider:
             logger.warning(
@@ -731,7 +752,29 @@ class MultiLLMClient:
         except Exception as exc:
             if self._is_transient_llm_error(exc):
                 self._record_circuit_breaker_outcome(transient_failure=True)
-            raise
+            if self._fallback_client is None:
+                raise
+            # The call that failed is retried on the fallback now. Waiting for
+            # the breaker to open first meant the calls that opened it -- a
+            # whole destination's content, each one -- failed with a working
+            # fallback configured and unused.
+            logger.warning(
+                "LLM call '%s' failed on '%s/%s' (%s: %s); retrying it on '%s/%s'.",
+                operation,
+                self.provider,
+                self.model,
+                type(exc).__name__,
+                exc,
+                self._fallback_client.provider,
+                self._fallback_client.model,
+            )
+            return self._fallback_client.generate_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                operation=operation,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
         self._record_circuit_breaker_outcome(transient_failure=False)
         used_model = usage.get("model", self.model)
 
