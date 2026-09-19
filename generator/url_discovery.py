@@ -148,6 +148,23 @@ def _strip_non_visible_html_noise(text: str) -> str:
 # _is_campground_focused_result_for_noncamping_item.
 CAMPGROUND_TEXT_SCAN_CHARS = 2000
 
+# A listing ID a model wrote as a placeholder rather than one it found.
+#
+# The 2026-09-18 Old Hickory build published eight TripAdvisor links of the
+# form `Attraction_Review-g55222-d12345678-Reviews-Charlie_Daniels_Park-...`:
+# d12345678, d23456789, d34567890, d12345679, d12345680, d12345682. Each names a
+# real place in the slug, so nothing downstream reads it as wrong, and
+# TripAdvisor answers every automated fetch with 403, so the liveness check
+# marks it "unchecked" rather than dead. The reader follows it to a listing
+# that does not exist.
+#
+# The shape is what gives it away: six or more digits counting up by one
+# (wrapping 9 to 0, so 34567890 counts), or six or more of one digit. A real
+# ID contains such a run roughly once in tens of thousands, and a placeholder
+# almost always does.
+PLACEHOLDER_ID_RUN = 6
+_PLACEHOLDER_ID_TOKEN = re.compile(r"(?<![0-9])[0-9]{%d,}(?![0-9])" % PLACEHOLDER_ID_RUN)
+
 GENERIC_BAD_URL_MARKERS = (
     "404errorpage",
     "/assetdetail/",
@@ -15985,7 +16002,30 @@ class URLDiscoverer:
         return any(pattern.search(candidate) for pattern in GENERIC_LISTING_TITLE_PATTERNS)
 
     @staticmethod
+    def _has_placeholder_listing_id(url: str) -> bool:
+        """True when a number in the URL's path is a placeholder, not an ID.
+
+        See PLACEHOLDER_ID_RUN. Only the path is read: a query string carries
+        coordinates and dates, which are not listing IDs.
+        """
+        path = urlparse(str(url or "")).path
+        for token in _PLACEHOLDER_ID_TOKEN.findall(path):
+            up = same = 1
+            for prev, cur in zip(token, token[1:]):
+                up = up + 1 if int(cur) == (int(prev) + 1) % 10 else 1
+                same = same + 1 if cur == prev else 1
+                if up >= PLACEHOLDER_ID_RUN or same >= PLACEHOLDER_ID_RUN:
+                    return True
+        return False
+
+    @staticmethod
     def _is_obviously_generic_url(lower_url: str) -> bool:
+        # Not a page about this item, which is what every caller is asking. A
+        # listing with an invented ID is a page about nothing, so it is caught
+        # here rather than at one call site: the retention chokepoint, the
+        # direct-batch row filter and the recovery searches all share this.
+        if URLDiscoverer._has_placeholder_listing_id(lower_url):
+            return True
         if "yelp.com/search" in lower_url:
             return True
         for marker in GENERIC_BAD_URL_MARKERS:
