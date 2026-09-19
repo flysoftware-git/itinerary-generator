@@ -3436,7 +3436,7 @@ class HTMLAssembler:
             # (url_discovery.py's gate clears it) -- render a pointer
             # instead of just omitting the section.
             if self._category_deferred_for_render(dest, "restaurant"):
-                return self._group_base_pointer_html(dest, dest_by_id, "Dinner recommendations", icon="\U0001f37d️")
+                return self._group_base_pointer_html(dest, dest_by_id, "Places to eat", icon="\U0001f37d️")
             return ""
         rows: list[str] = []
         for rest in rests:
@@ -3505,7 +3505,7 @@ class HTMLAssembler:
                 f'  </div>\n'
             )
 
-        html = '<div class="card restaurants-card">\n<h3>🍽️ Dinner Recommendations</h3>\n<div class="restaurant-list">\n'
+        html = '<div class="card restaurants-card">\n<h3>🍽️ Places to eat</h3>\n<div class="restaurant-list">\n'
         html += "".join(rows)
         html += '</div>\n</div>\n'
         return html
