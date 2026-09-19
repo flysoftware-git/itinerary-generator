@@ -4429,18 +4429,27 @@ class HTMLAssembler:
             return drive_url
 
         drive_title = str(drive.get("title", "") or "").strip()
-        # The drive's own name, placed by the region part of the stop's name
-        # ("Siebert Creek, Washington" -> "Washington") when there is one. The
-        # stop's town itself is left out: a named drive plus a small town that
-        # is not on it ("Olympic Peninsula Scenic Byway Siebert Creek") is a
-        # search Google Maps answers with "can't find", while the drive's name
-        # with its state, or alone, resolves to a route.
-        region = ", ".join(part.strip() for part in str(dest_name or "").split(",")[1:]
-                           if part.strip())
-        if drive_title:
+        # A drive with a name of its own is placed by the region part of the
+        # stop's name ("Siebert Creek, Washington" -> "Washington"), or by its
+        # name alone. The stop's town is left out: a named drive plus a small
+        # town that is not on it ("Olympic Peninsula Scenic Byway Siebert
+        # Creek") is a search Google Maps answers with "can't find", while the
+        # drive's name with its state resolves to a route.
+        #
+        # A drive whose name is only road words keeps the stop. Measured in
+        # Google Maps on 2026-09-19: "Scenic Loop, Utah" went to the Alpine
+        # Scenic Loop, "River Road Scenic Drive, Tennessee" to the Ocoee Scenic
+        # Byway, and "Lakeshore Drive, Washington" to a street in Seattle --
+        # each the wrong end of the state. With the stop they went to Moab, Old
+        # Hickory and Whidbey Island. The town is the only thing in such a
+        # name that says which one.
+        if drive_title and self._drive_title_names_a_route(drive_title):
+            region = ", ".join(part.strip() for part in str(dest_name or "").split(",")[1:]
+                               if part.strip())
             destination = f"{drive_title}, {region}" if region else drive_title
         else:
-            destination = str(dest_name or "").strip()
+            destination = " ".join(part for part in (drive_title, str(dest_name or "").strip())
+                                   if part).strip()
         if not destination:
             return ""
 
@@ -4450,6 +4459,26 @@ class HTMLAssembler:
             "travelmode=driving",
         ]
         return "https://www.google.com/maps/dir/?" + "&".join(params)
+
+    #: Words any road's name can be made of. A title with nothing else in it
+    #: ("Scenic Loop", "River Road Scenic Drive") names no particular road.
+    _GENERIC_ROAD_WORDS = frozenset({
+        "a", "an", "and", "the", "of", "to", "via", "along", "around", "through",
+        "scenic", "drive", "dr", "road", "rd", "loop", "byway", "highway", "hwy",
+        "route", "rte", "parkway", "pkwy", "trail", "way", "street", "st",
+        "avenue", "ave", "boulevard", "blvd", "lane", "ln", "circuit", "tour",
+        "backroad", "backroads", "overlook", "vista", "views", "view",
+        "river", "lake", "lakeshore", "lakefront", "shore", "shoreline", "coast",
+        "coastal", "beach", "bay", "canyon", "valley", "mountain", "mountains",
+        "forest", "ridge", "creek", "hill", "hills", "country", "countryside",
+        "north", "south", "east", "west", "old", "historic", "upper", "lower",
+    })
+
+    @classmethod
+    def _drive_title_names_a_route(cls, title: str) -> bool:
+        """True when the title has a word that is not a generic road word."""
+        words = re.findall(r"[a-z0-9']+", str(title or "").lower())
+        return any(word not in cls._GENERIC_ROAD_WORDS for word in words)
 
     def _clean_drive_description(self, description: Any) -> str:
         text = str(description or "").strip()

@@ -75,6 +75,25 @@ def test_a_drive_route_link_names_the_drive_and_its_region_not_the_stop() -> Non
     assert "Siebert" not in unquote(qualified) + unquote(bare)
 
 
+@pytest.mark.parametrize("title, stop, expected", [
+    # Measured in Google Maps, 2026-09-19. With the region only, each went to
+    # the wrong end of its state: the Alpine Scenic Loop, the Ocoee Scenic
+    # Byway, a street in Seattle. With the stop, to Moab, Old Hickory and
+    # Whidbey Island.
+    ("Scenic Loop", "Moab, Utah", "Scenic Loop Moab, Utah"),
+    ("River Road Scenic Drive", "Old Hickory, Tennessee", "River Road Scenic Drive Old Hickory, Tennessee"),
+    ("Lakeshore Drive", "Langley, Washington", "Lakeshore Drive Langley, Washington"),
+])
+def test_a_drive_named_only_in_road_words_keeps_its_stop(title, stop, expected) -> None:
+    """The rule above is for a drive with a name of its own. A name made only
+    of road words names no particular road, and the stop is what places it."""
+    from urllib.parse import unquote
+
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    url = assembler._build_scenic_drive_route_map_url({"title": title}, stop)
+    assert unquote(url).endswith(f"destination={expected}&travelmode=driving")
+
+
 def test_a_drive_with_no_title_still_links_to_its_stop() -> None:
     from urllib.parse import unquote
 
