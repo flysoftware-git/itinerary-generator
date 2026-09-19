@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import urllib.error
 from pathlib import Path
 
@@ -393,3 +394,203 @@ def test_leg_estimate_carries_the_profile_to_the_router(monkeypatch, cache):
                                      profile="cycling-regular")
     assert leg.routed and leg.miles == 11.4
     assert transport.urls == [f"{routing.ENDPOINT_BASE}/cycling-regular"]
+
+
+# ── Staying inside the rate limit ────────────────────────────────────────────
+
+
+class FakeClock:
+    """A monotonic clock that moves only when something sleeps on it.
+
+    Thread-safe. Each thread's last reading is kept, so a transport can say
+    when the request it is serving was let through the throttle: the
+    limiter's final clock reading before it returns is the acquisition.
+    """
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+        self._guard = threading.Lock()
+        self._local = threading.local()
+
+    def __call__(self):
+        with self._guard:
+            self._local.last = self.now
+            return self.now
+
+    def sleep(self, seconds):
+        with self._guard:
+            self.sleeps.append(seconds)
+            self.now += seconds
+
+    @property
+    def last_reading(self):
+        return self._local.last
+
+
+def _leg_points(i):
+    """A distinct pair of points per `i`, so every leg is its own cache key."""
+    return (47.0 + i * 0.01, -122.0), (48.0 + i * 0.01, -123.0)
+
+
+def _rate_limited(headers=None, status=429, body=b""):
+    return urllib.error.HTTPError("u", status, "Too Many Requests", headers or {},
+                                  io.BytesIO(body))
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """A fake clock behind a small process-wide throttle, and 429 waits
+    recorded rather than slept."""
+    fake = FakeClock()
+    monkeypatch.setattr(routing, "_LIMITER",
+                        routing.RateLimiter(3, 60.0, clock=fake, sleep=fake.sleep))
+    waits = []
+    monkeypatch.setattr(routing, "_sleep", waits.append)
+    fake.waits = waits
+    return fake
+
+
+def test_the_throttle_spaces_a_burst():
+    fake = FakeClock()
+    limiter = routing.RateLimiter(3, 60.0, clock=fake, sleep=fake.sleep)
+    taken = []
+    for _ in range(7):
+        limiter.acquire()
+        taken.append(fake.last_reading)
+    assert taken == [0, 0, 0, 60, 60, 60, 120], "the burst was not held to three a minute"
+
+
+def test_the_default_throttle_is_under_the_free_tier(monkeypatch):
+    assert routing.limiter().max_per_window == routing.DEFAULT_MAX_PER_MINUTE == 36
+    monkeypatch.setattr(routing, "_LIMITER", None)
+    monkeypatch.setenv(routing.MAX_PER_MINUTE_ENV, "20")
+    assert routing.limiter().max_per_window == 20
+
+
+def test_every_request_passes_the_throttle(monkeypatch, cache, clock):
+    transport = Sequence(*[_reply(10.0, 900.0)] * 4)
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    for i in range(4):
+        assert routing.route_leg(*_leg_points(i), key="k", cache_path=cache) is not None
+    assert clock.sleeps == [60.0], "the fourth request in a minute was not held back"
+    assert routing.stats()["requests"] == 4
+    assert routing.stats()["throttled_s"] == 60.0
+
+
+def test_a_cache_hit_spends_no_budget(monkeypatch, cache, clock):
+    transport = Sequence(*[_reply(10.0, 900.0)] * 3)
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    for i in range(3):
+        routing.route_leg(*_leg_points(i), key="k", cache_path=cache)
+    for _ in range(5):
+        routing.route_leg(*_leg_points(0), key="k", cache_path=cache)
+    assert clock.sleeps == [], "a cache hit waited for a slot it does not use"
+    assert len(transport.requests) == 3
+    counts = routing.stats()
+    assert counts["cache_hits"] == 5 and counts["requests"] == 3 and counts["routed"] == 3
+
+
+@pytest.mark.parametrize("headers, wait", [
+    ({"Retry-After": "3"}, 3.0),
+    ({"x-ratelimit-reset": "1700000005"}, 5.0),
+    ({"Retry-After": "45"}, routing.MAX_RETRY_WAIT_S),
+    ({}, routing.NO_HINT_WAIT_S),
+], ids=["retry-after", "ors-reset-epoch", "capped", "no-hint"])
+def test_a_per_minute_429_is_waited_out_and_asked_again(monkeypatch, cache, clock,
+                                                       headers, wait):
+    monkeypatch.setattr(routing, "_wall_clock", lambda: 1_700_000_000.0)
+    transport = Sequence(_rate_limited(headers), _reply(75.781, 9069.9))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    leg = routing.route_leg(ISSAQUAH, PORT_TOWNSEND, key="k", cache_path=cache)
+    assert leg is not None and leg.miles == 75.8, "a 429 was given up on at once"
+    assert clock.waits == [wait]
+    assert len(transport.requests) == 2
+    counts = routing.stats()
+    assert counts["rate_limited_waited"] == 1 and counts["routed"] == 1
+    assert counts["rate_limited_gave_up"] == 0
+
+
+def test_a_429_that_persists_is_estimated_after_a_bounded_wait(monkeypatch, cache, clock):
+    transport = Sequence(*[_rate_limited({"Retry-After": "2"})
+                           for _ in range(routing.MAX_RATE_LIMIT_RETRIES + 1)],
+                         _reply(1.0, 1.0))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    assert routing.route_leg(ISSAQUAH, PORT_TOWNSEND, key="k", cache_path=cache) is None
+    assert len(transport.requests) == routing.MAX_RATE_LIMIT_RETRIES + 1
+    assert clock.waits == [2.0] * routing.MAX_RATE_LIMIT_RETRIES
+    counts = routing.stats()
+    assert counts["rate_limited_waited"] == routing.MAX_RATE_LIMIT_RETRIES
+    assert counts["rate_limited_gave_up"] == 1 and counts["routed"] == 0
+    assert not cache.exists() or json.loads(cache.read_text()) == {}
+
+
+@pytest.mark.parametrize("refusal", [
+    lambda: _rate_limited({"x-ratelimit-reset": str(1_700_000_000 + 6 * 3600)}),
+    lambda: _rate_limited({"Retry-After": "7200"}),
+    lambda: _rate_limited(status=403, body=b'{"error": "Quota exceeded"}'),
+], ids=["ors-reset-hours-away", "retry-after-hours", "403-quota"])
+def test_the_daily_quota_is_not_waited_on(monkeypatch, cache, clock, refusal):
+    monkeypatch.setattr(routing, "_wall_clock", lambda: 1_700_000_000.0)
+    transport = Sequence(refusal(), _reply(1.0, 1.0))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    assert routing.route_leg(ISSAQUAH, PORT_TOWNSEND, key="k", cache_path=cache) is None
+    assert clock.waits == [], "a spent daily quota was waited on"
+    assert len(transport.requests) == 1
+    counts = routing.stats()
+    assert counts["quota_refused"] == 1 and counts["rate_limited_waited"] == 0
+    assert counts["failed"] == 0
+
+
+def test_other_failures_are_counted_as_failures(monkeypatch, cache, clock):
+    monkeypatch.setattr(routing.urllib.request, "urlopen",
+                        Transport(urllib.error.URLError("down")))
+    assert routing.route_leg(ISSAQUAH, PORT_TOWNSEND, key="k", cache_path=cache) is None
+    counts = routing.stats()
+    assert counts["failed"] == 1 and counts["requests"] == 1
+    assert counts["quota_refused"] == counts["rate_limited_gave_up"] == 0
+
+
+def test_no_key_spends_no_budget_and_counts_nothing(monkeypatch, cache, clock):
+    transport = Transport(_reply(1, 1))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    assert routing.route_leg(ISSAQUAH, PORT_TOWNSEND, key="", cache_path=cache) is None
+    assert transport.requests == [] and clock.sleeps == []
+    assert all(value == 0 for value in routing.stats().values())
+
+
+def test_threads_together_never_exceed_the_rate(monkeypatch, cache):
+    """Eight threads routing five legs each through a throttle of five a
+    minute: no sixty seconds ever carries more than five requests."""
+    fake = FakeClock()
+    rate = 5
+    monkeypatch.setattr(routing, "_LIMITER",
+                        routing.RateLimiter(rate, 60.0, clock=fake, sleep=fake.sleep))
+    sent = []
+    sent_guard = threading.Lock()
+
+    def transport(request, timeout=None):
+        with sent_guard:
+            sent.append(fake.last_reading)
+        return io.BytesIO(json.dumps(_reply(10.0, 900.0)).encode())
+
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    errors = []
+
+    def worker(n):
+        try:
+            for i in range(5):
+                routing.route_leg(*_leg_points(n * 5 + i), key="k", cache_path=cache)
+        except Exception as exc:  # noqa: BLE001 -- reported below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert not errors and len(sent) == 40
+    sent.sort()
+    busiest = max(sum(1 for t in sent if start <= t < start + 60.0) for start in sent)
+    assert busiest <= rate, f"{busiest} requests inside one minute"
+    assert routing.stats()["requests"] == 40 and routing.stats()["routed"] == 40
