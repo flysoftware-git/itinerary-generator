@@ -208,6 +208,29 @@ def test_the_travellers_own_seed_stays_but_loses_the_dead_link():
     assert SEED_DEAD not in _rendered_cards(trip)
 
 
+def test_the_seed_that_kept_its_card_and_lost_its_link_says_so():
+    """Staying is only half of it. The gate leaves a seed on the page with no
+    link at all, and the card has to account for that in the reader's terms --
+    a caution badge beside a description promising that "details will be
+    refined by linked references" tells them to wait for something no later
+    stage performs."""
+    d = _discoverer()
+    trip = _audited_trip(d)
+    attractions = _dest(trip)["ai_content"]["top_attractions"]
+    if not any(a["name"] == "Old Mill" for a in attractions):
+        attractions.append({"name": "Old Mill", "type": "historic", "is_seed": True})
+    for a in attractions:
+        if a["name"] == "Old Mill":
+            a["url"] = SEED_DEAD
+            a["is_seed"] = True
+
+    withhold_dead_card_links(trip, d)
+
+    html = _rendered_cards(trip)
+    assert "No source link found for this one" in html
+    assert "will be refined" not in html
+
+
 def test_a_blocked_link_still_publishes_and_is_counted_unchecked():
     d = _discoverer()
     trip = _audited_trip(d)

@@ -35,6 +35,20 @@ from generator.road_estimate import (
 logger = logging.getLogger(__name__)
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
+#: What an attraction card says about a seed nothing described.
+#:
+#: A seed is a place the trip's author asked for by name. It is named in the
+#: destination's content request and the prompt requires it to be described
+#: like any other attraction, so this line is reached only when generation was
+#: skipped or came back without it -- and it is still read by somebody on the
+#: trip. It therefore says the one thing that is true of the place (it is here
+#: because they asked for it) and the one thing worth doing about it, and
+#: nothing about the pipeline that produced it.
+SEED_FALLBACK_DESCRIPTION = (
+    "On this itinerary because it was asked for by name. Check current access, "
+    "opening hours and conditions before you go."
+)
+
 # Retrying a KeyError/TypeError/AttributeError/IndexError just burns up to
 # ~14s of exponential backoff on a bug that identical inputs will never fix on
 # a later attempt -- narrow retries to genuinely transient conditions (network
@@ -2151,6 +2165,19 @@ class AIContentGenerator:
         return n
 
     def _ensure_seed_attractions(self, attractions: list[dict[str, Any]], seed_names: list[str]) -> list[dict[str, Any]]:
+        """Put back any seed the model left out of `top_attractions`.
+
+        The seeds are named in the content request and the prompt requires
+        every one of them to be described to the same standard as an
+        attraction the model chose itself, so this path is the fallback for
+        the run where generation was skipped or came back short -- not the
+        normal way a seed is described. What it writes is therefore read by
+        somebody on the trip, and it says what is true of the place and what
+        to do next, in their words. It said
+        "Traveler-specified seed attraction; details will be refined by
+        linked references" until 2026-09-19, which described this function
+        rather than the trail, and promised a refinement nothing performs.
+        """
         if not seed_names:
             return attractions
 
@@ -2174,7 +2201,7 @@ class AIContentGenerator:
                     "difficulty": "N/A",
                     "duration": "",
                     "must_see": False,
-                    "description": "Traveler-specified seed attraction; details will be refined by linked references.",
+                    "description": SEED_FALLBACK_DESCRIPTION,
                     "practical_note": "",
                 }
             )

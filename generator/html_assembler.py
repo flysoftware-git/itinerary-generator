@@ -3011,6 +3011,19 @@ class HTMLAssembler:
                 if not url else ""
             )
             note_html = f'<span class="practical-note">📌 {note}</span>' if note else ""
+            # A seed is exempt from the verified-link-or-seed removal rule, so
+            # it is the one kind of attraction that can reach a card with no
+            # link at all -- every other unlinked attraction is removed before
+            # assembly. The badge alone reads as a quality warning about the
+            # place; this says what actually happened, so the reader knows the
+            # gap is ours and what to do about it rather than waiting for a
+            # detail the page is never going to add.
+            unlinked_seed_html = (
+                '<span class="practical-note">&#9888; No source link found for this one — '
+                'confirm hours, access and conditions before you go.</span>'
+                if attr.get("is_seed") and not url
+                else ""
+            )
 
             attraction_rows.append(
                 f'  <div class="attr-item">'
@@ -3031,6 +3044,7 @@ class HTMLAssembler:
                 f'</div>'
                 f'<span class="attr-desc">{html_escape.escape(str(attr.get("description", "") or ""))}</span>'
                 f'{note_html}'
+                f'{unlinked_seed_html}'
                 f'</div>\n'
             )
 

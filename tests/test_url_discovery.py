@@ -19033,3 +19033,139 @@ def test_the_retention_chokepoint_refuses_a_placeholder_listing():
 
     assert out == ""
     assert discoverer._last_retention_rejection[0] == 3
+
+
+def _seed_interest_filter_discoverer() -> tuple[URLDiscoverer, list[dict]]:
+    """A discoverer whose decisions are collected, with trails switched off.
+
+    Trails off keeps the run away from the AllTrails paths entirely: the
+    question here is only what the interest filter does to a seed, and that
+    is decided before any of them.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._attraction_source = "per_item_search"
+    discoverer._disable_trails = True
+    decisions: list[dict] = []
+    discoverer._log_decision = lambda **kwargs: decisions.append(kwargs)  # type: ignore[method-assign]
+    return discoverer, decisions
+
+
+def test_a_seed_the_interest_filter_matches_is_still_searched() -> None:
+    """The traveler wrote "Olympic Discovery Trail" into the manifest and got a
+    card with no link and nothing to say. `bike trail` and `cycling trail` are
+    interest-filter keywords, so discovery skipped the item before running a
+    search -- and because the verified-link-or-seed rule never removes a seed,
+    the skip had no visible effect except the empty card. Naming a place is
+    the strongest interest signal there is; it outranks a keyword guess about
+    the category."""
+    discoverer, decisions = _seed_interest_filter_discoverer()
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Olympic Discovery Trail",
+                "type": "attraction",
+                "description": "A paved bike trail running west from the waterfront.",
+            }
+        ]
+    }
+
+    discoverer._discover_attractions(
+        ai=ai,
+        dest={"_registry_decisions": []},
+        dest_name="Port Angeles, Washington",
+        nps_code=None,
+        seed_names=["Olympic Discovery Trail"],
+    )
+
+    reasons = [d.get("reason") for d in decisions]
+    assert "interest_filter_skipped" not in reasons
+    assert "interest_filter_seed_override" in reasons
+
+
+def test_a_non_seed_the_interest_filter_matches_is_still_skipped() -> None:
+    """The override belongs to the seed, not to everybody -- the filter still
+    does its job on an attraction nobody asked for."""
+    discoverer, decisions = _seed_interest_filter_discoverer()
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Waterfront Loop",
+                "type": "attraction",
+                "description": "A paved bike trail running west from the waterfront.",
+            }
+        ]
+    }
+
+    discoverer._discover_attractions(
+        ai=ai,
+        dest={"_registry_decisions": []},
+        dest_name="Port Angeles, Washington",
+        nps_code=None,
+        seed_names=[],
+    )
+
+    reasons = [d.get("reason") for d in decisions]
+    assert "interest_filter_skipped" in reasons
+    assert "interest_filter_seed_override" not in reasons
+
+
+def _port_angeles_trip(seeds: list[str]) -> dict:
+    return {
+        "destinations": [
+            {
+                "name": "Port Angeles, Washington",
+                "dates": "July 3-6, 2026",
+                "seeds": list(seeds),
+                "_registry_decisions": [],
+                "ai_content": {
+                    "top_attractions": [
+                        {
+                            "name": "Olympic Discovery Trail",
+                            "type": "attraction",
+                            "description": "A paved bike trail running west from the waterfront.",
+                            "url": "https://www.google.com/maps/search/?api=1&query=Olympic%20Discovery%20Trail",
+                        }
+                    ],
+                    "getting_here": {"en_route_stops": []},
+                    "dinner_recommendations": [],
+                },
+                "scenic_drives": [],
+                "cultural_events": {"events": []},
+            }
+        ]
+    }
+
+
+def test_the_audit_does_not_delete_a_seed_over_the_interest_filter() -> None:
+    """The same filter runs again in the audit, and there it removes the item
+    outright. Applied to a seed that is the audit deleting the traveler's own
+    request after the seed policy has promised it always stays."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    trip = _port_angeles_trip(["Olympic Discovery Trail"])
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    names = [a.get("name") for a in trip["destinations"][0]["ai_content"]["top_attractions"]]
+    assert "Olympic Discovery Trail" in names
+
+
+def test_the_audit_still_removes_a_non_seed_the_interest_filter_matches() -> None:
+    """Control for the test above: with the name absent from `seeds`, the
+    filter still removes it -- and removes it *for that reason*. Asserting
+    only that the list came back empty proves nothing here, because a
+    maps-search URL is not a verified one and verified-link-or-seed would have
+    removed the item a few lines later anyway."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    trip = _port_angeles_trip([])
+
+    with patch.object(discoverer, "_prewarm_url_validation_cache", return_value=None):
+        discoverer.audit_discovered_urls(trip)
+
+    assert trip["destinations"][0]["ai_content"]["top_attractions"] == []
+    reasons = [
+        reason
+        for record in trip["destinations"][0].get("_registry_decisions", [])
+        for reason in record.get("rejection_reasons", [])
+    ]
+    assert "interest_filter_removed" in reasons

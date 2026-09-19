@@ -2207,6 +2207,77 @@ def test_build_attractions_seed_no_url_attraction_renders_caution_badge() -> Non
     assert '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>' in html
 
 
+def test_an_unlinked_seed_says_no_link_was_found_rather_than_promising_one() -> None:
+    """A seed is the only attraction that can reach a card with no link -- the
+    verified-link-or-seed rule removes every other unlinked one before
+    assembly. The shipped card said so with a badge and then
+    "details will be refined by linked references", which reads as a promise
+    the page has no way to keep. Say what happened instead."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+
+    html = assembler._build_attractions(
+        {
+            "top_attractions": [
+                {
+                    "name": "Olympic Discovery Trail",
+                    "description": "A paved rail-trail running west from the waterfront.",
+                    "is_seed": True,
+                }
+            ]
+        },
+        drives=[],
+        dest_name="Port Angeles, Washington",
+    )
+
+    assert "No source link found for this one" in html
+    assert "will be refined" not in html
+
+
+def test_a_seed_that_found_its_link_says_nothing_about_missing_one() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+
+    html = assembler._build_attractions(
+        {
+            "top_attractions": [
+                {
+                    "name": "Olympic Discovery Trail",
+                    "description": "A paved rail-trail running west from the waterfront.",
+                    "url": "https://olympicdiscoverytrail.org/",
+                    "is_seed": True,
+                }
+            ]
+        },
+        drives=[],
+        dest_name="Port Angeles, Washington",
+    )
+
+    assert "No source link found" not in html
+
+
+def test_an_attraction_at_a_destination_that_seeded_nothing_is_unchanged() -> None:
+    """The line belongs to the seed exemption, so it must not appear on an
+    ordinary linked attraction."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+
+    html = assembler._build_attractions(
+        {
+            "top_attractions": [
+                {
+                    "name": "Hurricane Ridge",
+                    "description": "A high meadow road with views over the Bailey Range.",
+                    "url": "https://www.nps.gov/olym/planyourvisit/hurricane-ridge.htm",
+                }
+            ]
+        },
+        drives=[],
+        dest_name="Port Angeles, Washington",
+    )
+
+    assert "Hurricane Ridge" in html
+    assert "No source link found" not in html
+    assert "badge-seed" not in html
+
+
 def test_build_attractions_omits_caution_badge_when_url_present() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     html = assembler._build_attractions(
