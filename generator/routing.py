@@ -59,6 +59,36 @@ rather than building a URL nobody meant.
 No key, a timeout, a quota refusal (HTTP 429), an unroutable pair (HTTP 404) or
 a reply that does not parse: `route_leg` returns None and the caller estimates.
 Only successful routes are cached, so a refusal today is asked again tomorrow.
+A 429 that is only the per-minute limit is waited out first, within a bound;
+see the next section.
+
+## Staying inside the rate limit
+
+The free tier allows about 40 directions requests a minute, and a daily quota.
+Callers score several candidate routes at once, from several threads, so an
+unthrottled burst goes far past 40 -- and every refused leg used to become a
+straight line on the spot, leaving a map of routed roads and straight lines
+side by side, and route shares that could not be computed because too many
+legs were never measured.
+
+So every request passes one process-wide throttle first (`RateLimiter`): at
+most `MAX_PER_MINUTE_ENV` requests (default `DEFAULT_MAX_PER_MINUTE`, a little
+under the free tier) in any sixty seconds, whichever thread sends them. A
+cache hit sends nothing and spends nothing.
+
+A 429 still arrives -- another process on the same key, a tier lower than
+assumed -- and is then read for when the limit resets (`Retry-After`, or
+OpenRouteService's `x-ratelimit-reset`, epoch seconds). A reset within
+`QUOTA_RESET_S` is the per-minute window: it is waited out, at most
+`MAX_RETRY_WAIT_S` at a time (`NO_HINT_WAIT_S` when the reply gives no hint),
+and asked again up to `MAX_RATE_LIMIT_RETRIES` times. A reset further off than
+that is the daily quota, and is not waited on at all; nor is a 403. Either
+way, a leg still refused is estimated exactly as before.
+
+`stats()` counts what happened -- requests sent, cache hits, legs routed, 429s
+waited out, legs given up on the rate limit or the quota, other failures and
+time spent in the throttle -- so a caller can say how many legs were estimated
+and why.
 
 ## The line the route follows
 
@@ -119,6 +149,7 @@ import json
 import logging
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -193,7 +224,34 @@ MAX_GEOMETRY_POINTS = 300
 #: not worth keeping even when the bound would allow it.
 _MIN_DEVIATION_DEG = 0.00001
 
+#: The environment variable setting the throttle, in requests per minute. Unset
+#: is `DEFAULT_MAX_PER_MINUTE`; 0 turns the throttle off.
+MAX_PER_MINUTE_ENV = "OPENROUTESERVICE_MAX_PER_MINUTE"
+
+#: The free tier allows 40 directions requests a minute. A little under it, so
+#: a clock that disagrees with the server's by a second does not cost a 429.
+DEFAULT_MAX_PER_MINUTE = 36
+
+#: Times a leg refused with HTTP 429 is asked again after waiting.
+MAX_RATE_LIMIT_RETRIES = 2
+
+#: The longest single wait on a 429, in seconds. A per-minute window resets
+#: within a minute; a build should not stall longer than this per ask.
+MAX_RETRY_WAIT_S = 20.0
+
+#: The wait on a 429 whose reply says nothing about when the limit resets.
+NO_HINT_WAIT_S = 10.0
+
+#: A 429 whose reset is further off than this is the daily quota, not the
+#: per-minute window, and is not waited on: the leg is estimated at once.
+QUOTA_RESET_S = 90.0
+
 _lock = threading.Lock()
+
+#: The one sleep a 429 wait goes through, and the wall clock a reset hint is
+#: read against: module attributes so a test can make them instant.
+_sleep = time.sleep
+_wall_clock = time.time
 
 Point = tuple[float, float]
 Span = tuple[int, int]
@@ -659,6 +717,164 @@ def _remember_no_route(path: str | os.PathLike[str], cache_key: str) -> None:
         _save_cache(path, cache)
 
 
+# ── The rate limit ───────────────────────────────────────────────────────────
+
+
+class RateLimiter:
+    """At most `max_per_window` acquisitions in any `window_s` seconds.
+
+    A sliding window over the times of recent acquisitions, shared by every
+    thread holding the instance. A burst up to the limit goes at once; the next
+    waits until the oldest in the window is `window_s` old. `max_per_window`
+    of 0 or less never waits. `clock` and `sleep` are injectable, so a test can
+    run a minute of traffic in no time.
+    """
+
+    def __init__(self, max_per_window: int, window_s: float = 60.0, *,
+                 clock: Any = time.monotonic, sleep: Any = time.sleep) -> None:
+        self.max_per_window = int(max_per_window)
+        self.window_s = float(window_s)
+        self._clock = clock
+        self._sleep = sleep
+        self._sent: list[float] = []
+        self._guard = threading.Lock()
+
+    def acquire(self) -> float:
+        """Wait for a slot and take it. Returns the seconds waited."""
+        if self.max_per_window <= 0:
+            return 0.0
+        waited = 0.0
+        while True:
+            with self._guard:
+                now = self._clock()
+                horizon = now - self.window_s
+                while self._sent and self._sent[0] <= horizon:
+                    self._sent.pop(0)
+                if len(self._sent) < self.max_per_window:
+                    self._sent.append(now)
+                    return waited
+                delay = self._sent[0] + self.window_s - now
+            # Sleep outside the guard, so other threads can still see the
+            # window; each re-checks it when it wakes.
+            delay = max(delay, 0.001)
+            self._sleep(delay)
+            waited += delay
+
+
+def _configured_max_per_minute() -> int:
+    raw = str(os.environ.get(MAX_PER_MINUTE_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_MAX_PER_MINUTE
+    try:
+        value = int(float(raw))
+    except ValueError:
+        value = -1
+    if value < 0:
+        logger.warning("%s=%r is not a non-negative number; using %s.",
+                       MAX_PER_MINUTE_ENV, raw, DEFAULT_MAX_PER_MINUTE)
+        return DEFAULT_MAX_PER_MINUTE
+    return value
+
+
+#: The process-wide limiter, built from the environment on first use.
+_LIMITER: RateLimiter | None = None
+
+
+def limiter() -> RateLimiter:
+    """The one `RateLimiter` every request in this process passes."""
+    global _LIMITER
+    with _lock:
+        if _LIMITER is None:
+            _LIMITER = RateLimiter(_configured_max_per_minute())
+        return _LIMITER
+
+
+#: What `stats()` counts. `requests` is requests sent, retries included; the
+#: rest are per leg, except `rate_limited_waited` (one per 429 waited out) and
+#: `throttled_s` (seconds spent waiting in the throttle).
+STAT_NAMES = ("requests", "cache_hits", "routed", "no_route", "rate_limited_waited",
+              "rate_limited_gave_up", "quota_refused", "failed", "throttled_s")
+
+_stats: dict[str, float] = dict.fromkeys(STAT_NAMES, 0)
+_stats_lock = threading.Lock()
+
+
+def _count(name: str, amount: float = 1) -> None:
+    with _stats_lock:
+        _stats[name] += amount
+
+
+def stats() -> dict[str, float]:
+    """A snapshot of what routing has done in this process, by `STAT_NAMES`.
+
+    `rate_limited_gave_up`, `quota_refused` and `failed` are the legs a caller
+    estimated instead, and why; `no_route` is a land route that does not exist,
+    which is an answer rather than a failure.
+    """
+    with _stats_lock:
+        return dict(_stats)
+
+
+def reset_stats() -> None:
+    with _stats_lock:
+        for name in STAT_NAMES:
+            _stats[name] = 0
+
+
+def _header(headers: Any, name: str) -> str | None:
+    """A header's value, whatever case either side spelled it in."""
+    if headers is None:
+        return None
+    try:
+        items = headers.items()
+    except AttributeError:
+        return None
+    for key, value in items:
+        if str(key).lower() == name.lower():
+            return str(value).strip()
+    return None
+
+
+def _reset_delay(exc: urllib.error.HTTPError) -> float | None:
+    """Seconds until a 429's limit resets, by the reply's own hint, or None.
+
+    `Retry-After` is seconds or an HTTP date. `x-ratelimit-reset` is
+    OpenRouteService's, in epoch seconds; a value too small to be an epoch is
+    taken as seconds from now. Never raises; an unreadable hint is no hint.
+    """
+    headers = getattr(exc, "headers", None)
+    retry_after = _header(headers, "Retry-After")
+    if retry_after:
+        try:
+            return max(0.0, float(retry_after))
+        except ValueError:
+            try:
+                from email.utils import parsedate_to_datetime
+
+                when = parsedate_to_datetime(retry_after)
+                return max(0.0, when.timestamp() - _wall_clock())
+            except (TypeError, ValueError, IndexError, OverflowError):
+                pass
+    reset = _header(headers, "x-ratelimit-reset")
+    if reset:
+        try:
+            value = float(reset)
+        except ValueError:
+            return None
+        if value > 1_000_000_000:
+            return max(0.0, value - _wall_clock())
+        return max(0.0, value)
+    return None
+
+
+def _is_quota_message(exc: urllib.error.HTTPError) -> bool:
+    try:
+        body = exc.read() or b""
+    except Exception:  # noqa: BLE001 -- an unreadable body is not an error here
+        return False
+    return b"quota" in body.lower()
+
+
 def route_leg(
     origin: tuple[float, float],
     dest: tuple[float, float],
@@ -706,11 +922,15 @@ def route_leg(
         cached = _load_cache(path).get(cache_key)
     if isinstance(cached, dict):
         if avoid_ferries and cached.get("no_route") is True:
+            _count("cache_hits")
             return None
         try:
-            return _leg_from_cache(cached)
+            leg = _leg_from_cache(cached)
         except (KeyError, TypeError, ValueError):
             pass
+        else:
+            _count("cache_hits")
+            return leg
 
     request_body: dict[str, Any] = {
         # OpenRouteService takes [lng, lat].
@@ -725,15 +945,52 @@ def route_leg(
         request_body["options"] = {"avoid_features": ["ferries"]}
     endpoint = f"{ENDPOINT_BASE}/{profile}"
 
-    def _ask(body_dict: dict[str, Any]) -> Any:
+    def _send(body_dict: dict[str, Any]) -> Any:
         request = urllib.request.Request(
             endpoint, data=json.dumps(body_dict).encode("utf-8"), headers={
                 "Authorization": key,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             })
+        waited = limiter().acquire()
+        if waited:
+            _count("throttled_s", waited)
+        _count("requests")
         with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
             return json.load(response)
+
+    def _ask(body_dict: dict[str, Any]) -> Any:
+        """`_send`, with a per-minute 429 waited out a bounded number of times.
+
+        A refusal that is not waited out is re-raised carrying `_outcome`
+        (`rate_limited` or `quota`), for the handler below to count.
+        """
+        retries = 0
+        while True:
+            try:
+                return _send(body_dict)
+            except urllib.error.HTTPError as exc:
+                exc._outcome = None
+                if exc.code == 403 and _is_quota_message(exc):
+                    exc._outcome = "quota"
+                if exc.code != 429:
+                    raise
+                delay = _reset_delay(exc)
+                if delay is not None and delay > QUOTA_RESET_S:
+                    logger.info("Routing quota spent for %s (resets in %.0f s); "
+                                "not waiting.", cache_key, delay)
+                    exc._outcome = "quota"
+                    raise
+                if retries >= MAX_RATE_LIMIT_RETRIES:
+                    exc._outcome = "rate_limited"
+                    raise
+                wait = min(NO_HINT_WAIT_S if delay is None else delay, MAX_RETRY_WAIT_S)
+                retries += 1
+                _count("rate_limited_waited")
+                logger.info("Routing rate-limited for %s (HTTP 429); waiting %.1f s "
+                            "and asking again (%d of %d).", cache_key, wait, retries,
+                            MAX_RATE_LIMIT_RETRIES)
+                _sleep(wait)
 
     try:
         try:
@@ -751,23 +1008,31 @@ def route_leg(
     except urllib.error.HTTPError as exc:
         if avoid_ferries and exc.code == 404:
             logger.info("No land route for %s; the ferry is the only way.", cache_key)
+            _count("no_route")
             _remember_no_route(path, cache_key)
             return None
+        outcome = getattr(exc, "_outcome", None)
+        _count({"rate_limited": "rate_limited_gave_up",
+                "quota": "quota_refused"}.get(outcome, "failed"))
         logger.info("Routing refused %s (HTTP %s); estimating instead.", cache_key, exc.code)
         return None
     except (urllib.error.URLError, OSError, ValueError) as exc:
+        _count("failed")
         logger.info("Routing unavailable for %s (%s); estimating instead.", cache_key, exc)
         return None
 
     routed = parse_route(payload)
     if routed is None:
+        _count("failed")
         logger.info("Routing reply for %s did not parse; estimating instead.", cache_key)
         return None
     if avoid_ferries and (routed.has_ferry or routed.ferry_spans):
         # Asked to avoid ferries and crossed by one anyway: not a land route.
         logger.info("Land route for %s still takes a ferry; treating as none.", cache_key)
+        _count("no_route")
         _remember_no_route(path, cache_key)
         return None
+    _count("routed")
     with _lock:
         cache = _load_cache(path)
         cache[cache_key] = _leg_to_cache(routed)

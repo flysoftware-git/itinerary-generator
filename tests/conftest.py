@@ -65,3 +65,10 @@ def no_live_routing(tmp_path_factory, monkeypatch):
     monkeypatch.delenv(routing_mod.API_KEY_ENV, raising=False)
     monkeypatch.setattr(routing_mod, "DEFAULT_CACHE_PATH",
                         str(tmp_path_factory.mktemp("routing_cache") / "routes.json"))
+    # The throttle and the counts are process-wide, so each test starts with
+    # its own; and a 429 in a test is waited out in no time rather than real
+    # seconds. Tests of the throttle itself inject a clock and a sleep.
+    monkeypatch.delenv(routing_mod.MAX_PER_MINUTE_ENV, raising=False)
+    monkeypatch.setattr(routing_mod, "_LIMITER", None)
+    monkeypatch.setattr(routing_mod, "_sleep", lambda seconds: None)
+    monkeypatch.setattr(routing_mod, "_stats", dict.fromkeys(routing_mod.STAT_NAMES, 0))
