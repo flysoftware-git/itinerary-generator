@@ -324,6 +324,15 @@ class UsageTracker:
                     prices = pricing_val
                     best_match_len = len(m)
         if not prices:
+            # A provider that bills per query and consumes no tokens is priced
+            # in full by DEFAULT_TOOL_CALL_PRICING_USD_PER_1000, and has no
+            # token rate to be missing. Serper is that: it reports 0/0 tokens
+            # and $1.00 per 1,000 searches, and every build has been warning
+            # about a blind spot over a cost that is entirely accounted for.
+            # A warning that cries wolf on a healthy run is how the next real
+            # one gets scrolled past.
+            if in_tokens == 0 and out_tokens == 0 and self._tool_call_pricing.get(provider):
+                return 0.0
             # Silently returning 0.0 here is how token cost reported $0.00/day
             # against $24/day of real xAI billing on 2026-08-16 and 08-17: the
             # configured model had no pricing entry and nothing said so. The

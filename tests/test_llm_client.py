@@ -735,3 +735,32 @@ def test_success_forgets_how_slow_the_failures_were(monkeypatch) -> None:
 
     client._record_circuit_breaker_outcome(transient_failure=False)
     assert client._effective_breaker_window() == client._circuit_breaker_window_seconds
+
+
+def test_a_search_provider_that_uses_no_tokens_is_not_a_blind_spot(caplog) -> None:
+    """Serper bills per query and reports 0/0 tokens, and its $1.00 per 1,000
+    is in the tool-call table -- the cost is fully accounted for. Every build
+    still warned "Cost reporting blind spot: no pricing entry for
+    'serper:serper'". A warning that cries wolf on a healthy run is how the
+    next real one gets scrolled past."""
+    tracker = UsageTracker()
+
+    with caplog.at_level(logging.WARNING):
+        cost = tracker._estimate_cost("serper", "serper", 0, 0)
+
+    assert cost == 0.0
+    assert "blind spot" not in caplog.text
+    assert "serper:serper" not in tracker.summary().get("unpriced_models", [])
+
+
+def test_a_model_with_no_price_that_does_use_tokens_still_warns(caplog) -> None:
+    """The carve-out is for providers that consume no tokens, not for every
+    provider that happens to have a tool-call rate. A grok model missing from
+    the token table is the $24/day blind spot of 2026-08-16."""
+    tracker = UsageTracker()
+
+    with caplog.at_level(logging.WARNING):
+        tracker._estimate_cost("grok", "grok-9-unreleased", 1000, 500)
+
+    assert "blind spot" in caplog.text
+    assert "grok:grok-9-unreleased" in tracker.summary().get("unpriced_models", [])
