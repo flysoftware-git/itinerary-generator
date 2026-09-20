@@ -398,3 +398,148 @@ def test_concurrent_lookups_do_not_corrupt_the_cache_file(monkeypatch):
             f"{round_index}, {len(missing)} of {_RACE_THREADS} lost): "
             f"{sorted(missing)}"
         )
+
+
+# ── A lodging address the free data set cannot place ─────────────────────
+#
+# A real booking printed its address the way a hotel confirmation does:
+#
+#     33221 State Road 20, Oak Harbor, WA 98277 United States
+#
+# Nominatim returned nothing for it, so the stay had no coordinates, no map
+# pin, and one WARNING in a log the person reading the page never sees.
+#
+# Probing Nominatim directly with that address showed where the difficulty
+# actually is, and it is not where the obvious repair would look:
+#
+#     33221 State Road 20, Oak Harbor, WA 98277 United States   nothing
+#     33221 State Road 20, Oak Harbor, WA 98277                 nothing
+#     33221 State Road 20, Oak Harbor, WA                       nothing
+#     Oak Harbor, WA 98277 United States                        resolves
+#     Oak Harbor, WA                                            resolves
+#
+# The street line is what defeats it. A fallback ladder that strips the
+# country and then the postcode -- the first thing anyone reaches for --
+# would have fixed nothing here, because every rung still carries "33221
+# State Road 20".
+
+_HOTEL_ADDRESS = "33221 State Road 20, Oak Harbor, WA 98277 United States"
+_TOWN = "Oak Harbor, WA 98277 United States"
+
+
+class _PlaceIndex:
+    """A geolocator that only knows the places it was told about.
+
+    `_FakeGeolocator` above resolves everything, which cannot express the
+    defect under test: an address that is well-formed, unambiguous to a
+    human, and simply absent from the data set.
+    """
+
+    def __init__(self, known: dict[str, tuple[float, float]]):
+        self.calls: list[str] = []
+        self._known = known
+
+    def geocode(self, query):
+        self.calls.append(query)
+        coords = self._known.get(query)
+        return _FakeLocation(*coords) if coords else None
+
+
+def test_the_street_line_is_what_is_dropped_not_the_country_or_the_postcode():
+    """The non-obvious half of the fix, asserted on its own.
+
+    Stated as a unit test because the measurement above is the whole reason
+    the reduction is shaped this way, and a later reader tidying the country
+    or the postcode out of the query instead would pass every other test in
+    this section while fixing nothing.
+    """
+    assert geocoder_module.town_level_query(_HOTEL_ADDRESS) == _TOWN
+
+
+def test_a_stated_locality_is_preferred_over_parsing_the_address():
+    """Reservation ingestion may already have the town as its own field, and
+    a stated town cannot mistake a second address line for one."""
+    assert geocoder_module.town_level_query(
+        "Building 2, 33221 State Road 20, Oak Harbor, WA",
+        {"city": "Oak Harbor", "region": "WA", "country": "United States"},
+    ) == "Oak Harbor, WA, United States"
+
+
+def test_a_two_part_address_is_not_reduced_to_a_bare_state():
+    """A two-part "Oak Harbor, WA" minus its first part is the bare state,
+    which Nominatim places happily in the middle of Washington. A confidently wrong pin is worse
+    than the missing one this fallback exists to fix."""
+    assert geocoder_module.town_level_query("Oak Harbor, WA") is None
+
+
+def test_an_address_that_resolves_is_kept_and_asked_for_once():
+    lodging = {"location": "Zion Lodge, Springdale, UT"}
+    fake = _PlaceIndex({"Zion Lodge, Springdale, UT": (37.25, -112.98)})
+
+    assert _geocoder(fake).place_lodging(lodging) == "street"
+
+    assert (lodging["lat"], lodging["lng"]) == (37.25, -112.98)
+    assert lodging["location_precision"] == "street"
+    assert fake.calls == ["Zion Lodge, Springdale, UT"], (
+        "an address that resolved was reduced and asked for again"
+    )
+
+
+def test_an_unplaceable_street_address_falls_back_to_its_town():
+    lodging = {"location": _HOTEL_ADDRESS}
+    fake = _PlaceIndex({_TOWN: (48.29, -122.64)})
+
+    assert _geocoder(fake).place_lodging(lodging) == "town"
+
+    assert (lodging["lat"], lodging["lng"]) == (48.29, -122.64)
+    assert lodging["location_precision"] == "town", (
+        "the stay was placed from its town but the page has no way to say so"
+    )
+    assert fake.calls == [_HOTEL_ADDRESS, _TOWN]
+
+
+def test_the_fallback_goes_through_the_cache_and_the_throttle():
+    """Reusing `_geocode` rather than opening a second call path is what
+    keeps the extra question free when two stays share a town, and keeps it
+    inside Nominatim's one request per second when they do not."""
+    first = {"location": _HOTEL_ADDRESS}
+    fake = _PlaceIndex({_TOWN: (48.29, -122.64)})
+    _geocoder(fake).place_lodging(first)
+    calls_after_first = len(fake.calls)
+
+    second = {"location": "1 Pioneer Way, Oak Harbor, WA 98277 United States"}
+    _geocoder(fake).place_lodging(second)
+
+    assert second["location_precision"] == "town"
+    assert (second["lat"], second["lng"]) == (48.29, -122.64)
+    assert fake.calls[calls_after_first:] == [second["location"]], (
+        "the reduced form was re-fetched although it is already cached"
+    )
+
+
+def test_a_stay_that_cannot_be_placed_at_all_says_so_rather_than_vanishing():
+    lodging = {"location": _HOTEL_ADDRESS}
+    fake = _PlaceIndex({})
+
+    assert _geocoder(fake).place_lodging(lodging) == "unplaced"
+
+    assert "lat" not in lodging and "lng" not in lodging
+    assert lodging["location_precision"] == "unplaced", (
+        "nothing placed the stay and nothing recorded that, so the page "
+        "shows a stop with no pin and no explanation"
+    )
+
+
+def test_a_geocoder_failure_is_a_degraded_page_and_not_a_dead_build():
+    """Stage 2 runs after the manifest has been parsed and validated; a
+    booking address is not worth throwing that away for."""
+
+    class _Broken:
+        calls: list[str] = []
+
+        def geocode(self, query):
+            raise GeocoderRateLimited("blocked")
+
+    lodging = {"location": _HOTEL_ADDRESS}
+    assert _geocoder(_Broken()).place_lodging(lodging) == "unplaced"
+    assert lodging["location_precision"] == "unplaced"

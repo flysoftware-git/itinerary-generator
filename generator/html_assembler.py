@@ -2274,6 +2274,12 @@ class HTMLAssembler:
         "Lodging" affordance would still announce that the traveler has a room
         booked at this stop on these dates, which is most of what redaction is
         protecting.
+
+        It does carry a sentence ABOUT the location: when the stay could only
+        be placed from its town, or could not be placed at all, the card says
+        so. That is read off `lodging.location_precision`
+        (geocoder.place_lodging) rather than off the address, so saying it
+        costs nothing the omission above was protecting.
         """
         lodging = dest.get("lodging") if isinstance(dest.get("lodging"), dict) else {}
         if not lodging:
@@ -2306,6 +2312,34 @@ class HTMLAssembler:
                 '<div class="lodging-row"><span class="lodging-key">Property</span>'
                 f'<span class="lodging-val"><a href="{self._safe_href(website)}" '
                 f'target="_blank" rel="noopener">{html_escape.escape(website)}</a></span></div>'
+            )
+
+        # How the stay was placed, when it was placed by something other than
+        # its own address (geocoder.place_lodging). This is the one thing the
+        # reader previously had no way to learn: an address Nominatim cannot
+        # resolve produced a stop with no pin, one WARNING in a log nobody
+        # reading the page can see, and a page that said nothing at all.
+        #
+        # It is a sentence ABOUT the address, never the address itself -- the
+        # omission this method's docstring describes still holds, and this row
+        # is deliberately built from a precision flag rather than from
+        # `location`, so there is no path by which the street line reaches the
+        # page. It is also inside the name/website/confirmation guard above
+        # rather than beside it: `location` and `location_precision` both
+        # survive redaction, so keying the card on either would resurrect it
+        # in exactly the builds meant not to have one.
+        precision = str(lodging.get("location_precision", "") or "").strip()
+        if precision == "town":
+            rows.append(
+                '<div class="lodging-row"><span class="lodging-key">Map pin</span>'
+                '<span class="lodging-val">Approximate — placed from the town, '
+                'not the street address.</span></div>'
+            )
+        elif precision == "unplaced":
+            rows.append(
+                '<div class="lodging-row"><span class="lodging-key">Map pin</span>'
+                '<span class="lodging-val">Not placed — this address could not '
+                'be found on the map.</span></div>'
             )
 
         summary = f"\U0001f6cf️ Lodging — {html_escape.escape(name)}" if name else "\U0001f6cf️ Lodging"
