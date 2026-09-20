@@ -15,7 +15,7 @@ today, what model id backs it, and what evidence justifies that.
 
 | Provider | Content generation | Search / harvest (batch) | Search / harvest (non-batch) |
 |---|---|---|---|
-| **Grok (xAI)** | ✅ Default (`ai.provider: grok`). Model: `grok-4-fast` (`config.yaml` `ai.model`, which beats env `XAI_MODEL`; `llm_client.py` `_provider_default_model` still answers `grok-latest` when nothing names one). Measured against `grok-latest` in §6. | ✅ **Primary role.** Model: `grok-latest` (env `XAI_MODEL`, `grok_search.py`). Evidence: 21/21 (100%) citation-matched URLs, real API validation. `url_discovery.search_provider: grok` (default). | ✅ **Cultural events** (`cultural_events.search_provider: grok`, since 2026-08-15; the module is off by default). Not the per-item fallback — Serper is (see below). |
+| **Grok (xAI)** | ✅ Default (`ai.provider: grok`). Model: `grok-4-fast` (`config.yaml` `ai.model`, which beats env `XAI_MODEL`; `llm_client.py` `_provider_default_model` still answers `grok-latest` when nothing names one). Measured against `grok-latest` in §5. | ✅ **Primary role.** Model: `grok-4.3` (`config.yaml` `url_discovery.search_model`, which overrides the content model for harvest calls; `config.yaml`'s own `grok_search.model` is read by nothing). Evidence: 21/21 (100%) citation-matched URLs, real API validation. `url_discovery.search_provider: grok` (default). | ✅ **Cultural events** (`cultural_events.search_provider: grok`, since 2026-08-15; the module is off by default). Not the per-item fallback — Serper is (see below). |
 | **Claude (Anthropic)** | ✅ Available, opt-in via `ai.provider`/`ai.fallback_provider: anthropic`. Model default: `claude-3-5-sonnet-latest` — **⚠ stale, see §3**. | ✅ Available (`ClaudeSearch`), not selected as the batch default. | ✅ Available, **no longer a default for either non-batch shape.** Model: `claude-sonnet-5` (env `ANTHROPIC_MODEL`, `claude_search.py`). Evidence: 14/15 (93%) citation-matched. Was the default for both `url_discovery.nonbatch_search_provider` and `cultural_events.search_provider` until 2026-08-15, when both moved to grok: a same-shape real run cost ~4.6x Grok for equivalent output, and the account is no longer funded (`config.yaml`, `cultural_events` comment). |
 | **Serper** | Not applicable — a SERP API, no model. | Not applicable — the direct batch also *invents* the item list, which a SERP API cannot do. | ✅ **Primary role: the per-item fallback** (`url_discovery.nonbatch_search_provider: serper`, since 2026-08-24, `7abd28e`; `serper_search.py`). Evidence: on the 55 items run 7's paid LLM fallback handled, Serper returned a result for 55/55 (LLM 52/55), 53 passed `_retain_discovered_url` unmodified, 28 official `.gov` hits against the LLM's 2 and 2 travel-content-farm hits against 11. $1.00 per 1,000 queries against xAI's $5.00. Not a citation-fidelity measurement: Serper returns search results, not model-cited URLs. |
 | **OpenAI** | ✅ Available, opt-in via `ai.provider`/`ai.fallback_provider: openai`. Model default: `gpt-4o-mini`. | ❌ **Disqualified.** Probed with `gpt-5-search-api` (the current search-capable model — `gpt-4o-*-search-preview` deprecated 2026-07-23): 0/21 (0%) citation-matched — genuine search tool invoked, but returned URLs don't correspond to what was actually retrieved. Selectable in `search_provider.py` since 2026-08-15 (`94a5e56`, `openai_search.py`); no default uses it. | ❌ Same disqualification — selectable, and no default uses it. |
@@ -135,11 +135,22 @@ and 34), and the published page is slightly larger with one more link. Those
 margins are single-run and small; the honest claim is *no measurable loss*,
 not *better content*.
 
-**Two caveats on the cost figures.** They are the engine's own estimate, and
-the run logs `no pricing entry for 'serper:serper'` -- search spend is outside
-both numbers, and search has historically been the larger share of a run. The
-comparison between the two columns is sound (both exclude the same thing); the
-absolute figures are not a bill.
+**One caveat on the cost figures.** They are the engine's own estimate at list
+prices, not a bill: `Estimated USD` is token usage plus search tool fees, both
+priced from the tables in `llm_client.py`, and a real invoice differs (xAI's
+cached-input discount alone is unmodelled, in the direction of overstating).
+
+Search spend is *inside* both figures, not outside. The run's
+`no pricing entry for 'serper:serper'` line said otherwise and was a false
+alarm: Serper bills per query and reports no tokens, and its $1.00 per 1,000
+was in the tool-call table the whole time. #171 stopped that warning, so a
+rerun will not show it.
+
+**When this was measured.** 276s is `30 + 6144/25`, the token-derived budget
+this repo used before #170 -- so the run predates that change, and the fallback
+that answered its every call was already configured locally (the shipped
+default enabled one only in #171). Both columns ran under those same
+conditions, which is what makes the comparison fair.
 
 **What would change this conclusion.** A `grok-latest` run in which the primary
 calls actually complete -- the fair comparison this run did not get, because
