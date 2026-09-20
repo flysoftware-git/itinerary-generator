@@ -68,7 +68,27 @@ ai:
   # Supported providers: openai | anthropic | deepseek | gemini | grok
   # Legacy compatibility: azure_openai
   provider: "grok"
-  model: "grok-latest"
+  # A model, not an alias. "grok-latest" was the default here and it is the
+  # weakest of the three choices on every axis we can measure:
+  #
+  #   * It repoints silently, so a run cannot say what generated it, and the
+  #     pricing entry beside it says exactly that about its own $2/$10.
+  #   * $10 per million output tokens is the highest rate in the table --
+  #     grok-4-fast is $6 and grok-4.3 is $2.50 for the same work.
+  #   * It is the model that was timing out. On 2026-09-19 every
+  #     destination_bundle call of a five-stop trip failed on it; the guides
+  #     that succeeded that day all passed --llm-model grok-4-fast. Streaming
+  #     (#170) means a slow model now costs time rather than the call, but
+  #     that is a reason not to fear a slow model, not a reason to pick one.
+  #
+  # grok-4-fast built the published Old Hickory guide end to end for $3.09.
+  # grok-4.3 is half the output price again and is already trusted as
+  # url_discovery.search_model; it has not generated destination content
+  # here, so switching to it is a change to make deliberately and measure.
+  #
+  # Note this line beats XAI_MODEL in the environment: the env var is only
+  # consulted when no model is named (llm_client.MultiLLMClient.__init__).
+  model: "grok-4-fast"
   temperature: 0.7
   max_tokens: 4096
   # Runaway-spend guard, in US dollars of estimated model cost. 0 disables it,
@@ -93,17 +113,22 @@ ai:
   # produce the evidence for the next one.
   grok_max_concurrent_destinations: 2
   enable_url_candidate_experiment: false
-  # Optional content-generation failover: when the primary provider's circuit
-  # breaker opens (repeated transient errors -- see llm_client.py), calls are
-  # transparently routed to this fallback provider/model instead of failing.
-  # Requires the fallback provider's own API key to be present in the
-  # environment (checked eagerly at startup, same as the primary). Leave
-  # unset (or comment out) to disable -- the default, unchanged behavior.
-  # Note: this only covers content-generation calls (llm_client.py). It does
+  # Content-generation failover. Since #164 a failed call is retried on this
+  # provider AT ONCE rather than only after the breaker opens, so the calls
+  # that used to be spent opening the breaker -- a destination's whole content,
+  # each one -- are now the calls it rescues. Unset, that mechanism does
+  # nothing, which is what it did through every failure of 2026-09-19.
+  #
+  # Anthropic rather than the openai/gpt-4o-mini this example used to name:
+  # ANTHROPIC_API_KEY is the second key this project actually carries, and a
+  # fallback whose key is absent fails the run at startup (the key is checked
+  # eagerly, same as the primary). Comment both lines out to disable.
+  #
+  # Note: this covers content-generation calls (llm_client.py) only. It does
   # NOT cover search/harvest calls (grok_search.py), which have no
   # alternative-provider implementation.
-  # fallback_provider: "openai"
-  # fallback_model: "gpt-4o-mini"
+  fallback_provider: "anthropic"
+  fallback_model: "claude-sonnet-5"
 
 # ── Azure OpenAI (legacy compatibility) ──────────────────────────────────────
 azure_openai:
