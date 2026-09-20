@@ -2297,6 +2297,7 @@ class URLDiscoverer:
     _SKIPPED_REASON_CODES: frozenset[str] = frozenset({
         "seed_threshold_override",
         "interest_filter_seed_override",
+        "trail_links_disabled_seed_override",
     })
 
     @classmethod
@@ -5595,7 +5596,34 @@ class URLDiscoverer:
                 and self._direct_batch_is_authoritative()
             )
 
-            if trail_like and bool(getattr(self, "_disable_trails", False)):
+            # A seed is still searched, for the reason it survives the
+            # interest filter: naming a place in the manifest is the strongest
+            # statement of interest there is, and `trails: enabled: false` is a
+            # statement about a CATEGORY. Somebody who turned hiking off and
+            # then wrote a named trail into their own itinerary has said both
+            # things, and the specific one is the one they meant.
+            #
+            # **What this does NOT do is let an AllTrails link through.** The
+            # switch is an AllTrails cost control -- the measurement behind it
+            # is 98 paid fallback calls on that vendor -- and the chokepoint in
+            # `_retain_discovered_url` still refuses one whoever proposed it,
+            # seed included. That gate is deliberately absolute: guarding call
+            # sites one at a time failed four times before it existed.
+            #
+            # So what a seed gets here is what every other attraction gets: the
+            # ordinary hunt, over sources that are not the disabled vendor --
+            # an official site, a park page. A seed needs a link. It does not
+            # need an AllTrails link.
+            if trail_like and bool(getattr(self, "_disable_trails", False)) and is_seed:
+                self._log_decision(
+                    kind="attraction",
+                    dest_name=dest_name,
+                    item_name=attr_name,
+                    reason="trail_links_disabled_seed_override",
+                    message="trails are off, but the traveler named this one",
+                )
+            if (trail_like and bool(getattr(self, "_disable_trails", False))
+                    and not is_seed):
                 attr["url"] = ""
                 attr.pop("maps_url", None)
                 self._log_decision(
