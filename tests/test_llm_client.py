@@ -27,6 +27,7 @@ def _make_client(provider: str = "openai", *, threshold: int = 3, cooldown: floa
     client._circuit_breaker_cooldown_seconds = cooldown
     client._circuit_breaker_lock = threading.Lock()
     client._circuit_breaker_failure_times = []
+    client._circuit_breaker_slowest_failure = 0.0
     client._circuit_breaker_open_until = 0.0
     client._fallback_client = None
     return client
@@ -682,3 +683,55 @@ class TestCostReportingBlindSpotWarnings:
         with caplog.at_level(logging.WARNING):
             tracker.summary()
         assert not [r for r in caplog.records if "blind spot" in r.message]
+
+
+def test_the_breaker_window_outlasts_the_failures_it_must_count(monkeypatch) -> None:
+    """2026-09-19: every destination_bundle call failed after 276s, three
+    attempts each. The window was 180s, so each failure was pruned before the
+    next arrived, the count never reached three, and the breaker never opened
+    -- every one of five stops paid the full fourteen-minute cycle.
+
+    Seen red with the widening removed: the third failure leaves the breaker
+    shut."""
+    client = _make_client(threshold=3, cooldown=45.0)
+    clock = {"now": 0.0}
+    monkeypatch.setattr("generator.llm_client.time.monotonic", lambda: clock["now"])
+
+    for _ in range(3):
+        clock["now"] += 276.0
+        client._record_circuit_breaker_outcome(transient_failure=True, took_seconds=276.0)
+
+    assert client._circuit_breaker_open_until > clock["now"], (
+        "three failures of one destination, and the breaker is still shut")
+
+
+def test_a_run_of_quick_failures_leaves_the_window_where_it_was(monkeypatch) -> None:
+    """The widening follows the failures; it does not replace the configured
+    window. Quick failures must not make the breaker stickier than it was."""
+    client = _make_client(threshold=3, cooldown=45.0)
+    clock = {"now": 0.0}
+    monkeypatch.setattr("generator.llm_client.time.monotonic", lambda: clock["now"])
+
+    client._record_circuit_breaker_outcome(transient_failure=True, took_seconds=2.0)
+    assert client._effective_breaker_window() == client._circuit_breaker_window_seconds
+
+    # Two failures, then a long quiet spell: the first has aged out and the
+    # breaker stays shut, exactly as before this change.
+    clock["now"] += 500.0
+    client._record_circuit_breaker_outcome(transient_failure=True, took_seconds=2.0)
+    clock["now"] += 1.0
+    client._record_circuit_breaker_outcome(transient_failure=True, took_seconds=2.0)
+    assert client._circuit_breaker_open_until == 0.0
+
+
+def test_success_forgets_how_slow_the_failures_were(monkeypatch) -> None:
+    """The widening is about one run of failures. A call that succeeds ends
+    that run, and the next slow failure must start the measurement again."""
+    client = _make_client(threshold=3)
+    monkeypatch.setattr("generator.llm_client.time.monotonic", lambda: 0.0)
+
+    client._record_circuit_breaker_outcome(transient_failure=True, took_seconds=600.0)
+    assert client._effective_breaker_window() > client._circuit_breaker_window_seconds
+
+    client._record_circuit_breaker_outcome(transient_failure=False)
+    assert client._effective_breaker_window() == client._circuit_breaker_window_seconds

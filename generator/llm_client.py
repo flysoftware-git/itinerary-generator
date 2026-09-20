@@ -28,6 +28,14 @@ from generator.llm.router import LLMRouter
 
 logger = logging.getLogger(__name__)
 
+# The window below is a FLOOR, not the whole answer: _effective_breaker_window
+# widens it to whatever the failures actually take, because the reasoning in
+# this paragraph is only true while a call cannot outlast the window. On
+# 2026-09-19 each attempt took 276s and three of them spanned fourteen minutes,
+# so no two failures were ever in the window together and the breaker never
+# opened -- the exact bug the search path's own sizing comment warns about ("a
+# burst that can't land inside its own window").
+#
 # threshold=3/window=180s is sized differently from grok_search.py's search-
 # harvest breaker (4/30s) because content-generation calls have a longer
 # per-call timeout (60s vs 25s) and, critically, concurrency here depends on
@@ -46,6 +54,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_LLM_CIRCUIT_BREAKER_THRESHOLD = 3
 _DEFAULT_LLM_CIRCUIT_BREAKER_WINDOW_SECONDS = 180.0
 _DEFAULT_LLM_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 45.0
+# Room for the waits between one item's attempts, on top of the attempts
+# themselves. ai_content retries with wait_exponential(multiplier=2, min=2,
+# max=30), so two gaps inside three attempts come to well under this.
+_RETRY_BACKOFF_ALLOWANCE_SECONDS = 60.0
 _TRANSIENT_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
@@ -530,6 +542,10 @@ class MultiLLMClient:
         self._circuit_breaker_lock = threading.Lock()
         self._circuit_breaker_failure_times: list[float] = []
         self._circuit_breaker_open_until: float = 0.0
+        # How long the slowest failure in the current run of failures took.
+        # The window has to outlast one destination's own attempts or it can
+        # never see them together -- see _effective_breaker_window.
+        self._circuit_breaker_slowest_failure: float = 0.0
         self._router = LLMRouter()
         self._custom_provider = self._router.get_provider(self.provider, model=self.model)
 
@@ -665,14 +681,45 @@ class MultiLLMClient:
                 f"'{self.provider}' errors"
             )
 
-    def _record_circuit_breaker_outcome(self, *, transient_failure: bool) -> None:
+    def _effective_breaker_window(self) -> float:
+        """The window, widened to outlast the failures it has to count.
+
+        The configured 180s was sized when a content call timed out at 60s:
+        "a single destination's own tenacity retry cycle (3 attempts, each up
+        to 60s, separated by 2-8s backoff) spans up to ~186s end to end". That
+        sentence is the whole design, and it stops being true the moment a call
+        can take longer than 60s.
+
+        On 2026-09-19 it was not true: each attempt spent 276s before failing,
+        so three of them spanned about fourteen minutes. Every failure was
+        pruned by the cutoff before the next arrived, the count never reached
+        three, and the breaker that exists to stop the second destination
+        repeating the first one's wasted cycle never opened. All five stops
+        paid in full.
+
+        So the window follows the failures actually observed rather than an
+        assumption about how long a call takes: enough room for one item's
+        whole retry cycle, plus the backoff between attempts. A run of fast
+        failures leaves it at the configured value, which is what it was.
+        """
+        span = self._circuit_breaker_threshold * self._circuit_breaker_slowest_failure
+        return max(self._circuit_breaker_window_seconds, span + _RETRY_BACKOFF_ALLOWANCE_SECONDS)
+
+    def _record_circuit_breaker_outcome(self, *, transient_failure: bool,
+                                        took_seconds: float = 0.0) -> None:
         now = time.monotonic()
         with self._circuit_breaker_lock:
             if not transient_failure:
                 self._circuit_breaker_failure_times.clear()
+                self._circuit_breaker_slowest_failure = 0.0
                 self._circuit_breaker_open_until = 0.0
                 return
-            cutoff = now - self._circuit_breaker_window_seconds
+            try:
+                self._circuit_breaker_slowest_failure = max(
+                    self._circuit_breaker_slowest_failure, float(took_seconds or 0.0))
+            except (TypeError, ValueError):
+                pass
+            cutoff = now - self._effective_breaker_window()
             self._circuit_breaker_failure_times = [
                 t for t in self._circuit_breaker_failure_times if t >= cutoff
             ]
@@ -738,6 +785,9 @@ class MultiLLMClient:
             )
 
         self._circuit_breaker_check()
+        # Measured across the provider call so the breaker can size its window
+        # to what a failure actually costs (_effective_breaker_window).
+        call_started = time.monotonic()
         try:
             if self._custom_provider is not None:
                 text, usage = self._call_custom_provider(system_prompt, user_prompt, temp, tok)
@@ -751,7 +801,8 @@ class MultiLLMClient:
                 text, usage = self._call_gemini(system_prompt, user_prompt, temp, tok)
         except Exception as exc:
             if self._is_transient_llm_error(exc):
-                self._record_circuit_breaker_outcome(transient_failure=True)
+                self._record_circuit_breaker_outcome(
+                    transient_failure=True, took_seconds=time.monotonic() - call_started)
             if self._fallback_client is None:
                 raise
             # The call that failed is retried on the fallback now. Waiting for
