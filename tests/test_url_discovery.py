@@ -19082,6 +19082,62 @@ def test_a_seed_the_interest_filter_matches_is_still_searched() -> None:
     assert "interest_filter_seed_override" in reasons
 
 
+def _en_route_discoverer():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._disable_en_route = True
+    decisions: list[dict] = []
+    discoverer._log_decision = lambda **kwargs: decisions.append(kwargs)  # type: ignore[method-assign]
+    return discoverer, decisions
+
+
+def test_the_en_route_switch_keeps_a_stop_the_traveler_named() -> None:
+    """`en_route_stops: enabled: false` is a discovery cost control -- those
+    stops were 253 of 301 batch candidate rejections. A name in
+    `en_route_seeds` was not discovered, it was typed, and emptying the list
+    wholesale revoked the never-evict-a-manifest-seed guarantee that
+    `_apply_manifest_enroute_target` makes a few stages earlier.
+    """
+    discoverer, decisions = _en_route_discoverer()
+    ai = {"getting_here": {"en_route_stops": [
+        {"name": "Langley, Wa"},
+        {"name": "Coupeville, Wa"},
+        {"name": "A roadside diner nobody asked for"},
+    ]}}
+
+    discoverer._discover_en_route_stops(
+        ai, "Oak Harbor, WA",
+        dest={"en_route_seeds": ["Langley, Wa", "Coupeville, Wa"]},
+    )
+
+    kept = [stop["name"] for stop in ai["getting_here"]["en_route_stops"]]
+    assert kept == ["Langley, Wa", "Coupeville, Wa"]
+    assert [d.get("reason") for d in decisions] == ["en_route_disabled_seed_override"] * 2
+
+
+def test_the_en_route_switch_still_drops_everything_nobody_asked_for() -> None:
+    """The exemption belongs to the named stop. With no seeds the switch is
+    exactly what it was, which is what keeps its measured saving."""
+    discoverer, decisions = _en_route_discoverer()
+    ai = {"getting_here": {"en_route_stops": [{"name": "A roadside diner"}]}}
+
+    discoverer._discover_en_route_stops(ai, "Oak Harbor, WA", dest={})
+
+    assert ai["getting_here"]["en_route_stops"] == []
+    assert not decisions
+
+
+def test_a_named_stop_matches_however_it_was_punctuated() -> None:
+    """Seeds are matched the way every other seed in this module is."""
+    discoverer, _decisions = _en_route_discoverer()
+    ai = {"getting_here": {"en_route_stops": [{"name": "Langley, WA"}]}}
+
+    discoverer._discover_en_route_stops(
+        ai, "Oak Harbor, WA", dest={"en_route_seeds": ["langley wa"]},
+    )
+
+    assert [stop["name"] for stop in ai["getting_here"]["en_route_stops"]] == ["Langley, WA"]
+
+
 def test_a_seed_outranks_the_trails_switch() -> None:
     """`trails: enabled: false` is a statement about a category; writing a
     named trail into the manifest is a statement about a place. The switch was

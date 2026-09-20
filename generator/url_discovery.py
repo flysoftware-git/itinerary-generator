@@ -2298,6 +2298,7 @@ class URLDiscoverer:
         "seed_threshold_override",
         "interest_filter_seed_override",
         "trail_links_disabled_seed_override",
+        "en_route_disabled_seed_override",
     })
 
     @classmethod
@@ -12515,6 +12516,31 @@ class URLDiscoverer:
             url=url,
         )
 
+    def _seeded_en_route_stops(
+        self, getting_here: dict[str, Any], dest: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
+        """The en-route stops this destination's manifest actually names.
+
+        Matched the way every other seed in this module is -- lowercased, with
+        runs of punctuation flattened to single spaces -- so *Langley, Wa* and
+        *langley wa* are the same stop.
+        """
+        named = {
+            re.sub(r"[^a-z0-9]+", " ", str(seed or "").lower()).strip()
+            for seed in ((dest or {}).get("en_route_seeds", []) or [])
+            if str(seed or "").strip()
+        }
+        if not named:
+            return []
+        stops = getting_here.get("en_route_stops")
+        if not isinstance(stops, list):
+            return []
+        return [
+            stop for stop in stops
+            if isinstance(stop, dict)
+            and re.sub(r"[^a-z0-9]+", " ", str(stop.get("name", "") or "").lower()).strip() in named
+        ]
+
     def _discover_en_route_stops(
         self,
         ai: dict[str, Any],
@@ -12541,8 +12567,30 @@ class URLDiscoverer:
         # they moved to Maps links, and remain a priced enrichment rather
         # than part of the core itinerary.
         if getattr(self, "_disable_en_route", False):
-            getting_here["en_route_stops"] = []
+            # ... except a stop the traveler named themselves. The switch is a
+            # DISCOVERY cost control -- en-route stops were 253 of 301 batch
+            # candidate rejections -- and a name in `en_route_seeds` was not
+            # discovered, it was typed. Emptying the list wholesale silently
+            # revoked the never-evict-a-manifest-seed guarantee that
+            # `ai_content._apply_manifest_enroute_target` makes a few stages
+            # earlier: the seed survived the target cap, and then this dropped
+            # it anyway.
+            #
+            # Nothing is bought here. Discovery returns immediately either way,
+            # so a kept seed renders as the traveler's own name with no link --
+            # which is what `_keep_item_if_verified_or_seed` already allows a
+            # seed to be, and is the whole of what they asked for.
+            seeded = self._seeded_en_route_stops(getting_here, dest)
+            getting_here["en_route_stops"] = seeded
             ai["getting_here"] = getting_here
+            for stop in seeded:
+                self._log_decision(
+                    kind="en_route_stop",
+                    dest_name=dest_name,
+                    item_name=str(stop.get("name", "") or ""),
+                    reason="en_route_disabled_seed_override",
+                    message="en-route stops are off, but the traveler named this one",
+                )
             return
 
         # A booked train, ferry or flight has no roadside to stop at.
