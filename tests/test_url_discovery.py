@@ -19082,6 +19082,144 @@ def test_a_seed_the_interest_filter_matches_is_still_searched() -> None:
     assert "interest_filter_seed_override" in reasons
 
 
+def _en_route_discoverer():
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._disable_en_route = True
+    decisions: list[dict] = []
+    discoverer._log_decision = lambda **kwargs: decisions.append(kwargs)  # type: ignore[method-assign]
+    return discoverer, decisions
+
+
+def test_the_en_route_switch_keeps_a_stop_the_traveler_named() -> None:
+    """`en_route_stops: enabled: false` is a discovery cost control -- those
+    stops were 253 of 301 batch candidate rejections. A name in
+    `en_route_seeds` was not discovered, it was typed, and emptying the list
+    wholesale revoked the never-evict-a-manifest-seed guarantee that
+    `_apply_manifest_enroute_target` makes a few stages earlier.
+    """
+    discoverer, decisions = _en_route_discoverer()
+    ai = {"getting_here": {"en_route_stops": [
+        {"name": "Langley, Wa"},
+        {"name": "Coupeville, Wa"},
+        {"name": "A roadside diner nobody asked for"},
+    ]}}
+
+    discoverer._discover_en_route_stops(
+        ai, "Oak Harbor, WA",
+        dest={"en_route_seeds": ["Langley, Wa", "Coupeville, Wa"]},
+    )
+
+    kept = [stop["name"] for stop in ai["getting_here"]["en_route_stops"]]
+    assert kept == ["Langley, Wa", "Coupeville, Wa"]
+    assert [d.get("reason") for d in decisions] == ["en_route_disabled_seed_override"] * 2
+
+
+def test_the_en_route_switch_still_drops_everything_nobody_asked_for() -> None:
+    """The exemption belongs to the named stop. With no seeds the switch is
+    exactly what it was, which is what keeps its measured saving."""
+    discoverer, decisions = _en_route_discoverer()
+    ai = {"getting_here": {"en_route_stops": [{"name": "A roadside diner"}]}}
+
+    discoverer._discover_en_route_stops(ai, "Oak Harbor, WA", dest={})
+
+    assert ai["getting_here"]["en_route_stops"] == []
+    assert not decisions
+
+
+def test_a_named_stop_matches_however_it_was_punctuated() -> None:
+    """Seeds are matched the way every other seed in this module is."""
+    discoverer, _decisions = _en_route_discoverer()
+    ai = {"getting_here": {"en_route_stops": [{"name": "Langley, WA"}]}}
+
+    discoverer._discover_en_route_stops(
+        ai, "Oak Harbor, WA", dest={"en_route_seeds": ["langley wa"]},
+    )
+
+    assert [stop["name"] for stop in ai["getting_here"]["en_route_stops"]] == ["Langley, WA"]
+
+
+def test_a_seed_outranks_the_trails_switch() -> None:
+    """`trails: enabled: false` is a statement about a category; writing a
+    named trail into the manifest is a statement about a place. The switch was
+    checked first, so a run with trails off dropped the traveler's own name
+    before any search could run -- the same failure the interest filter had,
+    one gate over, and with the same symptom: the verified-link-or-seed rule
+    keeps the card, so all that is visible is a card with no link.
+    """
+    discoverer, decisions = _seed_interest_filter_discoverer()
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Olympic Discovery Trail",
+                "type": "trail",
+                "description": "A paved rail-trail running west from the waterfront.",
+            }
+        ]
+    }
+
+    discoverer._discover_attractions(
+        ai=ai,
+        dest={"_registry_decisions": []},
+        dest_name="Port Angeles, Washington",
+        nps_code=None,
+        seed_names=["Olympic Discovery Trail"],
+    )
+
+    reasons = [d.get("reason") for d in decisions]
+    assert "trail_links_disabled" not in reasons
+    assert "trail_links_disabled_seed_override" in reasons
+
+
+def test_a_trail_nobody_asked_for_is_still_dropped_when_trails_are_off() -> None:
+    """The exemption belongs to the seed. The switch exists to stop the
+    pipeline hunting links for every trail a model proposes, and that is
+    exactly what this one is."""
+    discoverer, decisions = _seed_interest_filter_discoverer()
+    ai = {
+        "top_attractions": [
+            {
+                "name": "Waterfront Loop Trail",
+                "type": "trail",
+                "description": "A paved rail-trail running west from the waterfront.",
+            }
+        ]
+    }
+
+    discoverer._discover_attractions(
+        ai=ai,
+        dest={"_registry_decisions": []},
+        dest_name="Port Angeles, Washington",
+        nps_code=None,
+        seed_names=[],
+    )
+
+    reasons = [d.get("reason") for d in decisions]
+    assert "trail_links_disabled" in reasons
+    assert "trail_links_disabled_seed_override" not in reasons
+
+
+def test_the_switch_still_refuses_an_alltrails_link_for_a_seed() -> None:
+    """The half this change deliberately does NOT make.
+
+    The switch is an AllTrails cost control -- 98 paid fallback calls on that
+    vendor, measured 2026-08-23 -- and the chokepoint is absolute on purpose,
+    because guarding call sites one at a time failed four times before it
+    existed. A seed needs a link; it does not need an AllTrails link, and
+    `TestTrailsSwitchEnforcedAtTheChokepoint` says so in the other direction.
+    """
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._disable_trails = True
+    discoverer._log_decision = lambda **kwargs: None  # type: ignore[method-assign]
+
+    kept = discoverer._retain_discovered_url(
+        "https://www.alltrails.com/trail/us/washington/olympic-discovery-trail",
+        "Olympic Discovery Trail", "Port Angeles, Washington",
+        allow_alltrails=True, kind="attraction", is_seed=True,
+        allow_shallow_relevance=True,
+    )
+    assert kept == "", "the trails switch was laundered by calling the item a seed"
+
+
 def test_a_non_seed_the_interest_filter_matches_is_still_skipped() -> None:
     """The override belongs to the seed, not to everybody -- the filter still
     does its job on an attraction nobody asked for."""

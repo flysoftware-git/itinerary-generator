@@ -2297,6 +2297,8 @@ class URLDiscoverer:
     _SKIPPED_REASON_CODES: frozenset[str] = frozenset({
         "seed_threshold_override",
         "interest_filter_seed_override",
+        "trail_links_disabled_seed_override",
+        "en_route_disabled_seed_override",
     })
 
     @classmethod
@@ -5595,7 +5597,34 @@ class URLDiscoverer:
                 and self._direct_batch_is_authoritative()
             )
 
-            if trail_like and bool(getattr(self, "_disable_trails", False)):
+            # A seed is still searched, for the reason it survives the
+            # interest filter: naming a place in the manifest is the strongest
+            # statement of interest there is, and `trails: enabled: false` is a
+            # statement about a CATEGORY. Somebody who turned hiking off and
+            # then wrote a named trail into their own itinerary has said both
+            # things, and the specific one is the one they meant.
+            #
+            # **What this does NOT do is let an AllTrails link through.** The
+            # switch is an AllTrails cost control -- the measurement behind it
+            # is 98 paid fallback calls on that vendor -- and the chokepoint in
+            # `_retain_discovered_url` still refuses one whoever proposed it,
+            # seed included. That gate is deliberately absolute: guarding call
+            # sites one at a time failed four times before it existed.
+            #
+            # So what a seed gets here is what every other attraction gets: the
+            # ordinary hunt, over sources that are not the disabled vendor --
+            # an official site, a park page. A seed needs a link. It does not
+            # need an AllTrails link.
+            if trail_like and bool(getattr(self, "_disable_trails", False)) and is_seed:
+                self._log_decision(
+                    kind="attraction",
+                    dest_name=dest_name,
+                    item_name=attr_name,
+                    reason="trail_links_disabled_seed_override",
+                    message="trails are off, but the traveler named this one",
+                )
+            if (trail_like and bool(getattr(self, "_disable_trails", False))
+                    and not is_seed):
                 attr["url"] = ""
                 attr.pop("maps_url", None)
                 self._log_decision(
@@ -12487,6 +12516,31 @@ class URLDiscoverer:
             url=url,
         )
 
+    def _seeded_en_route_stops(
+        self, getting_here: dict[str, Any], dest: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
+        """The en-route stops this destination's manifest actually names.
+
+        Matched the way every other seed in this module is -- lowercased, with
+        runs of punctuation flattened to single spaces -- so *Langley, Wa* and
+        *langley wa* are the same stop.
+        """
+        named = {
+            re.sub(r"[^a-z0-9]+", " ", str(seed or "").lower()).strip()
+            for seed in ((dest or {}).get("en_route_seeds", []) or [])
+            if str(seed or "").strip()
+        }
+        if not named:
+            return []
+        stops = getting_here.get("en_route_stops")
+        if not isinstance(stops, list):
+            return []
+        return [
+            stop for stop in stops
+            if isinstance(stop, dict)
+            and re.sub(r"[^a-z0-9]+", " ", str(stop.get("name", "") or "").lower()).strip() in named
+        ]
+
     def _discover_en_route_stops(
         self,
         ai: dict[str, Any],
@@ -12513,8 +12567,30 @@ class URLDiscoverer:
         # they moved to Maps links, and remain a priced enrichment rather
         # than part of the core itinerary.
         if getattr(self, "_disable_en_route", False):
-            getting_here["en_route_stops"] = []
+            # ... except a stop the traveler named themselves. The switch is a
+            # DISCOVERY cost control -- en-route stops were 253 of 301 batch
+            # candidate rejections -- and a name in `en_route_seeds` was not
+            # discovered, it was typed. Emptying the list wholesale silently
+            # revoked the never-evict-a-manifest-seed guarantee that
+            # `ai_content._apply_manifest_enroute_target` makes a few stages
+            # earlier: the seed survived the target cap, and then this dropped
+            # it anyway.
+            #
+            # Nothing is bought here. Discovery returns immediately either way,
+            # so a kept seed renders as the traveler's own name with no link --
+            # which is what `_keep_item_if_verified_or_seed` already allows a
+            # seed to be, and is the whole of what they asked for.
+            seeded = self._seeded_en_route_stops(getting_here, dest)
+            getting_here["en_route_stops"] = seeded
             ai["getting_here"] = getting_here
+            for stop in seeded:
+                self._log_decision(
+                    kind="en_route_stop",
+                    dest_name=dest_name,
+                    item_name=str(stop.get("name", "") or ""),
+                    reason="en_route_disabled_seed_override",
+                    message="en-route stops are off, but the traveler named this one",
+                )
             return
 
         # A booked train, ferry or flight has no roadside to stop at.

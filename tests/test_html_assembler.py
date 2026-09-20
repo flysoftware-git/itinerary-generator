@@ -6555,3 +6555,41 @@ def test_the_unlinked_seed_line_adds_no_second_warning_glyph() -> None:
     assert "No source link found for this one" in card
     assert card.count("&#9888;") + card.count("\u26a0") == 1, (
         "the card carries a second warning glyph beside the Unverified badge")
+
+
+def _en_route_trip(stop: dict) -> dict:
+    return {
+        "trip": {"title": "Named Stops"},
+        "_meta": {"generator_version": "9.9.9", "generated_at_utc": "2026-09-19T00:00:00+00:00"},
+        "destinations": [{
+            "id": "langley", "name": "Langley, Washington", "dates": "September 22, 2026",
+            "lat": 48.04, "lng": -122.41,
+            "ai_content": {"getting_here": {"en_route_stops": [stop]}},
+        }],
+    }
+
+
+def test_an_unlinked_en_route_seed_says_why_it_has_no_link() -> None:
+    """#168 gave the attraction card this sentence; a seeded en-route stop is
+    exempt from the same removal rule and can reach a card with no link too --
+    and does so more often since #169 keeps the stops the traveler named when
+    en-route discovery is off. Seen red before the stop card carried it."""
+    html = HTMLAssembler(config_path="config.yaml").assemble(_en_route_trip(
+        {"name": "Coupeville, WA", "is_seed": True, "url": "",
+         "description": "A waterfront town on Penn Cove."}))
+
+    start = html.find('<div class="stop-card">')
+    assert start != -1, "no stop card was rendered"
+    card = html[start:html.index("</div>\n", start) + 7]
+    assert "Coupeville" in card and "No source link found for this one" in card
+    assert card.count("&#9888;") + card.count("\u26a0") <= 1, "a second warning glyph"
+
+
+def test_a_discovered_en_route_stop_with_no_link_says_nothing_extra() -> None:
+    """Only a seed can be here without a link; anything else was removed long
+    before assembly, so the sentence must not appear on an ordinary stop."""
+    html = HTMLAssembler(config_path="config.yaml").assemble(_en_route_trip(
+        {"name": "Some Roadside Barn", "is_seed": False, "url": "",
+         "description": "A barn."}))
+
+    assert "No source link found" not in html

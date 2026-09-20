@@ -2751,11 +2751,25 @@ class HTMLAssembler:
                             f' <a href="{self._safe_href(lunch_url)}" class="lunch-link"'
                             f' target="_blank" rel="noopener">Find lunch here</a>'
                         )
+                # The same sentence an unlinked seeded attraction carries
+                # (#168), on the other list that can hold one. An en-route seed
+                # is exempt from the verified-link-or-seed removal exactly as an
+                # attraction seed is, so it too can reach a card with no link --
+                # and more often since `en_route_stops: enabled: false` began
+                # keeping the stops the traveler named. The badge alone reads as
+                # a warning about the place; this says what actually happened.
+                # No glyph of its own: the Unverified badge beside it has one.
+                unlinked_seed_html = (
+                    '<div class="stop-note">No source link found for this one — '
+                    'confirm hours, access and conditions before you go.</div>'
+                    if stop.get("is_seed") and not url
+                    else ""
+                )
                 html += (
                     f'    <div class="stop-card">'
                     f'<span class="stop-icon">{icon}</span>'
                     f'<div class="stop-body"><strong>{name_html}</strong>{detour_html}{rating_badge_html}{lunch_html}{caution_html}{maps_corner_html}'
-                    f'<div class="stop-desc">{description}</div>{note_html}</div>'
+                    f'<div class="stop-desc">{description}</div>{note_html}{unlinked_seed_html}</div>'
                     f'</div>\n'
                 )
             html += '  </div>\n'
