@@ -8,7 +8,12 @@ Next stop:      {next_destination}
 Budget:         {budget_guidance}
 Arrival mode:   {arrival_mode_guidance}
 {access_guidance}Seeds (attractions the traveler specifically intends to visit — include ALL of
-       these, do not omit any, and add further recommendations around them):
+       these, do not omit any, and add further recommendations around them.
+       A seed is a top_attractions entry like any other: give it the same full
+       description, type, difficulty, duration and practical_note you would
+       give an attraction you chose yourself. Returning a seed as a bare name
+       with no description is worse than not listing it, because the traveler
+       already knows they asked for it):
   {seeds}
 
 ════════════════════════════════════════════════════════
@@ -125,6 +130,9 @@ QUANTITY AND DIVERSITY RULES — read carefully
 
 top_attractions:
   - Include ALL seeds listed above without exception
+  - Describe every seed to the same standard as the rest: a real description
+    naming specific physical features, plus type, difficulty, duration and a
+    practical_note where they apply. Never return a seed as a name alone
   - Add further items to reach 6–8 total
   - Additional non-seed attractions must be genuinely touristic points of interest (exclude hospitals, clinics, urgent-care facilities, government service offices, and similar non-visitor facilities)
   - Prefer attractions with public ratings >= 4.0 and at least 10 ratings/reviews when that signal is known

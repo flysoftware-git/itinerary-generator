@@ -24,7 +24,10 @@ This document does not cover:
 
 ## Input Contract From Prompt
 The destination content prompt requests:
-- Include all seed attractions
+- Include all seed attractions, **described to the same standard as the rest**.
+  A seed returned as a bare name is worse than one not listed at all: the
+  traveller already knows they asked for it, so a card with only the name on it
+  tells them nothing they did not write themselves.
 - Add enough items to reach 6-8 total
 - Set `must_see=true` for no more than two items
 
@@ -37,8 +40,39 @@ Normalization in `AIContentGenerator` enforces or adjusts list quality:
 - `must_see` is capped to a budget of two items.
 - Similar attractions are merged by canonical-name similarity.
 - Missing user seeds are injected into attractions when the model omits them.
+  What that injection writes is read on the trip, so it says why the place is
+  on the itinerary and what to check before going, and nothing about this
+  pipeline (`SEED_FALLBACK_DESCRIPTION`). It is a fallback for the run where
+  generation was skipped or came back short, not the normal way a seed is
+  described -- the prompt above is.
 - En-route stops are removed from the attractions list to avoid duplication.
 - Seed attractions are protected from en-route overlap removal so user-requested anchors remain.
+
+## What A Seed Is Exempt From, And What It Is Not
+A seed carries one exemption and it is narrow. Under the verified-link-or-seed
+policy (`_keep_item_if_verified_or_seed`, owner decision 2026-08-17) a non-seed
+attraction left with no verified link is removed from the itinerary; a seed
+stays and renders with the `Unverified` badge, because an unverifiable seed may
+be an obscure-but-real place rather than a pipeline failure, and silently
+dropping a traveller's own request is the worse outcome.
+
+That exemption is about **removal**, not about **effort**. A seed is searched,
+audited and linked exactly like any other attraction, and three consequences
+follow:
+
+- The interest filter (`_is_uninterested_attraction`, keywords such as
+  `bike trail` and out-of-season `ski`) does **not** apply to a seed, in either
+  `_discover_attractions` or `audit_discovered_urls`. Naming a place in the
+  manifest is the strongest statement of interest there is and it outranks a
+  keyword guess about the category. Skipping a seed there used to be invisible:
+  the removal exemption kept the card whatever happened, so the only symptom
+  was a card with no link.
+- A seed that is searched and still finds nothing is the honest case, and the
+  card says so in as many words (`html_assembler`, beside the `Unverified`
+  badge) rather than implying a later stage will fill the gap in.
+- Everything else -- relevance gates, closure detection, the trail-miles
+  threshold -- still applies, with the existing seed-specific relaxations
+  (`seed_threshold_override`, `_search_alltrails_for_seed_relaxed`).
 
 ## Ordering Rules (What Determines Placement)
 Attraction placement is deterministic after normalization and is not based on web page ranking.
@@ -90,6 +124,10 @@ Important nuance:
 - If links look wrong but order looks right, inspect URL discovery/audit logic.
 - If final count is too low, check for aggressive de-duplication or en-route overlap removals.
 - If a requested seed attraction is missing, inspect seed canonicalization and the seed-injection path before URL discovery.
+- If a seed renders with no link and nothing to say, look for
+  `interest_filter_seed_override` in the decision log: it means the filter
+  matched the seed and discovery ran anyway. Its absence beside a keyword match
+  is the old behaviour, where the search never ran.
 - If a non-trail feature loses its official page, check `trail_like`. It is
   inferred from the *description*, so "accessible via a short walk" is enough to
   classify a rock formation or a crater as a trail. The audit's AllTrails-only

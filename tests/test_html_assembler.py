@@ -2207,6 +2207,77 @@ def test_build_attractions_seed_no_url_attraction_renders_caution_badge() -> Non
     assert '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>' in html
 
 
+def test_an_unlinked_seed_says_no_link_was_found_rather_than_promising_one() -> None:
+    """A seed is the only attraction that can reach a card with no link -- the
+    verified-link-or-seed rule removes every other unlinked one before
+    assembly. The shipped card said so with a badge and then
+    "details will be refined by linked references", which reads as a promise
+    the page has no way to keep. Say what happened instead."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+
+    html = assembler._build_attractions(
+        {
+            "top_attractions": [
+                {
+                    "name": "Olympic Discovery Trail",
+                    "description": "A paved rail-trail running west from the waterfront.",
+                    "is_seed": True,
+                }
+            ]
+        },
+        drives=[],
+        dest_name="Port Angeles, Washington",
+    )
+
+    assert "No source link found for this one" in html
+    assert "will be refined" not in html
+
+
+def test_a_seed_that_found_its_link_says_nothing_about_missing_one() -> None:
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+
+    html = assembler._build_attractions(
+        {
+            "top_attractions": [
+                {
+                    "name": "Olympic Discovery Trail",
+                    "description": "A paved rail-trail running west from the waterfront.",
+                    "url": "https://olympicdiscoverytrail.org/",
+                    "is_seed": True,
+                }
+            ]
+        },
+        drives=[],
+        dest_name="Port Angeles, Washington",
+    )
+
+    assert "No source link found" not in html
+
+
+def test_an_attraction_at_a_destination_that_seeded_nothing_is_unchanged() -> None:
+    """The line belongs to the seed exemption, so it must not appear on an
+    ordinary linked attraction."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+
+    html = assembler._build_attractions(
+        {
+            "top_attractions": [
+                {
+                    "name": "Hurricane Ridge",
+                    "description": "A high meadow road with views over the Bailey Range.",
+                    "url": "https://www.nps.gov/olym/planyourvisit/hurricane-ridge.htm",
+                }
+            ]
+        },
+        drives=[],
+        dest_name="Port Angeles, Washington",
+    )
+
+    assert "Hurricane Ridge" in html
+    assert "No source link found" not in html
+    assert "badge-seed" not in html
+
+
 def test_build_attractions_omits_caution_badge_when_url_present() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     html = assembler._build_attractions(
@@ -6457,3 +6528,30 @@ def test_flavor_and_lang_on_a_raster_layer_are_neither_used_nor_complained_about
 
     assert tiles.kind == "raster"
     assert caplog.text == ""
+
+
+def test_the_unlinked_seed_line_adds_no_second_warning_glyph() -> None:
+    """The Unverified badge on the same card already carries one, and the
+    owner's standing instruction (#149) is that these marks stay quiet. Seen
+    red with the glyph restored to the sentence."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {
+        "trip": {"title": "Quiet Marks"},
+        "_meta": {"generator_version": "9.9.9", "generated_at_utc": "2026-09-19T00:00:00+00:00"},
+        "destinations": [{
+            "id": "leipers", "name": "Leiper's Fork, Tennessee", "dates": "December 12, 2026",
+            "lat": 35.9, "lng": -87.0,
+            "ai_content": {"top_attractions": [
+                {"name": "Leiper's Fork Village", "is_seed": True, "url": "",
+                 "description": "A village of galleries and porches."},
+            ]},
+        }],
+    }
+
+    html = assembler.assemble(trip)
+    card = html[html.index("Leiper&#x27;s Fork Village"):]
+    card = card[:card.index("</div>\n")]
+
+    assert "No source link found for this one" in card
+    assert card.count("&#9888;") + card.count("\u26a0") == 1, (
+        "the card carries a second warning glyph beside the Unverified badge")

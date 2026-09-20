@@ -2296,6 +2296,7 @@ class URLDiscoverer:
     })
     _SKIPPED_REASON_CODES: frozenset[str] = frozenset({
         "seed_threshold_override",
+        "interest_filter_seed_override",
     })
 
     @classmethod
@@ -2941,16 +2942,29 @@ class URLDiscoverer:
                 if not maps_url and self._classify_url_policy_class(url) in {"google_maps_search", "google_maps_dir"}:
                     maps_url = url
 
+                # Same reasoning as the discovery-side filter: the traveler's
+                # own pick is not removed by a guess about what they are
+                # interested in. Without this a seed whose name matches a
+                # keyword is deleted here, after the seed policy has already
+                # promised it will always be shown.
                 if self._is_uninterested_attraction(attr_name, attr_type, attr_desc, dest_dates):
-                    self._record_registry_entity_removal(
-                        dest,
-                        section_target="top_attractions",
-                        entity_class="trail" if trail_like else "attraction",
-                        display_name=attr_name,
-                        description=attr_desc,
-                        rejection_reason="interest_filter_removed",
+                    if not is_seed:
+                        self._record_registry_entity_removal(
+                            dest,
+                            section_target="top_attractions",
+                            entity_class="trail" if trail_like else "attraction",
+                            display_name=attr_name,
+                            description=attr_desc,
+                            rejection_reason="interest_filter_removed",
+                        )
+                        continue
+                    self._log_decision(
+                        kind="attraction",
+                        dest_name=dest_name,
+                        item_name=attr_name,
+                        reason="interest_filter_seed_override",
+                        message="interest filter matched a traveler seed; kept and audited like any other attraction",
                     )
-                    continue
 
                 # PR-028: enforce max_trail_miles from AI description when page fetch is unavailable
                 if trail_like and max_trail_miles > 0:
@@ -5522,16 +5536,33 @@ class URLDiscoverer:
             attr_context = self._attraction_trail_context(attr)
             maps_fallback_url = f"https://www.google.com/maps/search/?api=1&query={quote(self._maps_fallback_query_text(attr_name, dest_name))}"
 
+            # The interest filter drops categories a traveler is assumed not to
+            # want -- golf, cycle routes, out-of-season skiing. A seed is that
+            # traveler naming this one place in the manifest, which is the
+            # strongest interest signal there is and outranks a keyword guess
+            # about its category. Skipping discovery here was also silent: the
+            # verified-link-or-seed rule keeps a seed whatever happens, so the
+            # only visible result was a card with no link and nothing to say
+            # ("Olympic Discovery Trail" matches the `bike trail` /
+            # `cycling trail` keywords).
             if self._is_uninterested_attraction(attr_name, attr_type, attr_desc, dest_dates):
-                attr["url"] = ""
+                if not is_seed:
+                    attr["url"] = ""
+                    self._log_decision(
+                        kind="attraction",
+                        dest_name=dest_name,
+                        item_name=attr_name,
+                        reason="interest_filter_skipped",
+                        message="attraction link skipped by interest filter",
+                    )
+                    continue
                 self._log_decision(
                     kind="attraction",
                     dest_name=dest_name,
                     item_name=attr_name,
-                    reason="interest_filter_skipped",
-                    message="attraction link skipped by interest filter",
+                    reason="interest_filter_seed_override",
+                    message="interest filter matched a traveler seed; searched like any other attraction",
                 )
-                continue
 
             trail_like = self._is_trail_like_attraction(attr_name, attr_type, attr_context)
 

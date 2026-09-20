@@ -3431,3 +3431,50 @@ def test_road_geometry_still_corrects_an_implausible_driving_leg() -> None:
 
     gh = trip["destinations"][1]["ai_content"]["getting_here"]
     assert gh["distance_miles"] != "1200"
+
+
+def test_an_omitted_seed_is_described_for_the_reader_not_the_pipeline() -> None:
+    """A guide shipped a card reading "Olympic Discovery Trail -- Your Pick --
+    Unverified -- Traveler-specified seed attraction; details will be refined
+    by linked references." That sentence describes this function, and the
+    refinement it promises is performed by nothing. Whatever the fallback
+    says, it is read on the trip, so it must be about the place."""
+    g = _gen()
+
+    out = g._ensure_seed_attractions([], ["Olympic Discovery Trail"])
+
+    seed = next(a for a in out if a.get("name") == "Olympic Discovery Trail")
+    description = str(seed.get("description", "") or "")
+    assert description
+    lowered = description.lower()
+    for jargon in (
+        "seed",
+        "traveler-specified",
+        "traveller-specified",
+        "refined",
+        "linked reference",
+        "pipeline",
+    ):
+        assert jargon not in lowered, f"pipeline vocabulary {jargon!r} in a card description"
+
+
+def test_a_destination_that_seeded_nothing_is_left_alone() -> None:
+    """The fallback must not reach a destination with no seeds at all."""
+    g = _gen()
+    attractions = [{"name": "Hurricane Ridge", "type": "attraction", "description": "A high meadow road."}]
+
+    assert g._ensure_seed_attractions(attractions, []) == attractions
+
+
+def test_the_content_request_asks_for_every_seed_to_be_described() -> None:
+    """The cheapest correct description of a seed is the one the destination's
+    own content call already produces, so the request has to ask for it.
+    Naming the seeds without saying how to treat them is what let one come
+    back as a name with nothing attached."""
+    from generator.ai_content import PROMPTS_DIR
+
+    template = (PROMPTS_DIR / "destination_content.txt").read_text(encoding="utf-8").lower()
+
+    assert "seeds" in template
+    assert "same full" in template or "same standard" in template
+    assert "bare name" in template or "name alone" in template
