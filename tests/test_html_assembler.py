@@ -5010,6 +5010,94 @@ def test_lodging_card_absent_entirely_for_redacted_build() -> None:
     assert assembler._build_lodging_card(dest) == ""
 
 
+def test_lodging_card_says_when_the_pin_is_only_the_town() -> None:
+    """A stay placed from its town rather than its street address used to be
+    indistinguishable from one placed exactly: same card, same map, a pin
+    that is simply somewhere else. The card says which it is."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {
+        "id": "oak-harbor",
+        "lodging": {
+            "name": "The Inn",
+            "confirmation_number": "OH-991",
+            "location": "33221 State Road 20, Oak Harbor, WA 98277 United States",
+            "location_precision": "town",
+        },
+    }
+
+    html = assembler._build_lodging_card(dest)
+
+    assert "Map pin" in html
+    assert "Approximate" in html
+    assert "town" in html
+    # Said ABOUT the address, never with it: the omission in this method's
+    # docstring still holds.
+    assert "State Road 20" not in html
+    assert "33221" not in html
+
+
+def test_lodging_card_says_when_the_stay_could_not_be_placed_at_all() -> None:
+    """Silent omission is the defect. A reader who sees a stop with no pin
+    has no way to tell a property with no location from an address the
+    geocoder lost, and the WARNING that knows the difference is in a build
+    log they will never see."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {
+        "id": "oak-harbor",
+        "lodging": {
+            "name": "The Inn",
+            "confirmation_number": "OH-991",
+            "location": "33221 State Road 20, Oak Harbor, WA 98277 United States",
+            "location_precision": "unplaced",
+        },
+    }
+
+    html = assembler._build_lodging_card(dest)
+
+    assert "Map pin" in html
+    assert "Not placed" in html
+    assert "State Road 20" not in html
+
+
+def test_lodging_card_is_silent_about_a_pin_that_is_where_it_says_it_is() -> None:
+    """The note is an exception report. A stay placed from its own address
+    needs no sentence about how it was placed."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {
+        "id": "zion",
+        "lodging": {
+            "name": "Zion Lodge",
+            "confirmation_number": "ZL-4471902",
+            "location": "Zion Lodge, Springdale, UT",
+            "location_precision": "street",
+        },
+    }
+
+    assert "Map pin" not in assembler._build_lodging_card(dest)
+
+
+def test_an_unplaced_stay_does_not_resurrect_the_card_in_a_redacted_build() -> None:
+    """`location_precision` survives redaction for the same reason
+    `location` does -- it is derived from a geocoding anchor, not from
+    anything identifying -- so it must not be able to key the card on its
+    own. A "Lodging — could not be placed" card in a redacted build would
+    announce a booked room at this stop on these dates, which is most of
+    what redaction protects."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    dest = {
+        "id": "oak-harbor",
+        "lodging": {
+            "name": "",
+            "website": "",
+            "confirmation_number": "",
+            "location": "33221 State Road 20, Oak Harbor, WA 98277 United States",
+            "location_precision": "unplaced",
+        },
+    }
+
+    assert assembler._build_lodging_card(dest) == ""
+
+
 def test_lodging_card_absent_when_destination_owns_no_lodging() -> None:
     """Grouped day-trip children defer to their base and must not restate its
     lodging -- the banner's link back to the base section is the reference

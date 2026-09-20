@@ -43,6 +43,73 @@ RATE_LIMIT_BACKOFF_SECONDS: tuple[int, ...] = (15, 60, 150, 300)
 #: gitignored, alongside the image cache.
 CACHE_PATH = Path(".cache/geocode/coordinates.json")
 
+#: How a lodging coordinate was arrived at, recorded on the lodging block by
+#: `Geocoder.place_lodging` so the page can say which one it is rather than
+#: leaving the reader with a pin -- or no pin -- and no explanation.
+#:
+#: "street"   the address exactly as the confirmation prints it resolved;
+#: "town"     only the reduced, town-level form resolved, so the pin is the
+#:            town and is out by however far the property is from it;
+#: "unplaced" nothing resolved and there are no coordinates at all.
+PRECISION_STREET = "street"
+PRECISION_TOWN = "town"
+PRECISION_UNPLACED = "unplaced"
+
+#: Fewer comma-separated parts than this and there is nothing safe to drop.
+#: A two-part "Oak Harbor, WA" reduced by one leaves the bare state, which
+#: Nominatim places happily -- in the middle of Washington. A confidently
+#: wrong pin is worse than the missing one this fallback exists to fix, so
+#: the reduction insists on enough address left over to still name a place.
+_MIN_PARTS_TO_REDUCE = 3
+
+
+def town_level_query(location: str, locality: dict | None = None) -> str | None:
+    """The same stay, asked for as a place rather than as an address.
+
+    Reservation ingestion fills `lodging.location` with the street line
+    exactly as the confirmation prints it, and that turns out to be the one
+    shape Nominatim is worst at. Probed directly against a real booking:
+
+        33221 State Road 20, Oak Harbor, WA 98277 United States   nothing
+        33221 State Road 20, Oak Harbor, WA 98277                 nothing
+        33221 State Road 20, Oak Harbor, WA                       nothing
+        Oak Harbor, WA 98277 United States                        resolves
+        Oak Harbor, WA                                            resolves
+
+    So it is the STREET LINE that defeats it -- not the country, and not the
+    postcode. That is worth stating plainly, because the obvious repair is a
+    ladder that strips the country, then the postcode, then gives up, and
+    that ladder would have fixed nothing here: every rung of it still
+    carries "33221 State Road 20". A state-route address is a shape the free
+    data set does not hold, and no amount of tidying the tail helps.
+
+    `lodging.locality` is preferred when ingestion supplied it: it is the
+    town, region and country already stated as separate parts, so it needs
+    no parsing at all and cannot mistake a second address line for a town.
+    Failing that, the first comma-separated part is dropped, which is where
+    the street line sits in every form we have seen.
+
+    Returns None when there is nothing to reduce -- the caller then has the
+    address it already tried and no second question worth asking.
+    """
+    if isinstance(locality, dict):
+        stated = ", ".join(
+            part
+            for part in (
+                str(locality.get(key, "") or "").strip()
+                for key in ("city", "region", "country")
+            )
+            if part
+        )
+        if stated:
+            return stated
+
+    pieces = [piece.strip() for piece in str(location or "").split(",")]
+    pieces = [piece for piece in pieces if piece]
+    if len(pieces) < _MIN_PARTS_TO_REDUCE:
+        return None
+    return ", ".join(pieces[1:]) or None
+
 
 class Geocoder:
     """Name → (lat, lng), with a cache that outlives the process.
@@ -223,3 +290,61 @@ class Geocoder:
                 logger.warning("Geocoder retry %d for '%s': %s", attempt + 1, name, exc)
                 time.sleep(2)
         raise ValueError(f"Geocoding failed for: '{name}'")
+
+    # ── Lodging ──────────────────────────────────────────────────────────
+
+    def place_lodging(self, lodging: dict) -> str:
+        """Put coordinates on a lodging block, and say how they were got.
+
+        Mutates `lodging` in place, setting `lat`/`lng` when something
+        resolved and `location_precision` always -- one of PRECISION_STREET,
+        PRECISION_TOWN or PRECISION_UNPLACED. The precision is the point:
+        before it existed, a stay whose address Nominatim could not place
+        left one WARNING in the build log and a page that said nothing at
+        all, so the reader saw a missing pin and had no way to know whether
+        the property had no location or the geocoder had merely lost.
+
+        Both lookups go through `_geocode`, which is what makes this safe to
+        call for every stop: the shared cache means a reduced form already
+        resolved for a neighbouring stay costs nothing, and the class-wide
+        throttle means the extra question still respects Nominatim's one
+        request per second. A second call path would have had neither.
+
+        Never raises. A stay that cannot be placed is a degraded page, not a
+        dead build -- the same posture stage 2 already took, kept here so
+        that moving the logic did not quietly change it.
+        """
+        location = str(lodging.get("location", "") or "").strip()
+        if not location:
+            lodging["location_precision"] = PRECISION_UNPLACED
+            return PRECISION_UNPLACED
+
+        reduced = town_level_query(location, lodging.get("locality"))
+        # Ordered most precise first, and deduplicated: `town_level_query`
+        # can hand back the address unchanged when `locality` restates it,
+        # and asking Nominatim the same question twice is exactly what the
+        # cache exists to avoid.
+        attempts = [(location, PRECISION_STREET)]
+        if reduced and reduced != location:
+            attempts.append((reduced, PRECISION_TOWN))
+
+        for query, precision in attempts:
+            try:
+                lat, lng = self._geocode(query)
+            except Exception as exc:  # noqa: BLE001 -- any failure is a miss
+                logger.debug("Lodging geocode miss for '%s': %s", query, exc)
+                continue
+            lodging["lat"] = lat
+            lodging["lng"] = lng
+            lodging["location_precision"] = precision
+            if precision == PRECISION_TOWN:
+                logger.warning(
+                    "Lodging placed from the town rather than the street address: "
+                    "'%s' did not resolve, '%s' did",
+                    location, query,
+                )
+            return precision
+
+        lodging["location_precision"] = PRECISION_UNPLACED
+        logger.warning("Lodging could not be placed at all: '%s'", location)
+        return PRECISION_UNPLACED

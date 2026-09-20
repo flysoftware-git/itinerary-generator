@@ -3169,7 +3169,7 @@ def main(
     # ── Stage 2: Geocode + auto-enrich ──────────────────────────────────────
     stage_2_started = perf_counter()
     click.echo("Stage 2/6 — Geocoding & enrichment…")
-    from generator.geocoder import Geocoder
+    from generator.geocoder import Geocoder, PRECISION_UNPLACED
     from generator.nps_resolver import NPSResolver
     from concurrent.futures import as_completed
     geo = Geocoder()
@@ -3182,18 +3182,31 @@ def main(
         lodging = dest.get("lodging", {}) if isinstance(dest.get("lodging", {}), dict) else {}
         lodging_location = str(lodging.get("location", "") or "").strip()
         if lodging_location:
+            # `place_lodging` owns both the fallback to a town-level form and
+            # the `location_precision` it records, so this loop no longer has
+            # to know that a confirmation's street line is the shape Nominatim
+            # is worst at. It does not raise; the try/except is kept only as a
+            # backstop, because an unplaced stay has never been worth failing
+            # a build that has already paid for stage 1.
             try:
-                llat, llng = geo._geocode(lodging_location)
-                lodging["lat"] = llat
-                lodging["lng"] = llng
-                dest["lodging"] = lodging
+                precision = geo.place_lodging(lodging)
             except Exception as exc:
+                lodging["location_precision"] = PRECISION_UNPLACED
                 logger.warning(
                     "Lodging geocode skipped for %s (%s): %s",
                     dest.get("name", "unknown destination"),
                     lodging_location,
                     exc,
                 )
+            else:
+                if precision == PRECISION_UNPLACED:
+                    logger.warning(
+                        "Lodging could not be placed for %s (%s) -- the page "
+                        "will say so rather than omit the stay silently",
+                        dest.get("name", "unknown destination"),
+                        lodging_location,
+                    )
+            dest["lodging"] = lodging
 
     # Optional departure/return geocoding for full-route maps and first-card routing context.
     departure_name = trip.get("trip", {}).get("departure")
