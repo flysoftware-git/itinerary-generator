@@ -2209,6 +2209,47 @@ class AIContentGenerator:
 
         return self._normalize_attractions(out)
 
+    def _ensure_seed_en_route_stops(
+        self, stops: list[dict[str, Any]], seed_names: list[str]
+    ) -> list[dict[str, Any]]:
+        """Put back any `en_route_seeds` name the model left out of the stops.
+
+        The counterpart of `_ensure_seed_attractions`, and it was missing --
+        which made the protection beside it conditional on luck. A manifest
+        naming *Langley, Wa* and *Coupeville, Wa* on the drive to Oak Harbor
+        produced neither: the model returned its own candidates, none of them
+        those towns, and `_apply_manifest_enroute_target` then faithfully
+        protected two stops that were not there. Measured on a five-stop trip,
+        2026-09-20: *unverified seed items kept ... en-route stops: 0*.
+
+        The asymmetry was invisible because both halves read correctly on their
+        own. An attraction seed is injected here and protected downstream; an
+        en-route seed was only ever protected, and a protected absence is still
+        an absence.
+
+        What it writes is the traveler's own name and nothing else invented
+        around it: no detour figure, no duration, no description of a town
+        nobody has looked at. Discovery and the audit treat it as a seed, which
+        means it may reach the page unverified -- which is the standing policy
+        for a name somebody asked for, and better than dropping it.
+        """
+        if not seed_names:
+            return stops
+
+        existing = {
+            self._canonical_seed_name(str(item.get("name", "") or ""))
+            for item in stops
+            if isinstance(item, dict)
+        }
+        out = list(stops)
+        for seed in seed_names:
+            name = str(seed or "").strip()
+            if not name or self._canonical_seed_name(name) in existing:
+                continue
+            out.append({"name": name, "why": "", "detour": "", "duration": ""})
+            existing.add(self._canonical_seed_name(name))
+        return out
+
     #: Booked modes on which a traveller cannot make a roadside stop. "car" is
     #: absent deliberately -- a rental car is exactly when en-route stops work.
     #: Alias for the one definition in transit_routing. This constant and
@@ -2328,6 +2369,7 @@ class AIContentGenerator:
             for s in ((dest or {}).get("en_route_seeds", []) or [])
             if str(s or "").strip()
         ]
+        normalized_stops = self._ensure_seed_en_route_stops(normalized_stops, seed_names)
         out["en_route_stops"] = self._apply_manifest_enroute_target(
             normalized_stops,
             dates=dates,

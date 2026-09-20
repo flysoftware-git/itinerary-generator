@@ -3478,3 +3478,68 @@ def test_the_content_request_asks_for_every_seed_to_be_described() -> None:
     assert "seeds" in template
     assert "same full" in template or "same standard" in template
     assert "bare name" in template or "name alone" in template
+
+# ── an en-route seed is put back, the way an attraction seed is ─────────────
+
+
+def _content():
+    from generator.ai_content import AIContentGenerator
+
+    return AIContentGenerator.__new__(AIContentGenerator)
+
+
+def test_an_en_route_seed_the_model_left_out_is_put_back():
+    """A manifest naming two towns on the drive produced neither: the model
+    returned its own candidates and `_apply_manifest_enroute_target` then
+    faithfully protected two stops that were not there. Measured on a
+    five-stop trip, 2026-09-20: *en-route stops: 0*."""
+    gen = _content()
+    stops = [{"name": "A roadside diner", "why": "coffee"}]
+
+    out = gen._ensure_seed_en_route_stops(stops, ["Langley, Wa", "Coupeville, Wa"])
+
+    assert [s["name"] for s in out] == ["A roadside diner", "Langley, Wa", "Coupeville, Wa"]
+
+
+def test_a_seed_the_model_did_name_is_not_doubled():
+    gen = _content()
+    stops = [{"name": "Coupeville, WA", "why": "the waterfront"}]
+
+    out = gen._ensure_seed_en_route_stops(stops, ["Coupeville, Wa"])
+
+    assert [s["name"] for s in out] == ["Coupeville, WA"], "the model's own entry is kept"
+
+
+def test_nothing_is_invented_around_the_name():
+    """The traveler's own name and no detour figure, duration or description of
+    a town nobody has looked at."""
+    gen = _content()
+
+    out = gen._ensure_seed_en_route_stops([], ["Langley, Wa"])
+
+    assert out == [{"name": "Langley, Wa", "why": "", "detour": "", "duration": ""}]
+
+
+def test_no_seeds_changes_nothing():
+    gen = _content()
+    stops = [{"name": "A roadside diner"}]
+    assert gen._ensure_seed_en_route_stops(stops, []) == stops
+
+def test_the_normalizer_itself_puts_a_named_stop_back():
+    """The one that pins the CALL, not the helper.
+
+    The first three tests here exercise `_ensure_seed_en_route_stops` directly,
+    and deleting its call site left all three green -- which is the whole defect
+    reproduced in miniature: a correct helper nobody invokes. This asks the
+    normalizer the pipeline actually runs.
+    """
+    gen = _content()
+
+    out = gen._normalize_getting_here(
+        {"en_route_stops": [{"name": "A roadside diner", "why": "coffee"}]},
+        "Oak Harbor, WA",
+        dest={"en_route_seeds": ["Langley, Wa", "Coupeville, Wa"]},
+    )
+
+    named = [s["name"] for s in out["en_route_stops"]]
+    assert "Langley, Wa" in named and "Coupeville, Wa" in named, named
