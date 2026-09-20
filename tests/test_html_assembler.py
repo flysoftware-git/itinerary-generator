@@ -6528,3 +6528,30 @@ def test_flavor_and_lang_on_a_raster_layer_are_neither_used_nor_complained_about
 
     assert tiles.kind == "raster"
     assert caplog.text == ""
+
+
+def test_the_unlinked_seed_line_adds_no_second_warning_glyph() -> None:
+    """The Unverified badge on the same card already carries one, and the
+    owner's standing instruction (#149) is that these marks stay quiet. Seen
+    red with the glyph restored to the sentence."""
+    assembler = HTMLAssembler(config_path="config.yaml")
+    trip = {
+        "trip": {"title": "Quiet Marks"},
+        "_meta": {"generator_version": "9.9.9", "generated_at_utc": "2026-09-19T00:00:00+00:00"},
+        "destinations": [{
+            "id": "leipers", "name": "Leiper's Fork, Tennessee", "dates": "December 12, 2026",
+            "lat": 35.9, "lng": -87.0,
+            "ai_content": {"top_attractions": [
+                {"name": "Leiper's Fork Village", "is_seed": True, "url": "",
+                 "description": "A village of galleries and porches."},
+            ]},
+        }],
+    }
+
+    html = assembler.assemble(trip)
+    card = html[html.index("Leiper&#x27;s Fork Village"):]
+    card = card[:card.index("</div>\n")]
+
+    assert "No source link found for this one" in card
+    assert card.count("&#9888;") + card.count("\u26a0") == 1, (
+        "the card carries a second warning glyph beside the Unverified badge")

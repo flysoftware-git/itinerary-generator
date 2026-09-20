@@ -3018,8 +3018,13 @@ class HTMLAssembler:
             # place; this says what actually happened, so the reader knows the
             # gap is ours and what to do about it rather than waiting for a
             # detail the page is never going to add.
+            #
+            # No warning glyph of its own: the Unverified badge on the same
+            # card already carries one, and two on one card is the loudness the
+            # owner asked to be rid of (#149). This is the explanation beside
+            # that badge, not a second alarm.
             unlinked_seed_html = (
-                '<span class="practical-note">&#9888; No source link found for this one — '
+                '<span class="practical-note">No source link found for this one — '
                 'confirm hours, access and conditions before you go.</span>'
                 if attr.get("is_seed") and not url
                 else ""
