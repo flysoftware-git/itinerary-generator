@@ -8845,6 +8845,59 @@ def test_retain_url_rejects_social_media_even_when_matched_restaurant_row() -> N
     assert out == ""
 
 
+def test_retain_url_rejects_city_directory_even_when_matched_restaurant_row() -> None:
+    """A city restaurant directory is not the restaurant's link, however well
+    the direct-batch row matches the restaurant.
+
+    From a real run: '123 Thai Food' in Port Townsend was logged as 'URL
+    rejected generic restaurant landing page' for menuguide.com/WA/Port-Townsend,
+    and on the very next line as 'Item-matched authoritative direct-batch URL
+    preserved' -- the matched-row leniency ran first on the second call and
+    re-admitted the page the generic-landing gate had just refused. The
+    directory shipped as the restaurant's link. The rejection must win, so the
+    item falls back to its map link like any other rejected URL."""
+    discoverer = URLDiscoverer.__new__(URLDiscoverer)
+    discoverer._direct_batch_authoritative = True
+    discoverer._fetch_final_url_cache = {}
+    directory_url = "https://menuguide.com/WA/Port-Townsend"
+    candidate = {
+        "name": "123 Thai Food",
+        "title": "123 Thai Food",
+        "url": directory_url,
+        "snippet": "123 Thai Food, Port Townsend, WA - menu, hours",
+    }
+
+    # Without a candidate row the ordinary gate already refuses it ...
+    without_row = discoverer._retain_discovered_url(
+        directory_url,
+        "123 Thai Food",
+        "Port Townsend, WA",
+        allow_alltrails=False,
+        kind="restaurant",
+    )
+    assert without_row == "", "precondition: the generic-landing gate rejects the directory"
+
+    # ... and a matching row must not bring it back.
+    with patch.object(
+        discoverer,
+        "_fetch_page_text",
+        return_value=(True, 200, "Port Townsend restaurants. 123 Thai Food. Menus for every restaurant in town."),
+    ):
+        with_row = discoverer._retain_discovered_url(
+            directory_url,
+            "123 Thai Food",
+            "Port Townsend, WA",
+            allow_alltrails=False,
+            kind="restaurant",
+            candidate=candidate,
+        )
+
+    assert with_row == "", (
+        "city directory rejected as a generic restaurant landing page was "
+        f"re-admitted by the item-matched direct-batch leniency: {with_row!r}"
+    )
+
+
 def test_audit_marks_seed_attraction_and_seed_survives_render_without_url() -> None:
     """Full-pipeline proof of the 'no usable link should drop a card unless it is
     a seed' policy for a real documented seed example (requirements.md §3.4 uses
