@@ -2194,6 +2194,16 @@ self.addEventListener('fetch', (event) => {
     // The offline guarantee is unchanged. Whatever is cached is still
     // returned whenever fetch rejects, which is what being offline looks
     // like from here.
+    //
+    // ...and a bad ANSWER is treated like no answer, when a good copy is
+    // cached. The fallback used to run only when fetch REJECTED, so a server
+    // that answered with an error had that error shown to the reader in place
+    // of the guide sitting in their cache: a 5xx from a host having a bad
+    // minute, a 403 from a front door whose session had lapsed, a 404 from a
+    // guide moved while the reader was away. None of those is the reader's
+    // problem when a copy they already opened is on the device, and an
+    // installed guide is exactly where that copy exists. The error still wins
+    // when nothing is cached: a first visit that fails should say why.
     if (event.request.mode === 'navigate') {
         event.respondWith(
             fetch(event.request)
@@ -2201,8 +2211,11 @@ self.addEventListener('fetch', (event) => {
                     if (response && response.ok) {
                         const clone = response.clone();
                         caches.open(CACHE).then((cache) => cache.put(event.request, clone));
+                        return response;
                     }
-                    return response;
+                    return caches
+                        .match(event.request)
+                        .then((cached) => cached || response);
                 })
                 .catch(() =>
                     caches
