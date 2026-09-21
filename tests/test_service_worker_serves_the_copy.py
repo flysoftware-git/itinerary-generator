@@ -63,7 +63,7 @@ const fetch = () => scenario.network === 'offline'
 
 new Function('self', 'caches', 'fetch', fs.readFileSync(swPath, 'utf8'))(self, caches, fetch);
 
-const url = 'https://guide.example/trip/index.html';
+const url = scenario.url || 'https://guide.example/trip/index.html';
 listeners.fetch({
   request: { url, mode: 'navigate', method: 'GET', destination: 'document' },
   respondWith: (p) => Promise.resolve(p).then((res) => {
@@ -83,9 +83,9 @@ def sw(tmp_path):
     return tmp_path / "sw.js", harness
 
 
-def _navigate(sw, network, cached=None):
+def _navigate(sw, network, cached=None, url=None):
     sw_path, harness = sw
-    scenario = json.dumps({"network": network, "cached": cached or {}})
+    scenario = json.dumps({"network": network, "cached": cached or {}, "url": url})
     done = subprocess.run(["node", str(harness), str(sw_path), scenario],
                           capture_output=True, text=True, timeout=20)
     assert done.returncode == 0, done.stderr
@@ -118,4 +118,30 @@ def test_a_good_answer_is_still_the_one_shown(sw):
 def test_offline_still_serves_the_copy(sw):
     """The path that already worked, kept as a control."""
     got = _navigate(sw, "offline", cached={URL: "the saved guide"})
+    assert got == {"status": 200, "body": "the saved guide"}, got
+
+
+# -- a link that carries a query string ------------------------------------
+#
+# `caches.match(request)` compares the whole URL, query included, so a guide
+# opened from a shared link -- `?utm_source=...`, or a cache-buster -- never
+# matches the copy saved under its bare address. The offline path already
+# knew this and fell back to `./index.html`, the shell every install
+# precaches. The bad-answer path, as first written, stopped at the exact
+# match: the same reader, the same saved guide, a 503 instead of a dropped
+# connection, and they got the error.
+
+SHARED = "https://guide.example/trip/index.html?utm_source=message"
+
+
+def test_offline_with_a_query_string_falls_back_to_the_shell(sw):
+    """Control: the offline path's second tier, which already worked."""
+    got = _navigate(sw, "offline", cached={"./index.html": "the saved guide"}, url=SHARED)
+    assert got == {"status": 200, "body": "the saved guide"}, got
+
+
+def test_a_bad_answer_with_a_query_string_falls_back_to_the_shell_too(sw):
+    """Seen red with the error path stopping at the exact match."""
+    got = _navigate(sw, {"status": 503, "body": "error page"},
+                    cached={"./index.html": "the saved guide"}, url=SHARED)
     assert got == {"status": 200, "body": "the saved guide"}, got

@@ -2213,8 +2213,16 @@ self.addEventListener('fetch', (event) => {
                         caches.open(CACHE).then((cache) => cache.put(event.request, clone));
                         return response;
                     }
+                    // The same two tiers the offline path below uses: the
+                    // exact page, then the shell every install precaches. A
+                    // link carrying a query string (a shared ?utm_source=,
+                    // a cache-buster) never matches the page saved under its
+                    // bare address, so stopping at the exact match served
+                    // the error to exactly the reader the offline path
+                    // would have rescued.
                     return caches
                         .match(event.request)
+                        .then((cached) => cached || caches.match('./index.html'))
                         .then((cached) => cached || response);
                 })
                 .catch(() =>

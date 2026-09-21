@@ -75,6 +75,17 @@ def _sw(build_id="run-A", body="<html>x</html>"):
     return (d / "sw.js").read_text(encoding="utf-8")
 
 
+def _navigate_branch(sw: str) -> str:
+    """The navigate branch, from its test to the `return;` that closes it.
+
+    Sliced to its own end rather than to a fixed width: these checks read
+    source text, and a fixed 800 characters broke the first time a comment
+    inside the branch grew -- which says nothing about the code.
+    """
+    nav = sw.index("event.request.mode === 'navigate'")
+    return sw[nav : sw.index("return;", nav)]
+
+
 def test_navigation_goes_to_the_network_before_the_cache():
     """The other half of the bug this file already documents.
 
@@ -96,7 +107,7 @@ def test_navigation_goes_to_the_network_before_the_cache():
         "or navigations never reach it"
     )
     # Inside the navigate branch, fetch is what is called first.
-    branch = sw[nav : nav + 800]
+    branch = _navigate_branch(sw)
     assert "fetch(event.request)" in branch
     assert branch.index("fetch(event.request)") < branch.index("caches.match"), (
         "the navigate branch must try the network before the cache"
@@ -106,8 +117,7 @@ def test_navigation_goes_to_the_network_before_the_cache():
 def test_navigation_still_falls_back_to_the_cache_when_offline():
     """Network-first must not mean network-only."""
     sw = _sw()
-    nav = sw.index("event.request.mode === 'navigate'")
-    branch = sw[nav : nav + 800]
+    branch = _navigate_branch(sw)
     assert ".catch(" in branch, "no offline fallback on the navigate branch"
     assert "caches" in branch.split(".catch(", 1)[1], (
         "the offline fallback must read from the cache"
