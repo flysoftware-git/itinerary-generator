@@ -4318,9 +4318,52 @@ class HTMLAssembler:
             f' v{html_escape.escape(str(version))}{manifest_segment}'
             f' · Itinerary output: {html_escape.escape(shown_time)}'
             f'{link_notes}'
+            f'{self._build_commit_notes(meta)}'
             f'{support}'
             '</div>'
             '</footer>'
+        )
+
+    @classmethod
+    def _build_commit_notes(cls, meta: dict[str, Any]) -> str:
+        """The commit that built the page, in a fold beside *About the links*.
+
+        A version number names a release; it does not name the code. Two guides
+        built a day apart from the same `v3.3.0` can differ in every fix merged
+        between them, and someone holding one cannot tell which. The commit was
+        already recorded -- `development_build` carries it, and the page's own
+        leading comment prints the fingerprint -- but a comment in the source is
+        not something a reader can open.
+
+        **In a fold, not on the footer line** (owner, 2026-09-21). The same
+        ruling that put the link notes behind *About the links* (#149): detail
+        that serves the person tracing a guide is available to them one click
+        away, and is not printed at every traveller who scrolls to the bottom.
+
+        Linked to the commit itself, so tracing is that one click. *With local
+        changes* when the tree was dirty: a dirty build's commit is not the whole
+        story, and saying so keeps the stamp honest. Empty when there is no git
+        -- a copy installed from an archive -- rather than a placeholder that
+        looks like a commit.
+        """
+        build = meta.get("development_build") if isinstance(meta.get("development_build"), dict) else {}
+        git = build.get("git") if isinstance(build.get("git"), dict) else {}
+        short = str(git.get("short_commit") or "").strip()
+        if not short:
+            return ""
+        full = str(git.get("commit") or "").strip()
+        label = html_escape.escape(short)
+        commit_html = (
+            f'<a href="{cls._REPO_URL}/commit/{html_escape.escape(full)}">{label}</a>'
+            if full else label
+        )
+        dirty = ", with local changes" if git.get("dirty") else ""
+        return (
+            '<details class="build-notes" style="margin:0.35rem auto 0;max-width:46rem;">'
+            '<summary style="cursor:pointer;display:inline;text-decoration:underline;'
+            'text-underline-offset:2px;">About this build</summary>'
+            f'<p style="margin:0.35rem 0 0;">Built from commit {commit_html}{dirty}.</p>'
+            '</details>'
         )
 
     def _inject_generator_footer(self, html: str, trip: dict[str, Any]) -> str:
