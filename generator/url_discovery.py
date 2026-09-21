@@ -3847,6 +3847,13 @@ class URLDiscoverer:
                 or "/restaurants/" in path_l
                 or "restaurants-near" in lower_url
                 or "best-restaurants-near" in lower_url
+                # A page whose path names only the destination -- a city
+                # directory such as menuguide.com/WA/Port-Townsend -- is a
+                # listing of every restaurant there, not this one. Without
+                # this the row match alone preserved it, straight after the
+                # generic-landing gate below had rejected the same URL for
+                # the same restaurant, and the directory shipped as its link.
+                or self._is_the_destinations_own_page(url, item_name, dest_name)
             )
             if not obvious_area_listing:
                 # This leniency still must not bypass the hard URL-class policy gate
