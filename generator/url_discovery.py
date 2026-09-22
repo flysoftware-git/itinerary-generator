@@ -27,6 +27,7 @@ import html as html_lib
 import json
 import logging
 import os
+import socket
 import time
 from html.parser import HTMLParser
 from pathlib import Path
@@ -409,6 +410,92 @@ DEFAULT_DOMAIN_BLOCK_COOLDOWN_SECONDS = 8.0
 # the pipeline does not know -- which is honest, and is not the same as "fine".
 LINK_LIVENESS_LIVE = "live"
 LINK_LIVENESS_DEAD = "dead"
+
+
+# ── Is a failed lookup evidence about the host, or about us? ─────────────────
+#
+# `_is_definitively_dead_status` treats "the host does not resolve" as proof a
+# link is gone. That is only true when the resolver itself is working. Windows
+# answers a lookup made during a local DNS drop with errno 11001
+# (WSAHOST_NOT_FOUND) -- the AUTHORITATIVE "no such host" code, not 11002's
+# "try again" -- so the existing carve-out for temporary failures does not
+# catch it.
+#
+# Measured on 2026-09-21: an Old Hickory build ran through three DNS drops of a
+# few seconds each. The link gate withheld nine live links as dead -- five on
+# alltrails.com, three on tnstateparks.com -- and discovery rejected a real
+# opentable.com restaurant page. All resolved again within the minute. And the
+# ledger keeps the most severe verdict, so a URL fetched fine at 21:10 stayed
+# "dead" for the rest of the run after one lookup failed at 21:30.
+#
+# So before a DNS failure is believed, it is checked twice: the host is looked
+# up again now, and if that also fails, well-known hosts are tried. A host that
+# resolves now was never gone. A lookup that fails alongside every canary says
+# the connection is down, not the link. Only a host that stays unresolvable
+# while the canaries resolve is taken as dead.
+
+#: Hosts whose disappearance would be news. If none of them resolves, the
+#: resolver is down and no lookup failure means anything about a link.
+DNS_HEALTH_CANARIES = ("www.google.com", "www.cloudflare.com", "github.com")
+
+#: How long one re-check may take. A healthy resolver answers in milliseconds;
+#: this bounds a hung one so a check cannot stall a run.
+DNS_RECHECK_TIMEOUT_SECONDS = 3.0
+
+#: How long a re-check result is trusted, so a burst of failures on one host --
+#: nine AllTrails links in the same second -- costs one lookup, not nine.
+DNS_RECHECK_TTL_SECONDS = 30.0
+
+_dns_recheck_cache: dict[str, tuple[float, bool]] = {}
+_dns_recheck_lock = threading.Lock()
+_DNS_HOST_IN_ERROR = re.compile(r"host='([^']+)'|Failed to resolve '([^']+)'", re.IGNORECASE)
+
+
+def _host_resolves(host: str) -> bool:
+    """True when `host` resolves right now. Cached briefly; never raises."""
+    name = str(host or "").strip().lower()
+    if not name:
+        return False
+    now = time.monotonic()
+    with _dns_recheck_lock:
+        hit = _dns_recheck_cache.get(name)
+        if hit is not None and now - hit[0] < DNS_RECHECK_TTL_SECONDS:
+            return hit[1]
+    # getaddrinfo takes no timeout, so it runs on a daemon thread that is
+    # abandoned rather than waited on if the resolver hangs. A plain thread and
+    # not `fanout_metrics.pool`: this is one bounded call, not pipeline fan-out,
+    # and that pool's `with` block waits for its workers on exit -- which would
+    # wait on the very hang this bound exists to walk away from.
+    answer: list[bool] = []
+
+    def _look() -> None:
+        try:
+            answer.append(bool(socket.getaddrinfo(name, 443)))
+        except Exception:  # noqa: BLE001 -- any failure is "did not resolve"
+            answer.append(False)
+
+    worker = threading.Thread(target=_look, name="dns-recheck", daemon=True)
+    worker.start()
+    worker.join(DNS_RECHECK_TIMEOUT_SECONDS)
+    resolved = bool(answer and answer[0])
+    with _dns_recheck_lock:
+        _dns_recheck_cache[name] = (time.monotonic(), resolved)
+    return resolved
+
+
+def dns_failure_is_ours(status_text: str) -> bool:
+    """True when a DNS failure in `status_text` says nothing about the link.
+
+    Either the host named in the error resolves now (it was a blip), or
+    nothing resolves at all (the connection is down). False only when the
+    host still fails while the canaries succeed -- which is what a host that
+    really does not exist looks like.
+    """
+    match = _DNS_HOST_IN_ERROR.search(str(status_text or ""))
+    host = next((g for g in (match.groups() if match else ()) if g), "")
+    if host and _host_resolves(host):
+        return True
+    return not any(_host_resolves(canary) for canary in DNS_HEALTH_CANARIES)
 LINK_LIVENESS_UNCHECKED = "unchecked"
 # A Google Maps link is not a page anyone could find dead: it is a location the
 # engine points at, most often because a place had no page of its own to link.
@@ -14979,19 +15066,23 @@ class URLDiscoverer:
             )
         ):
             return False
-        return any(
-            marker in text
-            for marker in (
-                "getaddrinfo failed",
-                "name or service not known",
-                "nodename nor servname",
-                "nameresolutionerror",
-                "failed to resolve",
-                "failed to establish a new connection",
-                "no address associated with hostname",
-                "errno 11001",
-            )
+        # A lookup failure is believed only once it survives a second look
+        # (`dns_failure_is_ours`, above LINK_LIVENESS_DEAD's neighbours): the
+        # host is asked for again, and the resolver itself is tested. Windows
+        # reports a local DNS drop as 11001, the authoritative "no such host",
+        # so the temporary-failure markers above never see it.
+        dns_markers = (
+            "getaddrinfo failed",
+            "name or service not known",
+            "nodename nor servname",
+            "nameresolutionerror",
+            "failed to resolve",
+            "no address associated with hostname",
+            "errno 11001",
         )
+        if any(marker in text for marker in dns_markers):
+            return not dns_failure_is_ours(str(status or ""))
+        return "failed to establish a new connection" in text
 
     @staticmethod
     def _is_bot_block_false_negative_dead_status(url: str, status: int | str | None) -> bool:

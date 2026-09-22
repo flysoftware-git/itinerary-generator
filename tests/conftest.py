@@ -72,3 +72,24 @@ def no_live_routing(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(routing_mod, "_LIMITER", None)
     monkeypatch.setattr(routing_mod, "_sleep", lambda seconds: None)
     monkeypatch.setattr(routing_mod, "_stats", dict.fromkeys(routing_mod.STAT_NAMES, 0))
+
+
+@pytest.fixture(autouse=True)
+def no_real_dns_rechecks(monkeypatch):
+    """No test resolves a real hostname.
+
+    `_is_definitively_dead_status` re-checks a DNS failure against the live
+    resolver before believing it. Unstubbed, every test that feeds it a DNS
+    error string would do real lookups -- slow, and red whenever the machine
+    running the suite is offline, which is exactly the condition the check
+    exists to recognise.
+
+    The default answers as a healthy network would for a host that really does
+    not exist: the canaries resolve, nothing else does. So a DNS error still
+    reads as dead, as every existing test expects. Tests about the re-check
+    itself replace this.
+    """
+    monkeypatch.setattr(
+        url_discovery_mod, "_host_resolves",
+        lambda host: host in url_discovery_mod.DNS_HEALTH_CANARIES,
+    )
