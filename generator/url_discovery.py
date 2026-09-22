@@ -610,6 +610,64 @@ RESTAURANT_PRE_OPENING_MARKERS: tuple[str, ...] = (
     "not yet open",
     "grand opening coming",
 )
+
+#: Phrases a business puts on its own page when there is nowhere to turn up and
+#: eat: it caters, it delivers, it hosts private functions, and it has no room
+#: with tables in it. Seen shipped in a real guide -- a caterer in Oak Harbor,
+#: WA, recommended as a place to have dinner, with an address that is an
+#: industrial unit.
+#:
+#: **Every one of these says ONLY, or says it outright.** That is the whole
+#: design of the list and the reason it is this short. Most restaurants worth
+#: recommending also cater, also deliver, and will also close the back room for
+#: a birthday, so a marker that merely mentions catering would throw away the
+#: good ones along with the caterers -- and it would do it silently, which is
+#: how a filter that looks careful ends up being the defect. A phrase earns a
+#: place here only if a restaurant with a dining room would not write it.
+#:
+#: Checked against the name, the search snippet and the fetched page, because
+#: this class of business often has the thinnest site of any: one page, a phone
+#: number, and a form.
+RESTAURANT_NO_DINING_ROOM_MARKERS: tuple[str, ...] = (
+    "catering only",
+    "catering-only",
+    "catering services only",
+    "we are a catering company",
+    "we are a catering business",
+    "is a catering company",
+    "we are not a restaurant",
+    "this is not a restaurant",
+    "no dine-in",
+    "no dine in",
+    "we do not offer dine-in",
+    "dine-in is not available",
+    "there is no dining room",
+    "we have no dining room",
+    "delivery only",
+    "delivery-only",
+    "private events only",
+    "private-events only",
+    "available for private events only",
+    "private bookings only",
+    "by private booking only",
+)
+
+#: The same thing said in a business's NAME. A trailing word, so *Catering by
+#: Zanini* and *The Catering Company* are caught while *Cattleman's* and any
+#: restaurant merely offering catering are not. Matched on the last words only,
+#: for the same reason: a name is short, and a substring match on it is a
+#: guess.
+RESTAURANT_NO_DINING_ROOM_NAME_ENDINGS: tuple[str, ...] = (
+    "catering",
+    "catering co",
+    "catering co.",
+    "catering company",
+    "caterers",
+    "caterer",
+    "catering services",
+    "catering & events",
+    "catering and events",
+)
 DEFAULT_URL_POLICY_MODE = "monitor"
 DEFAULT_ALLTRAILS_SLUG_DENYLIST: tuple[str, ...] = (
     "dixie-sugarloaf-trail",
@@ -4652,18 +4710,79 @@ class URLDiscoverer:
         )
         return "low"
 
+    @staticmethod
+    def _serves_no_walk_in_diner(text: str) -> str:
+        """The marker saying this business has nowhere to turn up and eat, or "".
+
+        A caterer, a delivery kitchen and a private-events venue are all real
+        food businesses and none of them is an answer to *where shall we have
+        dinner*. The reader is sent to an address that is an industrial unit,
+        or to a form.
+
+        Returns the phrase rather than a bool so the log says which one fired:
+        this list is the kind that grows by guesswork otherwise, and a marker
+        nobody can see firing is a marker nobody can tell is wrong.
+        """
+        lowered = " ".join(str(text or "").lower().split())
+        if not lowered:
+            return ""
+        for marker in RESTAURANT_NO_DINING_ROOM_MARKERS:
+            if marker in lowered:
+                return marker
+        return ""
+
+    @staticmethod
+    def _name_says_it_is_a_caterer(name: str) -> str:
+        """The trailing words saying so, or "". See the name-endings list."""
+        lowered = " ".join(str(name or "").lower().split()).strip(" .,-")
+        if not lowered:
+            return ""
+        for ending in RESTAURANT_NO_DINING_ROOM_NAME_ENDINGS:
+            if lowered == ending or lowered.endswith(" " + ending):
+                return ending
+        return ""
+
     def _is_restaurant_ineligible(self, rest: dict[str, Any], dest_name: str) -> bool:
         """Return True when a restaurant entry should be excluded from recommendations.
 
         Checks, in order:
         1. Name-based denylist (known-closed / pre-opening venues from config)
-        2. Page-text closure and pre-opening markers from the discovered URL
+        2. A name, or a snippet already harvested for this entry, saying the
+           business has no dining room -- it caters, delivers, or does private
+           functions only
+        3. Page-text closure, pre-opening and no-dining-room markers from the
+           discovered URL
+
+        2 runs before the fetch on purpose. This class of business tends to
+        have the thinnest site of any -- one page, a phone number and a form --
+        so the snippet is often the only text there is, and the fetch is a
+        request that buys nothing.
         """
         name = str(rest.get("name", "") or "").strip()
         name_lower = name.lower()
 
         if name_lower in getattr(self, "_restaurant_name_denylist", frozenset()):
             logger.info("  Restaurant name denylist hit: '%s' (%s)", name, dest_name)
+            return True
+
+        ending = self._name_says_it_is_a_caterer(name)
+        if ending:
+            logger.info(
+                "  Restaurant '%s' (%s) is a caterer by name (ends '%s'): no dining room.",
+                name, dest_name, ending,
+            )
+            return True
+
+        harvested = " ".join(
+            str(rest.get(field, "") or "")
+            for field in ("description", "practical_note", "cuisine", "snippet")
+        )
+        marker = self._serves_no_walk_in_diner(harvested)
+        if marker:
+            logger.info(
+                "  Restaurant '%s' (%s) says '%s' in its own snippet: no dining room.",
+                name, dest_name, marker,
+            )
             return True
 
         url = str(rest.get("url", "") or "").strip()
@@ -4675,6 +4794,13 @@ class URLDiscoverer:
             if not ok or not text:
                 return False
             text_lower = text.lower()
+            marker = self._serves_no_walk_in_diner(text_lower)
+            if marker:
+                logger.info(
+                    "  Restaurant '%s' (%s) says '%s' on its own page: no dining room. %s",
+                    name, dest_name, marker, url,
+                )
+                return True
             for marker in RESTAURANT_CLOSURE_MARKERS:
                 if marker in text_lower:
                     logger.info(

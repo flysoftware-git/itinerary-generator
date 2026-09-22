@@ -161,6 +161,14 @@ dinner_recommendations:
     a soft budget preference made the budget field inert: a low-cost brief and no
     brief at all produced identical restaurants (2026-08-27, Brussels).
   - Exclude chain restaurants and fast-food entries; prioritize local, independent, or regionally distinctive dinner spots
+  - Every entry must be somewhere a traveller can WALK IN AND SIT DOWN TO EAT.
+    Exclude caterers, delivery-only and ghost kitchens, meal-prep businesses,
+    and venues available only for private events or by private booking -- even
+    where they are well reviewed and locally known. These are real food
+    businesses and none of them is an answer to "where shall we have dinner":
+    the reader is sent to an industrial unit or a booking form. A restaurant
+    that ALSO caters, delivers or hosts functions is fine -- the test is
+    whether it has a dining room open to whoever turns up.
   - Respect the budget guidance above when selecting the center-of-gravity of options
     (e.g., mostly $$ for moderate budget, mostly $$$ for premium budget)
   - Include at least one recognisably casual / local option ($ or $$)
