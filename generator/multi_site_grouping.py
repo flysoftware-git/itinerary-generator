@@ -131,3 +131,88 @@ def category_deferred_to_base(
     if not is_grouped(dest):
         return False
     return str(category or "").strip().lower() in resolve_base_owned_categories(dest, default_categories)
+
+
+# ── A day out that goes from one place to another ──────────────────────────
+#
+# A grouped entry has meant a there-and-back day trip from the base since GH
+# #68, and that is one shape of outing rather than the only one. A ride along
+# a trail is dropped off at one end and finishes at the other; so is a paddle
+# down a river, a one-way walk, and a lift to the top of a hill. The three
+# fields below are how a manifest says so, and they are read HERE rather than
+# in the four modules that need them, for the reason this module already
+# exists: four readings of one rule become four rules.
+
+
+def stated_coordinates(holder: Any) -> tuple[float, float] | None:
+    """The point an author put in the manifest, or None.
+
+    None is the ordinary answer and means *look it up*, which is what every
+    manifest written before this field existed says. A malformed block is also
+    None rather than an error: the schema refuses anything that is not two
+    numbers in range, so reaching here with something else means a caller built
+    the dict itself, and no build is worth failing over that.
+    """
+    if not isinstance(holder, dict):
+        return None
+    block = holder.get("coordinates")
+    if not isinstance(block, dict):
+        return None
+    try:
+        return float(block["lat"]), float(block["lng"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _named_end(dest: dict[str, Any] | None, key: str) -> dict[str, Any] | None:
+    """One end of an outing, when the entry is an outing and the end is named.
+
+    Both halves matter. `start` on an entry that is not grouped describes
+    nothing -- there is no base for the outing to leave from -- and the parser
+    warns about exactly that, so reading it here would be the second, silent
+    interpretation of a field the first one rejected.
+    """
+    if not is_grouped(dest):
+        return None
+    end = (dest or {}).get(key)
+    if not isinstance(end, dict) or not str(end.get("name", "") or "").strip():
+        return None
+    return end
+
+
+def side_trip_start(dest: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Where this outing begins, when that is not the base it is grouped with."""
+    return _named_end(dest, "start")
+
+
+def side_trip_end(dest: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Where this outing finishes, when that is not the base it is grouped with.
+
+    Also where the NEXT stop's journey starts from: a traveller who ended the
+    day at the far end of a trail does not return to the base in order to
+    leave from it.
+    """
+    return _named_end(dest, "end")
+
+
+def is_point_to_point(dest: dict[str, Any] | None) -> bool:
+    """True when this outing does not come back to where it started.
+
+    Either end being named is enough. A ride that starts at a trailhead and
+    finishes back at the base is still a one-way journey out, and calling it
+    there-and-back would describe a return leg nobody rides.
+    """
+    return side_trip_start(dest) is not None or side_trip_end(dest) is not None
+
+
+def side_trip_mode(dest: dict[str, Any] | None) -> str:
+    """How this outing is travelled, or "" for the trip's own mode.
+
+    Distinct from `transport_mode`, which describes the relocation leg
+    arriving at a stop and is meaningless on a grouped entry: a day out has no
+    arriving journey. This is the other half of that -- the day out has a mode
+    of its own, and *we drove there* is not what a bike ride is.
+    """
+    if not is_grouped(dest):
+        return ""
+    return str((dest or {}).get("mode", "") or "").strip()

@@ -616,6 +616,13 @@
       function init(){
         if(typeof L==='undefined'){setTimeout(init,150);return;}
         var stops='<!--MAP_MARKERS_JSON-->';
+        /* Day trips that go from one place to another. Grouped entries are
+           deliberately not stops -- they share the base's lodging and would
+           draw a marker on top of it -- but one that finishes somewhere else
+           is a real journey across the map, and a route line that skips it
+           draws a trip nobody is taking. Drawn as a second, lighter line so
+           it cannot be read as part of the numbered route. */
+        var sideTrips='<!--SIDE_TRIPS_JSON-->';
         var map=L.map('overview-map',{zoomControl:true,scrollWheelZoom:false});
         /* Tile source, from config.yaml `map.tiles`. The default is the OSMF
            standard style, which is what this template shipped hardcoded until
@@ -661,7 +668,19 @@
           var popupWhen = markerDateSecondaryText.replace(/<br>/g, ' ');
           L.marker(s.c,{icon:icon}).bindPopup('<b>'+(stopIndex?stopIndex+' · ':'')+s.name+'</b><br>'+(popupWhen || ((s.mo || '') + ' ' + (s.dy || '')).trim())).addTo(map);
         });
-        map.fitBounds(L.featureGroup(stops.map(function(s){return L.circleMarker(s.c);})).getBounds().pad(0.1));
+        sideTrips.forEach(function(t){
+          L.polyline([t.a,t.b],{color:'<!--THEME_COLOR-->',weight:2,opacity:0.55}).addTo(map);
+          [t.a,t.b].forEach(function(p){
+            L.circleMarker(p,{radius:4,weight:2,color:'<!--THEME_COLOR-->',
+                              fillColor:'#fff',fillOpacity:1}).bindPopup(t.name).addTo(map);
+          });
+        });
+        var bounded=stops.map(function(s){return L.circleMarker(s.c);});
+        sideTrips.forEach(function(t){
+          bounded.push(L.circleMarker(t.a));
+          bounded.push(L.circleMarker(t.b));
+        });
+        if(bounded.length){map.fitBounds(L.featureGroup(bounded).getBounds().pad(0.1));}
       }
       init();
     })();

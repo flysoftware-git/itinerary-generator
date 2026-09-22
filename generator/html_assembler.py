@@ -36,6 +36,10 @@ from generator.multi_site_grouping import (
     category_deferred_to_base,
     group_base_id,
     is_grouped,
+    is_point_to_point,
+    side_trip_end,
+    side_trip_start,
+    stated_coordinates,
 )
 
 logger = logging.getLogger(__name__)
@@ -433,6 +437,8 @@ class HTMLAssembler:
         # ── Map markers JSON ─────────────────────────────────────────────────
         markers = self._build_map_markers(trip["destinations"], meta)
         html = html.replace("'<!--MAP_MARKERS_JSON-->'", json.dumps(markers))
+        side_trips = self._build_side_trip_legs(trip["destinations"])
+        html = html.replace("'<!--SIDE_TRIPS_JSON-->'", json.dumps(side_trips))
 
         # ── Tile layer ───────────────────────────────────────────────────────
         # The whole base-layer statement is built here rather than templated
@@ -507,7 +513,7 @@ class HTMLAssembler:
 
         departure_name = meta.get("departure", "")
 
-        def _previous_context(index: int) -> tuple[str, str]:
+        def _previous_context(index: int) -> tuple[str, str, tuple[float, float] | None]:
             """Where the leg arriving at destinations[index] starts from.
 
             Walks back past grouped day trips to the previous LODGING stop.
@@ -522,11 +528,24 @@ class HTMLAssembler:
             the last entry in the list. The same confusion had already been
             fixed on the content side (ai_content's leg distance
             correction); this is its rendering counterpart.
+
+            ONE EXCEPTION, and it is the reason `end` exists. A day out that
+            does not come back -- a ride dropped off at one end of a trail and
+            finishing at the other -- leaves the traveller somewhere the base
+            is not, and the next leg starts from there. Walking back past it to
+            the base describes a drive nobody makes, and on a long trail it is
+            the wrong side of a mountain.
             """
+            left_from = self._left_from_a_one_way_day_out(destinations, index)
+            if left_from is not None:
+                name = str(left_from.get("name", "") or "").strip()
+                return name, name, stated_coordinates(left_from)
             candidate = self._previous_lodging_stop(destinations, index)
             if candidate is not None:
-                return candidate["name"], self._destination_route_target(candidate)
-            return departure_name, str(departure_name or "").strip()
+                return (candidate["name"],
+                        self._destination_route_target(candidate),
+                        stated_coordinates(candidate))
+            return departure_name, str(departure_name or "").strip(), None
 
         for index, dest in enumerate(destinations):
             if not isinstance(dest, dict):
@@ -535,7 +554,7 @@ class HTMLAssembler:
             if dest_id in grouped_ids:
                 continue  # rendered nested inside its group base's section below
 
-            previous_name, previous_route_target = _previous_context(index)
+            previous_name, previous_route_target, previous_point = _previous_context(index)
             current_route_target = self._destination_route_target(dest)
 
             group_children = children_by_base.get(dest_id, [])
@@ -554,13 +573,25 @@ class HTMLAssembler:
                 # computed above as `dest`/`current_route_target`) is
                 # always the right "previous" context here.
                 child_current_route_target = self._destination_route_target(child)
+                # ...unless the outing itself starts somewhere else and the
+                # author said where. A ride that begins at a trailhead thirty
+                # miles away is not measured from the bed it slept in.
+                child_start = side_trip_start(child)
+                child_previous_name = (str(child_start.get("name", "")).strip()
+                                       if child_start is not None else dest["name"])
+                child_previous_target = (child_previous_name if child_start is not None
+                                         else current_route_target)
+                child_previous_point = (stated_coordinates(child_start)
+                                        if child_start is not None
+                                        else stated_coordinates(dest))
                 group_children_html += self._build_group_child_card(
                     child,
                     meta,
-                    dest["name"],
-                    current_route_target,
+                    child_previous_name,
+                    child_previous_target,
                     child_current_route_target,
                     dest_by_id,
+                    previous_point=child_previous_point,
                 )
 
             sections_html += self._build_single_section(
@@ -569,6 +600,7 @@ class HTMLAssembler:
                 previous_name,
                 previous_route_target,
                 current_route_target,
+                previous_point=previous_point,
                 is_last=(dest_id == effective_last_id),
                 dest_by_id=dest_by_id,
                 group_children=group_children,
@@ -857,6 +889,68 @@ class HTMLAssembler:
 
         return result
 
+    def _build_side_trip_legs(
+        self, destinations: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Day trips that go from one place to another, for the overview map.
+
+        A grouped entry is deliberately absent from the stops above: it shares
+        its base's lodging, so it renders as a marker sitting on top of the
+        base's own and the owner asked for it out (*"I don't want the overview
+        map to contain Daytrips, as that doesn't render well"*). That reasoning
+        is about a day trip that comes back. A ride that starts thirty miles
+        down the coast and finishes in the next town is not on top of anything,
+        and leaving it out draws a trip the traveller is not taking -- the
+        route line runs straight past the day they were most looking forward
+        to.
+
+        So these are their own thing rather than stops: a light second line
+        between the two ends, no number, no date plate. They cannot be confused
+        with the numbered stops, which is the property the exclusion was
+        protecting.
+
+        Both ends have to be placeable, and an outing whose ends land in the
+        same spot is dropped -- a zero-length line is a smudge on the map and
+        says nothing the base's own marker does not.
+        """
+
+        def _point(holder: Any) -> list[float] | None:
+            stated = stated_coordinates(holder)
+            if stated is not None:
+                return [stated[0], stated[1]]
+            if not isinstance(holder, dict):
+                return None
+            lat, lng = holder.get("lat"), holder.get("lng")
+            if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+                return [float(lat), float(lng)]
+            return None
+
+        by_id = {d.get("id"): d for d in destinations
+                 if isinstance(d, dict) and d.get("id")}
+        legs: list[dict[str, Any]] = []
+        for dest in destinations:
+            if not isinstance(dest, dict) or not is_point_to_point(dest):
+                continue
+            base = by_id.get(group_base_id(dest)) or {}
+            start = side_trip_start(dest)
+            end = side_trip_end(dest)
+            # An outing with only one named end runs from or to the base, which
+            # is where the traveller was: that is the journey, and drawing it
+            # is the whole point of reading these fields.
+            a = _point(start) or _point(base)
+            b = _point(end) or _point(dest)
+            if a is None or b is None or a == b:
+                continue
+            from_name = str((start or base).get("name", "") or "").strip()
+            to_name = str((end or dest).get("name", "") or "").strip()
+            legs.append({
+                "a": a,
+                "b": b,
+                "name": f"{from_name} → {to_name}".strip(" →"),
+                "mode": resolved_mode(dest),
+            })
+        return legs
+
     @staticmethod
     def _format_trip_datetime_label(raw: str) -> tuple[str, str]:
         text = str(raw or "").strip()
@@ -977,6 +1071,7 @@ class HTMLAssembler:
         previous_route_target: str = "",
         current_route_target: str = "",
         *,
+        previous_point: tuple[float, float] | None = None,
         is_last: bool = False,
         dest_by_id: dict[str, dict[str, Any]] | None = None,
         group_children: list[dict[str, Any]] | None = None,
@@ -1047,6 +1142,7 @@ class HTMLAssembler:
             previous_route_target=previous_route_target,
             current_route_target=current_route_target,
             dest_by_id=dest_by_id,
+            previous_point=previous_point,
         )
 
         # Attractions + scenic drives/viewpoints (deduped against group
@@ -1608,6 +1704,30 @@ class HTMLAssembler:
         return text
 
     @staticmethod
+    def _left_from_a_one_way_day_out(
+        destinations: list[dict[str, Any]], index: int
+    ) -> dict[str, Any] | None:
+        """Where the traveller stands when the leg into destinations[index]
+        begins, when the last thing they did was a day out that did not return.
+
+        Only the entries between this stop and the previous lodging stop are
+        looked at, and only the last of those that names an `end`: two days out
+        from one base end where the second one ended, not where the first did.
+        None -- the ordinary answer -- leaves the walk-back-to-the-base rule
+        exactly as it was.
+        """
+        for previous_index in range(index - 1, -1, -1):
+            candidate = destinations[previous_index]
+            if not isinstance(candidate, dict):
+                continue
+            if not is_grouped(candidate):
+                return None
+            end = side_trip_end(candidate)
+            if end is not None:
+                return end
+        return None
+
+    @staticmethod
     def _previous_lodging_stop(
         destinations: list[dict[str, Any]], index: int
     ) -> dict[str, Any] | None:
@@ -1657,11 +1777,32 @@ class HTMLAssembler:
         stops: list,
         *,
         waypoint_scope_name: str = "",
+        origin_point: tuple[float, float] | None = None,
     ) -> str:
-        """Build a Google Maps directions URL with destination and waypoints."""
+        """Build a Google Maps directions URL with destination and waypoints.
+
+        A point the AUTHOR stated wins over the name at either end. Not every
+        point: a lat/lng the build geocoded FROM the name carries no more
+        information than the name does, and Google labels a raw coordinate by
+        reverse geocoding it -- so the route panel would read '5FGM+75' where
+        the itinerary says a place, which is the readability cost the waypoint
+        loop below already documents. An author who typed a coordinate has said
+        something the name cannot: *this* Hollywood Beach, the park, not the
+        hamlet 190 km east that a gazetteer ranks higher. That is worth the
+        label, and it is the only case that is.
+        """
         destination = dest.get("name", "")
         if not destination:
             return ""
+        # What the URL asks for, which is not always what the page calls it.
+        # `destination` stays the NAME below: it is what the waypoint loop
+        # scopes its queries to, and a coordinate there would scope them to a
+        # number.
+        stated_destination = stated_coordinates(dest)
+        destination_param = (f"{stated_destination[0]},{stated_destination[1]}"
+                             if stated_destination is not None else destination)
+        origin_param = (f"{origin_point[0]},{origin_point[1]}"
+                        if origin_point is not None else previous_name)
 
         # This link sits inside "Getting Here". Opening driving directions for a
         # booked rail leg made the link contradict the section around it.
@@ -1674,9 +1815,9 @@ class HTMLAssembler:
         # for rail because the dict it was handed carried no transportation,
         # once for hiking because that dict carried no leg mode.
         travelmode = leg_mode(dest).maps_travelmode
-        params = [f"destination={quote(destination)}", f"travelmode={travelmode}", "api=1"]
-        if previous_name:
-            params.append(f"origin={quote(previous_name)}")
+        params = [f"destination={quote(destination_param)}", f"travelmode={travelmode}", "api=1"]
+        if origin_param:
+            params.append(f"origin={quote(origin_param)}")
 
         # Transit rejects waypoints outright -- Google returns "Sorry, we could
         # not calculate transit directions" and the link is dead -- and they are
@@ -2441,6 +2582,8 @@ class HTMLAssembler:
         previous_route_target: str,
         current_route_target: str,
         dest_by_id: dict[str, dict[str, Any]] | None,
+        *,
+        previous_point: tuple[float, float] | None = None,
     ) -> str:
         """Render a grouped (day-trip) entry's own content nested inside
         its group base's <section>, instead of as an independent sibling
@@ -2520,6 +2663,7 @@ class HTMLAssembler:
             previous_route_target=previous_route_target,
             current_route_target=current_route_target,
             dest_by_id=dest_by_id,
+            previous_point=previous_point,
         )
         html += self._build_attractions(ai, drives, dest.get("name", ""), dest=dest, dest_by_id=dest_by_id)
         # No _build_schedule call -- see docstring above.
@@ -2541,6 +2685,7 @@ class HTMLAssembler:
         previous_route_target: str = "",
         current_route_target: str = "",
         dest_by_id: dict[str, dict[str, Any]] | None = None,
+        previous_point: tuple[float, float] | None = None,
     ) -> str:
         gh = ai.get("getting_here", {})
         if not gh:
@@ -2549,15 +2694,28 @@ class HTMLAssembler:
         distance = gh.get("distance_miles", "")
         travel_time = gh.get("travel_time", "")
         stops = gh.get("en_route_stops", [])
+        # Where this leg finishes. For an outing that does not come back, that
+        # is its `end` rather than the entry's own name: the ride is *to*
+        # Hollywood Beach, and labelling it by the entry would say the ride
+        # ends where it is filed rather than where it stops.
+        outing_end = side_trip_end(dest)
+        arrival_name = (str(outing_end.get("name", "")).strip() if outing_end is not None
+                        else str(dest.get("name", "") or ""))
         route_label = ""
         if previous_name:
-            route_label = f'{self._short_place_name(previous_name)} → {self._short_place_name(dest.get("name", ""))}'
+            route_label = (f'{self._short_place_name(previous_name)} → '
+                           f'{self._short_place_name(arrival_name)}')
 
         # GH #68 multi-site grouping §4: a group_with transition is a
         # there-and-back day trip from the shared base, not a one-way
         # relocation leg -- label it distinctly so "Moab → Arches" doesn't
         # read as a new place to check into.
+        #
+        # ...unless it names an end of its own, in which case it IS one-way and
+        # the badge would be the misleading half. It is still a day out, so the
+        # badge stays and says so with the word that is true of both.
         is_group_day_trip = is_grouped(dest)
+        is_one_way_day_out = is_point_to_point(dest)
 
         # Compute the stops that will actually render as "CAN'T-MISS ENROUTE"
         # cards FIRST, then build the Google Maps URL from that exact list.
@@ -2601,7 +2759,15 @@ class HTMLAssembler:
         # has to be carried here, and an isolated test of that helper cannot
         # catch the omission -- test through _build_getting_here.
         route_destination = {
-            "name": current_route_target or dest.get("name", ""),
+            "name": (str(outing_end.get("name", "")).strip() if outing_end is not None
+                     else (current_route_target or dest.get("name", ""))),
+            # The author's own point for the far end, where there is one. A
+            # link built from a name opens whichever place Google thinks is
+            # most important, which is the same coin toss the manifest field
+            # exists to settle -- and it is settled once, here, rather than
+            # again in every reader.
+            "coordinates": ((outing_end or {}).get("coordinates")
+                            or dest.get("coordinates")),
             "transportation": dest.get("transportation") or [],
             RESOLVED_MODE_KEY: resolved_mode(dest),
             # The booked type as stamped at parse time. `transportation` above
@@ -2621,6 +2787,7 @@ class HTMLAssembler:
             route_destination,
             [stop for stop, _url, _fallback in visible_stops],
             waypoint_scope_name=str(dest.get("name", "") or ""),
+            origin_point=previous_point,
         )
 
         # Icon map for stop types
@@ -2670,7 +2837,8 @@ class HTMLAssembler:
         html += '  </div>\n'
 
         day_trip_badge = (
-            '<span class="badge badge-daytrip" style="background:var(--sage);color:#fff;">Day Trip</span>\n'
+            '<span class="badge badge-daytrip" style="background:var(--sage);color:#fff;">'
+            f'{"Day Out — One Way" if is_one_way_day_out else "Day Trip"}</span>\n'
             if is_group_day_trip
             else ""
         )

@@ -37,6 +37,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+
+from generator.multi_site_grouping import stated_coordinates
 import click
 from generator import __version__, __template_version__
 from generator import app_icon
@@ -2023,6 +2025,35 @@ def _filter_destinations(
     trip["destinations"] = destinations
 
 
+def place_destination(dest: dict[str, Any], geocode: Any) -> None:
+    """Put a stop, and the two ends of any outing it is, on the map.
+
+    An author who stated where this is, is believed and nothing is looked up.
+    A gazetteer answers "which place of this name is most important", which is
+    a different question from "which one did you mean" and cannot be made into
+    it by spelling: 'Hollywood Beach' is a park in Port Angeles and a hamlet
+    190 km east, both in Washington, and the second one wins. Where the
+    manifest carries the point there is nothing left to ask -- and the lookup
+    is skipped, which at Nominatim's one-request-a-second is also a second.
+
+    A side trip's `start` and `end` are placed from STATED coordinates only.
+    They are places in their own right and the build needs them on the map --
+    to draw the outing, and to start the next stop's journey where the ride
+    finished -- but reaching for the geocoder here would add two lookups per
+    grouped entry for names that are, by their nature, the small ambiguous
+    ones it is worst at.
+    """
+    stated = stated_coordinates(dest)
+    if stated is not None:
+        dest["lat"], dest["lng"] = stated
+    else:
+        dest["lat"], dest["lng"] = geocode(dest["name"])
+    for end in ("start", "end"):
+        point = stated_coordinates(dest.get(end))
+        if point is not None:
+            dest[end]["lat"], dest[end]["lng"] = point
+
+
 def _is_us_coordinates(lat: object, lng: object) -> bool:
     """Return True when coordinates are in US regions where NPS codes are relevant."""
     try:
@@ -3197,9 +3228,7 @@ def main(
     nps = NPSResolver()
     # Geocoding is sequential (Nominatim ToS: 1 req/sec)
     for dest in trip["destinations"]:
-        lat, lng = geo._geocode(dest["name"])
-        dest["lat"] = lat
-        dest["lng"] = lng
+        place_destination(dest, geo._geocode)
         lodging = dest.get("lodging", {}) if isinstance(dest.get("lodging", {}), dict) else {}
         lodging_location = str(lodging.get("location", "") or "").strip()
         if lodging_location:

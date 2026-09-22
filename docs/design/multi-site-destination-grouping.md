@@ -395,3 +395,75 @@ change):
   `.group-child-card` elements, not just `.dest-section`, so a nested
   child's nav tab highlights correctly while scrolled into its own nested
   content, not just while scrolled anywhere in the base's section.
+
+## 11. A day out that does not come back (2026-09-22)
+
+Everything above assumes one shape of outing: **there and back from the base.**
+§4 says so outright — *"a `group_with` transition is a there-and-back day trip
+from the shared base, not a one-way relocation leg"* — and three separate rules
+are built on it. The origin loop in `url_discovery` never advances its physical
+base past a grouped entry; `_previous_context` walks back past grouped entries
+to the last lodging stop; and `_build_map_markers` excludes grouped entries
+outright, because a day trip shares its base's lodging and its marker lands on
+top of the base's own.
+
+That is the right default and it is not the only shape. A ride along a
+rail-trail is dropped off at one end and finishes at the other. So is a paddle
+down a river, a one-way walk, and a lift to the top of a hill. On one of those,
+each of the three rules above is wrong in a way the page cannot show:
+
+- the day is measured from the bed it slept in rather than from the trailhead;
+- the next stop's journey is measured from that same bed, when the traveller is
+  standing thirty miles away where the ride finished — on a long trail, the
+  wrong side of a mountain;
+- the map draws a route line running straight past the day the trip was
+  planned around.
+
+### 11.1 What the manifest says
+
+Four optional fields, all ignorable, all no-ops when absent.
+
+| Field | Where | Means |
+|---|---|---|
+| `coordinates` | any destination | `{lat, lng}` the author states. Used instead of geocoding `name`. |
+| `start` | a `group_with` entry | `{name, coordinates?}` — where the outing begins, when that is not the base. |
+| `end` | a `group_with` entry | `{name, coordinates?}` — where it finishes, and where the next stop leaves from. |
+| `mode` | a `group_with` entry | how the outing itself is travelled. |
+
+`start`, `end` and `mode` on an entry with no `group_with` are warned about and
+ignored, the way `transport_mode` on a grouped entry already is (§4). One
+reading of one rule: `multi_site_grouping.py` holds it, and the four modules
+that need it ask rather than re-deriving.
+
+### 11.2 Why `mode` is not `transport_mode`
+
+`transport_mode` describes the relocation leg **arriving at** a stop, which is
+why it is meaningless on a grouped entry and warned about there. This is the
+other half of that sentence. A day out has no arriving journey; it *is* a
+journey, and *we drove there* is not what a bike ride is. Before this, a
+grouped entry resolved to `auto` unconditionally, so a ride was offered driving
+directions.
+
+### 11.3 Why `coordinates` is not a convenience
+
+A gazetteer answers *which place of this name is most important*. That is a
+different question from *which one did you mean*, and no spelling turns one
+into the other: **Hollywood Beach** is a park in Port Angeles and a hamlet 190
+km east, both in Washington, and the second is ranked higher. An author who
+already knows which one they mean has had no way to say so.
+
+The same field decides what a map link opens. A point the **author** stated
+wins over the name at either end of a directions URL; a lat/lng the build
+geocoded *from* the name does not, and deliberately — it carries no more
+information than the name, and Google labels a raw coordinate by reverse
+geocoding, so the route panel reads `5FGM+75` where the itinerary says a place.
+That readability cost is worth paying only where the coordinate says something
+the name cannot.
+
+### 11.4 What the map draws
+
+A one-way outing gets a second, lighter line between its two ends, with a small
+circle at each and no number or date plate. It is not a stop and cannot be
+mistaken for one, which is the property §3's exclusion was protecting. An
+outing whose ends resolve to the same point draws nothing: a zero-length line
+is a smudge, and says nothing the base's own marker does not.
