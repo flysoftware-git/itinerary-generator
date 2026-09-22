@@ -191,6 +191,31 @@ TRANSPORTATION_ITEM_SCHEMA: dict[str, Any] = {
 #: relying on. See docs/design/multimodal-routing.md 3.1.
 TRANSPORT_MODES: tuple[str, ...] = ("auto", "transit", "mixed", "bike", "hike")
 
+#: A point an author states rather than one the build looks up. Defined once so
+#: `coordinates` means the same thing wherever it appears: on a destination, and
+#: on a side trip's two ends.
+COORDINATES_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["lat", "lng"],
+    "properties": {
+        "lat": {"type": "number", "minimum": -90, "maximum": 90},
+        "lng": {"type": "number", "minimum": -180, "maximum": 180},
+    },
+}
+
+#: One end of a side trip: somewhere the outing starts or finishes that is not
+#: the lodging base it is grouped with.
+SIDE_TRIP_END_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["name"],
+    "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 200},
+        "coordinates": COORDINATES_SCHEMA,
+    },
+}
+
 #: One authored leg between two adjacent destinations. `from`/`to` are
 #: destination `id`s, never display names -- the issue's free-text matching
 #: fails silently, and a silently-ignored leg ships a traveler an itinerary
@@ -769,6 +794,60 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                        "default. An explicit empty list opts this entry out of any "
                                        "deferral. Only meaningful when group_with is also set.",
                     },
+                    "coordinates": {
+                        **COORDINATES_SCHEMA,
+                        "description": "Optional author-supplied position for this "
+                                       "destination. Given, it is used instead of "
+                                       "geocoding `name` -- and it is the author's "
+                                       "statement about which place this is, which a "
+                                       "gazetteer cannot always be asked for. A name "
+                                       "several places share ('Hollywood Beach' is a "
+                                       "park in Port Angeles and a hamlet 190 km away) "
+                                       "resolves by importance, confidently, and there "
+                                       "is no spelling that makes the question "
+                                       "unambiguous. An author who already knows where "
+                                       "they mean can now say so. Omitted = geocoded "
+                                       "from the name, unchanged.",
+                    },
+                    "start": {
+                        **SIDE_TRIP_END_SCHEMA,
+                        "description": "Optional: where this outing BEGINS, when that is "
+                                       "not the base it is grouped with. Only meaningful "
+                                       "with `group_with`; set elsewhere it is warned "
+                                       "about and ignored. A grouped entry has always "
+                                       "meant a there-and-back day trip from the base, "
+                                       "and that is one shape of outing rather than the "
+                                       "only one: a ride along a trail is dropped off at "
+                                       "one end and finishes at the other. Omitted = "
+                                       "there-and-back from the base, unchanged.",
+                    },
+                    "end": {
+                        **SIDE_TRIP_END_SCHEMA,
+                        "description": "Optional: where this outing FINISHES, when that "
+                                       "is not the base it is grouped with. Only "
+                                       "meaningful with `group_with`; set elsewhere it is "
+                                       "warned about and ignored. It is also where the "
+                                       "NEXT stop's journey starts from -- a traveller "
+                                       "who finished the ride here does not go back to "
+                                       "the base first to leave from it. Omitted = the "
+                                       "next stop leaves from the base, unchanged.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": list(TRANSPORT_MODES),
+                        "description": "Optional: how this OUTING is travelled -- the "
+                                       "ride, walk or paddle itself. Only meaningful "
+                                       "with `group_with`; set elsewhere it is warned "
+                                       "about and ignored. Distinct from "
+                                       "`transport_mode`, which describes the "
+                                       "relocation leg ARRIVING at a stop and is "
+                                       "meaningless on a grouped entry for exactly that "
+                                       "reason: a day out has no arriving journey. This "
+                                       "is the other half of that sentence -- the day "
+                                       "out has a mode of its own, and 'we drove there' "
+                                       "is not what a bike ride is. Omitted = the trip's "
+                                       "own mode, unchanged.",
+                    },
                     "stretch_note": {
                         "type": "string",
                         "pattern": "\\S",
@@ -812,6 +891,7 @@ class ManifestParser:
         self._validate_en_route_exclude(data)
         self._validate_ids_unique(data)
         self._validate_group_with(data)
+        self._warn_side_trip_fields_without_group(data)
         self._reject_legacy_transport_mode_key(data)
         self._validate_legs(data)
         self._warn_transport_mode_on_grouped(data)
@@ -1319,6 +1399,33 @@ class ManifestParser:
                     "a day trip from its base, not an arriving leg.",
                     dest.get("id"), dest.get("transport_mode"),
                 )
+
+    #: Fields that describe a day out, and so say nothing on an entry that is
+    #: not one. Warned about and ignored, like `transport_mode` above: a
+    #: manifest is often hand-edited, and refusing a build over a field in the
+    #: wrong place costs more than saying what was ignored.
+    _SIDE_TRIP_ONLY_FIELDS = ("start", "end", "mode")
+
+    def _warn_side_trip_fields_without_group(self, data: dict[str, Any]) -> None:
+        """`start`, `end` and `mode` describe an outing from a base.
+
+        Without `group_with` there is no base and no outing -- the entry is a
+        stop the trip relocates to, whose arriving leg is described by
+        `transport_mode` and whose own position is `coordinates`. So these are
+        not quietly repurposed; they are named and dropped.
+        """
+        for dest in data.get("destinations", []) or []:
+            if not isinstance(dest, dict):
+                continue
+            if str(dest.get("group_with", "") or "").strip():
+                continue
+            for field in self._SIDE_TRIP_ONLY_FIELDS:
+                if dest.get(field):
+                    logger.warning(
+                        "Destination '%s': %s ignored -- it describes a day out from a "
+                        "base, and this entry has no group_with.",
+                        dest.get("id"), field,
+                    )
 
     @staticmethod
     def _parse_lenient_date_range(dates: str) -> tuple[datetime, datetime] | None:

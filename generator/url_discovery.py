@@ -48,7 +48,12 @@ from generator.road_estimate import (
     leg_estimate,
 )
 from generator.place_resolver import PlaceResolutionRefused, PlaceResolver
-from generator.multi_site_grouping import DEFAULT_BASE_OWNED_CATEGORIES, category_deferred_to_base
+from generator.multi_site_grouping import (
+    DEFAULT_BASE_OWNED_CATEGORIES,
+    category_deferred_to_base,
+    side_trip_end,
+    side_trip_start,
+)
 from generator.search_provider import build_search_client
 from generator.url_validator import URLValidator
 
@@ -2592,6 +2597,94 @@ class URLDiscoverer:
             and self._search.is_circuit_open()
         )
 
+    def _resolve_en_route_origins(self, destinations: list[Any]) -> None:
+        """Stamp each destination with where the leg arriving at it starts.
+
+        Lifted out of `discover_all` so it can be exercised without a
+        discoverer, a config or a network. The rule it encodes is the same
+        one `html_assembler._previous_context` applies when rendering, and
+        two readings of one rule that cannot be tested against each other is
+        how they drift -- which is the failure GH #68 §4 open question #3
+        already records once.
+        """
+        # GH #68 multi-site grouping §4: origin resolution for the
+        # per-destination "getting here" leg. Built once so a group_with
+        # reference resolves regardless of list order (a grouped entry can
+        # legally appear before its base in the manifest).
+        dest_by_id: dict[str, Any] = {
+            d.get("id"): d for d in destinations if isinstance(d, dict) and d.get("id")
+        }
+        # Tracks the most recent *ungrouped* destination -- the traveler's
+        # actual physical base. A run of group_with entries never advances
+        # this, so the first ungrouped destination after a group still
+        # measures its own leg from the shared base rather than from
+        # whichever grouped sibling happened to render last.
+        last_physical_base: dict[str, Any] | None = None
+        # Where the traveller actually STANDS when the next relocation begins.
+        # Normally that is the base above, and for a there-and-back day trip it
+        # still is. An outing that finishes somewhere else -- a ride dropped off
+        # at one end of a trail and collected at the other -- moves it, because
+        # a traveller who ended the day at the far end does not drive back to
+        # the base in order to leave from it. Only a grouped entry's own `end`
+        # sets this, and the next ungrouped destination clears it.
+        left_from: dict[str, Any] | None = None
+        for idx, dest in enumerate(destinations):
+            if not isinstance(dest, dict):
+                continue
+            origin_name = ""
+            origin_lat = None
+            origin_lng = None
+            base_id = str(dest.get("group_with", "") or "").strip()
+            base_dest = dest_by_id.get(base_id) if base_id else None
+            start = side_trip_start(dest)
+            if start is not None:
+                # The outing begins somewhere the base is not, and the author
+                # said where. Measuring it from the base describes a journey
+                # nobody makes.
+                origin_name = str(start.get("name", "")).strip()
+                origin_lat = start.get("lat")
+                origin_lng = start.get("lng")
+            elif base_dest is not None:
+                # Grouped entry: base -> entry is a day-trip/detour, never
+                # previous-in-list -> entry (which could itself be another
+                # grouped sibling and would silently chain distances
+                # through it instead of measuring from the real base).
+                origin_name = str(base_dest.get("name", "") or "").strip()
+                origin_lat = base_dest.get("lat")
+                origin_lng = base_dest.get("lng")
+            elif left_from is not None:
+                # The previous day out ended away from the base, so this stop
+                # is reached from there.
+                origin_name = str(left_from.get("name", "") or "").strip()
+                origin_lat = left_from.get("lat")
+                origin_lng = left_from.get("lng")
+            elif last_physical_base is not None:
+                origin_name = str(last_physical_base.get("name", "") or "").strip()
+                origin_lat = last_physical_base.get("lat")
+                origin_lng = last_physical_base.get("lng")
+            elif idx > 0 and isinstance(destinations[idx - 1], dict):
+                # No base tracking applies yet (e.g. the very first
+                # destination) -- original adjacent-stop behavior, unchanged.
+                origin_name = str(destinations[idx - 1].get("name", "") or "").strip()
+                origin_lat = destinations[idx - 1].get("lat")
+                origin_lng = destinations[idx - 1].get("lng")
+            dest["_en_route_origin"] = origin_name
+            dest["_en_route_origin_lat"] = origin_lat
+            dest["_en_route_origin_lng"] = origin_lng
+            if base_dest is None:
+                # This (ungrouped) entry is now the physical base for
+                # whatever follows, including the next ungrouped
+                # destination after any grouped entries in between. It also
+                # consumes any day out that ended away from the base: the
+                # stop AFTER this one leaves from here, not from a trailhead
+                # two stops back.
+                last_physical_base = dest
+                left_from = None
+            else:
+                end = side_trip_end(dest)
+                if end is not None:
+                    left_from = end
+
     def discover_all(self, trip: dict[str, Any]) -> None:
         # The batch harvest builds its own restaurant list, so ai_content's
         # budget filter never sees those items. A "low-cost" Europe itinerary
@@ -2700,53 +2793,7 @@ class URLDiscoverer:
             summary_bits = ", ".join(f"{k}={v}" for k, v in top_counts[:6]) if top_counts else "none"
             logger.info("URL discovery summary for '%s': %s", name, summary_bits)
 
-        # GH #68 multi-site grouping §4: origin resolution for the
-        # per-destination "getting here" leg. Built once so a group_with
-        # reference resolves regardless of list order (a grouped entry can
-        # legally appear before its base in the manifest).
-        dest_by_id: dict[str, Any] = {
-            d.get("id"): d for d in destinations if isinstance(d, dict) and d.get("id")
-        }
-        # Tracks the most recent *ungrouped* destination -- the traveler's
-        # actual physical base. A run of group_with entries never advances
-        # this, so the first ungrouped destination after a group still
-        # measures its own leg from the shared base rather than from
-        # whichever grouped sibling happened to render last.
-        last_physical_base: dict[str, Any] | None = None
-        for idx, dest in enumerate(destinations):
-            if not isinstance(dest, dict):
-                continue
-            origin_name = ""
-            origin_lat = None
-            origin_lng = None
-            base_id = str(dest.get("group_with", "") or "").strip()
-            base_dest = dest_by_id.get(base_id) if base_id else None
-            if base_dest is not None:
-                # Grouped entry: base -> entry is a day-trip/detour, never
-                # previous-in-list -> entry (which could itself be another
-                # grouped sibling and would silently chain distances
-                # through it instead of measuring from the real base).
-                origin_name = str(base_dest.get("name", "") or "").strip()
-                origin_lat = base_dest.get("lat")
-                origin_lng = base_dest.get("lng")
-            elif last_physical_base is not None:
-                origin_name = str(last_physical_base.get("name", "") or "").strip()
-                origin_lat = last_physical_base.get("lat")
-                origin_lng = last_physical_base.get("lng")
-            elif idx > 0 and isinstance(destinations[idx - 1], dict):
-                # No base tracking applies yet (e.g. the very first
-                # destination) -- original adjacent-stop behavior, unchanged.
-                origin_name = str(destinations[idx - 1].get("name", "") or "").strip()
-                origin_lat = destinations[idx - 1].get("lat")
-                origin_lng = destinations[idx - 1].get("lng")
-            dest["_en_route_origin"] = origin_name
-            dest["_en_route_origin_lat"] = origin_lat
-            dest["_en_route_origin_lng"] = origin_lng
-            if base_dest is None:
-                # This (ungrouped) entry is now the physical base for
-                # whatever follows, including the next ungrouped
-                # destination after any grouped entries in between.
-                last_physical_base = dest
+        self._resolve_en_route_origins(destinations)
 
         # Pre-populate per-destination direct-batch caches from grouped
         # multi-destination calls before the per-destination pass below runs,

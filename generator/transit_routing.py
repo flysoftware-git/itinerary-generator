@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from generator.multi_site_grouping import side_trip_mode
+
 logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -258,14 +260,17 @@ def resolve_leg_mode(
     first two (multimodal-routing.md 3.2), so this ordering never silently
     picks a winner between two contradictory authored statements.
 
-    A grouped entry is always `auto`: a there-and-back day trip from a shared
-    base has no arriving relocation leg for a mode to describe. The parser
-    warns about a mode set there; this is where it is ignored.
+    A grouped entry has no arriving relocation leg for `transport_mode` to
+    describe -- the parser warns about one set there, and this is where it is
+    ignored. It does have a journey of its own, though: the day out itself.
+    `mode` is where the manifest says how that is travelled, and a ride
+    offered driving directions is the defect this closes. Without it, `auto`
+    as before.
     """
     if not isinstance(dest, dict):
         return "auto"
     if str(dest.get("group_with", "") or "").strip():
-        return "auto"
+        return side_trip_mode(dest) or "auto"
 
     dest_id = str(dest.get("id", "") or "").strip()
     if isinstance(legs, list) and dest_id:
