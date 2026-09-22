@@ -119,16 +119,32 @@ ai:
   # each one -- are now the calls it rescues. Unset, that mechanism does
   # nothing, which is what it did through every failure of 2026-09-19.
   #
-  # Anthropic rather than the openai/gpt-4o-mini this example used to name:
-  # ANTHROPIC_API_KEY is the second key this project actually carries, and a
-  # fallback whose key is absent fails the run at startup (the key is checked
-  # eagerly, same as the primary). Comment both lines out to disable.
+  # gpt-4o-mini, at $0.15/$0.60 per million tokens. It was claude-sonnet-5 for
+  # two days (#171), on a stated reason that was false: that no environment
+  # here carries an OpenAI key. Both .env files that build guides do -- the
+  # check that concluded otherwise searched for the wrong variable name.
+  #
+  # What those two days showed, measured on the Old Hickory builds of
+  # 2026-09-21:
+  #
+  #   * claude-sonnet-5 is $2/$10 -- the most expensive current option,
+  #     tied with the grok-latest #171 moved away from on price, and about
+  #     16x gpt-4o-mini on output.
+  #   * Not one of its five fallback calls in that run succeeded (SSL resets
+  #     and dropped connections on the same flaky network the primary saw).
+  #     A fallback earns its place by being cheap enough to call freely.
+  #   * gpt-4o-mini generated a whole guide's content on this machine the same
+  #     day (the manifest pinned it), so it is proven to produce usable output
+  #     here, which is the only claim a fallback needs to make.
+  #
+  # A fallback whose key is absent fails the run at startup: the key is
+  # checked eagerly, same as the primary. Comment both lines out to disable.
   #
   # Note: this covers content-generation calls (llm_client.py) only. It does
   # NOT cover search/harvest calls (grok_search.py), which have no
   # alternative-provider implementation.
-  fallback_provider: "anthropic"
-  fallback_model: "claude-sonnet-5"
+  fallback_provider: "openai"
+  fallback_model: "gpt-4o-mini"
 
 # ── Azure OpenAI (legacy compatibility) ──────────────────────────────────────
 azure_openai:
