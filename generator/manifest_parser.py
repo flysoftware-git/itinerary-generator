@@ -496,6 +496,23 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                     "type": "string",
                     "enum": ["openai", "anthropic", "deepseek", "gemini", "grok", "azure_openai"],
                 },
+                "llm_model": {
+                    "type": "string",
+                    "minLength": 2,
+                    "description": "Optional flat form of `llm.model`, symmetric with "
+                                   "`llm_provider`. Honoured by main._resolve_llm_overrides "
+                                   "but absent from this schema until now, so a "
+                                   "misspelling of the field the trip's whole content is "
+                                   "written by validated clean. Beaten by --llm-model.",
+                },
+                "short_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Optional home-screen icon label for the installed PWA. "
+                                   "iOS truncates around 12 characters, so a long `title` "
+                                   "renders clipped; omitted, the manifest and HTML fall back "
+                                   "to `title` (trimmed to 24 characters).",
+                },
                 "environment": {
                     "type": "string",
                     # One list, named in generator/environments.py. The same
@@ -537,6 +554,28 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                     },
                     "additionalProperties": False,
                 },
+            },
+        },
+        "categories": {
+            "type": "object",
+            "description": "Optional per-trip answers for the four priced discovery "
+                           "categories, so a trip that wants trails does not buy them "
+                           "for every other trip by flipping a config.yaml switch. "
+                           "Read by main._manifest_category_override, which also accepts "
+                           "this block nested under `trip`, and beaten by the paired CLI "
+                           "flags (--trails/--no-trails and friends). Each entry is a "
+                           "boolean, or an object carrying `enabled`.",
+            "properties": {
+                key: {
+                    "anyOf": [
+                        {"type": "boolean"},
+                        {
+                            "type": "object",
+                            "properties": {"enabled": {"type": "boolean"}},
+                        },
+                    ],
+                }
+                for key in ("trails", "cultural_events", "en_route_stops", "restaurants")
             },
         },
         "legs": {
