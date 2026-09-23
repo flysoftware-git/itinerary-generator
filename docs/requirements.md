@@ -347,6 +347,15 @@ The output file must remain usable when opened directly from disk (`file://`) an
 
 The manifest is intentionally minimal. All geocoding, NPS detection, URL discovery, and content generation happen automatically.
 
+The manifest is also the *only* way a trip is defined here: there is no guided
+authoring mode in this repository, and the generator accepts a hand-authored or
+externally produced manifest either way. That makes this section the interface
+contract, so it names every field `MANIFEST_SCHEMA` accepts — enforced by
+`tests/test_the_manifest_reference_names_every_field.py`, which fails when a
+field is added to the schema and not described here. The schema itself does not
+set `additionalProperties: false`, so an undocumented key is a key nobody can
+discover and a typo nothing reports.
+
 ### 3.1 Trip-Level Fields
 
 | Field | Required | Description |
@@ -354,16 +363,37 @@ The manifest is intentionally minimal. All geocoding, NPS detection, URL discove
 | `title` | ✅ | Trip title (e.g., "Southwest Road Trip") |
 | `subtitle` | ✅ | Trip subtitle (e.g., "October 2026 — Utah & Colorado") |
 | `theme_color` | ✅ | Hex color for nav, headers, map markers (e.g., `#C0623E`) |
-| `llm` | ❌ optional | Override model routing for this trip: `{provider, model, temperature, max_tokens}` |
+| `short_name` | ❌ optional | Home-screen icon label for the installed PWA. iOS truncates around 12 characters, so a long `title` renders clipped. Omitted, both the web manifest and the HTML meta fall back to `title` trimmed to 24 characters |
+| `llm` | ❌ optional | Override model routing for this trip: `{provider, model, features, temperature, max_tokens}` |
+| `llm_provider` / `llm_model` / `llm_features` | ❌ optional | Flat equivalents of the `llm` sub-keys, and the form this project's own manifests use. Precedence, lowest to highest: nested `llm.*` < flat < `--llm-provider`/`--llm-model` (`main._resolve_llm_overrides`). Either form's `features` takes one key, `code_execution: true` |
 | `budget` | ❌ optional | Budget guidance (string/number/object) passed into AI prompts |
-| `departure` | ❌ optional | Route origin location name for first leg and full-route map |
-| `return` | ❌ optional | Route final endpoint location name for full-route map |
+| `environment` | ❌ optional | `dev`/`eval`/`prod` tag for hybrid selection. Priority: CLI > manifest > `ENVIRONMENT` env var |
+| `departure` / `return` | ❌ optional | Route origin and final endpoint location names for the first leg, the getting-here context and the full-route map |
+| `departure_datetime` / `return_datetime` | ❌ optional | Date/time anchors for route overview labels and schedule feasibility guidance |
 | `default_day_start_time` | ❌ optional | Default local start time anchor for schedule realism (e.g., `10:00 AM`) |
 | `default_daily_activity_hours` | ❌ optional | Default per-day activity-time budget in hours used for schedule packing (default `5`) |
+| `attractions_per_day` / `restaurants_per_day` / `scenic_drives_per_day` | ❌ optional | Default targets per destination-day when ranking candidates. Scenic drives default to 2/day, the others to 4/day |
+| `en_route_stops_per_day` | ❌ optional | Target number of en-route stops for an arrival leg. **Not** scaled by day count, unlike the three above: an en-route stop belongs to the single drive into a destination, which happens once however long the stay |
+| `transport_mode` | ❌ optional | Trip-wide travel assumption for inter-destination legs: `auto` (the omitted default — every leg is a drive), `transit`, `mixed`, `bike`, `hike` |
+| `trail_name` | ❌ optional | Named trail this trip follows, e.g. `Pacific Crest Trail`. Used to look up each leg's AllTrails section, so it only affects `bike`/`hike` legs. Never invented: without it a leg gets no trail link |
+| `vehicle_range_miles` | ❌ optional | How far the vehicle goes on a tank or charge. An en-route stop then fires on whichever limit a leg reaches first — driving time or the tank |
+| `has_high_clearance_vehicle` | ❌ optional | Set `false` to exclude scenic drives marked high-clearance or 4WD. Omitted = unchanged behaviour |
+| `max_hike_miles` / `max_hike_elevation_gain_ft` | ❌ optional | Opt-in traveler limits for a single outing. An attraction reporting no distance or no gain is never excluded |
+| `access_notes` | ❌ optional | When true, destination content is asked what is known about *reaching* each place named — the walk from parking or transit, its surface and gradient, step-free entry and accessible parking |
+| `brand` | ❌ optional | Distributor credit and support routing for the page footer (§8.3). Provenance (§8.2) is not configurable and is not here |
 | `transportation[]` | ❌ optional | **Trip-wide** booked legs — the flight in, the flight home, a rental held for the whole trip. Same item shape as the per-destination list, sharing one schema definition. These bracket the itinerary rather than belonging to one stop, so they render under the route overview map. A leg tied to a specific locale mid-trip belongs in that destination's own list. **Cleared entirely** in privacy-redacted builds |
 
 
-`trip.llm.provider` supports: `openai`, `anthropic`, `deepseek`, `gemini`.
+`trip.llm.provider` and `trip.llm_provider` both support: `openai`, `anthropic`,
+`deepseek`, `gemini`, `grok`, `azure_openai`. `grok` is `config.yaml`'s default
+provider and was missing from this list until 2026-09-22.
+
+### 3.1.1 Top-Level Blocks Beside `trip` And `destinations`
+
+| Block | Required | Description |
+|---|---|---|
+| `categories` | ❌ optional | Per-trip answers for the four priced discovery categories — `trails`, `cultural_events`, `en_route_stops`, `restaurants` — each a boolean or an object carrying `enabled`. The answer is sticky per trip, so enabling trails for the Southwest trip does not also buy them for Europe. Accepted nested under `trip` as well, and beaten by the paired CLI flags (`--trails`/`--no-trails` and friends) |
+| `legs` | ❌ optional | Per-leg travel modes addressed by destination id, each `{from, to, mode}`. An alternative to per-destination `transport_mode` for authors who think in journeys rather than stops; both may be used, but not to disagree about one leg. See `docs/design/multimodal-routing.md` §3.2 |
 
 ### 3.2 Auto-Resolved Fields (NOT in manifest)
 
@@ -381,14 +411,55 @@ The manifest is intentionally minimal. All geocoding, NPS detection, URL discove
 | `id` | ✅ | Unique slug (e.g., `zion`, `moab`) |
 | `name` | ✅ | Full destination name for geocoding and AI prompts |
 | `dates` | ✅ | Human-readable date range (e.g., `"October 7–9, 2026"`) |
+| `planning_links[]` | ✅ | Array of `{label, url}` — Notion, TripIt, reservation links |
+| `coordinates` | ❌ optional | Author-supplied `{lat, lng}` used instead of geocoding `name` — the author's statement about which place this is, which a gazetteer cannot always be asked for |
 | `schedule_start_time` | ❌ optional | Destination-specific schedule start-time override (e.g., `8:30 AM`) |
 | `daily_activity_hours` | ❌ optional | Destination-specific activity-time budget override (hours) |
-| `planning_links[]` | ✅ | Array of `{label, url}` — Notion, TripIt, reservation links |
+| `attractions_per_day` / `restaurants_per_day` / `scenic_drives_per_day` / `en_route_stops_per_day` | ❌ optional | Destination-specific overrides of the trip-level targets (§3.1) |
 | `seeds[]` | ❌ optional | Attraction/hike/experience **name hints only** — things the user specifically intends to include. No URLs. No scenic drive titles (AI discovers those). |
+| `en_route_seeds[]` | ❌ optional | Name hints for en-route-stop discovery on the leg **arriving** at this destination — the drive from the previous stop — not attractions within the destination itself. Same shape and same rules as `seeds` |
+| `en_route_exclude[]` | ❌ optional | Name hints for en-route stops to **never** include on the arriving leg, even when discovery proposes one that verifies. Matched against `en_route_seeds` case- and punctuation-insensitively |
+| `lodging` | ❌ optional | Stay anchor: `{name, location, locality, dates, checkin_time, total_cost, currency, confirmation_number, website}`. `location` and `checkin_time` drive geocoding, routing and arrival-day scheduling, which is why §11.1 leaves them unredacted |
+| `transport_mode` | ❌ optional | Override for the leg **arriving** at this destination. Same values as the trip-level field; attaches to the arriving destination for the same reason `en_route_seeds` and `transportation` do |
+| `stretch_note` | ❌ optional | Author's note on the arriving leg, rendered verbatim (escaped) on its getting-here card |
+| `trail_section` / `trail_url` | ❌ optional | Name and URL of the trail section covering the arriving leg, written as the trail catalogue names it. Used on `bike`/`hike` legs; a supplied `trail_url` skips discovery entirely — design.md §1.4 bars the *model* from producing a URL, not a human |
+| `group_with` | ❌ optional | Id of another destination entry this one shares a lodging base with (GH #68 multi-site grouping). See `docs/design/multi-site-destination-grouping.md` |
+| `start` / `end` | ❌ optional | Where a grouped outing begins and finishes when that is not the base. Only meaningful with `group_with`; set elsewhere they are warned about and ignored |
+| `mode` | ❌ optional | How a grouped **outing** is travelled — the ride or walk itself — as distinct from `transport_mode`, which describes the relocation leg. Only meaningful with `group_with` |
+| `base_owned_categories[]` | ❌ optional | Per-entry override of which discovery categories defer to the group base instead of being discovered independently. Omitted = inherit `config.yaml`'s `multi_site_grouping.base_owned_categories` |
 | `lodging.confirmation_number` | ❌ optional | Booking code for the stay. Rendered in the lodging card; **redacted** in privacy-redacted builds (§11.1) — on most booking sites this code plus a surname is enough to view, change or cancel a reservation |
 | `lodging.website` | ❌ optional | Public URL for the lodging property. **Redacted** alongside `lodging.name`: the URL identifies the property just as precisely as the name, so exempting it would leak the same where-the-traveler-sleeps-on-which-dates fact |
 | `lodging.locality` | ❌ optional | `{city, region, country}` — the town the stay is in, as distinct from `lodging.location`, which ingestion fills with the street address (§3.4). Not redacted: a town is what the destination name already publishes |
 | `transportation[]` | ❌ optional | Booked travel legs **arriving at this destination**, each `{type, provider, label, confirmation_number, depart, arrive, website}` with `type` one of `plane`/`train`/`car`/`other`. Attaches to the arriving destination, mirroring `en_route_seeds`. Rendered as header pills. **Cleared entirely** in privacy-redacted builds |
+
+### 3.3.1 Booked Travel Leg Shape (`transportation[]`, both levels)
+
+One schema definition serves the trip-wide and per-destination lists, so a leg
+looks the same wherever it is filed. Only `type` is required.
+
+| Field | Description |
+|---|---|
+| `type` | `plane`, `train`, `car`, `ship`, `ferry`, `bus`, `shuttle` or `other` — drives the card's title and icon. `ship` is a cruise or repositioning sailing that carries the traveler between stops; `ferry` a shorter crossing |
+| `provider` | Airline, rail operator or rental company |
+| `label` | Short identifier for the leg (e.g. `UA 1234 SFO→LAS`, `Midsize SUV`). Falls back to `provider`, then to the type's own title |
+| `confirmation_number` | Booking code. **Redacted** in privacy-redacted builds, along with the whole leg (§11.1) |
+| `depart` / `arrive` | Free-text departure and arrival point and/or time. Display strings, like `dates` — nothing in the pipeline parses them |
+| `depart_time` / `arrive_time` | Clock times, each **local to the place it happens at**, exactly as the booking states them (`17:00`, `5:00 PM`). Separate from `depart`/`arrive` because those are display strings |
+| `total_cost` / `currency` | What the booking says it costs, as digits, plus the ISO 4217 code it is denominated in. Transcribed from a document, not computed — a fare booked in Euros must not be folded into a dollar total |
+| `website` | Carrier or rental manage-booking/info URL |
+| `stops[]` | Where a multi-stop leg calls on the way, in order, each `{place, date, arrive_time, depart_time}`. A cruise or a multi-city rail fare is not one place with two dates but an itinerary, and every call is somewhere the traveler will actually be |
+
+### 3.3.2 Footer Branding (`trip.brand`)
+
+Optional, and absent — the ordinary case — the footer renders as it always has,
+crediting this project and pointing at its issue tracker. Provenance (§8.2) is
+not configurable and is not here.
+
+| Field | Description |
+|---|---|
+| `distributor` / `distributor_url` | Who distributed this guide, and where that credit links (`https://` only) |
+| `support_url` / `support_label` | Where a reader takes a problem, and the wording of that link. `https:` or `mailto:` only — a published guide outlives its run, so `http://` is a downgrade |
+| `icon` / `icon_png` | Distributor mark rendered beside the credit |
 
 ### 3.4 Reservation Sidecar (generated, not hand-authored)
 
