@@ -5,6 +5,11 @@ NEVER invents events. Uses has_events decision tree:
   Format A: real events discovered, with venue, dates, admission
   Format B: honest fallback — no invented events
 
+That was the instruction, not a guarantee, and on 2026-09-22 a published
+guide carried two events no search result mentioned. `_drop_events_with_no_source`
+now enforces it after synthesis: an event none of the search results names
+does not reach the page.
+
 Search API history:
   v1.0: Bing Search API v7 (retired August 11, 2025)
   v1.1: Google Custom Search (deprecated full-web search, unusable)
@@ -20,6 +25,7 @@ Search API history:
 from __future__ import annotations
 import json, logging
 import re
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -241,6 +247,19 @@ class CulturalEventsDiscoverer:
                 logger.warning("_synthesize returned non-dict for '%s': %s", dest["name"], type(result))
                 return {"has_events": False, "honest_assessment": "Unable to parse events."}
             
+            # An event no search result mentions cannot be verified, linked
+            # or trusted -- drop it before anything downstream tries to give
+            # it a URL. Runs before _verify_event_urls so the maps fallback
+            # is never spent on an event that was never found.
+            _sourced_before = len((result.get("events") or []))
+            result = self._drop_events_with_no_source(result, raw_results, dest["name"])
+            _sourced_after = len((result.get("events") or []))
+            if _sourced_before != _sourced_after:
+                logger.info(
+                    "    source filter dropped %d of %d event(s) that no search result mentions",
+                    _sourced_before - _sourced_after, _sourced_before,
+                )
+
             # Verify any event URLs that came back
             result = self._verify_event_urls(result, dest["name"])
 
@@ -259,6 +278,128 @@ class CulturalEventsDiscoverer:
         except Exception as e:
             logger.error("Exception in _discover_for_dest for '%s': %s", dest["name"], e, exc_info=True)
             return {"has_events": False, "honest_assessment": "Event discovery encountered an error."}
+
+    # Words that carry no identity: every second event is a "festival" or a
+    # "tour", so matching on them would call anything sourced. What is left
+    # after these come out is the part that names THIS event.
+    _EVENT_NAME_NOISE = frozenset({
+        "the", "a", "an", "and", "or", "of", "at", "in", "on", "for", "with",
+        "annual", "celebration", "event", "events", "festival", "festivals",
+        "concert", "concerts", "series", "show", "shows", "tour", "tours",
+        "live", "night", "nights", "day", "days", "weekend", "party",
+        "2025", "2026", "2027",
+    })
+
+    # A synthesized event keeps its place when this share of its identifying
+    # words appears in the search results. Not 1.0: a model legitimately
+    # renames "A City Different Dia de los Muertos - Burn Zozobra" to
+    # "Dia de los Muertos Celebration", and dropping that would be worse than
+    # the problem. The two real inventions this was written for score 0.33.
+    _EVENT_SOURCE_COVERAGE = 0.6
+
+    @staticmethod
+    def _searchable_words(text: str) -> list[str]:
+        """Lowercase alphanumeric words, accents folded, for source matching."""
+        folded = unicodedata.normalize("NFKD", str(text or ""))
+        folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+        return [w for w in re.split(r"[^0-9a-z]+", folded.lower()) if w]
+
+    @classmethod
+    def _event_is_in_the_search_results(
+        cls, event: dict[str, Any], raw_results: list[dict[str, Any]]
+    ) -> bool:
+        """Did anything the search returned actually mention this event?
+
+        The synthesis prompt is given search results and told to report what
+        is in them. It does not always: on 2026-09-22 a Southwest build
+        published "Zion: We Own the Night Tour" for Zion, which appears in
+        none of that destination's eight results, and "Rocky Horror Picture
+        Show" for Telluride, which is that search's real "Telluride Horror
+        Show" crossed with a St. George result for "The Rocky Horror Picture
+        Show Movie Screening" -- carrying the St. George screening's October
+        24 date to Colorado. The sourced Telluride event was dropped in its
+        favour.
+
+        design.md 1.4 bars the model from producing a URL. Nothing barred it
+        from producing the event, and an event with no source has no URL and
+        no real venue, so it reaches the page as a Google Maps search for a
+        place that does not exist ("Zion area").
+
+        Matching is against result titles, snippets AND urls, because an
+        event is often only named inside a bundled calendar page's snippet --
+        the case _verify_event_urls' maps fallback exists to serve, which a
+        title-only match would have destroyed.
+        """
+        words = [w for w in cls._searchable_words(event.get("name", ""))
+                 if len(w) > 2 and w not in cls._EVENT_NAME_NOISE]
+        if not words:
+            # Nothing identifying to match on. Fail open: this gate exists to
+            # catch inventions, not to referee naming.
+            return True
+        haystack = set()
+        for row in raw_results or []:
+            if not isinstance(row, dict):
+                continue
+            for field in ("name", "snippet", "url"):
+                haystack.update(cls._searchable_words(row.get(field, "")))
+        if not haystack:
+            # No results to check against -- the search failed, which is not
+            # evidence the event is invented.
+            return True
+        hits = sum(1 for w in words if w in haystack)
+        return (hits / len(words)) >= cls._EVENT_SOURCE_COVERAGE
+
+    def _drop_events_with_no_source(
+        self, result: dict[str, Any], raw_results: list[dict[str, Any]], dest_name: str = ""
+    ) -> dict[str, Any]:
+        """Remove synthesized events that no search result mentions."""
+        if not isinstance(result, dict) or not result.get("events"):
+            return result
+        kept: list[dict[str, Any]] = []
+        for event in result.get("events") or []:
+            if not isinstance(event, dict):
+                continue
+            if self._event_is_in_the_search_results(event, raw_results):
+                kept.append(event)
+            else:
+                logger.info(
+                    "  Dropping cultural event absent from the search results: '%s' (%s)",
+                    str(event.get("name", "") or "unnamed"),
+                    dest_name or "unknown destination",
+                )
+        if len(kept) != len(result.get("events") or []):
+            result["events"] = kept
+            if not kept:
+                result["has_events"] = False
+        return result
+
+    # Words that leave a venue naming no particular place. "Zion area" is not
+    # somewhere a reader can stand.
+    _VAGUE_VENUE_WORDS = frozenset({
+        "the", "a", "an", "and", "of", "at", "in", "near", "around", "about",
+        "area", "areas", "region", "regional", "vicinity", "surrounding",
+        "surrounds", "environs", "greater", "various", "multiple", "several",
+        "venue", "venues", "location", "locations", "citywide", "countywide",
+        "tbd", "tba", "unknown", "unconfirmed", "downtown", "town", "city",
+    })
+
+    @classmethod
+    def _venue_names_a_place(cls, venue: str, dest_name: str) -> bool:
+        """Does this venue name somewhere, beyond the destination itself?
+
+        The maps fallback searches `venue + destination`. That is useful for
+        "Under Canvas Zion" and "The Palm Theatre", and useless for "Zion
+        area" or a venue that merely restates the stop -- it produces a link
+        that looks like a lookup and lands nowhere, which is worse than the
+        card carrying no link at all.
+        """
+        venue_words = set(cls._searchable_words(venue))
+        if not venue_words:
+            return False
+        venue_words -= cls._VAGUE_VENUE_WORDS
+        venue_words -= set(cls._searchable_words(dest_name))
+        venue_words = {w for w in venue_words if len(w) > 2}
+        return bool(venue_words)
 
     def _verify_event_urls(self, result: dict[str, Any], dest_name: str = "") -> dict[str, Any]:
         """Strip event URLs that are dead OR merely a generic/fallback page,
@@ -312,11 +453,23 @@ class CulturalEventsDiscoverer:
                 # pin; a show name is not. With no venue there is nothing
                 # honest to map, so the event keeps no link and the card still
                 # carries its name, date and admission.
+                # ...and the venue has to name a place. "Zion area" and a
+                # venue that just repeats the destination are not somewhere a
+                # reader can go, so mapping them produces a link that looks
+                # like a lookup and lands nowhere. See _venue_names_a_place.
                 venue_name = str(event.get("venue", "") or "").strip()
                 has_name = bool(str(event.get("name", "") or "").strip())
+                mappable = venue_name and self._venue_names_a_place(venue_name, dest_name)
+                if venue_name and not mappable:
+                    logger.info(
+                        "  No maps fallback for '%s' (%s): venue '%s' names no place",
+                        str(event.get("name", "") or "unnamed"),
+                        dest_name or "unknown destination",
+                        venue_name,
+                    )
                 fallback = (
                     self._event_maps_fallback_url({"name": venue_name}, dest_name)
-                    if venue_name and has_name else ""
+                    if mappable and has_name else ""
                 )
                 if fallback:
                     event["url"] = fallback
