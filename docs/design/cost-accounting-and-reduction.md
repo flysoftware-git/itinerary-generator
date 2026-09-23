@@ -957,6 +957,63 @@ exists.
 Worth naming because the reported figure looks complete. Anyone reasoning
 about cost from the run output alone will conclude this feature was free.
 
+## 8.14 What a published guide costs now (2026-09-22/23)
+
+Three prod builds on merged `v3`, generator `v3.3.0`, content on `grok-4-fast`,
+discovery on `grok-4.3`, per-item fallback on Serper. All categories on.
+
+| Run | Trip | Commit | Stops | ai_calls | url_search_calls | **Estimated** |
+|---|---|---|---|---|---|---|
+| 1 | Southwest | `0d367ce` | 10 | 10 | 250 | **$3.0825** |
+| 2 | Southwest, 4h later | `e132e57` | 10 | 10 | 192 | **$3.0557** |
+| 3 | Old Hickory | `e132e57` | 7 | 7 | 341 | **$3.0502** |
+
+Where it goes, run 3 as the example:
+
+| | calls | tokens | est | tool fee |
+|---|---|---|---|---|
+| grok/grok-4.3 (discovery) | 35 | 1,329,341 | $2.5172 | $0.7550 (151 searches) |
+| grok/grok-4-fast (content) | 14 | 77,897 | $0.2200 | — |
+| serper/serper (per-item fallback) | 313 | 0 | $0.3130 | $0.3130 |
+
+**Discovery is ~83% of the bill, and it is tokens, not fees.** grok-4.3 reads
+1.3M tokens per build -- harvested page text -- against grok-4-fast's 78-105K
+for every word of prose on the page. Anyone trying to reduce cost should be
+looking at how much HTML discovery reads, not at the content model.
+
+### Runs 1 and 2 answer "are these warm numbers?"
+
+Run 2 is the same trip on the same manifest four hours after run 1, against a
+populated cache. It reused 19 URL-discovery search results and all ten
+destinations' image candidates, and its search calls fell 250 -> 192.
+
+It saved **$0.027, under 1%.**
+
+The reason is the table above: what caches between runs is per-item search
+results, and those are the cheap part. The grok-4.3 harvest is not cached and
+does not shrink. Run 3 is the control -- Old Hickory fetched every image fresh,
+with no cache lines in its log at all, and cost the same $3.05.
+
+So the figures in this section are effectively cold-run figures. A true cold
+start would land near $3.10-3.20, not at a different order of magnitude.
+
+### Against the 2026-08-24 baseline
+
+§8.9 recorded **$2.82** like-for-like on `sw_manifest`. This is $3.06 for the
+same trip, about 8% higher. That is **not** a regression measurement: a month of
+merges separates them, the model changed (`grok-latest` -> `grok-4-fast` for
+content, #171/#179), and discovery draws differently every run -- run 1 and run 2
+of the same trip on the same day differ by 58 search calls. Treat $2.82 and
+$3.06 as two readings of a noisy instrument roughly a month apart, not as a
+trend.
+
+### What these figures still do not include
+
+Unchanged from §8.13 and §9: Google Places lookups are billed separately and
+appear nowhere here; geocoding, routing and image fetches are free-tier quota
+rather than dollars; and every figure is computed from token counts at list
+price, so it is an estimate, not an invoice.
+
 ## 9. Open items
 
 - **The residual 18%.** The corrected `$2.00/$6.00` rate computes $4.45 against $3.75
