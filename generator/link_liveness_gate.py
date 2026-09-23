@@ -51,6 +51,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 from generator.fanout_metrics import pool as instrumented_pool
 
@@ -125,6 +126,66 @@ def card_links(trip: dict[str, Any]) -> Iterator[CardLink]:
         tip_url = str(events.get("local_tip_url", "") or "").strip()
         if tip_url:
             yield CardLink(dest, "local_tip", events, "local_tip_url", tip_url)
+
+
+def _https_twin(url: str) -> str:
+    return "https://" + url[len("http://"):]
+
+
+def _same_page(first: str, second: str) -> bool:
+    """Same host and path, differing only in scheme (and a www prefix)."""
+    a, b = urlparse(first), urlparse(second)
+    host = lambda netloc: netloc.lower().removeprefix("www.")  # noqa: E731
+    return host(a.netloc) == host(b.netloc) and a.path.rstrip("/") == b.path.rstrip("/")
+
+
+def prefer_https_card_links(trip: dict[str, Any], discoverer: Any) -> int:
+    """Publish the https form of a card link wherever the site serves one.
+
+    The Southwest guide of 2026-09-22 published two `http://` links,
+    `desertbistro.com/menu-spring-2026` and `graftonheritage.org/`, and both
+    hosts answer https perfectly well. They arrived that way for two different
+    reasons, so this handles both:
+
+      * desertbistro serves http AND https, each 200, with no redirect. The
+        scheme is simply whichever one the search result happened to carry.
+        Probing the https twin settles it.
+      * graftonheritage redirects http to https. `URLValidator._check` follows
+        redirects but used to discard where it landed, so the pre-redirect
+        form was published. It now records the final URL, and this reads it.
+
+    A generated guide outlives its run and is read on hotel wifi. Publishing
+    the plaintext form of a page the server is willing to serve securely is a
+    downgrade nobody chose, and it is the same argument `trip.brand`'s
+    support_url already makes for `https:`-only.
+
+    Only `http://` links are touched, so the cost is one or two extra HEADs on
+    a build of ~350 links. A redirect is followed only when it lands on the
+    same page: a redirect that also changes host or path is a different
+    question and is left to the audit.
+    """
+    upgraded = 0
+    for link in card_links(trip):
+        if not link.url.lower().startswith("http://"):
+            continue
+        twin = _https_twin(link.url)
+        ok, _status = discoverer._verify_url_cached(twin)
+        if ok:
+            link.holder[link.field] = twin
+            upgraded += 1
+            logger.info("Published the https form of %s", link.url)
+            continue
+        # Not reachable as https directly -- but the site may send us there
+        # anyway, and where it sends us is what belongs on the page.
+        discoverer._verify_url_cached(link.url)
+        final = str(getattr(discoverer._url_validator, "_last_final_url", "") or "")
+        if final.lower().startswith("https://") and _same_page(final, link.url):
+            link.holder[link.field] = final
+            upgraded += 1
+            logger.info("Published the https form %s redirects to: %s", link.url, final)
+    if upgraded:
+        logger.info("Preferred https for %d card link(s)", upgraded)
+    return upgraded
 
 
 def _is_engine_built(url: str) -> bool:
