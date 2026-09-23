@@ -262,13 +262,17 @@ def test_verify_event_urls_strips_generic_landing_page() -> None:
         "events": [
             {
                 "name": "Field of Screams Softball Tournament",
-                "venue": "Moab",
+                # Venues that name places: a venue restating the destination
+                # no longer earns a maps fallback, since a map of the town
+                # the reader is standing in is not a lookup. See
+                # test_an_event_nobody_searched_up_is_not_published.
+                "venue": "Swanny City Park",
                 "dates_in_range": "October 23-24, 2026",
                 "url": "https://www.moab.org/things-to-do",
             },
             {
                 "name": "Canyonlands Ultra",
-                "venue": "Moab",
+                "venue": "Old Spanish Trail Arena",
                 "dates_in_range": "October 24, 2026",
                 "url": "https://www.moabultra.com/404errorpage",
             },
@@ -317,7 +321,10 @@ def test_verify_event_urls_strips_dead_link() -> None:
         "events": [
             {
                 "name": "Canyon Ultra",
-                "venue": "Moab",
+                # A venue that names a place, not just the stop. A venue
+                # restating the destination no longer earns a maps fallback
+                # -- see test_an_event_nobody_searched_up_is_not_published.
+                "venue": "Old Spanish Trail Arena",
                 "dates_in_range": "October 24, 2026",
                 "url": "https://www.moabultra.com/canyonlands-ultra-race-info",
             },
@@ -353,7 +360,7 @@ def test_verify_event_urls_assigns_maps_fallback_when_no_url_present() -> None:
         "events": [
             {
                 "name": "Canyonlands Ultra",
-                "venue": "Moab",
+                "venue": "Old Spanish Trail Arena",
                 "dates_in_range": "October 24, 2026",
                 "admission": "Varies",
             },
@@ -363,7 +370,7 @@ def test_verify_event_urls_assigns_maps_fallback_when_no_url_present() -> None:
     verified = d._verify_event_urls(result, "Moab")
 
     assert verified["events"][0]["url"] == (
-        "https://www.google.com/maps/search/?api=1&query=Moab"
+        "https://www.google.com/maps/search/?api=1&query=Old%20Spanish%20Trail%20Arena%20Moab"
     )
 
 
@@ -376,7 +383,7 @@ def test_verify_event_urls_fallback_omits_redundant_destination_scope() -> None:
         "events": [
             {
                 "name": "Moab Music Festival",
-                "venue": "Moab",
+                "venue": "Moab Arts and Recreation Center",
                 "dates_in_range": "September 2-18, 2026",
             },
         ],
@@ -385,7 +392,7 @@ def test_verify_event_urls_fallback_omits_redundant_destination_scope() -> None:
     verified = d._verify_event_urls(result, "Moab")
 
     assert verified["events"][0]["url"] == (
-        "https://www.google.com/maps/search/?api=1&query=Moab"
+        "https://www.google.com/maps/search/?api=1&query=Moab%20Arts%20and%20Recreation%20Center"
     )
 
 
