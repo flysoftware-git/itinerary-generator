@@ -51,7 +51,7 @@ class URLValidator:
 
     @property
     def _last_final_url(self) -> str:
-        """The URL the *calling thread's* most recent get_text ended on.
+        """The URL the *calling thread's* most recent get_text or _check ended on.
 
         One validator is shared by every page-fetch worker, so this cannot
         live on the instance: a second thread finishing its own fetch in the
@@ -122,6 +122,13 @@ class URLValidator:
             return False, str(exc), ""
 
     def _check(self, url: str) -> tuple[bool, int | str]:
+        # Cleared up front for the same reason get_text clears it: a call that
+        # never reaches a response must leave no final URL rather than the
+        # previous call's. _check follows redirects and, until 2026-09-23,
+        # threw the destination away -- so a site that answers http:// with a
+        # redirect to https:// had the http form published, which is what
+        # graftonheritage.org did on the Southwest guide.
+        self._last_final_url = ""
         if not url or not urlparse(url).scheme:
             return False, "invalid_url"
         for attempt in range(MAX_RETRIES + 1):
@@ -132,6 +139,7 @@ class URLValidator:
                     self._increment_counter("get_requests")
                     resp = self.session.get(url, timeout=self.timeout, allow_redirects=True, stream=True)
                     resp.close()
+                self._last_final_url = str(getattr(resp, "url", None) or url)
                 return resp.status_code < 400, resp.status_code
             except RequestException as exc:
                 if self._is_ssl_error(exc) and self._is_trusted_ssl_fallback_host(url):
@@ -143,6 +151,7 @@ class URLValidator:
                             resp = self.session.get(url, timeout=self.timeout, allow_redirects=True, stream=True, verify=False)
                             resp.close()
                         logger.info("SSL verify bypass used for trusted host: %s", urlparse(url).netloc)
+                        self._last_final_url = str(getattr(resp, "url", None) or url)
                         return resp.status_code < 400, resp.status_code
                     except RequestException as inner_exc:
                         if attempt == MAX_RETRIES:

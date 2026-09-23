@@ -3717,7 +3717,16 @@ def main(
         # is enforced over every card link, and where the liveness report is
         # recomputed to describe the page actually assembled. See
         # generator/link_liveness_gate.py for the measured gaps it closes.
-        from generator.link_liveness_gate import withhold_dead_card_links
+        from generator.link_liveness_gate import (
+            prefer_https_card_links,
+            withhold_dead_card_links,
+        )
+
+        # Before the dead-link gate, not after: an upgraded link is a
+        # different URL, and the report has to describe the one published.
+        _upgraded = prefer_https_card_links(trip, url_discoverer)
+        if _upgraded:
+            click.echo(f"  ✓ Published the https form of {_upgraded} link(s)")
 
         _gate = withhold_dead_card_links(trip, url_discoverer)
         if _gate["withheld"] or _gate["checked_at_assembly"]:
