@@ -82,9 +82,17 @@ ai:
   #     that is a reason not to fear a slow model, not a reason to pick one.
   #
   # grok-4-fast built the published Old Hickory guide end to end for $3.09.
+  # Re-measured 2026-09-22/23 across three prod builds: $3.05-$3.08, whichever
+  # trip and whether the cache was warm (a same-trip rerun four hours later
+  # saved $0.03). It is not the expensive half of that figure: content is
+  # 78-105K tokens and ~$0.22-0.31, while grok-4.3 discovery reads 1.3M tokens
+  # of harvested page text for ~$2.52. See
+  # docs/design/cost-accounting-and-reduction.md 8.14.
+  #
   # grok-4.3 is half the output price again and is already trusted as
   # url_discovery.search_model; it has not generated destination content
-  # here, so switching to it is a change to make deliberately and measure.
+  # here, so switching to it is a change to make deliberately and measure --
+  # and on the numbers above it would move ~$0.15 of a ~$3.06 build.
   #
   # Note this line beats XAI_MODEL in the environment: the env var is only
   # consulted when no model is named (llm_client.MultiLLMClient.__init__).
@@ -567,6 +575,14 @@ url_discovery:
   # resolve -- the most expensive discovery we do and the least likely to
   # succeed -- after which verified-link-or-seed deleted 29 attractions
   # anyway for not finding a website.
+  #
+  # That 66% is HISTORY, and the sentences below are the reason: the fallback
+  # moved to Serper, which bills $1.00/1000 rather than a model's token count.
+  # Measured 2026-09-22/23 across three prod builds, it is $0.16-$0.31 of a
+  # ~$3.06 run -- 5-10%, not 66% -- on 162-313 calls. Do not cite the 2026-08-22
+  # figure as a reason to touch this setting; the expensive half of a build is
+  # now the grok-4.3 harvest. See docs/design/cost-accounting-and-reduction.md
+  # 8.14.
   #
   # "geocode_maps" declines that call and answers "where is it" with a free
   # Nominatim geocode instead, emitting a coordinate Maps link. Owner
