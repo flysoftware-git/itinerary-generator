@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from generator.html_assembler import CHECKSUM_PATH, TEMPLATE_PATH, HTMLAssembler, _verify_checksum
+from generator.html_assembler import UNVERIFIED_CARD_TITLE
 from generator.transit_routing import RESOLVED_MODE_KEY
 
 
@@ -2204,7 +2205,10 @@ def test_build_attractions_seed_no_url_attraction_renders_caution_badge() -> Non
     )
 
     assert "Quiet Overlook" in html
-    assert '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>' in html
+    # Against the constant, not the sentence. This assertion pinned the exact
+    # title and broke when the title was widened to say the figures beside the
+    # badge were unchecked too -- a wording change, not a behaviour one.
+    assert f'<span class="badge badge-caution" title="{UNVERIFIED_CARD_TITLE}">⚠ Unverified</span>' in html
 
 
 def test_an_unlinked_seed_says_no_link_was_found_rather_than_promising_one() -> None:
@@ -3172,7 +3176,10 @@ def test_build_getting_here_seed_stop_with_no_url_renders_caution_badge() -> Non
     html = assembler._build_getting_here(ai, dest, previous_name="Albuquerque")
 
     assert "Adobe Plaza" in html
-    assert '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>' in html
+    # Against the constant, not the sentence. This assertion pinned the exact
+    # title and broke when the title was widened to say the figures beside the
+    # badge were unchecked too -- a wording change, not a behaviour one.
+    assert f'<span class="badge badge-caution" title="{UNVERIFIED_CARD_TITLE}">⚠ Unverified</span>' in html
 
 
 def test_build_getting_here_maps_fallback_does_not_append_map_suffix() -> None:
