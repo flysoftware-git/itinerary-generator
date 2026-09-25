@@ -2937,8 +2937,14 @@ class HTMLAssembler:
                     rating_text, description_raw = self._extract_rating_badge_and_clean_text(description_raw)
                 if not rating_text:
                     rating_text, practical_note_raw = self._extract_rating_badge_and_clean_text(practical_note_raw)
+                # Same scope the attraction card states on its figures. Without
+                # it the badge below asserts that the figures beside it were
+                # not checked, on a card where the rating -- often the only
+                # figure an en-route stop has -- says nothing about itself.
+                unchecked = f' title="{UNCHECKED_FIGURE_TITLE}"' if not url else ""
                 rating_badge_html = (
-                    f' <span class="badge badge-rating">★ {html_escape.escape(rating_text)}</span>' if rating_text else ""
+                    f' <span class="badge badge-rating"{unchecked}>★ {html_escape.escape(rating_text)}</span>'
+                    if rating_text else ""
                 )
                 caution_html = (
                     f' <span class="badge badge-caution" title="{UNVERIFIED_CARD_TITLE}">⚠ Unverified</span>'
@@ -3232,7 +3238,14 @@ class HTMLAssembler:
             dur_html = f'<span class="badge badge-duration"{unchecked}>{dur}</span>' if dur else ""
             distance_html = f'<span class="badge badge-distance"{unchecked}>{html_escape.escape(distance_display)}</span>' if distance_display else ""
             elevation_html = f'<span class="badge badge-elevation"{unchecked}>{html_escape.escape(elevation_display)}</span>' if elevation_display else ""
-            rating_html = f'<span class="badge badge-rating">★ {html_escape.escape(attr_rating_text)}</span>' if attr_rating_text else ""
+            # The rating carries the scope too. It was the one figure left bare
+            # by the first version of this change, and it is the figure a reader
+            # is least likely to doubt: a bare "★ 4.6" on a card with no source
+            # reads as somebody's aggregate, not as the model's own number.
+            rating_html = (
+                f'<span class="badge badge-rating"{unchecked}>★ {html_escape.escape(attr_rating_text)}</span>'
+                if attr_rating_text else ""
+            )
             must_html = '<span class="badge badge-mustsee">Must-See</span>' if must else ""
             # Seed attractions are the traveler's own explicit requests
             # (docs/requirements.md §3.4), distinct from Must-See's verified-
@@ -3728,13 +3741,22 @@ class HTMLAssembler:
             desc = self._restaurant_description(rest, dest_name, bool(url), _is_map_fallback)
             reserve = rest.get("reserve_recommended", False)
 
+            # Same scope the attraction card states on its figures, for the
+            # same reason: the badge below says the figures beside it were not
+            # checked, and a bare "★ 4.5  $$" is the model's own cuisine,
+            # rating and price band with nothing standing behind them.
+            unchecked = f' title="{UNCHECKED_FIGURE_TITLE}"' if not url else ""
+
             # Cuisine badge
-            cuisine_badge = f'<span class="badge cuisine-badge">{cuisine}</span>' if cuisine else ""
+            cuisine_badge = f'<span class="badge cuisine-badge"{unchecked}>{cuisine}</span>' if cuisine else ""
 
             # Reserve recommendation badge
             reserve_badge = '<span class="badge badge-reserve">Reservations Recommended</span>' if reserve else ""
-            price_badge = f'<span class="badge badge-price">{html_escape.escape(price)}</span>' if price else ""
-            rating_badge = f'<span class="badge badge-rating">★ {html_escape.escape(rating_text)}</span>' if rating_text else ""
+            price_badge = f'<span class="badge badge-price"{unchecked}>{html_escape.escape(price)}</span>' if price else ""
+            rating_badge = (
+                f'<span class="badge badge-rating"{unchecked}>★ {html_escape.escape(rating_text)}</span>'
+                if rating_text else ""
+            )
             caution_badge = (
                 f'<span class="badge badge-caution" title="{UNVERIFIED_CARD_TITLE}">⚠ Unverified</span>'
                 if not url else ""
