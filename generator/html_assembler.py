@@ -16,6 +16,7 @@ Template placeholders use the pattern <!--PLACEHOLDER_NAME-->.
 from __future__ import annotations
 import html as html_escape
 from generator import app_icon
+from generator.place_cues import COMMON_PLACE_CUES, US_STATES
 import hashlib, json, logging
 from datetime import datetime
 from pathlib import Path
@@ -4806,16 +4807,11 @@ class HTMLAssembler:
             return True
         if any(
             term in lowered
-            for term in (
-                "national park",
-                "state park",
-                "utah",
-                "colorado",
-                "arizona",
-                "new mexico",
-                "nevada",
-                "california",
-            )
+            # Was the same six-state literal as `url_discovery`, duplicated
+            # and free to drift. Shared now, and all fifty: a single-token
+            # place in one of the other forty-four used to read as unqualified
+            # here with nothing reporting it.
+            for term in (*COMMON_PLACE_CUES, *US_STATES)
         ):
             return True
         if re.search(r"\bst\.?\s+[a-z]", lowered):

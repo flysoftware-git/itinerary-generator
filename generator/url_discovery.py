@@ -292,19 +292,20 @@ COUNTRY_TLD_HINTS: dict[str, tuple[str, ...]] = {
     "romania": ("ro",),
     "bulgaria": ("bg",),
 }
+from generator.place_cues import COMMON_PLACE_CUES, US_STATES
+
+#: The six states this tuple used to name -- Utah, Colorado, Arizona, New
+#: Mexico, Nevada, California -- were the trips the engine was first exercised
+#: on. A place in the other forty-four read as unqualified, silently, and the
+#: literal was duplicated in `html_assembler` where it could drift. The states
+#: are shared now; the cues below stay here because they are this module's.
 LOCATION_CUE_TERMS = (
-    "national park",
-    "state park",
+    *COMMON_PLACE_CUES,
     "downtown",
     "historic district",
     "visitor center",
     "junction",
-    "utah",
-    "colorado",
-    "arizona",
-    "new mexico",
-    "nevada",
-    "california",
+    *sorted(US_STATES),
 )
 TEXT_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
