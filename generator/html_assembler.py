@@ -343,6 +343,15 @@ _GETTING_HERE_HEADING_BY_LEG_MODE: dict[str, str] = {
 }
 
 
+UNVERIFIED_CARD_TITLE = (
+    "No verified source link was found for this recommendation, and the "
+    "figures shown beside it were not checked either"
+)
+#: Said on each figure as well as on the badge. The badge alone reads as a
+#: statement about the link, because that is all it used to say.
+UNCHECKED_FIGURE_TITLE = "Not checked: this card has no verified source link"
+
+
 class HTMLAssembler:
     def __init__(self, config_path: Path | str = "config.yaml") -> None:
         import yaml
@@ -2932,7 +2941,7 @@ class HTMLAssembler:
                     f' <span class="badge badge-rating">★ {html_escape.escape(rating_text)}</span>' if rating_text else ""
                 )
                 caution_html = (
-                    ' <span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>'
+                    f' <span class="badge badge-caution" title="{UNVERIFIED_CARD_TITLE}">⚠ Unverified</span>'
                     if not url else ""
                 )
 
@@ -3208,11 +3217,21 @@ class HTMLAssembler:
                 except (TypeError, ValueError):
                     attr_rating_text = str(attr_rating_value).strip()
 
+            # The figures below are the model's, and on a card with no verified
+            # source nothing has checked them. The Unverified badge names the
+            # missing *link*, so without this a reader meets one warning and
+            # several unqualified numbers and reasonably reads the warning as
+            # covering the card. The scope is stated on each figure instead, so
+            # a claim's status travels with the claim.
+            #
+            # A title rather than a class, deliberately: the badges keep their
+            # look and `templates/` keeps its checksum.
+            unchecked = f' title="{UNCHECKED_FIGURE_TITLE}"' if not url else ""
             diff_class = difficulty_colors.get(diff, "")
-            diff_html = f'<span class="badge {diff_class}">{diff}</span>' if diff and diff_class else ""
-            dur_html = f'<span class="badge badge-duration">{dur}</span>' if dur else ""
-            distance_html = f'<span class="badge badge-distance">{html_escape.escape(distance_display)}</span>' if distance_display else ""
-            elevation_html = f'<span class="badge badge-elevation">{html_escape.escape(elevation_display)}</span>' if elevation_display else ""
+            diff_html = f'<span class="badge {diff_class}"{unchecked}>{diff}</span>' if diff and diff_class else ""
+            dur_html = f'<span class="badge badge-duration"{unchecked}>{dur}</span>' if dur else ""
+            distance_html = f'<span class="badge badge-distance"{unchecked}>{html_escape.escape(distance_display)}</span>' if distance_display else ""
+            elevation_html = f'<span class="badge badge-elevation"{unchecked}>{html_escape.escape(elevation_display)}</span>' if elevation_display else ""
             rating_html = f'<span class="badge badge-rating">★ {html_escape.escape(attr_rating_text)}</span>' if attr_rating_text else ""
             must_html = '<span class="badge badge-mustsee">Must-See</span>' if must else ""
             # Seed attractions are the traveler's own explicit requests
@@ -3223,7 +3242,7 @@ class HTMLAssembler:
             # promoted anyway because we had enough descriptive metadata to be useful,
             # but flagged so it's visually distinguishable from a linked, source-checked entry.
             caution_html = (
-                '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>'
+                f'<span class="badge badge-caution" title="{UNVERIFIED_CARD_TITLE}">⚠ Unverified</span>'
                 if not url else ""
             )
             note_html = f'<span class="practical-note">📌 {note}</span>' if note else ""
@@ -3717,7 +3736,7 @@ class HTMLAssembler:
             price_badge = f'<span class="badge badge-price">{html_escape.escape(price)}</span>' if price else ""
             rating_badge = f'<span class="badge badge-rating">★ {html_escape.escape(rating_text)}</span>' if rating_text else ""
             caution_badge = (
-                '<span class="badge badge-caution" title="No verified source link found for this recommendation">⚠ Unverified</span>'
+                f'<span class="badge badge-caution" title="{UNVERIFIED_CARD_TITLE}">⚠ Unverified</span>'
                 if not url else ""
             )
 
