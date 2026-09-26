@@ -41,6 +41,7 @@ from typing import Any
 from generator.llm_client import MultiLLMClient
 from generator.fanout_metrics import pool as instrumented_pool
 from generator.transit_routing import NON_DRIVING_BOOKED_TYPES, leg_mode
+from generator.place_cues import COMMON_PLACE_CUES, names_a_us_state
 from generator.road_estimate import (
     ROAD_DISTANCE_FACTOR,
     drive_minutes,
@@ -292,20 +293,7 @@ COUNTRY_TLD_HINTS: dict[str, tuple[str, ...]] = {
     "romania": ("ro",),
     "bulgaria": ("bg",),
 }
-LOCATION_CUE_TERMS = (
-    "national park",
-    "state park",
-    "downtown",
-    "historic district",
-    "visitor center",
-    "junction",
-    "utah",
-    "colorado",
-    "arizona",
-    "new mexico",
-    "nevada",
-    "california",
-)
+
 TEXT_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
@@ -17146,18 +17134,17 @@ class URLDiscoverer:
             return False
         if "," in lowered:
             return True
-        strong_location_terms = (
-            "national park",
-            "state park",
-            "junction",
-            "utah",
-            "colorado",
-            "arizona",
-            "new mexico",
-            "nevada",
-            "california",
-        )
+        # The third copy of the six-state literal, and the live one: this
+        # predicate is what callers reach (_maps_fallback_query_text and
+        # _drop_items_whose_names_are_locations). LOCATION_CUE_TERMS, which
+        # looked like the rule, was read by nothing at all -- so sharing the
+        # states there and leaving this alone made the two modules DISAGREE
+        # for forty-four states, which is worse than the duplication it set
+        # out to remove. `junction` stays this module's own cue.
+        strong_location_terms = (*COMMON_PLACE_CUES, "junction")
         if any(term in lowered for term in strong_location_terms):
+            return True
+        if names_a_us_state(lowered):
             return True
         if re.search(r"\b(?:st|saint)\.?\s+[a-z]", lowered):
             return True
