@@ -742,8 +742,26 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                     },
                     "seeds": {
                         "type": "array",
-                        "items": {"type": "string", "minLength": 2},
-                        "description": "Attraction/hike/experience name hints only — no URLs.",
+                        "items": {
+                            "oneOf": [
+                                {"type": "string", "minLength": 2},
+                                {
+                                    "type": "object",
+                                    "required": ["name"],
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "name": {"type": "string", "minLength": 2},
+                                        "url": {"type": "string", "minLength": 4},
+                                    },
+                                },
+                            ],
+                        },
+                        "description": "Attraction/hike/experience hints. Either a bare "
+                                       "name, or an object naming the page that hint "
+                                       "means: {name, url}. A bare name is still a name "
+                                       "only and may not be a URL — the object form is "
+                                       "how an author says WHICH page, when discovery "
+                                       "cannot be expected to guess it.",
                     },
                     "en_route_seeds": {
                         "type": "array",
@@ -926,6 +944,7 @@ class ManifestParser:
         self._resolve_brand_icon(data, manifest_path)
         self._resolve_brand_touch_icon(data, manifest_path)
         self._validate_seeds(data)
+        self._normalize_seeds(data)
         self._validate_en_route_seeds(data)
         self._validate_en_route_exclude(data)
         self._validate_ids_unique(data)
@@ -1248,13 +1267,93 @@ class ManifestParser:
         return f"Manifest validation failed at {location}: {exc.message}"
 
     def _validate_seeds(self, data: dict[str, Any]) -> None:
+        """A bare seed is still a name; an object seed may carry the page it means.
+
+        The bare-string rule is unchanged, including its message: a name is a
+        hint for discovery and a URL pasted into that slot was always a mistake.
+        What is new is a way to say the other thing -- *this hint means THIS
+        page* -- which the schema had no room for, so an author who already knew
+        the page had to discard that and hope discovery agreed.
+        """
         for dest in data.get("destinations", []):
             for seed in dest.get("seeds", []):
+                if isinstance(seed, dict):
+                    name = str(seed.get("name", "") or "")
+                    url = str(seed.get("url", "") or "").strip()
+                    if name.startswith(("http://", "https://")):
+                        raise ValueError(
+                            f"Destination '{dest['id']}': seed name '{name}' must be a "
+                            "name — put the address in this seed's 'url' instead."
+                        )
+                    if url and not url.startswith(("http://", "https://")):
+                        raise ValueError(
+                            f"Destination '{dest['id']}': seed '{name}' has url "
+                            f"'{url}', which is not an http(s) address."
+                        )
+                    continue
                 if seed.startswith(("http://", "https://")):
                     raise ValueError(
                         f"Destination '{dest['id']}': seed '{seed}' must be a "
-                        "name only — not a URL. The generator discovers all URLs automatically."
+                        "name only — not a URL. The generator discovers all URLs "
+                        "automatically. To say which page a hint means, give the "
+                        "seed as {name: ..., url: ...} instead."
                     )
+
+    def _normalize_seeds(self, data: dict[str, Any]) -> None:
+        """Hand every consumer the shape it already understands.
+
+        `seeds` goes back to being a list of plain names, exactly as before this
+        change, and any page a seed named is collected into `seed_links` beside
+        it. Nothing downstream has to learn the object form, and nothing that
+        reads `seeds` today has to change -- which is the whole reason the
+        widening is safe to make in one commit.
+
+        `seed_links` maps name -> url and is only present when at least one seed
+        carried a page, so its absence means *no seed named one* rather than
+        *this manifest predates the field*.
+
+        **Nothing yet PREFERS these links.** URL discovery still chooses an
+        attraction's link the way it always has; carrying the author's own
+        answer to that question is a separate change, deliberately not made
+        here. A field the parser validates and exposes and no caller reads is a
+        real cost, and it is paid on purpose: the alternative is one commit that
+        widens a schema in shared code AND rewires link selection, which is two
+        reviews wearing one hat.
+        """
+        for dest in data.get("destinations", []):
+            seeds = dest.get("seeds")
+            if not isinstance(seeds, list) or not seeds:
+                continue
+            names: list[str] = []
+            links: dict[str, str] = {}
+            for seed in seeds:
+                if isinstance(seed, dict):
+                    name = str(seed.get("name", "") or "").strip()
+                    url = str(seed.get("url", "") or "").strip()
+                    if not name:
+                        continue
+                    names.append(name)
+                    if url:
+                        # Two seeds of one name pointing at different pages is a
+                        # question the parser cannot answer, and `links[name] =
+                        # url` answered it by keeping whichever came last.
+                        # Silent, and the losing page is the one the author will
+                        # go looking for.
+                        existing = links.get(name)
+                        if existing and existing != url:
+                            raise ValueError(
+                                f"Destination '{dest['id']}': seed '{name}' names two "
+                                f"different pages ('{existing}' and '{url}'). Give the "
+                                "hint once, or name the two places distinctly."
+                            )
+                        links[name] = url
+                    continue
+                name = str(seed or "").strip()
+                if name:
+                    names.append(name)
+            dest["seeds"] = names
+            if links:
+                dest["seed_links"] = links
 
     def _validate_en_route_seeds(self, data: dict[str, Any]) -> None:
         for dest in data.get("destinations", []):

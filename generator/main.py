@@ -286,6 +286,11 @@ def _strip_destination_seeds(trip: dict[str, Any]) -> int:
         if isinstance(seeds, list) and seeds:
             stripped_count += len(seeds)
         dest["seeds"] = []
+        # And the pages those seeds named. `--noseed` means "ignore the
+        # manifest's seeds this run", so leaving `seed_links` behind would let
+        # the first consumer of it honour an author's chosen link during a run
+        # told to ignore the hint that carried it.
+        dest.pop("seed_links", None)
     return stripped_count
 
 
