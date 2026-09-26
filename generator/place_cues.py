@@ -38,6 +38,8 @@ options. A trip outside the US gets no cue from this and falls through to the
 comma rule, which is the same answer it got before for forty-four states.
 """
 
+import re
+
 #: Lowercase, no punctuation: callers lowercase the haystack before testing.
 #: The District of Columbia is included because "Washington, DC" and
 #: "Washington" are different places and the second is the state.
@@ -62,3 +64,28 @@ COMMON_PLACE_CUES: tuple[str, ...] = (
     "national park",
     "state park",
 )
+
+#: A state qualifies a name when it TRAILS it -- "Olympia Washington", "Bend
+#: Oregon" -- and not merely when it appears somewhere inside it. A plain
+#: substring test over forty-four more states turns a person's name into a
+#: location: `"georgia" in "Georgia O'Keeffe Museum"` is true, and the museum
+#: then lost the "Santa Fe" its maps query needed. The same test admits "Texas
+#: Roadhouse", "Washington Monument", "Indiana Dunes", "Virginia's Diner" and
+#: "Ohio Street Overlook", every one of them a name that says nothing about
+#: where it is.
+#:
+#: Anchoring at the end keeps the errors on the benign side, which this file
+#: already argues is the right bias: a missed cue means a query goes out more
+#: qualified than it had to be, a false cue means it goes out unqualified and
+#: can land on the wrong place entirely. "New York City" is the cost -- it
+#: reads as unqualified and gets its destination appended, harmlessly.
+_TRAILING_STATE_RE = re.compile(
+    r"(?:^|[\s,])(?:"
+    + "|".join(re.escape(state) for state in sorted(US_STATES, key=len, reverse=True))
+    + r")\s*$"
+)
+
+
+def names_a_us_state(text: str) -> bool:
+    """Does this free-text name END with a US state (or DC)?"""
+    return bool(_TRAILING_STATE_RE.search(str(text or "").lower().strip()))

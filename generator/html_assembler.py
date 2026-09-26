@@ -16,7 +16,7 @@ Template placeholders use the pattern <!--PLACEHOLDER_NAME-->.
 from __future__ import annotations
 import html as html_escape
 from generator import app_icon
-from generator.place_cues import COMMON_PLACE_CUES, US_STATES
+from generator.place_cues import COMMON_PLACE_CUES, names_a_us_state
 import hashlib, json, logging
 from datetime import datetime
 from pathlib import Path
@@ -4805,16 +4805,22 @@ class HTMLAssembler:
             return False
         if "," in lowered:
             return True
-        if any(
-            term in lowered
-            # Was the same six-state literal as `url_discovery`, duplicated
-            # and free to drift. Shared now, and all fifty: a single-token
-            # place in one of the other forty-four used to read as unqualified
-            # here with nothing reporting it.
-            for term in (*COMMON_PLACE_CUES, *US_STATES)
-        ):
+        # Was the same six-state literal as `url_discovery`, duplicated and
+        # free to drift. Shared now, and all fifty -- a single-token place in
+        # one of the other forty-four used to read as unqualified here with
+        # nothing reporting it. The states are matched at the END of the name
+        # rather than anywhere in it; see place_cues.names_a_us_state for the
+        # museum that lost its city to a substring match on a person's name.
+        if any(term in lowered for term in COMMON_PLACE_CUES):
             return True
-        if re.search(r"\bst\.?\s+[a-z]", lowered):
+        if names_a_us_state(lowered):
+            return True
+        # The other place these two copies had drifted, found by asserting they
+        # agree rather than by reading them: url_discovery's copy of this line
+        # spells the word out, this one never did, so "Saint George" read as
+        # unqualified here and as qualified there -- for a town this project
+        # builds a guide to. Same pattern in both now.
+        if re.search(r"\b(?:st|saint)\.?\s+[a-z]", lowered):
             return True
         return False
 
