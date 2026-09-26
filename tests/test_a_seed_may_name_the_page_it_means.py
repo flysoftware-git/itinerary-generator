@@ -62,10 +62,71 @@ WITH_PAGE = """    seeds:
 """
 
 
+TWO_PAGES_ONE_NAME = """    seeds:
+      - name: "Riverside Park"
+        url: "https://example.org/one"
+      - name: "Riverside Park"
+        url: "https://example.org/two"
+"""
+
+ONE_PAGE_NAMED_TWICE = """    seeds:
+      - name: "Riverside Park"
+        url: "https://example.org/one"
+      - name: "Riverside Park"
+        url: "https://example.org/one"
+"""
+
+ONE_SEED_WITH_A_PAGE = """    seeds:
+      - name: "Riverside Park"
+        url: "https://example.org/one"
+"""
+
+
 def _parse(tmp_path: Path, seeds_block: str) -> dict:
     path = tmp_path / "manifest.yaml"
     path.write_text(HEAD + seeds_block, encoding="utf-8")
     return ManifestParser().parse(path)
+
+
+def test_two_seeds_of_one_name_may_not_name_different_pages(tmp_path):
+    """The parser cannot choose between them, so it refuses to choose silently.
+
+    `links[name] = url` kept whichever came last, and the losing page is the one
+    the author would go looking for.
+    """
+    with pytest.raises(ValueError) as caught:
+        _parse(tmp_path, TWO_PAGES_ONE_NAME)
+
+    said = str(caught.value)
+    assert "two different pages" in said
+    assert "example.org/one" in said and "example.org/two" in said
+
+
+def test_the_same_page_named_twice_is_not_a_conflict(tmp_path):
+    """Repetition is not ambiguity: the author said the same thing twice."""
+    dest = _parse(tmp_path, ONE_PAGE_NAMED_TWICE)["destinations"][0]
+
+    assert dest["seeds"] == ["Riverside Park", "Riverside Park"]
+    assert dest["seed_links"] == {"Riverside Park": "https://example.org/one"}
+
+
+def test_noseed_drops_the_pages_the_seeds_named(tmp_path):
+    """`--noseed` means ignore the manifest's seeds, the links included.
+
+    Left behind, `seed_links` would let the first consumer of it honour an
+    author's chosen page during a run told to ignore the hint that carried it.
+    """
+    from generator.main import _strip_destination_seeds
+
+    parsed = _parse(tmp_path, ONE_SEED_WITH_A_PAGE)
+    assert parsed["destinations"][0]["seed_links"]
+
+    _strip_destination_seeds(parsed)
+
+    assert parsed["destinations"][0]["seeds"] == []
+    assert "seed_links" not in parsed["destinations"][0], (
+        "the pages the seeds named outlived the seeds they came from"
+    )
 
 
 # -- the bare form is untouched ----------------------------------------------

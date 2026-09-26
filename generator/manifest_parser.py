@@ -1334,6 +1334,18 @@ class ManifestParser:
                         continue
                     names.append(name)
                     if url:
+                        # Two seeds of one name pointing at different pages is a
+                        # question the parser cannot answer, and `links[name] =
+                        # url` answered it by keeping whichever came last.
+                        # Silent, and the losing page is the one the author will
+                        # go looking for.
+                        existing = links.get(name)
+                        if existing and existing != url:
+                            raise ValueError(
+                                f"Destination '{dest['id']}': seed '{name}' names two "
+                                f"different pages ('{existing}' and '{url}'). Give the "
+                                "hint once, or name the two places distinctly."
+                            )
                         links[name] = url
                     continue
                 name = str(seed or "").strip()
