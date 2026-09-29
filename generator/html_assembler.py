@@ -43,6 +43,8 @@ from generator.multi_site_grouping import (
     stated_coordinates,
 )
 
+from generator import date_span
+
 logger = logging.getLogger(__name__)
 TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "v2.5_template.html"
 CHECKSUM_PATH = Path(__file__).parent.parent / "templates" / "checksums.txt"
@@ -1164,7 +1166,8 @@ class HTMLAssembler:
         section += self._build_attractions(attractions_ai, drives, dest.get("name", ""), dest=dest, dest_by_id=dest_by_id)
 
         # Daily schedule
-        section += self._build_schedule(ai, drives, dest["name"])
+        section += self._build_schedule(ai, drives, dest["name"],
+                                        dates=dest.get("dates"))
 
         # Cultural events
         section += self._build_events(events, dest["name"], dest=dest, dest_by_id=dest_by_id)
@@ -3367,7 +3370,24 @@ class HTMLAssembler:
         html += '</div>\n</div>\n'
         return html
 
-    def _build_schedule(self, ai: dict, drives: list, dest_name: str) -> str:
+    def _build_schedule(self, ai: dict, drives: list, dest_name: str,
+                        dates: str | None = None) -> str:
+        """The destination's possible daily schedule.
+
+        `dates` is the destination's own manifest date string, and it is
+        what lets a day title say WHICH day it means -- `Day 1 -- Fri 3 Oct`
+        rather than an ordinal a traveller has to count out against their
+        own booking. Optional and defaulting to None, so every existing
+        caller and every destination with no parseable dates renders
+        exactly as before.
+
+        **This does not give a grouped child a schedule.** The refusal at
+        the top of the grouped-entry builder is untouched: a day trip's
+        plan is still covered by the base's own multi-day schedule, and
+        dating that schedule does not ask it to stop. Placing an
+        identified day trip ONTO one of these days is a separate,
+        deferred question.
+        """
         schedule = ai.get("possible_daily_schedule", [])
         # Renderer is fail-closed for schedule content. If upstream generation
         # produced no normalized schedule, omit this card rather than inventing
@@ -3387,7 +3407,9 @@ class HTMLAssembler:
                 if not periods:
                     continue
                 html += f'  <div class="schedule-day">\n'
-                html += f'    <div class="schedule-day-title">{html_escape.escape(day.get("day_label", "Day"))}</div>\n'
+                title = date_span.dated_day_label(
+                    day.get("day_label", "Day"), dates)
+                html += f'    <div class="schedule-day-title">{html_escape.escape(title)}</div>\n'
                 for period in periods:
                     label = str(period.get("period", "Plan")).title()
                     content = str(period.get("summary", "")).strip()
