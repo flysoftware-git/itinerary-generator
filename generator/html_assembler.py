@@ -449,6 +449,8 @@ class HTMLAssembler:
         html = html.replace("'<!--MAP_MARKERS_JSON-->'", json.dumps(markers))
         side_trips = self._build_side_trip_legs(trip["destinations"])
         html = html.replace("'<!--SIDE_TRIPS_JSON-->'", json.dumps(side_trips))
+        route_legs = self._build_route_legs(markers)
+        html = html.replace("'<!--ROUTE_LEGS_JSON-->'", json.dumps(route_legs))
 
         # ── Tile layer ───────────────────────────────────────────────────────
         # The whole base-layer statement is built here rather than templated
@@ -898,6 +900,47 @@ class HTMLAssembler:
                 })
 
         return result
+
+
+    def _build_route_legs(self, markers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """One entry per consecutive pair of stops: the road, where it is known.
+
+        **The shape was already fetched, decoded, simplified and cached, and
+        then discarded one step from the page.** `routing.RoutedLeg.geometry`
+        has held the real road since the geometry work; the map drew a dashed
+        straight line through the stops regardless, so a guide claimed a road
+        nobody drove.
+
+        Read from the routing cache with `routing.cached_leg`, which never
+        reaches the network: rendering a page must not become a provider call.
+        A leg the cache cannot answer gets `routed: False` and no points, and
+        the page draws it dashed and SAYS SO in the legend.
+
+        That honesty is the point rather than a nicety. `routing.py` records
+        that a cache entry written before geometry was kept has none, and that
+        a leg is not re-asked just to fetch a shape -- so a real guide mixes
+        routed and unrouted legs for a while. A map that quietly straight-lines
+        some of them is making the same claim about both.
+        """
+        from generator import routing
+
+        legs: list[dict[str, Any]] = []
+        for before, after in zip(markers, markers[1:]):
+            start, end = before.get("c"), after.get("c")
+            if not (isinstance(start, (list, tuple)) and len(start) == 2
+                    and isinstance(end, (list, tuple)) and len(end) == 2):
+                continue
+            shape = None
+            try:
+                leg = routing.cached_leg((float(start[0]), float(start[1])),
+                                         (float(end[0]), float(end[1])))
+            except Exception:            # a renderer never fails on a cache
+                leg = None
+            if leg is not None and leg.geometry:
+                shape = [[round(lat, 5), round(lng, 5)] for lat, lng in leg.geometry]
+            legs.append({"c": shape or [list(start), list(end)],
+                         "routed": bool(shape)})
+        return legs
 
     def _build_side_trip_legs(
         self, destinations: list[dict[str, Any]]

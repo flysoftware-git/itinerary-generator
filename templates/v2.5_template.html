@@ -643,7 +643,42 @@
            different call: a vector archive drawn by protomaps-leaflet inside
            this same Leaflet map, so everything below it is unchanged. */
         <!--TILE_LAYER-->
-        L.polyline(stops.map(function(s){return s.c;}),{color:'<!--THEME_COLOR-->',weight:2.5,dashArray:'7,6',opacity:0.85}).addTo(map);
+        /* The route, drawn as the road where the road is known.
+
+           This used to be one dashed polyline through the stops -- a straight
+           line between each pair, whatever the road did. The real shape was
+           being fetched, decoded, simplified and cached by generator/routing.py
+           and then thrown away here.
+
+           Each leg is now drawn on its own: SOLID where the routed shape is
+           known, DASHED where it is not. A cache entry written before geometry
+           was kept has none, and a leg is not re-asked just to fetch a shape,
+           so a guide legitimately mixes the two -- and the legend below says
+           how many are straight lines rather than letting the page imply a
+           road nobody drove. */
+        var routeLegs='<!--ROUTE_LEGS_JSON-->';
+        var unrouted=0;
+        if (routeLegs && routeLegs.length) {
+          routeLegs.forEach(function(leg){
+            if (!leg.routed) { unrouted++; }
+            L.polyline(leg.c,{color:'<!--THEME_COLOR-->',weight:2.5,
+                              dashArray:leg.routed?null:'7,6',
+                              opacity:0.85}).addTo(map);
+          });
+        } else {
+          L.polyline(stops.map(function(s){return s.c;}),{color:'<!--THEME_COLOR-->',weight:2.5,dashArray:'7,6',opacity:0.85}).addTo(map);
+        }
+        if (unrouted > 0 && routeLegs.length) {
+          var note=L.control({position:'bottomleft'});
+          note.onAdd=function(){
+            var box=L.DomUtil.create('div','route-line-note');
+            box.innerHTML='Roads as routed; '+unrouted+' of '+routeLegs.length+
+                          (unrouted===1?' leg not routed, drawn as a straight line'
+                                      :' legs not routed, drawn as straight lines');
+            return box;
+          };
+          note.addTo(map);
+        }
         stops.forEach(function(s){
           var stopIndex = s.stop_index || s.idx;
           var idxLabel=stopIndex ? '<span class="route-marker-index">'+stopIndex+'</span>' : '';
