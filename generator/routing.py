@@ -875,6 +875,42 @@ def _is_quota_message(exc: urllib.error.HTTPError) -> bool:
     return b"quota" in body.lower()
 
 
+def cached_leg(
+    origin: tuple[float, float],
+    dest: tuple[float, float],
+    *,
+    cache_path: str | os.PathLike[str] | None = None,
+    avoid_ferries: bool = False,
+    profile: str = DEFAULT_PROFILE,
+) -> RoutedLeg | None:
+    """The routed leg this pair already has on disk, or None. Never asks.
+
+    `route_leg` reads this cache too, but it cannot be used to *only* read:
+    with no API key it returns None before looking, and with one it will go
+    and fetch. Both are wrong for a renderer, which must never turn drawing a
+    page into a provider call or a network wait.
+
+    So this is the read half on its own. No key, no request, no timeout, no
+    cost, and None whenever the answer is not already there -- which a caller
+    must treat as *shape unknown* rather than *no road*, because the two look
+    identical from here. An entry written before geometry was kept loads with
+    `geometry` None, exactly as it does through `route_leg`.
+    """
+    if profile not in PROFILES:
+        raise ValueError(f"profile must be one of {PROFILES}, not {profile!r}")
+    path = DEFAULT_CACHE_PATH if cache_path is None else cache_path
+    cache_key = _cache_key(origin, dest, avoid_ferries=avoid_ferries,
+                           profile=profile)
+    with _lock:
+        cached = _load_cache(path).get(cache_key)
+    if not isinstance(cached, dict) or cached.get("no_route") is True:
+        return None
+    try:
+        return _leg_from_cache(cached)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def route_leg(
     origin: tuple[float, float],
     dest: tuple[float, float],
