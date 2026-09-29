@@ -3788,7 +3788,14 @@ def main(
     from generator.html_validator import HTMLValidator
     from generator.report_writer import ReportWriter
     validator = HTMLValidator(config_path)
-    report = validator.validate(output_file, trip)
+    # The gate is told what the run did not attempt, so it fails the guide
+    # for defects rather than for absences the operator asked for. Same
+    # words as the flags; see HTMLValidator.validate.
+    _skipped = [name for name, off in (("images", skip_images),
+                                       ("events", skip_events),
+                                       ("url_discovery", skip_url_discovery))
+                if off]
+    report = validator.validate(output_file, trip, skipped=_skipped)
     # Tri-state link liveness, recorded by the URL audit (url_discovery's
     # LINK_LIVENESS_*). Attached here so the published artifact says how much
     # of itself the fail-closed gate was actually able to check.
