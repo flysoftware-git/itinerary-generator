@@ -3483,9 +3483,15 @@ class HTMLAssembler:
         **This does not give a grouped child a schedule.** The refusal at
         the top of the grouped-entry builder is untouched: a day trip's
         plan is still covered by the base's own multi-day schedule, and
-        dating that schedule does not ask it to stop. Placing an
-        identified day trip ONTO one of these days is a separate,
-        deferred question.
+        dating that schedule does not ask it to stop.
+
+        `day_trips` are the base's grouped children, and each day names the
+        ones whose own dates cover it -- a pointer to the card that already
+        exists, never a schedule of its own. See `_day_trips_on`. This
+        paragraph used to close by calling that placement "a separate,
+        deferred question"; it is the question this parameter answers, and a
+        docstring still deferring it would send the next reader looking for a
+        feature that is already here.
         """
         schedule = ai.get("possible_daily_schedule", [])
         # Renderer is fail-closed for schedule content. If upstream generation
@@ -3506,10 +3512,15 @@ class HTMLAssembler:
                 if not periods:
                     continue
                 html += f'  <div class="schedule-day">\n'
-                label = day.get("day_label", "Day")
-                title = date_span.dated_day_label(label, dates)
+                # `day_label` and the period name are two different labels, and
+                # one variable held both -- safe only because the day trips are
+                # placed before the period loop reassigns it. Named apart so a
+                # later second use of the day's label cannot silently be handed
+                # "Morning".
+                day_label = day.get("day_label", "Day")
+                title = date_span.dated_day_label(day_label, dates)
                 html += f'    <div class="schedule-day-title">{html_escape.escape(title)}</div>\n'
-                html += self._day_trips_on(label, dates, day_trips)
+                html += self._day_trips_on(day_label, dates, day_trips)
                 for period in periods:
                     label = str(period.get("period", "Plan")).title()
                     content = str(period.get("summary", "")).strip()
