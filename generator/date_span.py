@@ -261,17 +261,45 @@ def dated_day_label(label: str, dates: str | None) -> str:
     something the manifest does not say.
     """
     text = str(label or "").strip()
-    found = _DAY_ORDINAL.match(text)
-    if not found:
-        return text
-    covered = span(dates) if dates else None
-    if covered is None:
-        return text
-    start, end = covered
-    day = _dt.timedelta(days=int(found.group(1)) - 1) + start
-    if day > end:
+    day = day_of(text, dates)
+    if day is None:
         return text
     return DATED_DAY_LABEL % (text, _day_reads(day))
+
+
+def day_of(label: str, dates: str | None) -> "_dt.date | None":
+    """The calendar day a schedule label falls on, or None.
+
+    Split out of `dated_day_label` because two callers now need the DATE and
+    not the sentence: the title, and anything placing a dated thing onto the
+    day it belongs to. Deriving the day twice, in two modules, from two
+    readings of the same label is the defect this function exists to prevent
+    rather than a style preference.
+
+    None for every case `dated_day_label` leaves alone, and for the same
+    reasons: a label that is not a plain ordinal, a destination whose `dates`
+    will not parse, and an ordinal running past the end of the stay.
+    """
+    found = _DAY_ORDINAL.match(str(label or "").strip())
+    if not found:
+        return None
+    covered = span(dates) if dates else None
+    if covered is None:
+        return None
+    start, end = covered
+    day = _dt.timedelta(days=int(found.group(1)) - 1) + start
+    return None if day > end else day
+
+
+def covers(dates: str | None, day: "_dt.date") -> bool:
+    """Whether a manifest date string covers `day`. False when it will not parse.
+
+    False rather than raising, because an unparseable date on a day trip must
+    leave the guide renderable -- the trip simply is not placed, and still
+    renders in its own right where it always did.
+    """
+    covered = span(dates) if dates else None
+    return bool(covered and covered[0] <= day <= covered[1])
 
 
 def _day_reads(day: "_dt.date") -> str:

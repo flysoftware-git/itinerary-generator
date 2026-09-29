@@ -1210,7 +1210,8 @@ class HTMLAssembler:
 
         # Daily schedule
         section += self._build_schedule(ai, drives, dest["name"],
-                                        dates=dest.get("dates"))
+                                        dates=dest.get("dates"),
+                                        day_trips=group_children)
 
         # Cultural events
         section += self._build_events(events, dest["name"], dest=dest, dest_by_id=dest_by_id)
@@ -3413,8 +3414,63 @@ class HTMLAssembler:
         html += '</div>\n</div>\n'
         return html
 
+
+    def _day_trips_on(self, label: str, dates: str | None,
+                      day_trips: list[dict[str, Any]] | None) -> str:
+        """Name the day trips the traveller chose that fall on this day.
+
+        **The gap this closes.** The base's schedule gained real dates, and the
+        traveller's chosen day trips carry dates of their own -- and nothing
+        put the two together, so a dated schedule still could not say WHEN the
+        traveller does the thing they picked. They had to work it out.
+
+        **It does NOT give a grouped child a schedule.** That refusal, at the
+        top of the grouped-entry builder, is the constraint this had to respect
+        rather than reverse: a day trip's plan is covered by the base's own
+        multi-day schedule, and a second schedule inside the child would
+        re-introduce the false parity the grouping restructure exists to fix.
+        What appears here is a POINTER on the base's day -- the day's content,
+        naming what happens on it and linking to the card that already exists.
+        The child gains nothing.
+
+        **Placement is by date, not by order.** A day trip is placed on every
+        day its own `dates` cover, which for a there-and-back day trip is one.
+        Nothing is inferred from the manifest's ordering, because a day trip
+        written third is not thereby on the third day, and a guess dressed as a
+        placement is worse than no placement -- the same argument that made the
+        dated title read its ordinal from the label rather than from position.
+
+        **Anything that does not resolve is simply not placed.** A child whose
+        `dates` will not parse, or that falls outside the base's stay, is left
+        alone and still renders its own card exactly where it does today. A
+        guide never loses a day trip by this; at worst it fails to point at one.
+        """
+        if not day_trips:
+            return ""
+        day = date_span.day_of(label, dates)
+        if day is None:
+            return ""
+        placed = [child for child in day_trips
+                  if date_span.covers(child.get("dates"), day)]
+        if not placed:
+            return ""
+        links = []
+        for child in placed:
+            name = html_escape.escape(str(child.get("name") or "").strip())
+            child_id = str(child.get("id") or "").strip()
+            if not name:
+                continue
+            links.append(f'<a href="#section-{html_escape.escape(child_id)}">{name}</a>'
+                         if child_id else name)
+        if not links:
+            return ""
+        word = "Day trip" if len(links) == 1 else "Day trips"
+        return (f'    <div class="schedule-day-trip">{word}: '
+                f'{", ".join(links)}</div>\n')
+
     def _build_schedule(self, ai: dict, drives: list, dest_name: str,
-                        dates: str | None = None) -> str:
+                        dates: str | None = None,
+                        day_trips: list[dict[str, Any]] | None = None) -> str:
         """The destination's possible daily schedule.
 
         `dates` is the destination's own manifest date string, and it is
@@ -3450,9 +3506,10 @@ class HTMLAssembler:
                 if not periods:
                     continue
                 html += f'  <div class="schedule-day">\n'
-                title = date_span.dated_day_label(
-                    day.get("day_label", "Day"), dates)
+                label = day.get("day_label", "Day")
+                title = date_span.dated_day_label(label, dates)
                 html += f'    <div class="schedule-day-title">{html_escape.escape(title)}</div>\n'
+                html += self._day_trips_on(label, dates, day_trips)
                 for period in periods:
                     label = str(period.get("period", "Plan")).title()
                     content = str(period.get("summary", "")).strip()
