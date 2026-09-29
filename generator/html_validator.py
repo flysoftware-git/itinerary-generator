@@ -26,7 +26,7 @@ import html
 import logging, re
 import html as html_lib
 from pathlib import Path
-from typing import Any
+from typing import Any, Collection
 
 logger = logging.getLogger(__name__)
 MIN_PER_DESTINATION_DEFAULT = 2
@@ -57,7 +57,33 @@ class HTMLValidator:
         self._max_no_url_restaurants = int(quality_cfg.get("max_no_url_restaurants", DEFAULT_MAX_NO_URL_RESTAURANTS))
         self._max_empty_teaser_ratio = float(quality_cfg.get("max_empty_teaser_ratio", DEFAULT_MAX_EMPTY_TEASER_RATIO))
 
-    def validate(self, html_path: str | Path, trip: dict[str, Any]) -> dict[str, Any]:
+    def validate(self, html_path: str | Path, trip: dict[str, Any],
+                 skipped: Collection[str] = ()) -> dict[str, Any]:
+        """Check a built guide, and fail it only for what the run tried to do.
+
+        `skipped` names the stages the operator turned off, using the same
+        words as the flags: ``"images"`` for ``--skip-images``, ``"events"``
+        for ``--skip-events``, ``"url_discovery"`` for
+        ``--skip-url-discovery``. A check whose subject was skipped stands
+        down rather than reporting its absence as a defect.
+
+        **Why this argument exists.** Without it a validator cannot tell an
+        empty result from an absent attempt, and the two mean opposite
+        things: a guide that was meant to have pictures and has none is
+        broken, while a guide built with ``--skip-images`` has none because
+        that is what was asked for. Reported as an error, the second case
+        makes the run exit non-zero every single time, so the exit code
+        stops distinguishing a real failure from a cheap build.
+
+        The run-quality path already drew this distinction one gate
+        earlier -- ``main.py`` only counts an image shortfall
+        ``if not skip_images`` -- so this brings the two gates into
+        agreement rather than inventing a new rule.
+
+        Default ``()`` keeps every existing caller behaving exactly as
+        before: nothing skipped, every check runs.
+        """
+        skipped = frozenset(skipped)
         html_path = Path(html_path)
         html = html_path.read_text(encoding="utf-8")
         errors: list[str] = []
@@ -67,7 +93,7 @@ class HTMLValidator:
         self._check_drive_modal_keys(html, trip, errors)
         self._check_section_div_balance(html, trip, errors)
         self._check_script_isolation(html, warnings)
-        self._check_image_counts(html, trip, errors)
+        self._check_image_counts(html, trip, errors, skipped)
         self._check_orphan_content_rate(trip, warnings)
         self._check_duplicate_urls_within_destination(trip, warnings)
         self._check_teaser_completeness(trip, warnings)
@@ -261,7 +287,19 @@ class HTMLValidator:
 
     # ── Check 5: Image counts ────────────────────────────────────────────────
 
-    def _check_image_counts(self, html: str, trip: dict[str, Any], errors: list[str]) -> None:
+    def _check_image_counts(self, html: str, trip: dict[str, Any],
+                            errors: list[str],
+                            skipped: Collection[str] = ()) -> None:
+        """Every destination carries at least the configured minimum.
+
+        Stands down entirely when images were skipped. Not lowered to a
+        warning: a run that never fetched a picture has nothing to say
+        about whether the guide has enough of them, and a warning on every
+        destination of every cheap build is noise that trains an operator
+        to ignore the one that matters.
+        """
+        if "images" in frozenset(skipped):
+            return
         for dest in trip.get("destinations", []):
             count = len(dest.get("images", []))
             if count < self._min_images:
