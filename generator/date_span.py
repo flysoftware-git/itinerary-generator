@@ -233,3 +233,53 @@ def unaccounted(stays: list[tuple[str, str]]) -> list[dict[str, object]]:
             "before": after,
         })
     return runs
+
+
+#: How a dated day reads: the ordinal a reader counts by, then the date they
+#: pack and book against. Ruled 2026-09-27; both halves, in that order.
+DATED_DAY_LABEL = "%s \u00b7 %s"
+
+_DAY_ORDINAL = re.compile(r"^\s*Day\s+(\d{1,3})\s*$", re.IGNORECASE)
+
+
+def dated_day_label(label: str, dates: str | None) -> str:
+    """`Day 1` plus the day it actually falls on, or `label` unchanged.
+
+    **Unchanged is the important half.** A guide whose destination has no
+    parseable `dates`, or whose schedule labels are not plain ordinals, gets
+    exactly what it gets today -- so nothing looks broken where nothing is, and
+    this can land without a migration or a flag.
+
+    The ordinal is read from the LABEL rather than from the day's position in
+    the schedule, because the renderer skips days with no periods: the third
+    rendered day is not reliably `Day 3`, and dating it by position would print
+    a confident wrong date, which is worse than printing none.
+
+    A label whose ordinal runs past the destination's span is left alone for
+    the same reason. That happens when a schedule was generated for more days
+    than the dates cover, and inventing a date beyond the stay would claim
+    something the manifest does not say.
+    """
+    text = str(label or "").strip()
+    found = _DAY_ORDINAL.match(text)
+    if not found:
+        return text
+    covered = span(dates) if dates else None
+    if covered is None:
+        return text
+    start, end = covered
+    day = _dt.timedelta(days=int(found.group(1)) - 1) + start
+    if day > end:
+        return text
+    return DATED_DAY_LABEL % (text, _day_reads(day))
+
+
+def _day_reads(day: "_dt.date") -> str:
+    """`Fri 3 Oct` -- weekday, day, short month, and no year.
+
+    No year because a schedule sits inside a destination whose dates are
+    printed above it, and a year on every one of five day titles is noise. No
+    zero padding, and the month is abbreviated in English the way the rest of
+    this page already writes dates.
+    """
+    return "%s %d %s" % (day.strftime("%a"), day.day, day.strftime("%b"))
