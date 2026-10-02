@@ -5784,6 +5784,16 @@ class URLDiscoverer:
             for seed in (seed_names or [])
             if str(seed or "").strip()
         }
+        # The pages the author named for their own seeds (manifest
+        # `seeds: [{name, url}]`, lifted into `dest["seed_links"]` by
+        # manifest_parser._normalize_seeds). Keyed the way seeds are keyed, so a
+        # manifest writing "Olympic Discovery Trail" matches an item called
+        # "Olympic Discovery Trail." without the author guessing at punctuation.
+        seed_link_by_key = {
+            re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip(): str(url or "").strip()
+            for name, url in ((dest or {}).get("seed_links") or {}).items()
+            if str(url or "").strip()
+        }
         for attr in list(top_attractions):
             attr_name = attr.get("name", "")
             attr_key = re.sub(r"[^a-z0-9]+", " ", str(attr_name or "").lower()).strip()
@@ -5792,6 +5802,35 @@ class URLDiscoverer:
             attr_desc = str(attr.get("description", "") or "")
             attr_context = self._attraction_trail_context(attr)
             maps_fallback_url = f"https://www.google.com/maps/search/?api=1&query={quote(self._maps_fallback_query_text(attr_name, dest_name))}"
+
+            # The author named the page this seed means, so there is nothing to
+            # discover. Taken before every other path in this loop, because the
+            # paths below exist to BEAT an incumbent link -- a TripAdvisor row
+            # upgraded to an official site, a remembered direct-batch row
+            # preferred over a search result -- and each of them would happily
+            # beat the author's own answer with a guess. design.md 1.4 bars the
+            # MODEL from producing a URL; a human may, which is the footing
+            # `planning_links` and a leg's `trail_url` already stand on.
+            #
+            # Retention evidence is recorded with it so the audit does not
+            # re-derive relevance blind and discard it -- the same mechanism,
+            # and the same limits, as an already-vetted trail-batch URL: the
+            # hard gates still apply, and a dead link is still dead.
+            authored_url = seed_link_by_key.get(attr_key, "") if is_seed else ""
+            if authored_url:
+                attr["url"] = authored_url
+                self._remember_retention_evidence(
+                    attr_name, authored_url, candidate=None, allow_shallow_relevance=True,
+                )
+                self._log_decision(
+                    kind="attraction",
+                    dest_name=dest_name,
+                    item_name=attr_name,
+                    reason="seed_named_the_page",
+                    message="the manifest named this seed's page; discovery skipped",
+                    url=authored_url,
+                )
+                continue
 
             # The interest filter drops categories a traveler is assumed not to
             # want -- golf, cycle routes, out-of-season skiing. A seed is that
