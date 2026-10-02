@@ -31,6 +31,7 @@ This directory captures behavior-oriented design notes for major pipeline compon
 - `search-provider-capability-probe.md`: root cause and fix for Grok search never actually being invoked, the cross-provider (Grok/Claude/OpenAI/Gemini) citation-fidelity probe that followed, Claude's addition as a second working search/harvest provider, and the resulting Grok-batch/Claude-non-batch production split.
 - `provider-model-matrix.md`: canonical provider × role (content-gen/batch-search/non-batch-search) matrix — current model ids, which roles each provider is actually approved for, and the evidence behind each assignment.
 - `multi-site-destination-grouping.md`: spec for GH #68 (multi-site destinations, e.g. Moab as a base for Arches + Canyonlands) — manifest `group_with` field, lodging dedup, nav clustering, and route/distance handling for grouped day-trip hops.
+- `the-manifest-is-the-interface.md`: the owner's 2026-10-01 decision approving full implementation of `{name, url}` seeds, and what this engine owes the manifest format — `requirements.md` §3 is the interface another system emits to, this engine renders rather than elaborates, and its obligation is not to lose what it was handed. Manifest round trip itself is not a feature of this repository.
 
 ## Conventions
 - Focus on runtime behavior, not just intent.
