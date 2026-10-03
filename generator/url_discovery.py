@@ -52,6 +52,7 @@ from generator.place_resolver import PlaceResolutionRefused, PlaceResolver
 from generator.multi_site_grouping import (
     DEFAULT_BASE_OWNED_CATEGORIES,
     category_deferred_to_base,
+    comes_back,
     side_trip_end,
     side_trip_start,
 )
@@ -2728,7 +2729,11 @@ class URLDiscoverer:
                 left_from = None
             else:
                 end = side_trip_end(dest)
-                if end is not None:
+                if comes_back(dest):
+                    # Ridden back to where it began: nothing moves the
+                    # traveller, so the next stop leaves from the base.
+                    left_from = None
+                elif end is not None:
                     left_from = end
 
     def discover_all(self, trip: dict[str, Any]) -> None:

@@ -37,6 +37,8 @@ from generator.multi_site_grouping import (
     category_deferred_to_base,
     group_base_id,
     is_grouped,
+    comes_back,
+    has_named_ends,
     is_point_to_point,
     side_trip_end,
     side_trip_start,
@@ -686,7 +688,7 @@ class HTMLAssembler:
         departure = str(trip_meta.get("departure", "") or "").strip()
         ret = str(trip_meta.get("return", "") or "").strip()
 
-        route_stops = [self._destination_route_target(d) for d in destinations]
+        route_stops = [self._overview_route_stop(d) for d in destinations]
         route_stops = [s for s in route_stops if s]
         if not route_stops:
             return ""
@@ -984,7 +986,7 @@ class HTMLAssembler:
                  if isinstance(d, dict) and d.get("id")}
         legs: list[dict[str, Any]] = []
         for dest in destinations:
-            if not isinstance(dest, dict) or not is_point_to_point(dest):
+            if not isinstance(dest, dict) or not has_named_ends(dest):
                 continue
             base = by_id.get(group_base_id(dest)) or {}
             start = side_trip_start(dest)
@@ -998,11 +1000,14 @@ class HTMLAssembler:
                 continue
             from_name = str((start or base).get("name", "") or "").strip()
             to_name = str((end or dest).get("name", "") or "").strip()
+            back = comes_back(dest)
             legs.append({
                 "a": a,
                 "b": b,
-                "name": f"{from_name} → {to_name}".strip(" →"),
+                "name": (f"{from_name} → {to_name}".strip(" →")
+                         + (" and back" if back else "")),
                 "mode": resolved_mode(dest),
+                "returns": back,
             })
         return legs
 
@@ -1779,6 +1784,10 @@ class HTMLAssembler:
                 continue
             if not is_grouped(candidate):
                 return None
+            if comes_back(candidate):
+                # Back where it began: the stop after it leaves from the bed,
+                # not from the far end of a ride that was ridden back.
+                return None
             end = side_trip_end(candidate)
             if end is not None:
                 return end
@@ -2027,6 +2036,23 @@ class HTMLAssembler:
         if not candidate:
             return ""
         return f"https://www.google.com/maps/search/?api=1&query={quote(candidate)}"
+
+    @classmethod
+    def _overview_route_stop(cls, dest: dict[str, Any] | None) -> str:
+        """What the whole-trip route link stops at for this entry.
+
+        An outing's stated point where the manifest gives one -- its start, else
+        its own coordinates -- because a name is answered by whichever place
+        Google ranks highest: a ride from *Siebert Creek* opened the creek's
+        label point, miles from the trailhead the author placed. Every other
+        entry is unchanged.
+        """
+        if is_grouped(dest):
+            point = (stated_coordinates(side_trip_start(dest))
+                     or stated_coordinates(dest))
+            if point is not None:
+                return f"{point[0]},{point[1]}"
+        return cls._destination_route_target(dest)
 
     @staticmethod
     def _destination_route_target(dest: dict[str, Any] | None) -> str:
@@ -2893,9 +2919,13 @@ class HTMLAssembler:
             html += f'    <a href="{gmaps_url}" target="_blank" rel="noopener" class="gmaps-link">Open in Google Maps →</a>\n'
         html += '  </div>\n'
 
+        day_trip_badge_text = ("Day Out — One Way" if is_one_way_day_out
+                               else "Day Out — Out and Back"
+                               if comes_back(dest) and has_named_ends(dest)
+                               else "Day Trip")
         day_trip_badge = (
             '<span class="badge badge-daytrip" style="background:var(--sage);color:#fff;">'
-            f'{"Day Out — One Way" if is_one_way_day_out else "Day Trip"}</span>\n'
+            f'{day_trip_badge_text}</span>\n'
             if is_group_day_trip
             else ""
         )
