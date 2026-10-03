@@ -467,6 +467,39 @@ routing:
     # Take the land route unless the ferry route, allowance included, is MORE
     # than this many minutes faster. Exactly this many faster is still land.
     prefer_land_within_minutes: 15
+  google_routes_fallback:
+    # OFF. When OpenRouteService refuses a leg because the key's daily quota
+    # is spent (2,000 directions a day on the free plan), every remaining leg
+    # in the run becomes a straight-line estimate and the map draws straight
+    # lines. With this true, a leg refused FOR THE QUOTA -- and for nothing
+    # else: not a no-route 404, not a refused key, not the per-minute limit,
+    # not the ferry-avoiding ask -- is asked once of Google's Routes API
+    # (Compute Routes) instead.
+    #
+    # Two switches, both required, plus the key: this one, and
+    # maps_platform.enabled above, which is also where the key comes from
+    # (GOOGLE_MAPS_PLATFORM_KEY in the environment, with the Routes API
+    # enabled on it). A key in the environment turns nothing on by itself.
+    #
+    # What it costs: one metered Compute Routes request per refused leg,
+    # asking only for distance, duration and the polyline and no traffic, so
+    # it stays on the basic (Essentials) SKU -- $5 per 1,000 requests, with
+    # 10,000 free a month under Google's per-SKU free allowances. Re-check
+    # Google's pricing page before relying on that: docs/design/
+    # multimodal-routing.md 6.4 records the Routes tiers as roughly
+    # $5 / $10 / $15 per 1,000 and the free allowance as unconfirmed. A run's
+    # report counts the requests sent (routing.google_requests) and the legs
+    # they routed (routing.google_routes).
+    #
+    # Read Google's terms before turning it on. Routes answers are kept in
+    # memory for the run and never written to the routing cache, because the
+    # terms let a caller cache only latitude and longitude, and only for 30
+    # days. But a routed leg's road is drawn on this project's Leaflet map and
+    # its miles and minutes are written into a published page, and
+    # docs/design/multimodal-routing.md 6.4 records Maps Platform terms as
+    # requiring a Google map for displayed results and as restricting storage
+    # -- the reason this ships off.
+    enabled: false
 
 
 # ── URL discovery ─────────────────────────────────────────────────────────────

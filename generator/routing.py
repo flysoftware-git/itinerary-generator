@@ -140,6 +140,39 @@ remembered (as `{"no_route": true}`), because an island does not grow a bridge
 between runs and asking again would spend quota on every build. A leg without
 a ferry makes no second request. A cache entry written before alternatives
 existed is still an ordinary routed leg.
+
+## When the quota runs out: Google Routes, if it is allowed to answer
+
+A free key's daily allowance is a hard wall. Once it is spent every further
+leg in the run is refused for the quota -- HTTP 403 with a body naming it, or
+a 429 whose reset is hours away -- and every one of them becomes a straight
+line, so a page whose cache was cold comes out with no roads on it at all.
+
+So a leg refused **for the quota, and only for the quota** is asked once of
+Google's Routes API (Compute Routes, `GOOGLE_ROUTES_ENDPOINT`), and its
+distance, duration and encoded polyline become a `RoutedLeg` in exactly the
+shape this module returns for OpenRouteService, with `router` set to
+`google_routes` and the reason counted in `stats()` (`google_requests`,
+`google_routes`). A no-route 404, a refused key, a timeout, a per-minute 429
+and the ferry-avoiding ask are never sent there: none of them is the wall
+this exists for, and the second router is metered.
+
+It is off unless two decisions say otherwise, both in config.yaml: the
+Maps Platform gate (`generator.maps_platform`, which also supplies the key and
+never lets a key in the environment enable spending on its own) **and**
+`routing.google_routes_fallback.enabled`. Either one false, a missing file or
+an unreadable section, and the leg is estimated exactly as before.
+
+**A Google answer is not written to the on-disk cache.** Google's Maps
+Platform terms let a Routes caller hold latitude and longitude temporarily and
+grant no storage allowance for distance or duration, so these legs are kept in
+memory for the run (`_google_memo`) and asked again on the next one.
+
+Two things a Google-routed leg does not carry. The field mask asks only for
+distance, duration and the polyline, so the reply says nothing about ferries:
+`ferry_share` is 0 and no ferry-or-land choice is made for it, even where the
+route sails. And a heavy-goods profile is asked as an ordinary drive, which is
+the nearest mode Routes offers.
 """
 
 from __future__ import annotations
@@ -156,6 +189,8 @@ from dataclasses import dataclass
 from math import cos, radians, sqrt
 from pathlib import Path
 from typing import Any
+
+from generator import maps_platform
 
 logger = logging.getLogger(__name__)
 
@@ -254,12 +289,51 @@ NO_HINT_WAIT_S = 10.0
 #: per-minute window, and is not waited on: the leg is estimated at once.
 QUOTA_RESET_S = 90.0
 
+#: Which router answered a leg: `RoutedLeg.router`.
+ROUTER_ORS = "openrouteservice"
+ROUTER_GOOGLE = "google_routes"
+
+#: Google's Compute Routes endpoint, the second router. Asked only for a leg
+#: OpenRouteService refused for its quota; see the module docstring.
+GOOGLE_ROUTES_ENDPOINT = "https://routes.googleapis.com/directions/v2:computeRoutes"
+
+#: Only what a `RoutedLeg` is built from. Routes refuses a request with no
+#: mask, and some fields (tolls, traffic) move a request to a dearer SKU.
+#: No `routingPreference` is sent either, so a drive is traffic-unaware.
+GOOGLE_ROUTES_FIELD_MASK = ("routes.distanceMeters,routes.duration,"
+                            "routes.polyline.encodedPolyline")
+
+#: The Routes `travelMode` for each OpenRouteService profile. Routes has no
+#: heavy-goods mode, so `driving-hgv` is asked as an ordinary drive.
+GOOGLE_TRAVEL_MODES = {
+    "driving-car": "DRIVE", "driving-hgv": "DRIVE",
+    "cycling-regular": "BICYCLE", "cycling-road": "BICYCLE",
+    "cycling-mountain": "BICYCLE",
+    "foot-walking": "WALK", "foot-hiking": "WALK",
+}
+
+#: The switch under `routing:` in config.yaml, beside the Maps Platform gate.
+GOOGLE_ROUTES_CONFIG_KEY = "google_routes_fallback"
+
+METRES_PER_MILE = 1609.344
+
 _lock = threading.Lock()
 
 #: The one sleep a 429 wait goes through, and the wall clock a reset hint is
 #: read against: module attributes so a test can make them instant.
 _sleep = time.sleep
 _wall_clock = time.time
+
+#: The transport for Google Routes requests, separate from the one
+#: OpenRouteService requests go through, so a test serving one router's
+#: replies cannot answer the other's by accident. `tests/conftest.py` replaces
+#: it with one that refuses, so no test reaches Google unless it says so.
+_google_urlopen = urllib.request.urlopen
+
+#: Legs Google answered in this process, by cache key; None for a pair it had
+#: no route for. Memory only: see the module docstring for why these never
+#: reach the on-disk cache.
+_google_memo: dict[str, Any] = {}
 
 Point = tuple[float, float]
 Span = tuple[int, int]
@@ -280,6 +354,9 @@ class RoutedLeg:
     #: Ferry crossings as inclusive `(from, to)` index ranges into `geometry`.
     #: Empty when there is no ferry or no geometry.
     ferry_spans: tuple[Span, ...] = ()
+    #: Which router answered: `ROUTER_ORS`, or `ROUTER_GOOGLE` for a leg
+    #: OpenRouteService refused for its quota and Google Routes then routed.
+    router: str = ROUTER_ORS
 
     @property
     def ferry_miles(self) -> float:
@@ -313,6 +390,12 @@ DEFAULT_PREFER_LAND_WITHIN_MINUTES = 15.0
 #: The config file `configured_ferry_policy` reads when not given one: the
 #: repository's own, so the answer does not depend on the working directory.
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
+
+#: The config file the Google Routes fallback reads both of its decisions
+#: from (`routing.google_routes_fallback.enabled` and the Maps Platform gate).
+#: A module attribute so `tests/conftest.py` can point it at a file that does
+#: not exist, which reads as off.
+GOOGLE_ROUTES_CONFIG_PATH: str | os.PathLike[str] = DEFAULT_CONFIG_PATH
 
 
 @dataclass(frozen=True)
@@ -800,8 +883,12 @@ def limiter() -> RateLimiter:
 #: What `stats()` counts. `requests` is requests sent, retries included; the
 #: rest are per leg, except `rate_limited_waited` (one per 429 waited out) and
 #: `throttled_s` (seconds spent waiting in the throttle).
+#: `google_requests` is metered requests sent to Google Routes, and
+#: `google_routes` the legs it answered after OpenRouteService refused them
+#: for the quota -- those legs are roads, so they are not in `quota_refused`.
 STAT_NAMES = ("requests", "cache_hits", "routed", "no_route", "rate_limited_waited",
-              "rate_limited_gave_up", "quota_refused", "failed", "throttled_s")
+              "rate_limited_gave_up", "quota_refused", "failed", "throttled_s",
+              "google_requests", "google_routes")
 
 _stats: dict[str, float] = dict.fromkeys(STAT_NAMES, 0)
 _stats_lock = threading.Lock()
@@ -827,6 +914,16 @@ def reset_stats() -> None:
     with _stats_lock:
         for name in STAT_NAMES:
             _stats[name] = 0
+
+
+def forget_google_routes() -> None:
+    """Drop every leg Google Routes answered in this process.
+
+    They are held for the run that asked (see the module docstring), so a
+    run's start clears them, the way it resets `stats()`.
+    """
+    with _lock:
+        _google_memo.clear()
 
 
 def _header(headers: Any, name: str) -> str | None:
@@ -883,6 +980,136 @@ def _is_quota_message(exc: urllib.error.HTTPError) -> bool:
     return b"quota" in body.lower()
 
 
+# ── The second router, for a spent quota ─────────────────────────────────────
+
+
+def google_routes_enabled(config_path: str | os.PathLike[str] | None = None) -> bool:
+    """Whether `routing.google_routes_fallback.enabled` is literally `true`.
+
+    False for every kind of doubt -- no file, no section, a value that is not
+    a boolean -- for the reason `generator.maps_platform` gives: this is a
+    spend control, and the cost of failing closed is a straight line.
+    """
+    path = GOOGLE_ROUTES_CONFIG_PATH if config_path is None else config_path
+    try:
+        import yaml
+
+        with open(path, "r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle) or {}
+        section = (config.get("routing") or {}).get(GOOGLE_ROUTES_CONFIG_KEY) or {}
+        return isinstance(section, dict) and section.get("enabled") is True
+    except FileNotFoundError:
+        return False
+    except Exception as exc:  # noqa: BLE001 -- a corrupt config is not fatal
+        logger.warning("Could not read routing.%s.enabled from %s (%s); the Google "
+                       "Routes fallback is off.", GOOGLE_ROUTES_CONFIG_KEY, path, exc)
+        return False
+
+
+def google_routes_key(config_path: str | os.PathLike[str] | None = None) -> str:
+    """The Maps Platform key, or `""` unless both switches are on.
+
+    Both decisions are read from the same file: this module's own switch, and
+    the Maps Platform gate, which is also the only place the key is read from
+    -- so a key in the environment cannot turn the fallback on by itself.
+    """
+    path = GOOGLE_ROUTES_CONFIG_PATH if config_path is None else config_path
+    if not google_routes_enabled(path):
+        return ""
+    return maps_platform.api_key(path)
+
+
+def parse_google_route(payload: Any) -> RoutedLeg | None:
+    """A `RoutedLeg` from a Compute Routes reply, or None.
+
+    `distanceMeters` is metres and `duration` a string of seconds (`"5064s"`);
+    `polyline.encodedPolyline` is the same encoding, at the same precision, as
+    OpenRouteService's geometry, and is simplified to the same bound. The
+    reply carries nothing about ferries under `GOOGLE_ROUTES_FIELD_MASK`, so
+    the leg has no ferry share or spans. An empty reply -- Routes found no
+    route -- is None.
+    """
+    try:
+        route = payload["routes"][0]
+        metres = float(route["distanceMeters"])
+        duration = str(route["duration"]).strip()
+        seconds = float(duration[:-1] if duration.endswith("s") else duration)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    if metres <= 0 or seconds <= 0:
+        return None
+    geometry: tuple[Point, ...] | None = None
+    encoded = (route.get("polyline") or {}).get("encodedPolyline")
+    if isinstance(encoded, str) and encoded:
+        try:
+            points = decode_polyline(encoded)
+        except ValueError:
+            points = []
+        if len(points) >= 2:
+            geometry, _ = simplify_geometry(points)
+    return RoutedLeg(miles=round(metres / METRES_PER_MILE, 1), minutes=round(seconds / 60.0, 1),
+                     geometry=geometry, router=ROUTER_GOOGLE)
+
+
+def _route_by_google(
+    origin: tuple[float, float],
+    dest: tuple[float, float],
+    *,
+    profile: str,
+    cache_key: str,
+    google_key: str | None,
+) -> RoutedLeg | None:
+    """Ask Google Routes for a leg OpenRouteService refused for its quota.
+
+    None when the fallback is off (`google_routes_key`), and on any failure;
+    the caller then estimates exactly as it would have. The answer is kept in
+    `_google_memo` for the run and never written to disk: Google's terms let a
+    Routes caller cache latitude and longitude only, and only for a while, and
+    grant nothing for distance or duration.
+    """
+    key = google_routes_key() if google_key is None else str(google_key).strip()
+    if not key:
+        return None
+    with _lock:
+        if cache_key in _google_memo:
+            return _google_memo[cache_key]
+
+    def _point(where: tuple[float, float]) -> dict[str, Any]:
+        return {"location": {"latLng": {"latitude": where[0], "longitude": where[1]}}}
+
+    body = {"origin": _point(origin), "destination": _point(dest),
+            "travelMode": GOOGLE_TRAVEL_MODES[profile],
+            "polylineEncoding": "ENCODED_POLYLINE"}
+    request = urllib.request.Request(
+        GOOGLE_ROUTES_ENDPOINT, data=json.dumps(body).encode("utf-8"), headers={
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": key,
+            "X-Goog-FieldMask": GOOGLE_ROUTES_FIELD_MASK,
+        })
+    _count("google_requests")
+    try:
+        with _google_urlopen(request, timeout=TIMEOUT_S) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        logger.info("Google Routes refused %s too (HTTP %s); estimating instead.",
+                    cache_key, exc.code)
+        return None
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        logger.info("Google Routes unavailable for %s (%s); estimating instead.",
+                    cache_key, exc)
+        return None
+    leg = parse_google_route(payload)
+    with _lock:
+        _google_memo[cache_key] = leg
+    if leg is None:
+        logger.info("Google Routes had no route for %s; estimating instead.", cache_key)
+        return None
+    _count("google_routes")
+    logger.info("Routed %s through Google Routes: the OpenRouteService quota is spent.",
+                cache_key)
+    return leg
+
+
 def cached_leg(
     origin: tuple[float, float],
     dest: tuple[float, float],
@@ -903,12 +1130,21 @@ def cached_leg(
     must treat as *shape unknown* rather than *no road*, because the two look
     identical from here. An entry written before geometry was kept loads with
     `geometry` None, exactly as it does through `route_leg`.
+
+    A leg Google Routes answered earlier in this process is returned too, from
+    memory: it is never on disk (see the module docstring), and a map drawn in
+    the run that routed it should draw its road rather than a straight line.
     """
     if profile not in PROFILES:
         raise ValueError(f"profile must be one of {PROFILES}, not {profile!r}")
     path = DEFAULT_CACHE_PATH if cache_path is None else cache_path
     cache_key = _cache_key(origin, dest, avoid_ferries=avoid_ferries,
                            profile=profile)
+    if not avoid_ferries:
+        with _lock:
+            remembered = _google_memo.get(cache_key)
+        if remembered is not None:
+            return remembered
     with _lock:
         cached = _load_cache(path).get(cache_key)
     if not isinstance(cached, dict) or cached.get("no_route") is True:
@@ -927,6 +1163,7 @@ def route_leg(
     cache_path: str | os.PathLike[str] | None = None,
     avoid_ferries: bool = False,
     profile: str = DEFAULT_PROFILE,
+    google_key: str | None = None,
 ) -> RoutedLeg | None:
     """Route one leg between two `(lat, lng)` points, or None.
 
@@ -954,6 +1191,12 @@ def route_leg(
     which is where a rural point's nearest road actually is. Only then is it
     a straight-line fallback. The snapped answer is cached under the ordinary
     key, so the second ask happens once per pair and never again.
+
+    **A refusal for the quota is asked of Google Routes** when config.yaml
+    allows it (`google_routes_key`), and only then; see the module docstring.
+    `google_key` overrides that lookup the way `key` does for
+    OpenRouteService -- `""` turns the fallback off. A leg Google answers has
+    `router` `google_routes` and is held in memory, never in `cache_path`.
     """
     if profile not in PROFILES:
         raise ValueError(f"profile must be one of {PROFILES}, not {profile!r}")
@@ -962,6 +1205,14 @@ def route_leg(
         return None
     path = DEFAULT_CACHE_PATH if cache_path is None else cache_path
     cache_key = _cache_key(origin, dest, avoid_ferries=avoid_ferries, profile=profile)
+    if not avoid_ferries:
+        # A pair Google already routed this run was refused for the quota a
+        # moment ago; asking OpenRouteService again would only be refused.
+        with _lock:
+            remembered = _google_memo.get(cache_key)
+        if remembered is not None:
+            _count("cache_hits")
+            return remembered
     with _lock:
         cached = _load_cache(path).get(cache_key)
     if isinstance(cached, dict):
@@ -1056,9 +1307,21 @@ def route_leg(
             _remember_no_route(path, cache_key)
             return None
         outcome = getattr(exc, "_outcome", None)
+        if outcome == "quota" and not avoid_ferries:
+            # The one refusal the second router is for. Nothing else -- a
+            # no-route 404, a refused key, the per-minute limit -- reaches it.
+            rescued = _route_by_google(origin, dest, profile=profile,
+                                       cache_key=cache_key, google_key=google_key)
+            if rescued is not None:
+                return rescued
         _count({"rate_limited": "rate_limited_gave_up",
                 "quota": "quota_refused"}.get(outcome, "failed"))
-        logger.info("Routing refused %s (HTTP %s); estimating instead.", cache_key, exc.code)
+        if outcome == "quota":
+            logger.info("Routing quota spent for %s (HTTP %s); estimating instead.",
+                        cache_key, exc.code)
+        else:
+            logger.info("Routing refused %s (HTTP %s); estimating instead.",
+                        cache_key, exc.code)
         return None
     except (urllib.error.URLError, OSError, ValueError) as exc:
         _count("failed")

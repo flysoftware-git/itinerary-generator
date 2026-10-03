@@ -2843,6 +2843,9 @@ def main(
     from generator import routing as _routing
 
     _routing.reset_stats()
+    # Likewise the Google Routes answers held in memory: they are for the run
+    # that asked, and a long-lived process must not keep them past it.
+    _routing.forget_google_routes()
     # Bound here rather than at construction, because _finalize_run reads it
     # and runs on paths that fail long before the client exists.
     llm_client = None
