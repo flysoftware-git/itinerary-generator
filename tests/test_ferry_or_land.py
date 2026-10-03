@@ -42,7 +42,7 @@ def _fixture(name):
 #: The reply OpenRouteService documents for a pair it cannot connect: HTTP 404,
 #: error code 2009. Not recorded -- the four live calls went on the legs above.
 NO_ROUTE = urllib.error.HTTPError(
-    "https://api.openrouteservice.org/v2/directions/driving-car", 404, "Not Found", {},
+    "https://api.heigit.org/openrouteservice/v2/directions/driving-car", 404, "Not Found", {},
     io.BytesIO(b'{"error":{"code":2009,"message":"Route could not be found"}}'))
 
 

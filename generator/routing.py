@@ -164,7 +164,15 @@ API_KEY_ENV = "OPENROUTESERVICE_API_KEY"
 
 #: Every directions endpoint, less the profile. The profile is the last path
 #: segment, and the only thing that differs between them.
-ENDPOINT_BASE = "https://api.openrouteservice.org/v2/directions"
+#:
+#: **api.heigit.org, not api.openrouteservice.org.** HeiGIT deprecated the old
+#: host on 2026-04-28, reduced its quota from 2026-08-24, and shuts it down on
+#: 2026-11-02..06 (https://ask.openrouteservice.org/t/7912). Measured 2026-10-03
+#: with one key: the old host refused every leg with `403 Quota exceeded`, so
+#: every road on a page fell back to a straight line, while this host routed the
+#: same leg with the key's full daily quota left. Existing keys work here
+#: unchanged.
+ENDPOINT_BASE = "https://api.heigit.org/openrouteservice/v2/directions"
 
 #: The profile a caller that names none gets, which is what every caller got
 #: before profiles were an option.
