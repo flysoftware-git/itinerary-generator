@@ -406,3 +406,112 @@ def test_the_template_has_somewhere_to_draw_them():
 
     assert "'<!--SIDE_TRIPS_JSON-->'" in template
     assert template.count("'<!--SIDE_TRIPS_JSON-->'") == 1
+
+
+# ── a day out that DOES come back (`returns: true`) ─────────────────────────
+#
+# A ride along a trail is often out and back: driven to one end, ridden to the
+# other and back to the car. Its ends are still named -- the ride runs between
+# them -- but the traveller finishes where they began.
+
+
+def test_returns_is_read_only_when_it_is_said():
+    from generator.multi_site_grouping import comes_back
+
+    assert comes_back(_ride(returns=True))
+    assert not comes_back(_ride())
+    assert not comes_back(_ride(returns="yes"))
+    assert not comes_back({"id": "x", "name": "X", "returns": True})
+    assert not is_point_to_point(_ride(returns=True))
+    assert is_point_to_point(_ride())
+
+
+def test_the_schema_accepts_returns_and_refuses_a_non_boolean(tmp_path):
+    import yaml
+
+    parser = ManifestParser()
+    manifest = {
+        "trip": {"title": "A ride", "subtitle": "Out and back",
+                 "theme_color": "#C0623E"},
+        "destinations": [
+            {"id": "base", "name": "Lilliwaup, Washington",
+             "dates": "September 12-14, 2026", "coordinates": dict(BASE),
+             "planning_links": [{"label": "Map", "url": "https://example.com/map"}]},
+            dict(_ride(returns=True), dates="September 13, 2026",
+                 planning_links=[{"label": "Trail", "url": "https://example.com/trail"}]),
+        ],
+    }
+    path = tmp_path / "trip.yaml"
+    path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    assert parser.load(str(path))["destinations"][1]["returns"] is True
+
+    manifest["destinations"][1]["returns"] = "sometimes"
+    path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    with pytest.raises(Exception):
+        parser.load(str(path))
+
+
+def test_after_a_ride_that_comes_back_the_next_stop_leaves_from_the_base():
+    stops = _trip(
+        {"id": "base", "name": "Lilliwaup, Washington", **BASE},
+        _ride(returns=True),
+        {"id": "port_townsend", "name": "Port Townsend, Washington"},
+    )
+
+    origins = _origins(stops)
+
+    # The ride itself still begins at the trailhead...
+    assert origins["the_ride"] == "Siebert Creek"
+    # ...and the traveller is back at the car, so the trip goes on from the bed.
+    assert origins["port_townsend"] == "Lilliwaup, Washington"
+
+
+def test_the_page_leaves_the_next_stop_from_the_base_too():
+    stops = _trip(
+        {"id": "base", "name": "Lilliwaup, Washington", **BASE},
+        _ride(returns=True),
+        {"id": "port_townsend", "name": "Port Townsend, Washington"},
+    )
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+
+    assert assembler._left_from_a_one_way_day_out(stops, 2) is None
+    assert assembler._left_from_a_one_way_day_out(_trip(*stops[:1], _ride(), *stops[2:]), 2)
+
+
+def test_a_ride_that_comes_back_is_called_out_and_back():
+    _, ride = _trip({"id": "base", "name": "Lilliwaup, Washington"}, _ride(returns=True))
+    html = _rendered_leg("Siebert Creek", ride,
+                         previous_point=(TRAILHEAD["lat"], TRAILHEAD["lng"]))
+
+    assert "Day Out — Out and Back" in html
+    assert "One Way" not in html
+    # Still ridden between the two named points.
+    assert "origin=48.10726%2C-123.2821" in html
+    assert "travelmode=bicycling" in html
+
+
+def test_the_overview_map_draws_the_ride_and_says_it_comes_back():
+    legs = _legs(_trip({"id": "base", "name": "Lilliwaup, Washington", **BASE},
+                       _ride(returns=True)))
+
+    assert len(legs) == 1
+    assert legs[0]["a"] == [TRAILHEAD["lat"], TRAILHEAD["lng"]]
+    assert legs[0]["name"] == "Siebert Creek → Hollywood Beach and back"
+    assert legs[0]["returns"] is True
+
+
+def test_the_whole_trip_link_stops_at_the_trailhead_not_the_name():
+    """The 2026-09 guide this came from listed the ride as a waypoint by name,
+    and Google answered *Siebert Creek, Washington* with the creek's label
+    point, miles from the trailhead the manifest placed."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    stops = _trip({"id": "base", "name": "Lilliwaup, Washington"},
+                  dict(_ride(returns=True), name="Siebert Creek, Washington"),
+                  {"id": "port_townsend", "name": "Port Townsend, Washington"})
+
+    url = assembler._build_google_maps_url(stops, {"departure": "Issaquah, WA",
+                                                   "return": "Issaquah, WA"})
+
+    assert "48.10726%2C-123.2821" in url, url
+    assert "Siebert%20Creek" not in url, url
+    assert "Lilliwaup" in url and "Port%20Townsend" in url

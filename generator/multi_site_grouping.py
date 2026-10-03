@@ -195,14 +195,33 @@ def side_trip_end(dest: dict[str, Any] | None) -> dict[str, Any] | None:
     return _named_end(dest, "end")
 
 
+def comes_back(dest: dict[str, Any] | None) -> bool:
+    """True when the manifest says this outing returns the way it went.
+
+    A ride along a trail is often out and back: driven to one end, ridden to the
+    other, ridden back to the car. Its two ends are still worth naming -- the
+    ride runs between them -- but the traveller finishes where they began, so
+    the next stop does not leave from the far end. Only an explicit
+    `returns: true` says so; omitted, an outing with a named end finishes
+    there, exactly as before.
+    """
+    return is_grouped(dest) and (dest or {}).get("returns") is True
+
+
+def has_named_ends(dest: dict[str, Any] | None) -> bool:
+    """True when this outing runs between places other than its base."""
+    return side_trip_start(dest) is not None or side_trip_end(dest) is not None
+
+
 def is_point_to_point(dest: dict[str, Any] | None) -> bool:
     """True when this outing does not come back to where it started.
 
-    Either end being named is enough. A ride that starts at a trailhead and
-    finishes back at the base is still a one-way journey out, and calling it
-    there-and-back would describe a return leg nobody rides.
+    Either end being named is enough, unless the manifest says it comes back
+    (`returns: true`). A ride that starts at a trailhead and finishes back at
+    the base is still a one-way journey out, and calling it there-and-back
+    would describe a return leg nobody rides.
     """
-    return side_trip_start(dest) is not None or side_trip_end(dest) is not None
+    return has_named_ends(dest) and not comes_back(dest)
 
 
 def side_trip_mode(dest: dict[str, Any] | None) -> str:

@@ -889,6 +889,19 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                        "the base first to leave from it. Omitted = the "
                                        "next stop leaves from the base, unchanged.",
                     },
+                    "returns": {
+                        "type": "boolean",
+                        "description": "Optional: true when this outing comes back "
+                                       "the way it went -- driven to `start`, ridden "
+                                       "to `end`, ridden back to the car. Only "
+                                       "meaningful with `group_with`; set elsewhere "
+                                       "it is warned about and ignored. The ride is "
+                                       "still drawn between its two ends, but the "
+                                       "traveller finishes where they began, so the "
+                                       "NEXT stop leaves from the base and not from "
+                                       "`end`. Omitted = an outing with an `end` "
+                                       "finishes there, unchanged.",
+                    },
                     "mode": {
                         "type": "string",
                         "enum": list(TRANSPORT_MODES),
@@ -1542,7 +1555,7 @@ class ManifestParser:
     #: not one. Warned about and ignored, like `transport_mode` above: a
     #: manifest is often hand-edited, and refusing a build over a field in the
     #: wrong place costs more than saying what was ignored.
-    _SIDE_TRIP_ONLY_FIELDS = ("start", "end", "mode")
+    _SIDE_TRIP_ONLY_FIELDS = ("start", "end", "mode", "returns")
 
     def _warn_side_trip_fields_without_group(self, data: dict[str, Any]) -> None:
         """`start`, `end` and `mode` describe an outing from a base.
