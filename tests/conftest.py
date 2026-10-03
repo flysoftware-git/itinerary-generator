@@ -72,6 +72,21 @@ def no_live_routing(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(routing_mod, "_LIMITER", None)
     monkeypatch.setattr(routing_mod, "_sleep", lambda seconds: None)
     monkeypatch.setattr(routing_mod, "_stats", dict.fromkeys(routing_mod.STAT_NAMES, 0))
+    # Nor does any test reach Google Routes, the metered second router a
+    # quota refusal can be sent to. Its switches are read from a file that
+    # does not exist, which is off whatever the real config.yaml says; its
+    # memory starts empty; and its transport refuses LOUDLY -- an
+    # AssertionError is not a failure routing catches, so a test that reaches
+    # Google without meaning to is red rather than quietly estimated. Tests of
+    # the fallback pass a Google key and a transport explicitly.
+    monkeypatch.setattr(routing_mod, "GOOGLE_ROUTES_CONFIG_PATH",
+                        str(tmp_path_factory.mktemp("routing_config") / "absent.yaml"))
+    monkeypatch.setattr(routing_mod, "_google_memo", {})
+
+    def _no_google(request, timeout=None):
+        raise AssertionError(f"a test reached Google Routes: {request.full_url}")
+
+    monkeypatch.setattr(routing_mod, "_google_urlopen", _no_google)
 
 
 @pytest.fixture(autouse=True)

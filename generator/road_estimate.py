@@ -145,6 +145,10 @@ class LegEstimate:
     #: A `generator.routing.FerryChoiceReason`: the numbers the choice was
     #: made on, and its `summary` sentence. None when `chosen` is None.
     chosen_reason: Any = None
+    #: Which router answered: `openrouteservice`, or `google_routes` for a leg
+    #: the first refused for its quota (`generator.routing.RoutedLeg.router`).
+    #: None for an estimate.
+    router: str | None = None
 
     @property
     def has_ferry(self) -> bool:
@@ -176,6 +180,7 @@ def _routed_estimate(routed: Any, **choice: Any) -> LegEstimate:
                        geometry=tuple(geometry) if geometry else None,
                        ferry_spans=tuple(getattr(routed, "ferry_spans", ()) or ())
                        if geometry else (),
+                       router=getattr(routed, "router", None),
                        **choice)
 
 
