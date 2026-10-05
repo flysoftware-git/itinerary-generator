@@ -1560,10 +1560,10 @@ def _resolve_llm_overrides(
     cli_provider: str | None,
     cli_model: str | None,
 ) -> dict[str, Any]:
-    """Resolve the effective LLM provider/model/features overrides passed to
+    """Resolve the effective LLM provider/model overrides passed to
     MultiLLMClient, in precedence order (lowest to highest):
-      1. nested trip.trip.llm.{provider,model,features,...} (base dict)
-      2. flat trip.trip.llm_provider / trip.trip.llm_features / trip.trip.llm_model
+      1. nested trip.trip.llm.{provider,model,...} (base dict)
+      2. flat trip.trip.llm_provider / trip.trip.llm_model
       3. --llm-provider / --llm-model CLI flags
 
     trip.llm_model (flat) previously had no handling at all -- only the nested
@@ -1577,8 +1577,6 @@ def _resolve_llm_overrides(
 
     if trip_meta.get("llm_provider"):
         overrides["provider"] = trip_meta.get("llm_provider")
-    if trip_meta.get("llm_features"):
-        overrides["features"] = trip_meta.get("llm_features")
     if trip_meta.get("llm_model"):
         overrides["model"] = trip_meta.get("llm_model")
 

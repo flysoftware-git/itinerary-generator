@@ -25,7 +25,11 @@ was true of `seed_links`.
 
 What it does catch is the one failure that is otherwise invisible: a field an
 author can legitimately set, that nothing anywhere consumes. On its first run it
-found `code_execution`, which nobody had reported.
+found `code_execution`, which nobody had reported -- `trip.llm_features` and the
+nested `trip.llm.features`, accepted by the schema and read by no consumer. They
+were removed from the schema on 2026-10-04 rather than implemented, which is why
+the list below is empty: the first entry it ever held was answered instead of
+kept.
 
 **It would not have caught `seed_links` itself, and that is worth saying.** The
 check is keyed on names the schema accepts, and `seed_links` is not one — the
@@ -51,19 +55,7 @@ from typing import Any
 #:
 #: Adding an entry here is a statement that an author can set this field and it
 #: will do nothing. It should be rarer than fixing the field.
-FIELDS_NOT_HONOURED: dict[str, str] = {
-    "code_execution": (
-        "KNOWN GAP, found 2026-10-01 by the test that reads this file. "
-        "`trip.llm_features.code_execution` and the nested `trip.llm.features."
-        "code_execution` are accepted by the schema and resolved into the "
-        "override dict by main._resolve_llm_overrides as `features`. "
-        "MultiLLMClient.__init__ then reads `provider`, `model`, `temperature` "
-        "and `max_tokens` from that dict and never `features`, so the setting "
-        "is dropped in silence. Either the client should honour it or the "
-        "schema should stop accepting it; both are changes to make "
-        "deliberately, which is why it is declared rather than quietly removed."
-    ),
-}
+FIELDS_NOT_HONOURED: dict[str, str] = {}
 
 
 def schema_field_names(schema: dict[str, Any]) -> set[str]:

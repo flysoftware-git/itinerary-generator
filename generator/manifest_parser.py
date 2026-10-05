@@ -527,26 +527,12 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                    "Renamed from `test` to `eval`; a manifest still "
                                    "carrying `test` needs the one-word change."
                 },
-                "llm_features": {
-                    "type": "object",
-                    "properties": {
-                        "code_execution": {"const": True},
-                    },
-                    "additionalProperties": False,
-                },
                 "llm": {
                     "type": "object",
                     "properties": {
                         "provider": {
                             "type": "string",
                             "enum": ["openai", "anthropic", "deepseek", "gemini", "grok", "azure_openai"],
-                        },
-                        "features": {
-                            "type": "object",
-                            "properties": {
-                                "code_execution": {"const": True},
-                            },
-                            "additionalProperties": False,
                         },
                         "model": {"type": "string", "minLength": 2},
                         "temperature": {"type": "number", "minimum": 0.0, "maximum": 1.0},
@@ -956,6 +942,7 @@ class ManifestParser:
         self._merge_reservations_sidecar(data, manifest_path)
         self._resolve_brand_icon(data, manifest_path)
         self._resolve_brand_touch_icon(data, manifest_path)
+        self._warn_llm_features_never_did_anything(data)
         self._validate_seeds(data)
         self._normalize_seeds(data)
         self._validate_en_route_seeds(data)
@@ -1555,6 +1542,37 @@ class ManifestParser:
     #: not one. Warned about and ignored, like `transport_mode` above: a
     #: manifest is often hand-edited, and refusing a build over a field in the
     #: wrong place costs more than saying what was ignored.
+    #: Removed from the schema 2026-10-04. `trip.llm_features.code_execution`
+    #: and the nested `trip.llm.features.code_execution` were accepted, carried
+    #: into the override dict by `main._resolve_llm_overrides` as `features` --
+    #: and read by nothing. `MultiLLMClient.__init__` takes `provider`, `model`,
+    #: `temperature` and `max_tokens` from that dict and never `features`, and
+    #: no provider's `create_json_completion` has a tools parameter to pass one
+    #: to. So the field promised a capability this engine has no interface for.
+    #:
+    #: Warned rather than refused: a manifest carrying it built the same output
+    #: before and builds the same output now, so failing the run would punish an
+    #: author for a promise this project failed to keep. Nothing in the repo set
+    #: it; `manifests/tuning_surface.yaml` says in a comment that it deliberately
+    #: does not.
+    _FIELDS_THAT_NEVER_DID_ANYTHING = ("llm_features",)
+
+    def _warn_llm_features_never_did_anything(self, data: dict[str, Any]) -> None:
+        trip = data.get("trip") if isinstance(data, dict) else None
+        if not isinstance(trip, dict):
+            return
+        carried = [f for f in self._FIELDS_THAT_NEVER_DID_ANYTHING if trip.get(f)]
+        nested = trip.get("llm")
+        if isinstance(nested, dict) and nested.get("features"):
+            carried.append("llm.features")
+        for field in carried:
+            logger.warning(
+                "trip.%s ignored -- it was accepted by the schema but read by "
+                "nothing, and was removed on 2026-10-04. No build behaviour "
+                "changes by deleting it.",
+                field,
+            )
+
     _SIDE_TRIP_ONLY_FIELDS = ("start", "end", "mode", "returns")
 
     def _warn_side_trip_fields_without_group(self, data: dict[str, Any]) -> None:
