@@ -66,6 +66,10 @@ All string values follow the voice and style rules in the system prompt.
   "top_attractions": [
     {{
       "name": "Real attraction, trail, or landmark name",
+      "locality": "The town the attraction is actually in, or the nearest one,
+        with its state or country -- e.g. Port Angeles, Washington. This is
+        where a map should look for it, so it is NOT this destination's name
+        unless the attraction really is there. Omit if you do not know.",
       "type": "hike | attraction | viewpoint | activity | landmark",
       "difficulty": "Easy | Moderate | Strenuous | N/A",
       "duration": "e.g. 4–5 hrs round-trip | 45 min | half-day",
