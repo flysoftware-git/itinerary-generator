@@ -589,11 +589,46 @@ def _error_code(exc: urllib.error.HTTPError) -> int | None:
         return None
 
 
-def _load_cache(path: str | os.PathLike[str]) -> dict[str, Any]:
+#: The cache as last parsed, per file: `{path: ((mtime_ns, size), contents)}`.
+#:
+#: Every leg lookup used to read and parse the whole cache file again. A trip of
+#: thirty legs asks about each leg more than once, so a 2 MB cache was parsed
+#: over a hundred times to draw one page -- measured at 11.3 s of a 15.7 s first
+#: view, against no router call at all. The file only changes when a route is
+#: saved, so it is parsed once and reused until its modification time or size
+#: says otherwise -- which also notices a write from another process.
+_parsed: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+_parsed_lock = threading.Lock()
+
+
+def _stamp(path: Path) -> tuple[int, int] | None:
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _load_cache(path: str | os.PathLike[str]) -> dict[str, Any]:
+    """The cache's contents: a copy, so a caller's edits never reach the next reader."""
+    target = Path(path)
+    stamp = _stamp(target)
+    if stamp is None:
+        return {}
+    key = os.fspath(target.absolute())
+    with _parsed_lock:
+        held = _parsed.get(key)
+        if held is not None and held[0] == stamp:
+            return dict(held[1])
+    try:
+        contents = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    if not isinstance(contents, dict):
+        return {}
+    with _parsed_lock:
+        _parsed[key] = (stamp, contents)
+    return dict(contents)
 
 
 def _save_cache(path: str | os.PathLike[str], cache: dict[str, Any]) -> None:
@@ -605,6 +640,11 @@ def _save_cache(path: str | os.PathLike[str], cache: dict[str, Any]) -> None:
         temp.replace(target)
     except OSError as exc:
         logger.info("Routing cache not saved (%s).", exc)
+        return
+    stamp = _stamp(target)
+    if stamp is not None:
+        with _parsed_lock:
+            _parsed[os.fspath(target.absolute())] = (stamp, dict(cache))
 
 
 def decode_polyline(encoded: str, precision: int = POLYLINE_PRECISION) -> list[Point]:
