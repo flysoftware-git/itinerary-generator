@@ -3318,6 +3318,31 @@ def test_build_getting_here_prefers_structured_rating_field_over_text_extraction
     assert '<span class="badge badge-rating">★ 4.6/5</span>' in html
 
 
+def test_an_attraction_is_looked_for_in_its_own_town() -> None:
+    """A destination's attractions are often in the next town. Qualified by
+    the destination's name, "Ediz Hook Siebert Creek, Washington" is not a
+    place a map can find -- Ediz Hook is in Port Angeles -- and a directions
+    URL with one unplaceable waypoint does not open. The attraction's own
+    locality qualifies it where the content gives one; the destination's name
+    is the fallback only."""
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    url = assembler._build_destination_attractions_map_url(
+        {"name": "Siebert Creek, Washington"},
+        [
+            {"name": "Ediz Hook", "locality": "Port Angeles, Washington"},
+            {"name": "Dungeness Spit", "locality": "Sequim, Washington"},
+            {"name": "Siebert Creek Trailhead"},
+        ],
+    )
+
+    assert "Ediz%20Hook%20Port%20Angeles%2C%20Washington" in url
+    assert "Dungeness%20Spit%20Sequim%2C%20Washington" in url
+    assert "Ediz%20Hook%20Siebert" not in url
+    # No locality: the destination's name, as before. Here the name already
+    # carries the destination's own token, so it stands alone.
+    assert "destination=Siebert%20Creek%20Trailhead" in url
+
+
 def test_destination_attractions_map_url_uses_multi_waypoint_directions() -> None:
     """Multiple attractions must render as real named map pins via a
     /maps/dir/ URL, not collapse to a generic destination-only search."""

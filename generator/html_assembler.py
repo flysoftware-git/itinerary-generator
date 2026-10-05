@@ -1372,8 +1372,19 @@ class HTMLAssembler:
             return ""
 
         dest_label = str(dest_name or "").strip()
-        names = [str(item.get("name", "") or "").strip() for item in entries]
-        qualified = [self._maps_fallback_query_text(name, dest_label) for name in names]
+        # Each attraction is qualified by the town it is in when the content
+        # says so, and by the destination's name only when it does not. The
+        # destination is where the traveller sleeps, and its attractions are
+        # often in the next town: "Ediz Hook Siebert Creek, Washington" is not
+        # a place Google can find, because Ediz Hook is in Port Angeles, and a
+        # directions URL with one unplaceable waypoint does not open at all.
+        qualified = [
+            self._maps_fallback_query_text(
+                str(item.get("name", "") or "").strip(),
+                str(item.get("locality", "") or "").strip() or dest_label,
+            )
+            for item in entries
+        ]
 
         # Single item: open a focused destination-scoped search query directly.
         if len(qualified) == 1:
