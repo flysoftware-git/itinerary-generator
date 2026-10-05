@@ -7,6 +7,7 @@ cached -- is a fact the test controls.
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import threading
@@ -75,6 +76,8 @@ def test_without_a_key_nothing_is_asked(monkeypatch, cache):
     urllib.error.HTTPError("u", 429, "quota", {}, None),
     urllib.error.URLError("down"),
     TimeoutError("slow"),
+    http.client.BadStatusLine(""),
+    http.client.IncompleteRead(b"{"),
 ])
 def test_a_refusal_is_a_fallback_and_is_not_remembered(monkeypatch, cache, failure):
     monkeypatch.setattr(routing.urllib.request, "urlopen", Transport(failure))
@@ -594,3 +597,15 @@ def test_threads_together_never_exceed_the_rate(monkeypatch, cache):
     busiest = max(sum(1 for t in sent if start <= t < start + 60.0) for start in sent)
     assert busiest <= rate, f"{busiest} requests inside one minute"
     assert routing.stats()["requests"] == 40 and routing.stats()["routed"] == 40
+
+
+def test_a_garbled_reply_to_the_wider_ask_is_a_fallback(monkeypatch, cache):
+    """The second request of the retry is the one that came back with no status
+    line at all. That is not an `HTTPError` and not a `URLError`, and it must
+    still end as an estimate rather than as an exception in the caller."""
+    transport = Sequence(_refusal(routing.NO_ROUTABLE_POINT),
+                         http.client.BadStatusLine(""))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    assert routing.route_leg(ISSAQUAH, SIEBERT_CREEK, key="k", cache_path=cache) is None
+    assert len(transport.requests) == 2
+    assert not cache.exists() or json.loads(cache.read_text()) == {}
