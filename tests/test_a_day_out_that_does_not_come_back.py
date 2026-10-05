@@ -351,11 +351,25 @@ def _legs(destinations):
 def test_the_overview_map_draws_the_ride():
     legs = _legs(_trip({"id": "base", "name": "Lilliwaup, Washington", **BASE}, _ride()))
 
-    assert len(legs) == 1
-    assert legs[0]["a"] == [TRAILHEAD["lat"], TRAILHEAD["lng"]]
-    assert legs[0]["b"] == [BEACH["lat"], BEACH["lng"]]
-    assert legs[0]["name"] == "Siebert Creek → Hollywood Beach"
-    assert legs[0]["mode"] == "bike"
+    rides = [leg for leg in legs if leg["mode"] == "bike"]
+    assert len(rides) == 1
+    assert rides[0]["a"] == [TRAILHEAD["lat"], TRAILHEAD["lng"]]
+    assert rides[0]["b"] == [BEACH["lat"], BEACH["lng"]]
+    assert rides[0]["name"] == "Siebert Creek → Hollywood Beach"
+
+
+def test_the_overview_map_draws_the_drive_out_to_the_ride():
+    """The ride's ends sit thirty miles from the base, and without the drive out
+    the ride floats on the map joined to nothing (the owner, on the rebuilt
+    Lilliwaup guide: *"Map doesn't connect side trip"*). Seen red with the
+    drive-out leg not added."""
+    legs = _legs(_trip({"id": "base", "name": "Lilliwaup, Washington", **BASE}, _ride()))
+
+    out = [leg for leg in legs if leg["mode"] == "drive"]
+    assert len(out) == 1, legs
+    assert out[0]["b"] == [TRAILHEAD["lat"], TRAILHEAD["lng"]], "the drive out ends where the ride starts"
+    assert out[0]["a"] != out[0]["b"]
+    assert out[0]["name"] == "Lilliwaup, Washington → Siebert Creek"
 
 
 def test_an_outing_with_one_named_end_runs_from_the_base():
@@ -494,10 +508,11 @@ def test_the_overview_map_draws_the_ride_and_says_it_comes_back():
     legs = _legs(_trip({"id": "base", "name": "Lilliwaup, Washington", **BASE},
                        _ride(returns=True)))
 
-    assert len(legs) == 1
-    assert legs[0]["a"] == [TRAILHEAD["lat"], TRAILHEAD["lng"]]
-    assert legs[0]["name"] == "Siebert Creek → Hollywood Beach and back"
-    assert legs[0]["returns"] is True
+    rides = [leg for leg in legs if leg["mode"] == "bike"]
+    assert len(rides) == 1
+    assert rides[0]["a"] == [TRAILHEAD["lat"], TRAILHEAD["lng"]]
+    assert rides[0]["name"] == "Siebert Creek → Hollywood Beach and back"
+    assert rides[0]["returns"] is True
 
 
 def test_the_whole_trip_link_stops_at_the_trailhead_not_the_name():
