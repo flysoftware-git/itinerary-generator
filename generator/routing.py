@@ -178,6 +178,7 @@ the nearest mode Routes offers.
 from __future__ import annotations
 
 import heapq
+import http.client
 import json
 import logging
 import os
@@ -1134,7 +1135,7 @@ def _route_by_google(
         logger.info("Google Routes refused %s too (HTTP %s); estimating instead.",
                     cache_key, exc.code)
         return None
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
         logger.info("Google Routes unavailable for %s (%s); estimating instead.",
                     cache_key, exc)
         return None
@@ -1363,7 +1364,13 @@ def route_leg(
             logger.info("Routing refused %s (HTTP %s); estimating instead.",
                         cache_key, exc.code)
         return None
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    # `http.client.HTTPException` is not a `URLError` and not an `OSError`: a
+    # reply whose status line is garbled (`BadStatusLine`) or whose body stops
+    # short (`IncompleteRead`) arrives as one, and without it here a single bad
+    # answer from the router is an exception in whatever asked for a leg rather
+    # than an estimate. Seen on the wider snap retry, which is the second
+    # request in a row to the same host.
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
         _count("failed")
         logger.info("Routing unavailable for %s (%s); estimating instead.", cache_key, exc)
         return None
