@@ -1001,6 +1001,21 @@ class HTMLAssembler:
             from_name = str((start or base).get("name", "") or "").strip()
             to_name = str((end or dest).get("name", "") or "").strip()
             back = comes_back(dest)
+            # The drive out to where the ride starts, from the base it is taken
+            # from. Without it the ride floats on the map, joined to nothing:
+            # its two ends sit thirty miles from the base and no line says how
+            # the traveller got there. Drawn as one more of these legs, so it
+            # reads as part of the outing and never as a numbered stop.
+            here = _point(base)
+            if start and here is not None and here != a:
+                base_name = str(base.get("name", "") or "").strip()
+                legs.append({
+                    "a": here,
+                    "b": a,
+                    "name": f"{base_name} → {from_name}".strip(" →") + (" and back" if back else ""),
+                    "mode": "drive",
+                    "returns": back,
+                })
             legs.append({
                 "a": a,
                 "b": b,
