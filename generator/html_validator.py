@@ -57,6 +57,28 @@ class HTMLValidator:
         self._max_no_url_restaurants = int(quality_cfg.get("max_no_url_restaurants", DEFAULT_MAX_NO_URL_RESTAURANTS))
         self._max_empty_teaser_ratio = float(quality_cfg.get("max_empty_teaser_ratio", DEFAULT_MAX_EMPTY_TEASER_RATIO))
 
+    def _restaurant_threshold(self, trip: dict[str, Any]) -> int:
+        """This trip's own no-URL restaurant threshold, or the configured one.
+
+        The configured value is one number for every build, and the right one
+        depends on how densely the destination is INDEXED rather than on
+        anything about the guide: a park covered by its park service and the
+        trail sites tolerates a strict threshold that throws away most of the
+        dining in a thinly-indexed suburb.
+
+        A value that is not a whole number at or above zero is ignored rather
+        than raised on: the schema already refuses those, so reaching here with
+        one means a caller built the dict itself, and no build is worth failing
+        for it.
+        """
+        said = (trip or {}).get("trip")
+        if not isinstance(said, dict):
+            return self._max_no_url_restaurants
+        value = said.get("max_no_url_restaurants")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return self._max_no_url_restaurants
+        return value
+
     def validate(self, html_path: str | Path, trip: dict[str, Any],
                  skipped: Collection[str] = ()) -> dict[str, Any]:
         """Check a built guide, and fail it only for what the run tried to do.
@@ -379,10 +401,11 @@ class HTMLValidator:
                 f"Attractions with no URL or maps fallback: {no_url_attractions} "
                 f"(threshold: {self._max_no_url_attractions})"
             )
-        if no_url_restaurants > self._max_no_url_restaurants:
+        restaurant_threshold = self._restaurant_threshold(trip)
+        if no_url_restaurants > restaurant_threshold:
             warnings.append(
                 f"Restaurants with no URL: {no_url_restaurants} "
-                f"(threshold: {self._max_no_url_restaurants})"
+                f"(threshold: {restaurant_threshold})"
             )
         if no_url_stops > self._max_no_url_en_route_stops:
             warnings.append(
@@ -391,7 +414,7 @@ class HTMLValidator:
             )
         for label, removed, kept, threshold in (
             ("Attractions", removed_attractions, kept_attractions, self._max_no_url_attractions),
-            ("Restaurants", removed_restaurants, kept_restaurants, self._max_no_url_restaurants),
+            ("Restaurants", removed_restaurants, kept_restaurants, restaurant_threshold),
             ("En-route stops", removed_stops, kept_stops, self._max_no_url_en_route_stops),
         ):
             if removed <= threshold:

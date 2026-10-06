@@ -296,6 +296,25 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                     },
                     "additionalProperties": False,
                 },
+                #: How many restaurants may reach the page with no verified URL
+                #: before the quality gate warns, for THIS trip. Absent, the
+                #: `quality_gate.max_no_url_restaurants` config value governs,
+                #: which is where it has always been decided.
+                #:
+                #: The config value is one number for every build, and the right
+                #: one depends on how densely the destination is INDEXED rather
+                #: than on anything about the guide. A national park is covered
+                #: by its park service and the trail sites; a suburb is covered
+                #: by social pages and aggregators, and a threshold calibrated on
+                #: the first throws away most of the dining on the second --
+                #: measured at 77% removed on one such build. The trip knows what
+                #: kind of place it is about; `config.yaml` cannot.
+                "max_no_url_restaurants": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": ("Optional per-trip override for "
+                                    "quality_gate.max_no_url_restaurants."),
+                },
                 "budget": {
                     "description": "Optional budget guidance consumed by content generation.",
                     "oneOf": [
