@@ -10627,6 +10627,46 @@ class URLDiscoverer:
                     dest_name=dest_name,
                     max_attempts=int(getattr(self, "_max_restaurant_query_attempts", 3) or 3),
                 )
+            # Pass 3: the restaurant's OWN site. Without this a restaurant that
+            # is on neither Google Maps nor TripAdvisor got no link at all, even
+            # when its website was the first organic result -- measured on the
+            # Old Hickory guide, where Lebanon lost fourteen real businesses
+            # this way. Cedar City Brewing Company is on Tennessee's own
+            # tourism site; the search returns cedarcitybrewing.com first; the
+            # engine asked only maps and TripAdvisor and dropped the place.
+            #
+            # Admitted only when the domain is the restaurant's own, by the
+            # same test the official-site UPGRADE already uses -- so this is
+            # the upgrade path's rule applied to an item that has nothing to
+            # upgrade, not a new kind of guess. `dest_name` goes with it so a
+            # town-named domain cannot stand in for a business.
+            if not url:
+                own_site = self._search_first(
+                    restaurant_variants,
+                    item_name=rest_name,
+                    dest_name=dest_name,
+                    max_attempts=int(getattr(self, "_max_restaurant_query_attempts", 3) or 3),
+                )
+                if own_site and self._domain_matches_item_name(own_site, rest_name, dest_name)                         and not self._is_third_party_restaurant_page(own_site):
+                    url = own_site
+                    self._log_decision(
+                        kind="restaurant",
+                        dest_name=dest_name,
+                        item_name=rest_name,
+                        reason="own_site_accepted",
+                        message="restaurant link (its own site); not on maps or TripAdvisor",
+                        url=own_site,
+                    )
+                elif own_site:
+                    self._log_decision(
+                        kind="restaurant",
+                        dest_name=dest_name,
+                        item_name=rest_name,
+                        reason="own_site_rejected_name_mismatch",
+                        message="open search result is not this restaurant's own site",
+                        url=own_site,
+                    )
+
             url = self._normalize_restaurant_url(url)
             if url and self._url_already_claimed(url, claimed_restaurant_urls):
                 self._log_decision(
@@ -10702,7 +10742,7 @@ class URLDiscoverer:
     )
 
     @staticmethod
-    def _domain_matches_item_name(url: str, item_name: str) -> bool:
+    def _domain_matches_item_name(url: str, item_name: str, dest_name: str = "") -> bool:
         """Does the URL's domain look like it BELONGS to this item?
 
         The discriminator a host list cannot express. "rotisse.be" contains
@@ -10736,6 +10776,15 @@ class URLDiscoverer:
         name_key = re.sub(r"[^a-z0-9]", "", raw_name)
         if len(name_key) < 5:
             return False
+        # A name made only of the destination's own words identifies no domain:
+        # every `*lebanon*` host "contains" the name "Lebanon". Checked before
+        # containment, which would otherwise return True and never reach the
+        # token rule below.
+        if dest_name:
+            place_words = {t for t in re.split(r"[^a-z0-9]+", str(dest_name).lower()) if len(t) >= 4}
+            name_words = {t for t in re.split(r"[^a-z0-9]+", raw_name) if len(t) >= 4}
+            if name_words and not (name_words - place_words):
+                return False
         if name_key in host_key:
             return True
 
@@ -10744,7 +10793,20 @@ class URLDiscoverer:
         # name containment rejects a genuine official site. Fall back to the
         # first distinctive token, which is what a restaurant actually builds
         # its domain around.
+        # The distinctive token is the one the DESTINATION does not supply.
+        # "Lebanon Public House" in Lebanon starts with the town, so the old
+        # first-token rule matched sociallebanon.com -- which is Town Square
+        # Social, a different business on the same square. Any `*lebanon*`
+        # domain matched any Lebanon restaurant whose name began with the town.
+        # Measured 2026-10-05 on the Old Hickory guide.
         tokens = [tok for tok in re.split(r"[^a-z0-9]+", raw_name) if len(tok) >= 4]
+        if dest_name:
+            place = {t for t in re.split(r"[^a-z0-9]+", str(dest_name).lower()) if len(t) >= 4}
+            distinctive = [t for t in tokens if t not in place]
+            # All the name had was the town: nothing here identifies a domain.
+            if not distinctive:
+                return False
+            tokens = distinctive
         if not tokens:
             return False
         return tokens[0] in host_key
