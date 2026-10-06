@@ -2805,40 +2805,7 @@ class URLDiscoverer:
                 source_counts = dict(getattr(self, "_decision_source_stats_by_destination", {}).get(name, {}))
                 raw_threads = dict(getattr(self, "_decision_threads_by_destination", {}).get(name, {}))
 
-            disposition_threads: dict[str, list[dict[str, Any]]] = {
-                trace: [dict(event) for event in events if isinstance(event, dict)]
-                for trace, events in raw_threads.items()
-                if isinstance(events, list)
-            }
-            event_count = sum(len(events) for events in disposition_threads.values())
-            dest["_url_discovery"] = {
-                "reason_counts": decision_counts,
-                "source_counts": source_counts,
-                "thread_count": len(disposition_threads),
-                "event_count": event_count,
-                "disposition_threads": disposition_threads,
-                "restaurant_dispositions": self._summarize_entity_dispositions(
-                    kind="restaurant",
-                    disposition_threads=disposition_threads,
-                ),
-                "attraction_dispositions": self._summarize_entity_dispositions(
-                    kind="attraction",
-                    disposition_threads=disposition_threads,
-                ),
-                "trail_dispositions": self._summarize_entity_dispositions(
-                    kind="trail",
-                    disposition_threads=disposition_threads,
-                ),
-                "en_route_stop_dispositions": self._summarize_entity_dispositions(
-                    kind="en_route_stop",
-                    disposition_threads=disposition_threads,
-                ),
-                "scenic_drive_dispositions": self._summarize_entity_dispositions(
-                    kind="scenic_drive",
-                    disposition_threads=disposition_threads,
-                ),
-                "retention_exit_counts": self.retention_exit_counts(name),
-            }
+            dest["_url_discovery"] = self._url_discovery_snapshot(name)
 
             top_counts = sorted(decision_counts.items(), key=lambda row: row[1], reverse=True)
             summary_bits = ", ".join(f"{k}={v}" for k, v in top_counts[:6]) if top_counts else "none"
@@ -3861,11 +3828,53 @@ class URLDiscoverer:
         # The audit re-runs the retention gate, after discovery took its
         # snapshot of this destination's counts -- refresh it so the audit's
         # refusals are counted in what the run reports.
+        # ...and the decision log with them. Refreshing only the counts left the
+        # status report describing a destination as it stood BEFORE the audit,
+        # so `no_verified_url_removed` -- written by the audit, and the only
+        # record of an item the verified-link-or-seed policy dropped -- was
+        # missing from every report. Measured 2026-10-06 on the two published
+        # guides: the quality gate counted 25 and 31 removals, their reports
+        # listed none. Two ledgers written one line apart in
+        # `_keep_item_if_verified_or_seed`, disagreeing because one of them was
+        # read too early.
         for dest in trip.get("destinations", []) or []:
             if isinstance(dest, dict) and isinstance(dest.get("_url_discovery"), dict):
-                dest["_url_discovery"]["retention_exit_counts"] = self.retention_exit_counts(
-                    dest.get("name", "")
-                )
+                dest["_url_discovery"] = self._url_discovery_snapshot(dest.get("name", ""))
+
+
+    def _url_discovery_snapshot(self, dest_name: str) -> dict[str, Any]:
+        """Everything this destination's decision log currently says.
+
+        Built from the live log rather than accumulated, so it can be taken
+        again later and simply be right. The audit pass makes decisions after
+        discovery has already taken one of these -- most importantly
+        `no_verified_url_removed`, which is the only record of an item the
+        verified-link-or-seed policy dropped.
+        """
+        if not hasattr(self, "_request_cache_lock"):
+            self._request_cache_lock = Lock()
+        with self._request_cache_lock:
+            decision_counts = dict(getattr(self, "_decision_stats_by_destination", {}).get(dest_name, {}))
+            source_counts = dict(getattr(self, "_decision_source_stats_by_destination", {}).get(dest_name, {}))
+            raw_threads = dict(getattr(self, "_decision_threads_by_destination", {}).get(dest_name, {}))
+        threads: dict[str, list[dict[str, Any]]] = {
+            trace: [dict(event) for event in events if isinstance(event, dict)]
+            for trace, events in raw_threads.items()
+            if isinstance(events, list)
+        }
+        snapshot = {
+            "reason_counts": decision_counts,
+            "source_counts": source_counts,
+            "thread_count": len(threads),
+            "event_count": sum(len(events) for events in threads.values()),
+            "disposition_threads": threads,
+            "retention_exit_counts": self.retention_exit_counts(dest_name),
+        }
+        for kind in ("restaurant", "attraction", "trail", "en_route_stop", "scenic_drive"):
+            snapshot[f"{kind}_dispositions"] = self._summarize_entity_dispositions(
+                kind=kind, disposition_threads=threads,
+            )
+        return snapshot
 
     def _retain_discovered_url(
         self,
