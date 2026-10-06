@@ -76,7 +76,8 @@ _MONTH_ALIASES = {m[:3]: m for m in _MONTHS}
 _EXTRACTION_PROMPT_TEMPLATE = """\
 You extract travel booking details from forwarded confirmation emails.
 
-Return STRICT JSON with this shape:
+Return STRICT JSON: {"reservations": [ ... ]}, ONE OBJECT PER BOOKING the email
+confirms, each with this shape:
 {
   "kind": "lodging" | "transportation" | "none",
   "type": {TRANSPORT_TYPES},
@@ -143,6 +144,16 @@ Rules:
 - Use "" for anything the email does not state. NEVER invent a confirmation
   number, price, currency, time, date or URL. An empty string is always better
   than a guess.
+- ONE OBJECT PER BOOKING. A round-trip ticket is two flights, outbound and
+  return; a confirmation listing several flights, or a flight and a car, is one
+  object for each. Never merge two journeys into one object and never drop the
+  second. An email that confirms no booking returns
+  {"reservations": [{"kind": "none"}]}.
+- "depart" and "arrive" say WHERE a journey starts and ends: the PLACE first,
+  then its date and time as the email prints them -- for a flight the airport
+  with its code ("Seattle (SEA) on Sat, Oct 17 at 10:39 AM"), for a rental car
+  the pickup and return locations, for a ship its ports. Never a date or time
+  without its place: a time alone cannot be put on a map.
 - Return only the JSON object, no prose.
 """
 
@@ -1052,14 +1063,35 @@ def fetch_unseen_messages(
     return messages
 
 
-def extract_reservation(llm_client: Any, subject: str, body: str) -> dict[str, Any]:
-    """Ask the configured LLM to turn one email into a reservation dict."""
+def extract_reservations(llm_client: Any, subject: str, body: str) -> list[dict[str, Any]]:
+    """Every booking one email confirms, as reservation dicts.
+
+    One email often carries several: a round-trip ticket is two flights, and a
+    travel agent's confirmation can hold a flight and a car. Asked for one
+    object, the model returned the first and the rest were lost -- a trip whose
+    flight home was booked on the same confirmation as its flight out came back
+    with no way home. An answer in the older single-object shape is still
+    accepted, as a list of one.
+    """
     result = llm_client.generate_json(
         system_prompt=EXTRACTION_SYSTEM_PROMPT,
         user_prompt=f"Subject: {subject}\n\n{body}",
         operation="reservation_extraction",
     )
-    return result if isinstance(result, dict) else {}
+    if isinstance(result, dict) and isinstance(result.get("reservations"), list):
+        return [r for r in result["reservations"] if isinstance(r, dict)]
+    if isinstance(result, dict) and result:
+        return [result]
+    return []
+
+
+def extract_reservation(llm_client: Any, subject: str, body: str) -> dict[str, Any]:
+    """The first booking an email confirms; kept for callers that read one.
+
+    Prefer `extract_reservations`: an email carrying a round trip has two.
+    """
+    found = extract_reservations(llm_client, subject, body)
+    return found[0] if found else {}
 
 
 def _record(outcomes: list[dict[str, Any]] | None, entry: dict[str, Any],

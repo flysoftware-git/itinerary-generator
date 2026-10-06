@@ -1637,3 +1637,56 @@ def test_the_prompt_asks_for_the_name_and_the_parts_of_the_place() -> None:
     assert ('"locality": { "city": string, "region": string, "country": string }'
             in EXTRACTION_SYSTEM_PROMPT)
     assert LODGING_NAME_KEYS[0] == "name", "the documented key must be trusted first"
+
+
+# ── one email, every booking in it ─────────────────────────────────────────
+
+class _Answers:
+    """A stand-in LLM client that answers with what it was given."""
+
+    def __init__(self, answer):
+        self.answer = answer
+
+    def generate_json(self, **_kwargs):
+        return self.answer
+
+
+_OUT = {"kind": "transportation", "type": "plane", "label": "AS 212",
+        "depart": "Seattle (SEA) on Sat, Oct 17 at 10:39 AM",
+        "arrive": "Las Vegas (LAS) on Sat, Oct 17 at 1:25 PM"}
+_HOME = {"kind": "transportation", "type": "plane", "label": "AS 330",
+         "depart": "Albuquerque (ABQ) on Thu, Oct 29 at 12:16 PM",
+         "arrive": "Seattle (SEA) on Thu, Oct 29 at 2:29 PM"}
+
+
+def test_a_round_trip_confirmation_is_two_flights():
+    """A round-trip ticket carried its flight home in the same email, and the
+    single-object answer kept only the flight out. Seen red with
+    `extract_reservations` returning the answer's first booking only."""
+    from generator.reservation_ingest import extract_reservations
+
+    found = extract_reservations(_Answers({"reservations": [_OUT, _HOME]}), "s", "b")
+    assert [r["label"] for r in found] == ["AS 212", "AS 330"]
+
+
+def test_an_answer_in_the_older_shape_is_a_list_of_one():
+    from generator.reservation_ingest import extract_reservations
+
+    assert extract_reservations(_Answers(dict(_OUT)), "s", "b") == [_OUT]
+    assert extract_reservations(_Answers(None), "s", "b") == []
+
+
+def test_the_one_booking_reader_still_answers_with_the_first():
+    from generator.reservation_ingest import extract_reservation
+
+    assert extract_reservation(_Answers({"reservations": [_OUT, _HOME]}), "s", "b") == _OUT
+    assert extract_reservation(_Answers({"reservations": []}), "s", "b") == {}
+
+
+def test_the_prompt_asks_for_every_booking_and_for_places():
+    """The two rules the model was never given. Seen red with either removed."""
+    from generator.reservation_ingest import EXTRACTION_SYSTEM_PROMPT
+
+    assert '"reservations"' in EXTRACTION_SYSTEM_PROMPT
+    assert "A round-trip ticket is two flights" in EXTRACTION_SYSTEM_PROMPT
+    assert "the PLACE first" in EXTRACTION_SYSTEM_PROMPT
