@@ -309,6 +309,7 @@ def test_every_request_allows_the_router_to_snap_to_a_road(monkeypatch, cache):
 def test_a_point_with_no_road_near_it_is_asked_again_further_out(monkeypatch, cache):
     """OpenRouteService's 2010: asked again once, wider, and that answer is the
     leg. Without it the drive to a creek is a straight line."""
+    monkeypatch.setenv(routing.MAX_SNAP_RADIUS_ENV, str(routing.WIDE_SNAP_RADIUS_M))
     transport = Sequence(
         _refusal(routing.NO_ROUTABLE_POINT,
                  "Could not find routable point within a radius of 350.0 meters "
@@ -322,6 +323,7 @@ def test_a_point_with_no_road_near_it_is_asked_again_further_out(monkeypatch, ca
 
 
 def test_the_wider_ask_is_made_once_and_then_cached(monkeypatch, cache):
+    monkeypatch.setenv(routing.MAX_SNAP_RADIUS_ENV, str(routing.WIDE_SNAP_RADIUS_M))
     transport = Sequence(_refusal(routing.NO_ROUTABLE_POINT), _reply(57.0, 4284.0))
     monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
     first = routing.route_leg(ISSAQUAH, SIEBERT_CREEK, key="k", cache_path=cache)
@@ -333,6 +335,7 @@ def test_the_wider_ask_is_made_once_and_then_cached(monkeypatch, cache):
 def test_a_point_no_radius_reaches_is_still_a_fallback(monkeypatch, cache):
     """Refused twice is refused: the straight line is then the honest answer,
     and nothing is remembered so tomorrow's run asks again."""
+    monkeypatch.setenv(routing.MAX_SNAP_RADIUS_ENV, str(routing.WIDE_SNAP_RADIUS_M))
     transport = Sequence(_refusal(routing.NO_ROUTABLE_POINT),
                          _refusal(routing.NO_ROUTABLE_POINT))
     monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
@@ -600,6 +603,7 @@ def test_threads_together_never_exceed_the_rate(monkeypatch, cache):
 
 
 def test_a_garbled_reply_to_the_wider_ask_is_a_fallback(monkeypatch, cache):
+    monkeypatch.setenv(routing.MAX_SNAP_RADIUS_ENV, str(routing.WIDE_SNAP_RADIUS_M))
     """The second request of the retry is the one that came back with no status
     line at all. That is not an `HTTPError` and not a `URLError`, and it must
     still end as an estimate rather than as an exception in the caller."""
@@ -609,3 +613,23 @@ def test_a_garbled_reply_to_the_wider_ask_is_a_fallback(monkeypatch, cache):
     assert routing.route_leg(ISSAQUAH, SIEBERT_CREEK, key="k", cache_path=cache) is None
     assert len(transport.requests) == 2
     assert not cache.exists() or json.loads(cache.read_text()) == {}
+
+
+def test_the_public_router_is_not_asked_wider_than_it_will_look(monkeypatch, cache):
+    """The public OpenRouteService API caps the snap radius at 350 m and answers
+    a 3,000 m ask with the same 2010, so by default the wider ask is not made:
+    one request, and the leg is estimated. Seen red with the cap check removed,
+    which made the second request every time."""
+    monkeypatch.delenv(routing.MAX_SNAP_RADIUS_ENV, raising=False)
+    transport = Sequence(_refusal(routing.NO_ROUTABLE_POINT), _reply(57.0, 4284.0))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    assert routing.route_leg(ISSAQUAH, SIEBERT_CREEK, key="k", cache_path=cache) is None
+    assert len(transport.requests) == 1
+
+
+def test_a_router_that_says_it_looks_further_is_asked_further(monkeypatch, cache):
+    monkeypatch.setenv(routing.MAX_SNAP_RADIUS_ENV, "5000")
+    transport = Sequence(_refusal(routing.NO_ROUTABLE_POINT), _reply(57.0, 4284.0))
+    monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
+    assert routing.route_leg(ISSAQUAH, SIEBERT_CREEK, key="k", cache_path=cache).miles == 57.0
+    assert len(transport.requests) == 2

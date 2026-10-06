@@ -242,6 +242,16 @@ SNAP_RADIUS_M = 350
 #: really is not near a road and the straight line is the honest answer.
 WIDE_SNAP_RADIUS_M = 3000
 
+#: The widest snap radius the router will honour, in metres. The public
+#: OpenRouteService API refuses anything wider: asked at 3,000 m and at
+#: 20,000 m it answers the same 2010 as at 350 m, and asked with no limit it
+#: says why -- *within the maximum possible radius of 350.0 meters*. So on the
+#: public API the wider ask above can never succeed and costs a request (and
+#: a slot in the per-minute quota) on every leg that ends off a road. A
+#: self-hosted router configured for more says so here, and gets the retry.
+MAX_SNAP_RADIUS_ENV = "OPENROUTESERVICE_MAX_SNAP_RADIUS_M"
+DEFAULT_MAX_SNAP_RADIUS_M = 350
+
 #: OpenRouteService's own code for *"Could not find routable point within a
 #: radius of N metres of specified coordinate"*, returned with HTTP 404. It is
 #: the one refusal that says *ask again, further out* rather than *no*.
@@ -893,6 +903,22 @@ class RateLimiter:
             waited += delay
 
 
+def _configured_max_snap_radius() -> int:
+    """The router's widest snap radius: `MAX_SNAP_RADIUS_ENV`, else the public API's."""
+    raw = str(os.environ.get(MAX_SNAP_RADIUS_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_MAX_SNAP_RADIUS_M
+    try:
+        value = int(float(raw))
+    except ValueError:
+        value = -1
+    if value < 0:
+        logger.warning("%s=%r is not a non-negative number; using %s.",
+                       MAX_SNAP_RADIUS_ENV, raw, DEFAULT_MAX_SNAP_RADIUS_M)
+        return DEFAULT_MAX_SNAP_RADIUS_M
+    return value
+
+
 def _configured_max_per_minute() -> int:
     raw = str(os.environ.get(MAX_PER_MINUTE_ENV) or "").strip()
     if not raw:
@@ -1335,6 +1361,10 @@ def route_leg(
             # The one refusal that means *look further out*, and it is asked
             # again exactly once. Every other refusal falls through unchanged.
             if exc.code != 404 or _error_code(exc) != NO_ROUTABLE_POINT:
+                raise
+            # Only where it can succeed: a router that will not look further
+            # than the first ask already did answers the wider one the same way.
+            if WIDE_SNAP_RADIUS_M > _configured_max_snap_radius():
                 raise
             logger.info("No road within %sm of an end of %s; asking again at %sm.",
                         SNAP_RADIUS_M, cache_key, WIDE_SNAP_RADIUS_M)
