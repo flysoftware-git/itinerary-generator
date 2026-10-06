@@ -4339,6 +4339,14 @@ class HTMLAssembler:
         ("Camera", ("camera",)),
         ("Layers / light jacket (temperature swings)", ("layer", "light jacket")),
         ("Hiking boots/shoes", ("hiking boot", "hiking shoe")),
+        # One bag, two spellings. A five-city guide listed "day pack" for two
+        # cities and "daypack" for a third, as two entries one line apart, so a
+        # reader packing from the list has no way to tell it is one bag -- and
+        # the two place lists are each missing the other's cities. This is the
+        # conservative case the note above describes rather than an exception to
+        # it: the whitespace is the only difference, so there is no advice here
+        # that merging could flatten.
+        ("Day pack", ("day pack", "daypack")),
     )
 
     @classmethod
@@ -4371,7 +4379,13 @@ class HTMLAssembler:
         html += '    <p class="pack-summary-intro">Here\'s what to bring and where it\'s needed:</p>\n'
         html += '    <ul class="pack-summary-list">\n'
         for item in sorted(by_item.keys(), key=str.lower):
-            places = ", ".join(sorted(p for p in by_item[item] if p))
+            # Semicolons, because a destination's own name usually carries a
+            # comma: joining "Amsterdam, Netherlands" and "Berlin, Germany" with
+            # ", " renders "Amsterdam, Netherlands, Berlin, Germany", where the
+            # separator between two places is the same character as the one
+            # inside each, and a reader cannot tell four places from two. The
+            # names are the manifest's own and are not reformatted here.
+            places = "; ".join(sorted(p for p in by_item[item] if p))
             html += f'      <li><strong>{html_escape.escape(item)}</strong>'
             if places:
                 html += f' <span class="pack-summary-places">({html_escape.escape(places)})</span>'
