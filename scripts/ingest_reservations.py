@@ -33,7 +33,7 @@ from generator.reservation_ingest import (
     build_match_candidates,
     build_sidecar,
     email_to_text,
-    extract_reservation,
+    extract_reservations,
     fetch_unseen_messages,
     NotAMessage,
     load_sidecar,
@@ -137,7 +137,7 @@ def main(manifest, config_path, env_file, mailbox, threshold, limit, archive_fol
             logger.warning("uid %s: no readable body; skipped", uid)
             continue
         try:
-            reservation = extract_reservation(llm, subject, body)
+            found = extract_reservations(llm, subject, body)
         except Exception as exc:
             # One unparseable email must not abandon the rest of the mailbox.
             # It also never reaches build_sidecar, so it gets no disposition and
@@ -147,9 +147,11 @@ def main(manifest, config_path, env_file, mailbox, threshold, limit, archive_fol
             # picked it up on the retry.
             logger.error("uid %s (%r): extraction failed: %s", uid, subject[:60], exc)
             continue
-        kind = str(reservation.get("kind", "")).lower()
-        click.echo(f"  uid {uid}: {kind or 'unrecognized'} — {subject[:70]}")
-        entries.append({"source": {"uid": uid, "subject": subject}, "reservation": reservation})
+        # One entry per booking: a round-trip confirmation is two flights.
+        for reservation in found or [{}]:
+            kind = str(reservation.get("kind", "")).lower()
+            click.echo(f"  uid {uid}: {kind or 'unrecognized'} — {subject[:70]}")
+            entries.append({"source": {"uid": uid, "subject": subject}, "reservation": reservation})
 
     sidecar_path = ManifestParser.reservations_sidecar_path(manifest_path)
     outcomes: list[dict] = []
@@ -185,10 +187,14 @@ def main(manifest, config_path, env_file, mailbox, threshold, limit, archive_fol
         # Consume ONLY what this manifest actually dealt with. A booking judged
         # to belong to another trip stays unread and in place, so a manifest
         # that does not exist yet can still find it.
-        handled = [
-            o["uid"] for o in outcomes
-            if o["disposition"] in ("attached", "pending", "duplicate", "not_a_booking")
-        ]
+        # A message carrying several bookings is filed only when EVERY one was
+        # dealt with: one that belongs to another trip keeps the whole message
+        # unread for that trip's manifest to find.
+        dealt = ("attached", "pending", "duplicate", "not_a_booking")
+        by_uid: dict = {}
+        for o in outcomes:
+            by_uid.setdefault(o["uid"], []).append(o["disposition"] in dealt)
+        handled = [uid for uid, done in by_uid.items() if all(done)]
         filed = mark_messages_processed(
             host=host, user=user, password=password, mailbox=mailbox, uids=handled,
             archive_folder=(archive_folder or None),
