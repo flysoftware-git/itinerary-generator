@@ -2524,6 +2524,102 @@ def test_ensure_seed_attractions_adds_missing_seed() -> None:
     assert "The Narrows" in names
 
 
+def test_a_ceiling_named_budget_does_not_trim_the_splurge_options() -> None:
+    """The defect, through the real path rather than through the helper.
+
+    `budget: {budget: 500}` is a stated ceiling. Stringifying the object put the
+    KEY into the haystack, the keyword list matched "budget", and the filter
+    trimmed every option over $$ down to one -- on the strength of a key name.
+    Seen red with `str(budget or "")` restored: only one of the two splurge
+    options survives.
+    """
+    g = _gen()
+    restaurants = [
+        {"name": "Cheap Eats", "description": "A", "cuisine": "Cafe", "price_range": "$"},
+        {"name": "Splurge One", "description": "C", "cuisine": "French", "price_range": "$$$$"},
+        {"name": "Splurge Two", "description": "D", "cuisine": "Tasting", "price_range": "$$$"},
+    ]
+
+    kept = [r.get("name") for r in g._normalize_restaurants(
+        list(restaurants), budget={"budget": 500})]
+
+    assert "Splurge One" in kept and "Splurge Two" in kept, (
+        "a ceiling stated under the key 'budget' was read as a request for cheap "
+        f"food and trimmed the splurge options: kept {kept}"
+    )
+
+
+def test_budget_words_reads_an_objects_values_and_not_its_key_names() -> None:
+    """A stated ceiling is not a request for cheap food.
+
+    `trip.budget` may be a string, a number or an object. The price filter used
+    to stringify it, which put the object's KEY NAMES into the haystack: a
+    manifest saying `budget: {budget: 500}` matched the word "budget" and every
+    restaurant over $$ was trimmed, on the strength of a key the author chose for
+    an unrelated reason.
+    """
+    from generator.ai_content import budget_words
+
+    assert budget_words({"budget": 500}) == ""
+    assert budget_words({"max_per_meal_usd": 15}) == ""
+    # The author's own words still read, hyphens normalised as before.
+    assert budget_words({"dining": "low-cost"}) == "low cost"
+    assert budget_words("luxury") == "luxury"
+    assert budget_words({"dining": "low-cost", "notes": "No fine dining."}) == (
+        "low cost no fine dining."
+    )
+
+
+def test_budget_words_gives_a_number_no_words_at_all() -> None:
+    """A number is a ceiling, not a price band.
+
+    Nothing in a figure says which band a traveller wants to eat in -- that
+    needs party size, meal count and local prices, none of which are here -- so
+    it contributes no words and the caller reports that it could not act on it.
+    """
+    from generator.ai_content import budget_words
+
+    for value in (3000, 3000.0, 150, True, False, None, "", {}, []):
+        assert budget_words(value) == "", value
+
+
+def test_a_numeric_budget_leaves_the_restaurant_order_alone() -> None:
+    """And does not quietly behave like a low budget or a high one."""
+    g = _gen()
+    restaurants = [
+        {"name": "Cheap Eats", "description": "A", "cuisine": "Cafe", "price_range": "$"},
+        {"name": "Mid Place", "description": "B", "cuisine": "Bistro", "price_range": "$$"},
+        {"name": "Splurge One", "description": "C", "cuisine": "French", "price_range": "$$$$"},
+        {"name": "Splurge Two", "description": "D", "cuisine": "Tasting", "price_range": "$$$$"},
+    ]
+
+    kept = [r.get("name") for r in g._normalize_restaurants(list(restaurants), budget=3000.0)]
+
+    assert "Splurge One" in kept and "Splurge Two" in kept, (
+        "a numeric ceiling must not trim splurge options the way the word "
+        "'budget' does -- it says nothing about price band"
+    )
+    assert "Cheap Eats" in kept and "Mid Place" in kept
+
+
+def test_a_stated_low_budget_object_still_trims_as_before() -> None:
+    """The behaviour this fix must not change: words an author wrote still read."""
+    g = _gen()
+    restaurants = [
+        {"name": "Cheap Eats", "description": "A", "cuisine": "Cafe", "price_range": "$"},
+        {"name": "Splurge One", "description": "C", "cuisine": "French", "price_range": "$$$$"},
+        {"name": "Splurge Two", "description": "D", "cuisine": "Tasting", "price_range": "$$$$"},
+    ]
+
+    kept = [r.get("name") for r in g._normalize_restaurants(
+        list(restaurants), budget={"dining": "low-cost", "notes": "No fine dining."})]
+
+    assert "Cheap Eats" in kept
+    assert len([n for n in kept if str(n).startswith("Splurge")]) <= 1, (
+        "a low-budget brief keeps at most one splurge option"
+    )
+
+
 def test_normalize_restaurants_deduplicates_canonical_name_variants() -> None:
     g = _gen()
     restaurants = [

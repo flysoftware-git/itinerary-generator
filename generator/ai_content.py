@@ -222,6 +222,27 @@ DEFAULT_VEHICLE_RANGE_MILES: float | None = None
 _FOCUS_LOOKBACK_PERIODS = 6
 
 
+#: The words an author wrote about money, with none of our own mixed in.
+#:
+#: `trip.budget` is a string, a number or an object. Only the VALUES of an
+#: object are read: stringifying it puts its key names into the haystack too, so
+#: `budget: {budget: 500}` -- a stated ceiling -- matched "budget" and was read
+#: as a request for cheap food. A number states a ceiling rather than a
+#: preference and contributes no words at all, which is why the caller says so
+#: instead of treating the silence as "nothing was asked for".
+def budget_words(budget: Any) -> str:
+    """Lower-cased, hyphen-normalised words from a manifest budget of any shape."""
+    if isinstance(budget, bool):
+        return ""
+    if isinstance(budget, (int, float)):
+        return ""
+    if isinstance(budget, dict):
+        return " ".join(w for w in (budget_words(v) for v in budget.values()) if w)
+    if isinstance(budget, (list, tuple)):
+        return " ".join(w for w in (budget_words(v) for v in budget) if w)
+    return re.sub(r"[-_]+", " ", str(budget or "").lower())
+
+
 class AIContentGenerator:
     _CHAIN_NAME_TOKENS = {
         "mcdonald",
@@ -4537,7 +4558,7 @@ class AIContentGenerator:
         # original keywords, so the budget-aware sort never ran and the brief
         # looked ignored end to end. Matching on a fixed word list is fragile
         # by nature -- these are the phrasings a person actually writes.
-        budget_text = re.sub(r"[-_]+", " ", str(budget or "").lower())
+        budget_text = budget_words(budget)
         low_budget = any(
             k in budget_text
             for k in [
@@ -4555,6 +4576,17 @@ class AIContentGenerator:
         if "no fine dining" in budget_text or "not fine dining" in budget_text:
             high_budget = False
             low_budget = True
+        if budget not in (None, "", {}, []) and not (low_budget or high_budget):
+            # Stated and unreadable is a different fact from unstated, and the
+            # two were reported the same way: nothing. A number is the common
+            # case -- a ceiling in dollars says nothing about which price band a
+            # traveller wants to eat in, so the order is left alone and the
+            # reason is on the record rather than inferred from its absence.
+            logger.info(
+                "Restaurant budget guidance %r named no price band this step can "
+                "act on (a number is a ceiling, not a band); restaurants left in "
+                "discovery order.", budget,
+            )
         if budget_text.strip():
             logger.info(
                 "Restaurant budget guidance %r -> low=%s high=%s",
