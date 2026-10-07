@@ -295,6 +295,15 @@ COUNTRY_TLD_HINTS: dict[str, tuple[str, ...]] = {
     "bulgaria": ("bg",),
 }
 
+#: The `type` values an itinerary uses to say a thing IS a trail, as opposed to
+#: a place somebody walks at. `_is_trail_like_attraction` reads prose as well,
+#: deliberately -- being generous about what might be on AllTrails is cheap. But
+#: the no-trails switch DELETES what it matches, and prose is too loose a reason
+#: to delete Charles Bridge ("a short walk across"). Shared so the classifier and
+#: the switch cannot drift apart, which is how both of today's other link bugs
+#: started.
+DECLARED_TRAIL_TYPES: frozenset[str] = frozenset({"hike", "hiking", "trail", "trek", "walk"})
+
 TEXT_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
@@ -5963,7 +5972,38 @@ class URLDiscoverer:
                     reason="trail_links_disabled_seed_override",
                     message="trails are off, but the traveler named this one",
                 )
-            if (trail_like and bool(getattr(self, "_disable_trails", False))
+            # A non-seed gets the same answer, and for the same reason. This
+            # branch used to set `url = ""`, drop the maps fallback and
+            # `continue` -- no discovery of any kind -- which does not omit an
+            # AllTrails LINK, it deletes the ATTRACTION: with no url and no
+            # maps_url, verified-link-or-seed removes the item outright.
+            #
+            # Measured 2026-10-06 on the Europe guide, where trails are off:
+            # Manneken Pis and Charles Bridge were dropped with exactly two
+            # events in their trail, `trail_links_disabled` then
+            # `no_verified_url_removed`. Neither is a trail.
+            # `_is_trail_like_attraction` reads the model's own words, and
+            # Charles Bridge's description says "a short walk across" with
+            # difficulty Easy -- so a famous bridge was classified trail-like
+            # and a cost control for one vendor removed it from the guide.
+            #
+            # The paragraph above already says what the switch means: a seed
+            # gets "the ordinary hunt, over sources that are not the disabled
+            # vendor". That is the right behaviour for any attraction, and the
+            # chokepoint in `_retain_discovered_url` still refuses an AllTrails
+            # URL whoever proposes it, so the vendor stays switched off.
+            # ...but only for something the itinerary itself calls a trail.
+            # `trail_like` is a fuzzy classifier -- it reads the model's prose
+            # to decide whether AllTrails is worth asking, and being generous
+            # there is right. Deciding DELETION on it is not: Charles Bridge
+            # says "a short walk across" and Manneken Pis reads walk-like too.
+            # The declared `type` is the itinerary's own statement about what
+            # the thing is, and a trail nobody asked for is still dropped by
+            # it (test_a_trail_nobody_asked_for_is_still_dropped_when_trails
+            # _are_off), which is the behaviour this switch was built for.
+            declared_trail = str(attr.get("type", "") or "").strip().lower() in DECLARED_TRAIL_TYPES
+            if (trail_like and declared_trail
+                    and bool(getattr(self, "_disable_trails", False))
                     and not is_seed):
                 attr["url"] = ""
                 attr.pop("maps_url", None)
@@ -5975,6 +6015,19 @@ class URLDiscoverer:
                     message="trail-like link omitted by no-trails option",
                 )
                 continue
+            if (trail_like and not declared_trail
+                    and bool(getattr(self, "_disable_trails", False))
+                    and not is_seed):
+                self._log_decision(
+                    kind="attraction",
+                    dest_name=dest_name,
+                    item_name=attr_name,
+                    reason="trail_links_disabled_non_alltrails_search",
+                    message=(
+                        "trails are off: no AllTrails link, but the attraction is "
+                        "still searched over other sources"
+                    ),
+                )
 
             # In direct-link batch mode for non-trail attractions, treat batch
             # results as primary and avoid overriding with separate AI
@@ -17121,14 +17174,7 @@ class URLDiscoverer:
         if place_level_name and not name_has_trail_cue:
             return False
 
-        trail_types = {
-            "hike",
-            "hiking",
-            "trail",
-            "trek",
-            "walk",
-        }
-        if type_norm in trail_types:
+        if type_norm in DECLARED_TRAIL_TYPES:
             return True
 
         trail_substrings = (
