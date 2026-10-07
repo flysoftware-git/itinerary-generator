@@ -435,3 +435,112 @@ def test_search_returns_empty_list_on_exception() -> None:
     cs._network_retries = 0
 
     assert cs.search("anything") == []
+
+
+def _usage_response(usage: dict) -> dict:
+    """An Anthropic messages response carrying `usage`, with the text it needs."""
+    return {"content": [{"type": "text", "text": "<ul></ul>"}], "usage": usage}
+
+
+def test_a_live_search_records_its_server_tool_count() -> None:
+    """Anthropic bills server-side web search separately from tokens, as xAI and
+    OpenAI do -- so a search-path run reporting only tokens under-states its own
+    cost. `grok_search` and `openai_search` have passed this count since
+    2026-08-17 and this provider did not, which meant the ledger was complete
+    only while the configured provider happened to be one of the other two.
+    """
+    tracker = MagicMock()
+    cs = ClaudeSearch(api_key="k", model="m", usage_tracker=tracker)
+
+    cs._record_usage(
+        _usage_response({"input_tokens": 100, "output_tokens": 50,
+                         "server_tool_use": {"web_search_requests": 3}}),
+        operation_suffix="chat_completion_search",
+    )
+
+    tracker.add.assert_called_once()
+    assert tracker.add.call_args.kwargs["tool_calls"] == 3, (
+        "the server tool count is not reaching the tracker, so search fees "
+        "are recorded as $0.00"
+    )
+
+
+def test_a_live_search_with_no_tool_count_complains_rather_than_reporting_zero() -> None:
+    """The load-bearing one, and the reason this change is safe to make at all.
+
+    `llm_client.py` records that live verification of Anthropic's
+    `usage.server_tool_use.web_search_requests` field name was blocked by an
+    exhausted account credit, and says to confirm it against a real response
+    before wiring it up. A blind read that returns 0 on a wrong field name is
+    indistinguishable from a search that did not happen -- so it would leave the
+    ledger as blind as before while making it look repaired, which is worse than
+    the documented gap it replaces.
+
+    So an absent count on a search-path call is reported. If the field was never
+    named right, the next real run says so.
+    """
+    tracker = MagicMock()
+    cs = ClaudeSearch(api_key="k", model="m", usage_tracker=tracker)
+
+    cs._record_usage(
+        _usage_response({"input_tokens": 100, "output_tokens": 50}),
+        operation_suffix="chat_completion_search",
+    )
+
+    tracker.warn_once.assert_called_once()
+    key, message = tracker.warn_once.call_args.args[:2]
+    assert key == "claude-search-no-tool-count"
+    assert "server_tool_use" in message, (
+        "the warning does not name the field to check, which is the only "
+        "actionable thing it can carry"
+    )
+    assert tracker.add.call_args.kwargs["tool_calls"] == 0
+
+
+def test_a_non_search_call_is_not_expected_to_report_a_tool_count() -> None:
+    """A plain completion runs no server-side search, so silence is correct
+    there and warning on it would train the reader to ignore the warning."""
+    tracker = MagicMock()
+    cs = ClaudeSearch(api_key="k", model="m", usage_tracker=tracker)
+
+    cs._record_usage(
+        _usage_response({"input_tokens": 10, "output_tokens": 5}),
+        operation_suffix="chat_completion",
+    )
+
+    tracker.warn_once.assert_not_called()
+    assert tracker.add.call_args.kwargs["tool_calls"] == 0
+
+
+def test_an_unrecognised_tool_usage_shape_is_absent_rather_than_guessed() -> None:
+    """The shape is unverified, so a value that cannot be read as a count has to
+    be reported as missing. Returning a plausible number from an unexpected
+    shape is how an instrument goes quiet rather than wrong."""
+    tracker = MagicMock()
+    cs = ClaudeSearch(api_key="k", model="m", usage_tracker=tracker)
+
+    cs._record_usage(
+        _usage_response({"input_tokens": 10, "output_tokens": 5,
+                         "server_tool_use": "two searches"}),
+        operation_suffix="chat_completion_search",
+    )
+
+    tracker.warn_once.assert_called_once()
+    assert tracker.add.call_args.kwargs["tool_calls"] == 0
+
+
+def test_a_count_under_an_undocumented_key_is_still_counted() -> None:
+    """If the key is named differently but the block is a mapping of counts, the
+    sum is the honest reading -- under-counting a fee that was certainly charged
+    is the failure this change exists to stop."""
+    tracker = MagicMock()
+    cs = ClaudeSearch(api_key="k", model="m", usage_tracker=tracker)
+
+    cs._record_usage(
+        _usage_response({"input_tokens": 10, "output_tokens": 5,
+                         "server_tool_use": {"web_search_calls": 2}}),
+        operation_suffix="chat_completion_search",
+    )
+
+    assert tracker.add.call_args.kwargs["tool_calls"] == 2
+    tracker.warn_once.assert_not_called()

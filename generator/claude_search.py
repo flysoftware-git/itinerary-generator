@@ -261,6 +261,39 @@ class ClaudeSearch:
                 parts.append(str(block.get("text", "") or ""))
         return "\n".join(parts)
 
+    @staticmethod
+    def _server_tool_calls(usage: dict[str, Any]) -> int | None:
+        """Server-side web-search invocations in one response, or None if absent.
+
+        **None and 0 are different answers and the caller needs both.** 0 means the
+        provider said no search ran; None means nothing in the payload said
+        anything, which is what a renamed or mis-remembered field looks like.
+        Collapsing them is how a cost report goes quiet instead of wrong.
+
+        The shape is read defensively because it is unverified against a live
+        response -- `llm_client.py` records that the account credit needed to
+        confirm `usage.server_tool_use.web_search_requests` was exhausted. A plain
+        integer, a mapping carrying the documented key, and a mapping of tool names
+        to counts are all accepted; anything else is absent rather than guessed at,
+        because a guess that happens to parse is worse than a gap that is reported.
+        """
+        block = usage.get("server_tool_use")
+        if block is None:
+            return None
+        if isinstance(block, bool):
+            return None
+        if isinstance(block, int):
+            return block
+        if isinstance(block, dict):
+            documented = block.get("web_search_requests")
+            if isinstance(documented, int) and not isinstance(documented, bool):
+                return documented
+            counts = [v for v in block.values()
+                      if isinstance(v, int) and not isinstance(v, bool)]
+            if counts:
+                return sum(counts)
+        return None
+
     def _record_usage(self, data: dict[str, Any], *, operation_suffix: str) -> None:
         usage = data.get("usage", {})
         if not (self._usage_tracker and isinstance(usage, dict)):
@@ -275,13 +308,41 @@ class ClaudeSearch:
             + int(usage.get("cache_read_input_tokens", 0) or 0)
         )
         completion_tokens = int(usage.get("output_tokens", 0) or 0)
-        if prompt_tokens or completion_tokens:
+
+        # Anthropic bills server-side web search separately from tokens, the way
+        # xAI and OpenAI do, so a search-path run that reports only tokens is
+        # under-reporting its own cost. `grok_search` and `openai_search` have
+        # passed this since 2026-08-17; this is the same read for this provider.
+        tool_calls = self._server_tool_calls(usage)
+        searched = operation_suffix.endswith("_search")
+        if searched and tool_calls is None:
+            # Loud, not silent. If the field has been renamed -- or was never
+            # named right, which `llm_client.py` says could not be confirmed
+            # against a live response -- then passing 0 would read exactly like
+            # a search that did not happen, and the ledger would stay blind
+            # while looking repaired. Same doctrine as `llm_client`'s
+            # unpriced-model and unpriced-tool-call warnings: visible rather
+            # than free.
+            warn_once = getattr(self._usage_tracker, "warn_once", None)
+            message = (
+                "Cost reporting blind spot: a Claude live-search response carried no "
+                "server tool count, so its search fees are being recorded as $0.00. "
+                "Expected usage.server_tool_use.web_search_requests; check the field "
+                "name against a real response."
+            )
+            if callable(warn_once):
+                warn_once("claude-search-no-tool-count", message)
+            else:
+                logger.warning(message)
+
+        if prompt_tokens or completion_tokens or tool_calls:
             self._usage_tracker.add(
                 provider="anthropic",
                 model=self._model,
                 operation=f"{self._usage_operation_prefix}:{operation_suffix}",
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                tool_calls=tool_calls or 0,
             )
 
     def chat_completion(
