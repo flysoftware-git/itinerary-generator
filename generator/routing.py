@@ -210,6 +210,41 @@ API_KEY_ENV = "OPENROUTESERVICE_API_KEY"
 #: unchanged.
 ENDPOINT_BASE = "https://api.heigit.org/openrouteservice/v2/directions"
 
+#: Where to send directions, when it is not the public API above.
+#:
+#: openrouteservice is open source and meant to be self-hostable, and the public
+#: instance has a daily quota and terms of its own. Until now the host was a
+#: constant, so a user running their own server had nowhere to say so and had to
+#: edit this file. Named like the other knobs in this module -- the key, the snap
+#: radius, the rate -- and **absent, nothing changes**: every run routes to the
+#: public API exactly as before.
+BASE_URL_ENV = "OPENROUTESERVICE_BASE_URL"
+
+
+def endpoint_base() -> str:
+    """The directions host for this run: the environment's, or the public API.
+
+    A value that is not an http(s) URL is IGNORED rather than raised on, and
+    said in the log. The alternative is a run that dies at its first leg because
+    of a typo in an environment variable, after the expensive stages have
+    already been paid for -- and the right failure for a misnamed host is the
+    routing this run would have had anyway.
+
+    A trailing slash is trimmed, because the caller appends `/<profile>` and a
+    double slash is a 404 on some deployments and not on others, which is the
+    kind of difference nobody should have to discover.
+    """
+    said = str(os.environ.get(BASE_URL_ENV, "") or "").strip()
+    if not said:
+        return ENDPOINT_BASE
+    if not said.startswith(("https://", "http://")):
+        logger.warning(
+            "%s is not an http(s) URL (%r); routing through %s instead",
+            BASE_URL_ENV, said[:60], ENDPOINT_BASE,
+        )
+        return ENDPOINT_BASE
+    return said.rstrip("/")
+
 #: The profile a caller that names none gets, which is what every caller got
 #: before profiles were an option.
 DEFAULT_PROFILE = "driving-car"
@@ -1305,7 +1340,7 @@ def route_leg(
     }
     if avoid_ferries:
         request_body["options"] = {"avoid_features": ["ferries"]}
-    endpoint = f"{ENDPOINT_BASE}/{profile}"
+    endpoint = f"{endpoint_base()}/{profile}"
 
     def _send(body_dict: dict[str, Any]) -> Any:
         request = urllib.request.Request(
