@@ -1157,7 +1157,8 @@ Cost accounting note:
 
 ```
 output/
-├── index.html              ← Portable itinerary entry point
+├── index.html              ← Portable itinerary entry point. THE SHAREABLE ONE
+├── index.personal.html     ← Optional unredacted companion. NEVER PUBLISHED
 ├── images/
 │   ├── {md5hash}.jpg       ← Downloaded destination images
 │   └── ...
@@ -1168,6 +1169,36 @@ output/
 ```
 
 When `--environment` is provided explicitly, the above structure is created under `output/{environment}/` instead.
+
+### 12.1 `index.html` and `index.personal.html` — the two renders
+
+`index.html` is **always the shareable render**: the one privacy redaction has been
+applied to, and the only one that may ever be published. Its name is fixed, and
+nothing may rename it or move it — a consumer is entitled to treat "a directory
+with an `index.html` in it" as the whole definition of a guide.
+
+`index.personal.html` is written **beside it, in the same directory**, when and
+only when:
+
+1. redaction ran for this build (see §9's `--privacy-mode`), **and**
+2. redaction actually withheld something — a manifest carrying no confirmations
+   and no booked legs would render identical bytes twice, so the companion is
+   skipped rather than duplicated.
+
+It holds what redaction withheld: `planning_links`, `lodging.name`, `website`,
+`confirmation_number`, `total_cost`/`currency`, and every `transportation` leg,
+trip-wide and per-destination. **It is the traveler's own copy and is never
+published, never delivered and never served.** The two renders differ in
+disclosure only; their content is otherwise identical, because both come from one
+run rather than from two.
+
+**Why this is in the interface section rather than left as an implementation
+detail.** A downstream consumer deciding how carefully to handle a build's output
+directory cannot answer that from `index.html` alone once a companion exists: the
+shareable page is genuinely redacted while the directory is not safe. A consumer
+therefore needs the companion's **name** to be a documented fact it can rely on,
+not one inferred from a commit. That is what this section is: the filename is part
+of the output contract, and a change to it is a change to the interface.
 
 ---
 

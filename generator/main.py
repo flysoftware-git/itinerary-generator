@@ -30,6 +30,7 @@ scripts/run-trip.BAT.
 
 from __future__ import annotations
 import atexit
+import copy
 import json
 import logging, os, sys
 import subprocess
@@ -316,7 +317,80 @@ def _resolve_privacy_redaction(mode: str | None, environment_selected: str) -> b
     return environment_selected == "prod"
 
 
-def _apply_privacy_redaction(trip: dict[str, Any]) -> dict[str, int]:
+#: How `_apply_privacy_redaction` hands back what it took, so one paid run can
+#: render both a shareable guide and the traveler's own copy.
+#:
+#: Handed to a caller-owned dict rather than parked on the trip, and that is not
+#: a style choice. `test_redaction_still_removes_everything_sensitive` asserts no
+#: record locator survives anywhere in `repr(trip)` after redaction, which is the
+#: right invariant and caught the first version of this change. The trip is never
+#: a carrier for the payload, not even for one statement.
+#:
+#: **Redaction deliberately keeps its position in the pipeline** -- before AI
+#: content, before URL discovery, before scheduling -- and the reason is a leak
+#: it would otherwise open. `ai_content._booked_leg_guidance` builds a prompt
+#: from a leg's `provider` and `label` ("Booked leg: Alaska Airlines -- AS 212
+#: SEA to LAS") and instructs the model to describe that journey by operator and
+#: terminal. Today prod never reaches it, because the legs are already gone. Move
+#: the redaction to render time and prod prose starts naming the carrier and
+#: flight -- text no later pass can retract, since clearing the leg list does not
+#: unwrite a paragraph derived from it.
+#:
+#: So the shareable render stays bit-for-bit what it was, and the personal copy
+#: is produced by restoring the withheld payload into a COPY at assembly. The two
+#: differ in disclosure, never in content. The cost is one render, not one run:
+#: the search and the model calls are already paid for by then.
+
+
+def _restore_privacy_payload(trip: dict[str, Any], withheld: dict[str, Any]) -> None:
+    """Put back what `_apply_privacy_redaction` withheld, on a copy.
+
+    Addresses destinations by index because that is what the redaction walked;
+    a name would not survive two destinations sharing one.
+    """
+    trip_meta = trip.get("trip")
+    legs = (withheld or {}).get("trip_transportation")
+    if isinstance(trip_meta, dict) and legs:
+        trip_meta["transportation"] = copy.deepcopy(legs)
+
+    destinations = trip.get("destinations", []) or []
+    for raw_index, saved in ((withheld or {}).get("destinations") or {}).items():
+        try:
+            dest = destinations[int(raw_index)]
+        except (IndexError, ValueError, TypeError):
+            continue
+        if not isinstance(dest, dict) or not isinstance(saved, dict):
+            continue
+        if saved.get("planning_links"):
+            dest["planning_links"] = copy.deepcopy(saved["planning_links"])
+        if saved.get("transportation"):
+            dest["transportation"] = copy.deepcopy(saved["transportation"])
+        lodging_fields = saved.get("lodging") or {}
+        lodging = dest.get("lodging")
+        if isinstance(lodging, dict) and lodging_fields:
+            lodging.update(copy.deepcopy(lodging_fields))
+
+
+def _privacy_payload_has_content(withheld: Any) -> bool:
+    """True when redaction actually took something.
+
+    A tester's manifest with no confirmations and no booked legs redacts to an
+    identical page, and a second render of the same bytes is waste.
+    """
+    if not isinstance(withheld, dict):
+        return False
+    if withheld.get("trip_transportation"):
+        return True
+    for saved in (withheld.get("destinations") or {}).values():
+        if isinstance(saved, dict) and any(saved.get(k) for k in
+                                           ("planning_links", "transportation", "lodging")):
+            return True
+    return False
+
+
+def _apply_privacy_redaction(
+    trip: dict[str, Any], withheld_out: dict[str, Any] | None = None
+) -> dict[str, int]:
     """Redact planning_links and lodging.name in place. planning_links are
     replaced with a single placeholder entry (rather than emptied outright)
     so the renderer can show an explanatory pill instead of the button
@@ -336,22 +410,28 @@ def _apply_privacy_redaction(trip: dict[str, Any]) -> dict[str, int]:
     # on trip["trip"], not on any destination, and are exactly as sensitive.
     # Missing this would leave record locators on a published page while every
     # per-destination leg was correctly cleared.
+    withheld: dict[str, Any] = {"trip_transportation": [], "destinations": {}}
+
     trip_meta = trip.get("trip")
     if isinstance(trip_meta, dict):
         trip_legs = trip_meta.get("transportation")
         if isinstance(trip_legs, list) and trip_legs:
             counts["transportation"] += len(trip_legs)
+            withheld["trip_transportation"] = copy.deepcopy(trip_legs)
             trip_meta["transportation"] = []
-    for dest in trip.get("destinations", []) or []:
+    for dest_index, dest in enumerate(trip.get("destinations", []) or []):
         if not isinstance(dest, dict):
             continue
+        saved: dict[str, Any] = {}
         links = dest.get("planning_links", [])
         if isinstance(links, list) and links:
             counts["planning_links"] += len(links)
+            saved["planning_links"] = copy.deepcopy(links)
             dest["planning_links"] = [{"label": "Trip Plans", "url": "", "redacted": True}]
         lodging = dest.get("lodging")
         if isinstance(lodging, dict) and str(lodging.get("name", "") or "").strip():
             counts["lodging_names"] += 1
+            saved.setdefault("lodging", {})["name"] = lodging["name"]
             lodging["name"] = ""
         # Blanked for the same reason as name, not as a separate policy: a
         # link to the property's own site names the property. Redacting the
@@ -359,16 +439,21 @@ def _apply_privacy_redaction(trip: dict[str, Any]) -> dict[str, int]:
         # protect nothing.
         if isinstance(lodging, dict) and str(lodging.get("website", "") or "").strip():
             counts["lodging_websites"] += 1
+            saved.setdefault("lodging", {})["website"] = lodging["website"]
             lodging["website"] = ""
         # Highest-sensitivity field in the block: on most booking sites this
         # code plus a surname is enough to view, modify or cancel the stay.
         if isinstance(lodging, dict) and str(lodging.get("confirmation_number", "") or "").strip():
             counts["lodging_confirmations"] += 1
+            saved.setdefault("lodging", {})["confirmation_number"] = lodging["confirmation_number"]
             lodging["confirmation_number"] = ""
         # What the stay cost. Not identifying on its own, and cleared anyway: it
         # is a fact from the traveler's receipt, the booked legs it sits beside
         # are dropped wholesale, and a published guide has no use for it.
         if isinstance(lodging, dict):
+            for money_field in ("total_cost", "currency"):
+                if money_field in lodging:
+                    saved.setdefault("lodging", {})[money_field] = lodging[money_field]
             lodging.pop("total_cost", None)
             lodging.pop("currency", None)
         # Dropped wholesale rather than field-by-field like lodging above.
@@ -380,7 +465,13 @@ def _apply_privacy_redaction(trip: dict[str, Any]) -> dict[str, int]:
         legs = dest.get("transportation")
         if isinstance(legs, list) and legs:
             counts["transportation"] += len(legs)
+            saved["transportation"] = copy.deepcopy(legs)
             dest["transportation"] = []
+        if saved:
+            withheld["destinations"][dest_index] = saved
+    if withheld_out is not None:
+        withheld_out.clear()
+        withheld_out.update(withheld)
     return counts
 
 
@@ -3111,8 +3202,13 @@ def main(
     )
 
     redact_privacy_details = _resolve_privacy_redaction(privacy_mode, environment_selected)
+    privacy_withheld: dict[str, Any] = {}
     if redact_privacy_details:
-        redaction_counts = _apply_privacy_redaction(trip)
+        # Into a local the pipeline never sees, so the payload cannot ride into a
+        # report, a sidecar or the page itself. Only the personal render at
+        # assembly reads it again.
+        privacy_withheld = {}
+        redaction_counts = _apply_privacy_redaction(trip, privacy_withheld)
         click.echo(
             click.style("   Privacy  : ", fg="cyan") +
             click.style(
@@ -3746,6 +3842,32 @@ def main(
 
     output_file.write_text(html, encoding="utf-8")
     click.echo(f"  ✓ index.html written ({output_file.stat().st_size:,} bytes)")
+
+    # The traveler's own copy, from the same run. Owner decision 2026-10-07:
+    # a redacted guide is not a travel document -- it has no transportation
+    # section at all -- and the owner reads their own confirmations off it, so
+    # one run emits both rather than the choice being a flag somebody has to set
+    # correctly every time. `index.html` keeps its meaning (the shareable one)
+    # so every existing consumer, publish step and parity check is untouched;
+    # the personal copy is purely additive and never published.
+    #
+    # Skipped when redaction took nothing: a manifest with no confirmations and
+    # no booked legs renders identical bytes, and a second copy of the same page
+    # is waste rather than a feature.
+    if _privacy_payload_has_content(privacy_withheld):
+        personal_trip = copy.deepcopy(trip)
+        _restore_privacy_payload(personal_trip, privacy_withheld)
+        personal_trip["_meta"] = {
+            **(personal_trip.get("_meta") or {}),
+            "privacy_redacted": False,
+            "personal_copy": True,
+        }
+        personal_file = output_file.with_name("index.personal.html")
+        personal_file.write_text(assembler.assemble(personal_trip), encoding="utf-8")
+        click.echo(
+            f"  ✓ Personal copy written, unredacted and not for publishing: "
+            f"{personal_file.name} ({personal_file.stat().st_size:,} bytes)"
+        )
 
     current_output_urls = _read_output_urls(output_file)
     parity_summary = _latest_direct_batch_parity_summary(output_dir=output_dir)
