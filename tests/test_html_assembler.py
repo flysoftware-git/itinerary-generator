@@ -4569,6 +4569,52 @@ def test_build_packing_summary_consolidates_differently_worded_same_advice() -> 
         assert name in html
 
 
+def test_build_packing_summary_consolidates_day_pack_spellings() -> None:
+    """The owner's Europe guide, 2026-10-06: the summary listed "day pack"
+    (Brussels, Frankfurt) and "daypack" (Berlin) as two entries one line
+    apart, so a reader packing from the list has no way to tell it is one bag --
+    and each entry's place list is missing the other's cities, which is the half
+    that misleads rather than merely repeats.
+
+    This is the conservative case the group list's own note describes, not an
+    exception to it: whitespace is the only difference between the two
+    spellings, so there is no advice here that merging could flatten.
+    """
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [
+        {"name": "Brussels", "ai_content": {"expected_environment": {"what_to_pack": ["day pack"]}}},
+        {"name": "Frankfurt", "ai_content": {"expected_environment": {"what_to_pack": ["day pack"]}}},
+        {"name": "Berlin", "ai_content": {"expected_environment": {"what_to_pack": ["daypack"]}}},
+    ]
+
+    html = assembler._build_packing_summary(destinations)
+
+    assert html.count("<li>") == 1
+    for name in ("Brussels", "Frankfurt", "Berlin"):
+        assert name in html, f"{name} lost its place on the one entry"
+
+
+def test_build_packing_summary_separates_places_whose_names_carry_commas() -> None:
+    """A destination's name usually carries a comma, so joining the places with
+    ", " renders "Amsterdam, Netherlands, Berlin, Germany" -- the separator
+    BETWEEN two places is the same character as the one inside each, and a
+    reader cannot tell four places from two.
+
+    Semicolons separate them without touching the names, which are the
+    manifest's own and are not reformatted here.
+    """
+    assembler = HTMLAssembler.__new__(HTMLAssembler)
+    destinations = [
+        {"name": "Amsterdam, Netherlands", "ai_content": {"expected_environment": {"what_to_pack": ["umbrella"]}}},
+        {"name": "Berlin, Germany", "ai_content": {"expected_environment": {"what_to_pack": ["umbrella"]}}},
+    ]
+
+    html = assembler._build_packing_summary(destinations)
+
+    assert "Amsterdam, Netherlands; Berlin, Germany" in html
+    assert "Amsterdam, Netherlands, Berlin, Germany" not in html
+
+
 def test_build_packing_summary_consolidates_camera_dropping_qualifier() -> None:
     assembler = HTMLAssembler.__new__(HTMLAssembler)
     destinations = [
