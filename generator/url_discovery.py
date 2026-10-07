@@ -882,6 +882,17 @@ DEFAULT_URL_POLICY_BLOCKED_CLASSES = (
     "google_maps_search",
     "google_maps_dir",
 )
+
+#: Blocked policy classes a LATER gate can still rescue, because retention takes
+#: the caller's permission for them -- `allow_google_maps_search` for the two
+#: maps classes, `allow_alltrails` for AllTrails. The search selector must not
+#: pre-empt those: restaurant pass 1 hunts `google.com/maps` on purpose and the
+#: trail passes hunt AllTrails on purpose, so a selector that refused them would
+#: break the passes that exist to find them. Everything else in the blocked set
+#: is refused whoever proposes it, which is what makes it safe to skip early.
+CONTEXT_RESCUABLE_POLICY_CLASSES: frozenset[str] = frozenset(
+    {"google_maps_search", "google_maps_dir", "alltrails"}
+)
 DEFAULT_URL_DOMAIN_DENYLIST: tuple[str, ...] = ()
 DEFAULT_URL_POLICY_ALLOWLIST_PATH = "docs/policy/url_policy_allowlist.txt"
 DEFAULT_URL_POLICY_AUTO_ALLOW_FROM_OUTPUT = True
@@ -4472,6 +4483,37 @@ class URLDiscoverer:
             if host == normalized or host.endswith(f".{normalized}"):
                 return True
         return False
+
+    def _policy_class_refused_outright(self, url: str) -> str:
+        """The blocked policy class retention will refuse whoever proposes `url`.
+
+        Returns the class name, or `""` when nothing here settles it.
+
+        This exists so the search selector and the retention chokepoint stop
+        being two readers of "is this URL acceptable" that do not share a rule.
+        The selector asked only `_is_relevant_result`; retention asked the policy
+        class as well. A Facebook post titled "Tiergarten Berlin Germany" is
+        therefore maximally *relevant*, won selection, and was then certain to be
+        refused at retention exit 30 -- while better candidates sat unexamined
+        behind it. Measured on the Europe guide built 2026-10-07: Tiergarten,
+        Römerberg, the Prague Astronomical Clock and the Canal Ring Boat Tour all
+        removed for no verified URL, all four with the same trail, and
+        `berlin.de` reachable for Brandenburg Gate but never reached for the
+        Tiergarten.
+
+        Only classes the caller cannot rescue are reported -- see
+        `CONTEXT_RESCUABLE_POLICY_CLASSES`. In `monitor` mode retention refuses
+        nothing, so neither does this.
+        """
+        if str(getattr(self, "_url_policy_mode", DEFAULT_URL_POLICY_MODE) or "") != "enforce":
+            return ""
+        policy_class = self._classify_url_policy_class(url)
+        if not policy_class or policy_class in CONTEXT_RESCUABLE_POLICY_CLASSES:
+            return ""
+        blocked = getattr(
+            self, "_url_policy_blocked_classes", set(DEFAULT_URL_POLICY_BLOCKED_CLASSES)
+        )
+        return policy_class if policy_class in blocked else ""
 
     @staticmethod
     def _classify_url_policy_class(url: str) -> str:
@@ -14549,6 +14591,33 @@ class URLDiscoverer:
             return None
 
         ranked = sorted(ranked_candidates.items(), key=lambda row: row[1][0], reverse=True)
+
+        # Drop what the retention chokepoint refuses outright BEFORE the deep
+        # checks, so a candidate that cannot survive does not consume one of the
+        # three and does not stand in front of one that would. Skipping costs
+        # nothing -- no fetch -- which is why these are filtered out of `ranked`
+        # rather than counted against the budget.
+        survivors: list[tuple[str, tuple[int, dict[str, Any]]]] = []
+        for candidate_url, payload in ranked:
+            refused_class = self._policy_class_refused_outright(candidate_url)
+            if refused_class:
+                self._log_decision(
+                    kind="search",
+                    dest_name=dest_name,
+                    item_name=item_name,
+                    reason="search_candidate_refused_by_url_policy",
+                    message=(
+                        f"skipped a [{refused_class}] candidate the retention gate "
+                        "refuses outright; considering the next one instead"
+                    ),
+                    url=candidate_url,
+                )
+                continue
+            survivors.append((candidate_url, payload))
+        if not survivors:
+            return None
+        ranked = survivors
+
         max_deep_checks = min(3, len(ranked))
         for idx, (candidate_url, payload) in enumerate(ranked):
             score, candidate_item = payload
