@@ -3794,6 +3794,38 @@ class URLDiscoverer:
                             self._annotate_registry_url_decision(event, rendered_url=cleaned)
                         else:
                             event.pop("url", None)
+                            if not maps_url:
+                                # The venue is still a place even though the page
+                                # was not. `_verify_event_urls` offers its maps
+                                # fallback only to an event that has no URL when
+                                # it runs, so an event holding one got none --
+                                # and the audit then took that URL away, leaving
+                                # a card with nothing. Measured 2026-10-06 on the
+                                # Europe guide: "Evanescence + Poppy" at
+                                # Festhalle Messe Frankfurt, a venue that names a
+                                # place perfectly well, rendered unlinked.
+                                #
+                                # Same rule as the original fallback, not a
+                                # looser one: a venue that only restates the
+                                # destination still earns no link.
+                                from generator.cultural_events import (
+                                    CulturalEventsDiscoverer as _Events,
+                                )
+
+                                venue = str(event.get("venue", "") or "").strip()
+                                if venue and _Events._venue_names_a_place(venue, dest_name):
+                                    maps_url = _Events._event_maps_fallback_url(
+                                        {"name": venue}, dest_name
+                                    )
+                                    if maps_url:
+                                        self._log_decision(
+                                            kind="event",
+                                            dest_name=dest_name,
+                                            item_name=event_name,
+                                            reason="venue_maps_fallback_after_audit",
+                                            message="page rejected by the audit; the venue still names a place",
+                                            url=maps_url,
+                                        )
                             if maps_url:
                                 event["maps_url"] = maps_url
                             else:
