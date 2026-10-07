@@ -230,6 +230,61 @@ def test_any_orphan_restaurant_warns(tmp_path):
     assert any("restaurants with no url" in w.lower() for w in report["warnings"])
 
 
+def test_a_trip_may_raise_its_own_orphan_restaurant_threshold(tmp_path):
+    """The configured number is calibrated on well-indexed destinations.
+
+    `quality_gate.max_no_url_restaurants` is one value for every build, and the
+    right one depends on how densely the destination is INDEXED: a park covered
+    by its park service and the trail sites tolerates a strict bar that throws
+    away most of the dining in a thinly-indexed suburb. The trip knows what kind
+    of place it is about and the config does not, so the trip may say.
+
+    Seen red with the validator reading `self._max_no_url_restaurants` directly:
+    three orphans warn however high the trip sets its own bar.
+    """
+    trip = _trip_with_attractions([], dinner=[{"name": f"Cafe {i}", "url": ""}
+                                              for i in range(3)])
+    trip["trip"] = {"max_no_url_restaurants": 5}
+    p = _write_html(tmp_path, VALID_HTML)
+    report = _make_validator(tmp_path).validate(p, trip)
+
+    assert not any("restaurants with no url" in w.lower() for w in report["warnings"]), (
+        "three orphans warned although the trip allowed five: %s" % report["warnings"])
+
+
+def test_a_trip_that_says_nothing_keeps_the_configured_bar(tmp_path):
+    """The default is untouched, which is every manifest written before this."""
+    trip = _trip_with_attractions([], dinner=[{"name": "Cafe", "url": ""}])
+    p = _write_html(tmp_path, VALID_HTML)
+    report = _make_validator(tmp_path).validate(p, trip)
+    assert any("restaurants with no url" in w.lower() for w in report["warnings"])
+
+
+def test_a_trip_may_also_tighten_the_bar(tmp_path):
+    """It is an override and not a licence: a trip that wants none still gets
+    none, and the number is read rather than treated as permission to relax."""
+    trip = _trip_with_attractions([], dinner=[{"name": "Cafe", "url": ""}])
+    trip["trip"] = {"max_no_url_restaurants": 0}
+    p = _write_html(tmp_path, VALID_HTML)
+    report = _make_validator(tmp_path).validate(p, trip)
+    assert any("restaurants with no url" in w.lower() for w in report["warnings"])
+
+
+def test_a_nonsense_threshold_is_ignored_rather_than_raised_on(tmp_path):
+    """The schema refuses these, so reaching here with one means a caller built
+    the dict itself -- and no build is worth failing for it. A bool is excluded
+    by name, because `isinstance(True, int)` is True in Python and `True` would
+    otherwise read as a threshold of one.
+    """
+    for bad in (True, -1, "five", None, 2.5):
+        trip = _trip_with_attractions([], dinner=[{"name": "Cafe", "url": ""}])
+        trip["trip"] = {"max_no_url_restaurants": bad}
+        p = _write_html(tmp_path, VALID_HTML)
+        report = _make_validator(tmp_path).validate(p, trip)
+        assert any("restaurants with no url" in w.lower() for w in report["warnings"]), (
+            f"{bad!r} was treated as a threshold instead of being ignored")
+
+
 def test_duplicate_attraction_url_within_destination_warns(tmp_path):
     """New check (2026-08-15) -- not in the old quality gate. Regression
     for the Theme F bug (dipstick55): two entries independently resolving
