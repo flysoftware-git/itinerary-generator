@@ -342,3 +342,48 @@ class TestTheLedgerNeverLandsInThePrivateDirectory:
             assert not str(name).endswith(main_mod.PRIVATE_OUTPUT_SUFFIX), (
                 f"environment {name!r} collides with the private directory suffix"
             )
+
+
+class TestTheSuffixIsInterfaceAndNotDecoration:
+    """What the private directory's NAME has to carry, now that it is the only
+    thing a reader can use to state disclosure positively.
+
+    A consumer's page-reading check can return "redacted" or "unknown" and never
+    "not redacted" -- the marker is a redaction pill, and a trip with no planning
+    links renders none either way. So where a ledger claims the run was redacted
+    and the private page is silent, the name is all that is left.
+    """
+
+    def test_the_suffix_is_a_named_constant_a_consumer_can_cite(self):
+        assert main_mod.PRIVATE_OUTPUT_SUFFIX == "-private"
+
+    def test_the_private_directory_name_ends_with_it_and_the_shareable_does_not(
+        self, tmp_path
+    ):
+        """Read off the leaf, which is what a consumer matches on."""
+        shareable = tmp_path / "prod"
+        shareable.mkdir()
+        private = shareable.with_name(shareable.name + main_mod.PRIVATE_OUTPUT_SUFFIX)
+
+        index = main_mod._write_private_copy(private, "<html></html>", shareable)
+
+        assert index.parent.name.endswith(main_mod.PRIVATE_OUTPUT_SUFFIX)
+        assert not shareable.name.endswith(main_mod.PRIVATE_OUTPUT_SUFFIX)
+
+    def test_the_suffix_is_on_the_leaf_so_a_parent_cannot_speak_for_a_child(
+        self, tmp_path
+    ):
+        """A guide under `.../prod-private-archive/prod/` is an ORDINARY guide.
+
+        A reader matching the suffix anywhere in the path would call it private
+        because of a directory above it, and block a publish that should have
+        gone ahead. The generator's part of that contract is that it only ever
+        puts the suffix on the leaf it is describing.
+        """
+        nested = tmp_path / "prod-private-archive" / "prod"
+        nested.mkdir(parents=True)
+
+        assert not nested.name.endswith(main_mod.PRIVATE_OUTPUT_SUFFIX)
+        assert main_mod.PRIVATE_OUTPUT_SUFFIX in str(nested), (
+            "the whole-path match this guards against would fire here"
+        )

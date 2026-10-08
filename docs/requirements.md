@@ -1215,8 +1215,28 @@ traveler's confirmations. With no ledger a reader falls back to the page, which
 shows no redaction pill — so it reads as unredacted or as unknown, and both fail
 closed.
 
-Consumers should treat the **directory** as the unit of disclosure, and where a
-ledger and a page disagree about disclosure, prefer the page.
+Consumers should treat the **directory** as the unit of disclosure, and **the
+directory's name is what states it.** The `-private` suffix is therefore part of
+this interface rather than a layout convenience: it is the only thing at the
+reading end that can state disclosure positively.
+
+A page can say "redacted" and can never say "not redacted" — the marker is a
+redaction pill, and a trip with no planning links renders no pill either way, so
+its absence says nothing. In the one case that matters, a ledger claiming
+`privacy_redacted: true` beside a private page, the page is silent and the record
+is the only thing talking. Only the name is left.
+
+Two notes for anyone implementing the read, both failure modes rather than
+preferences:
+
+- Match the suffix on the **leaf** directory name, never against the whole path.
+  A guide at `.../prod-private-archive/prod/` is an ordinary shareable guide, and
+  matching anywhere in the path would call it private because of a directory
+  above it — blocking a publish that should have gone ahead.
+- Keep "cannot prove it was redacted" as carrying personal data, independently of
+  the name. The name adds a way to say *private*; it must not become the only
+  way, or an ordinary directory whose page is unreadable starts reporting itself
+  safe.
 
 **Both renders come from one run.** Their content is identical and only their
 disclosure differs, because they are two renders of one set of model calls
