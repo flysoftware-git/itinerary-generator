@@ -1158,7 +1158,6 @@ Cost accounting note:
 ```
 output/
 ├── index.html              ← Portable itinerary entry point. THE SHAREABLE ONE
-├── index.personal.html     ← Optional unredacted companion. NEVER PUBLISHED
 ├── images/
 │   ├── {md5hash}.jpg       ← Downloaded destination images
 │   └── ...
@@ -1170,35 +1169,87 @@ output/
 
 When `--environment` is provided explicitly, the above structure is created under `output/{environment}/` instead.
 
-### 12.1 `index.html` and `index.personal.html` — the two renders
+A redacting build additionally writes `output/{environment}-private/`, with the
+same shape and its own `index.html`. See §12.1.
 
-`index.html` is **always the shareable render**: the one privacy redaction has been
-applied to, and the only one that may ever be published. Its name is fixed, and
-nothing may rename it or move it — a consumer is entitled to treat "a directory
-with an `index.html` in it" as the whole definition of a guide.
+### 12.1 Two directories — the shareable guide and the traveler's own
 
-`index.personal.html` is written **beside it, in the same directory**, when and
-only when:
+Every `index.html` this generator writes is the **only** page of its directory,
+and which kind it is, is a fact about **the directory it sits in**:
+
+| Directory | Its `index.html` | May be published |
+|---|---|---|
+| `output/{environment}/` | the **shareable** render, redaction applied | yes — this is the only one |
+| `output/{environment}-private/` | the **traveler's own** render, nothing withheld | **never** |
+
+`index.html` is the fixed name in both. Nothing may rename or move it — a
+consumer is entitled to treat "a directory with an `index.html` in it" as the
+whole definition of a guide, and that is exactly why the two renders are two
+directories rather than two filenames in one. A companion file beside the index
+is invisible to such a consumer, so a directory holding personal data would
+report itself as holding none.
+
+The private directory is written when, and only when:
 
 1. redaction ran for this build (see §9's `--privacy-mode`), **and**
 2. redaction actually withheld something — a manifest carrying no confirmations
-   and no booked legs would render identical bytes twice, so the companion is
-   skipped rather than duplicated.
+   and no booked legs would render identical bytes twice, so it is skipped
+   rather than duplicated.
 
 It holds what redaction withheld: `planning_links`, `lodging.name`, `website`,
 `confirmation_number`, `total_cost`/`currency`, and every `transportation` leg,
-trip-wide and per-destination. **It is the traveler's own copy and is never
-published, never delivered and never served.** The two renders differ in
-disclosure only; their content is otherwise identical, because both come from one
-run rather than from two.
+trip-wide and per-destination. It is **never published, never delivered and
+never served.**
+
+It is self-contained — its own `images/` and the PWA pair come with it — because
+a directory whose page cannot render its own images is not a guide. It
+deliberately carries **no run ledger and no reports**, and that is a safety
+property rather than tidiness. A consumer deciding whether a directory holds
+personal data will prefer a ledger record over reading the page, on the
+reasonable ground that a ledger knows more. About **disclosure** that precedence
+is backwards here: one run produces two renders at different disclosure levels,
+so the run's `privacy_redacted: true` is true of the *run* and false of *this
+page*. A ledger in this directory would therefore make the private guide report
+itself redacted, and a delivery check keyed on that would hand over the
+traveler's confirmations. With no ledger a reader falls back to the page, which
+shows no redaction pill — so it reads as unredacted or as unknown, and both fail
+closed.
+
+Consumers should treat the **directory** as the unit of disclosure, and **the
+directory's name is what states it.** The `-private` suffix is therefore part of
+this interface rather than a layout convenience: it is the only thing at the
+reading end that can state disclosure positively.
+
+A page can say "redacted" and can never say "not redacted" — the marker is a
+redaction pill, and a trip with no planning links renders no pill either way, so
+its absence says nothing. In the one case that matters, a ledger claiming
+`privacy_redacted: true` beside a private page, the page is silent and the record
+is the only thing talking. Only the name is left.
+
+Two notes for anyone implementing the read, both failure modes rather than
+preferences:
+
+- Match the suffix on the **leaf** directory name, never against the whole path.
+  A guide at `.../prod-private-archive/prod/` is an ordinary shareable guide, and
+  matching anywhere in the path would call it private because of a directory
+  above it — blocking a publish that should have gone ahead.
+- Keep "cannot prove it was redacted" as carrying personal data, independently of
+  the name. The name adds a way to say *private*; it must not become the only
+  way, or an ordinary directory whose page is unreadable starts reporting itself
+  safe.
+
+**Both renders come from one run.** Their content is identical and only their
+disclosure differs, because they are two renders of one set of model calls
+rather than two builds. Re-running to produce the second would not give the same
+guide: content generation is not deterministic, and three builds of one manifest
+on 2026-10-07 produced three different restaurant lists.
 
 **Why this is in the interface section rather than left as an implementation
-detail.** A downstream consumer deciding how carefully to handle a build's output
-directory cannot answer that from `index.html` alone once a companion exists: the
-shareable page is genuinely redacted while the directory is not safe. A consumer
-therefore needs the companion's **name** to be a documented fact it can rely on,
-not one inferred from a commit. That is what this section is: the filename is part
-of the output contract, and a change to it is a change to the interface.
+detail.** A consumer has to decide how carefully to handle a build's output, and
+under this layout it can: each directory is judged by its own page, with no
+special case and nothing to know about companion filenames. The directory naming
+is therefore part of the output contract, and a change to it is a change to the
+interface.
 
 ---
 
