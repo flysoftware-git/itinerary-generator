@@ -28,7 +28,8 @@ TRANSPORTATION_ITEM_SCHEMA: dict[str, Any] = {
     "properties": {
         "type": {
             "type": "string",
-            "enum": ["plane", "train", "car", "ship", "ferry", "bus", "shuttle", "other"],
+            "enum": ["plane", "train", "car", "ship", "ferry", "bus", "shuttle",
+                     "taxi", "other"],
             "description": "Drives the category title and icon on the "
                            "rendered card. `ship` covers a cruise or "
                            "repositioning sailing that carries the traveler "
@@ -40,7 +41,16 @@ TRANSPORTATION_ITEM_SCHEMA: dict[str, Any] = {
                            "services nobody has bought yet. `other` remains "
                            "the fallback so an unrecognized booking still "
                            "renders with its details intact rather than being "
-                           "dropped.",
+                           "dropped. `taxi` covers a taxi, a minicab or a "
+                           "ride-hailing trip -- a door-to-door ride the "
+                           "traveler arranges, which is how most airport and "
+                           "port transfers are actually made. It is "
+                           "deliberately NOT one of transit_estimate's "
+                           "TRANSIT_MODES: those are scheduled services an "
+                           "estimator can look up a timetable for, and a taxi "
+                           "has no timetable to find. Without this, such a leg "
+                           "had to be entered as `car` and rendered as though "
+                           "the traveler were driving it themselves.",
         },
         "provider": {
             "type": "string",
