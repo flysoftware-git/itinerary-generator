@@ -123,6 +123,50 @@ def test_image_count_below_min_flagged(tmp_path):
     assert any("image" in e.lower() or "minimum" in e.lower() for e in report["errors"])
 
 
+def test_the_image_check_stands_down_when_images_were_skipped(tmp_path):
+    """`--skip-images` must not fail the run for the pictures it did not fetch.
+
+    The documented cheap run is `--skip-images`, and the image-count check is
+    the only one whose subject an operator can empty with a `--skip-*` flag --
+    so without this stand-down the cheap path exits 2 on every build, and the
+    flag that exists to save money cannot be used at all.
+
+    It is a stand-down rather than a warning for the reason the method's own
+    docstring gives: a run that never fetched a picture has nothing to say about
+    whether the guide has enough of them, and a warning on every destination of
+    every cheap build trains an operator to ignore the one that matters.
+    """
+    trip_with_one_image = {
+        "destinations": [
+            {
+                "id": "zion",
+                "name": "Zion National Park",
+                "images": [{"local_path": "output/images/abc.jpg"}],
+                "scenic_drives": [{"title": "Zion Canyon Scenic Drive"}],
+            }
+        ]
+    }
+    p = _write_html(tmp_path, VALID_HTML)
+    v = _make_validator(tmp_path)
+
+    # Same trip, same page: the only difference is whether the run tried.
+    failed = v.validate(p, trip_with_one_image)
+    assert any("image" in e.lower() or "minimum" in e.lower()
+               for e in failed["errors"]), (
+        "the sibling case no longer fails, so this test would pass even with "
+        "the stand-down removed and proves nothing")
+
+    skipped = v.validate(p, trip_with_one_image, skipped=["images"])
+    # Both channels, not just errors. Standing down means SILENT, not quieter:
+    # a warning on every destination of every cheap build is the noise the
+    # method's docstring refuses, and it would not show up in `errors`.
+    said = list(skipped["errors"]) + list(skipped["warnings"])
+    assert not any("image" in m.lower() or "minimum" in m.lower()
+                   for m in said), (
+        f"a run that skipped images is told about the pictures it did not "
+        f"fetch: {said}")
+
+
 def _trip_with_attractions(attractions, dinner=None, en_route_stops=None):
     return {
         "destinations": [
