@@ -3907,6 +3907,29 @@ def main(
     output_file.write_text(html, encoding="utf-8")
     click.echo(f"  ✓ index.html written ({output_file.stat().st_size:,} bytes)")
 
+    # An item the pipeline KEPT and the page never drew. Every drop during
+    # discovery already records a reason; disappearing after it recorded
+    # nothing, which is why eight declared seeds could go missing from the
+    # 2026-10-08 Old Hickory build and only a comparison against the published
+    # page could find them. Reported, not repaired -- this says an accepted
+    # item has no card, and nothing about which stage is responsible.
+    unrendered = assembler.unrendered_items(trip)
+    runtime_metrics["unrendered_items"] = unrendered
+    if unrendered:
+        seeds_missing = [row for row in unrendered if row.get("is_seed") == "yes"]
+        click.echo(click.style(
+            f"  ⚠ {len(unrendered)} accepted item(s) have no card on the page"
+            + (f", {len(seeds_missing)} of them declared seeds" if seeds_missing else ""),
+            fg="yellow",
+        ))
+        for row in unrendered[:12]:
+            click.echo(
+                f"      · {row['kind']}: {row['item']} ({row['destination']})"
+                + ("  [SEED]" if row.get("is_seed") == "yes" else "")
+            )
+        if len(unrendered) > 12:
+            click.echo(f"      · … and {len(unrendered) - 12} more")
+
 
     current_output_urls = _read_output_urls(output_file)
     parity_summary = _latest_direct_batch_parity_summary(output_dir=output_dir)

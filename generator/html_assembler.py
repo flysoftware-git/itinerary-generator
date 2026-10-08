@@ -376,6 +376,10 @@ class HTMLAssembler:
             self._multi_site_base_owned_categories = frozenset(DEFAULT_BASE_OWNED_CATEGORIES)
 
     def assemble(self, trip: dict[str, Any]) -> str:
+        # Cleared per assemble, not per instance: one run assembles twice when
+        # it writes the traveler's private copy, and a record carried over from
+        # the first render would report the second as complete whatever it drew.
+        self._accounted_items: dict[tuple[str, str], str] = {}
         template_text = TEMPLATE_PATH.read_text(encoding="utf-8")
         _verify_checksum(template_text)
         logger.info("Template checksum verified ✓")
@@ -1176,7 +1180,19 @@ class HTMLAssembler:
         attractions_for_render = ai.get("top_attractions", [])
         if group_children:
             covered_names = self._group_child_covered_names(group_children)
+            before_dedupe = list(attractions_for_render)
             attractions_for_render = self._dedupe_attractions_against_names(attractions_for_render, covered_names)
+            # Deliberate, documented above -- and until now silent. An item the
+            # base drops because a nested child already covers it is accounted
+            # for, and saying so is what keeps it out of the unaccounted list.
+            kept_keys = {self.render_key(str((a or {}).get("name", "")))
+                         for a in attractions_for_render if isinstance(a, dict)}
+            for dropped in before_dedupe:
+                if not isinstance(dropped, dict):
+                    continue
+                if self.render_key(str(dropped.get("name", ""))) not in kept_keys:
+                    self._note_accounted("attraction", str(dropped.get("name", "")),
+                                         "covered_by_grouped_child")
 
         # Header
         section += self._build_header(
@@ -3176,6 +3192,115 @@ class HTMLAssembler:
         smaller = min(len(tokens_a), len(tokens_b))
         return (len(shared) / smaller) >= 0.66
 
+    #: Normalisation for matching an item the pipeline accepted against the
+    #: card this assembler drew for it. A manifest writes `Jackson's`, generated
+    #: prose writes `Jackson’s`, and a page may carry either -- so a
+    #: comparison on raw text reports churn that is punctuation. Measured
+    #: 2026-10-08 while diagnosing this very gap: comparing raw anchor text
+    #: called `Andrew Jackson's Hermitage` both lost and gained in one build.
+    _RENDER_FOLD = {
+        "’": "'", "‘": "'", "ʼ": "'",
+        "–": "-", "—": "-", " ": " ", "&": "and",
+    }
+
+    @classmethod
+    def render_key(cls, name: str) -> str:
+        """The key both sides of the reconciliation compare on."""
+        import re as _re
+        import unicodedata as _ud
+
+        text = str(name or "")
+        for bad, good in cls._RENDER_FOLD.items():
+            text = text.replace(bad, good)
+        # NFKD, then drop the combining marks, so an accent folds to its base
+        # letter rather than being stripped with the punctuation. `Café
+        # Pasqual's` and `Cafe Pasqual's` are one restaurant, and under NFKC
+        # plus a strip they keyed as `caf` and `cafe` -- a real name from the
+        # Southwest guide, and caught by this module's own test rather than by
+        # another build.
+        text = _ud.normalize("NFKD", text)
+        text = "".join(ch for ch in text if not _ud.combining(ch))
+        text = _re.sub(r"[^a-z0-9 ]+", " ", text.lower())
+        return _re.sub(r"\s+", " ", text).strip()
+
+    def unrendered_items(self, trip: dict[str, Any]) -> list[dict[str, str]]:
+        """Items the pipeline kept that no card was drawn for.
+
+        WHY THIS EXISTS
+        ---------------
+        The run records a reason for every item discovery drops -- 17 of the 33
+        missing attractions in the 2026-10-08 Old Hickory build had one, and
+        every one of those was the system working. The other 16 had no reason
+        recorded anywhere: their last event was an acceptance, eight of them
+        were declared seeds, and `Andrew Jackson's Hermitage`, `Grand Ole Opry`
+        and `Carter House` were simply absent from the page.
+
+        Nothing was wrong with the reasons that were written. The defect was
+        that disappearing AFTER discovery had no reason at all, so the only way
+        to find it was to compare a built page against a published one. This
+        makes that difference a fact the run states about itself.
+
+        It reports rather than repairs, and it names what it cannot see: this
+        knows an item was kept and that no card was drawn, and nothing about
+        which stage between the two is responsible.
+        """
+        accounted = getattr(self, "_accounted_items", {})
+        missing: list[dict[str, str]] = []
+        for dest in (trip.get("destinations") or []):
+            if not isinstance(dest, dict):
+                continue
+            dest_name = str(dest.get("name", "") or "")
+            ai = dest.get("ai_content") or {}
+            for kind, section in (("attraction", "top_attractions"),
+                                  ("restaurant", "dinner_recommendations")):
+                for item in (ai.get(section) or []):
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(item.get("name", "") or "")
+                    key = self.render_key(name)
+                    if not key or (kind, key) in accounted:
+                        continue
+                    missing.append({
+                        "kind": kind,
+                        "destination": dest_name,
+                        "item": name,
+                        "is_seed": "yes" if item.get("is_seed") else "no",
+                        "had_url": "yes" if str(item.get("url", "") or "").strip() else "no",
+                    })
+        return missing
+
+    def _note_accounted(self, kind: str, name: str, reason: str) -> None:
+        """Record that this item is accounted for, and how.
+
+        Keyed trip-wide rather than per destination, deliberately. Multi-site
+        grouping legitimately draws a child's landmark on the base's card and
+        the base's own list is filtered against what its children cover, so a
+        per-destination key would report every intentional move as a mystery --
+        which is the noise that teaches a reader to ignore the line. The
+        destination is still reported for diagnosis; it is just not part of the
+        match.
+        """
+        if not hasattr(self, "_accounted_items"):
+            self._accounted_items: dict[tuple[str, str], str] = {}
+        key = self.render_key(name)
+        if key:
+            self._accounted_items.setdefault((kind, key), reason)
+
+    def _note_rendered(self, kind: str, dest_name: str, name: str) -> None:
+        """Record that a card was actually drawn for this item.
+
+        **Recorded by the writer rather than re-read from the HTML**, and that
+        is the point of it. The gap this closes was found by parsing the built
+        page and comparing names, which took three wrong answers to get right --
+        an item mentioned in schedule prose looked rendered, and a curly
+        apostrophe looked like a different place. The assembler knows what it
+        drew; nothing else has to guess.
+
+        Follows `_rendered_drive_titles`, which already does this for scenic
+        drives, rather than inventing a second convention.
+        """
+        self._note_accounted(kind, name, "rendered")
+
     def _build_attractions(
         self,
         ai: dict,
@@ -3386,6 +3511,7 @@ class HTMLAssembler:
                 else ""
             )
 
+            self._note_rendered("attraction", dest_name, attr.get("name", ""))
             attraction_rows.append(
                 f'  <div class="attr-item">'
                 f'<div class="attr-header attr-header-inline">'
@@ -3958,6 +4084,7 @@ class HTMLAssembler:
 
             desc_html = f'    <span class="rest-desc">{html_escape.escape(desc)}</span>\n' if desc else ""
             maps_corner_html = self._maps_corner_link_html(rest, url)
+            self._note_rendered("restaurant", dest_name, rest.get("name", ""))
             rows.append(
                 f'  <div class="rest-item">\n'
                 f'    <div class="rest-header rest-header-inline">\n'
