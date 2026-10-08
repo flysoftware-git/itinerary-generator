@@ -284,6 +284,36 @@ def reconcile_trip_from_registry(trip: dict[str, Any], registry: dict[str, Any])
 
         ai["top_attractions"] = _payloads(destination_id, "top_attractions")
         ai["dinner_recommendations"] = _payloads(destination_id, "dinner_recommendations")
+
+        # What the registry says SHOULD reach the page, named. `_payloads` above
+        # is the point items actually disappear -- anything not accepted is
+        # excluded here and the rebuilt list carries no trace of it -- so this
+        # is the only place that can state the expectation a render is then
+        # measured against. Without it the check downstream compares the trip
+        # with itself: the per-day cap has already trimmed it and this function
+        # has already rebuilt it, so survivors match survivors and 55 missing
+        # cards reported as none on the 2026-10-08 Old Hickory build.
+        accepted_items: list[dict[str, str]] = []
+        for section_target, kind in (("top_attractions", "attraction"),
+                                     ("dinner_recommendations", "restaurant")):
+            refs = destination_view.get(destination_id, {}) if isinstance(
+                destination_view.get(destination_id, {}), dict) else {}
+            for ref in (refs.get(section_target, []) or []):
+                entity = by_id.get(str(ref or ""))
+                if not entity:
+                    continue
+                if str(entity.get("validation_status", "accepted") or "accepted") not in _ACCEPTED_STATUSES:
+                    continue
+                name = str(entity.get("display_name", "") or "") or str(
+                    (entity.get("raw_payload") or {}).get("name", "") or "")
+                if name:
+                    accepted_items.append({
+                        "kind": kind,
+                        "item": name,
+                        "section": section_target,
+                        "destination": str(dest.get("name", "") or ""),
+                    })
+        dest["_registry_accepted_items"] = accepted_items
         getting_here["en_route_stops"] = _payloads(destination_id, "getting_here.en_route_stops")
         getting_there["route_options"] = _payloads(destination_id, "getting_there.route_options")
         ai["getting_here"] = getting_here
