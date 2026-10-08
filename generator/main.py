@@ -1545,6 +1545,40 @@ def _build_destination_status_report(
                     },
                 },
                 "section_counts": section_counts,
+                # The registry's decision, PER ITEM. Until now this report
+                # carried the registry's counts and its reason vocabulary and
+                # named no item either belonged to -- so a reader could see
+                # "rejected=16" and a list containing `entity_removed`, and
+                # could not learn which sixteen or which reason went with which.
+                #
+                # That is what made the 2026-10-08 Old Hickory investigation
+                # archaeology. Sixteen attractions had no card and no reason in
+                # the disposition threads, and the reasons existed all along --
+                # on the registry side, at the right granularity, discarded
+                # before anything readable was written. `_payloads` then drops
+                # whatever is not accepted, which is where the items actually
+                # disappear.
+                #
+                # Two ledgers, and a report that showed one of them per item and
+                # the other only in aggregate, is how a count gets mistaken for
+                # an explanation. Both are now per item.
+                "registry_item_decisions": [
+                    {
+                        "item": str(entity.get("display_name", "") or ""),
+                        "section": str(entity.get("section_target", "") or ""),
+                        "status": str(entity.get("validation_status", "") or ""),
+                        "reasons": [
+                            str(reason or "")
+                            for reason in (entity.get("rejection_reasons", []) or [])
+                            if str(reason or "")
+                        ],
+                        "rendered_url": str(entity.get("rendered_url", "") or ""),
+                    }
+                    for entity in destination_entities
+                    if isinstance(entity, dict)
+                    and str(entity.get("validation_status", "") or "").strip().lower()
+                    not in {"accepted", "pending"}
+                ],
                 "url_discovery_disposition_threads": (
                     url_discovery_meta.get("disposition_threads", {})
                     if isinstance(url_discovery_meta.get("disposition_threads", {}), dict)
@@ -3913,8 +3947,28 @@ def main(
     # 2026-10-08 Old Hickory build and only a comparison against the published
     # page could find them. Reported, not repaired -- this says an accepted
     # item has no card, and nothing about which stage is responsible.
-    unrendered = assembler.unrendered_items(trip)
-    runtime_metrics["unrendered_items"] = unrendered
+    # The accepted set, taken from the registry rather than from the trip. The
+    # trip has already been trimmed by the per-day cap and rebuilt from accepted
+    # entities by then, so measuring against it compares survivors with
+    # survivors and can only ever agree.
+    expected_on_page: list[dict[str, str]] = []
+    for dest in (trip.get("destinations") or []):
+        if not isinstance(dest, dict):
+            continue
+        for entity in (dest.get("_registry_accepted_items") or []):
+            if isinstance(entity, dict) and entity.get("item"):
+                expected_on_page.append(entity)
+    reconciliation = assembler.render_reconciliation(
+        trip, expected_on_page or None
+    )
+    runtime_metrics["render_reconciliation"] = reconciliation
+    unrendered = reconciliation["missing"]
+    # Printed whether or not anything is missing, because a zero that cannot be
+    # told from "nothing examined" is what let 55 items go unreported.
+    click.echo(
+        f"  ✓ Render reconciliation ({reconciliation['baseline']}): "
+        f"{reconciliation['accounted']}/{reconciliation['examined']} accounted for"
+    )
     if unrendered:
         seeds_missing = [row for row in unrendered if row.get("is_seed") == "yes"]
         click.echo(click.style(

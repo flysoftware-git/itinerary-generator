@@ -3223,6 +3223,57 @@ class HTMLAssembler:
         text = _re.sub(r"[^a-z0-9 ]+", " ", text.lower())
         return _re.sub(r"\s+", " ", text).strip()
 
+    def render_reconciliation(
+        self, trip: dict[str, Any], expected: list[dict[str, str]] | None = None
+    ) -> dict[str, Any]:
+        """What was expected on the page, what was drawn, and what is missing.
+
+        **Returns the denominator, not just the shortfall.** The first version of
+        this returned a bare list, and on the 2026-10-08 build it returned `[]`
+        while 7 attractions and 48 restaurants had no card. An empty list cannot
+        tell "nothing missing" from "nothing examined", which is the same defect
+        class the guard was built to catch -- #196's `FIELDS_NOT_HONOURED` is
+        worth something only because it can be seen to be `{}`. Reporting
+        "examined 44, missing 0" beside a report saying 92 were accepted would
+        have shown the contradiction immediately.
+
+        **And it takes its baseline from the caller**, because the trip is the
+        wrong baseline. The per-day restaurant cap does `ai["dinner_
+        recommendations"] = kept` BEFORE assembly, and the entity registry
+        rebuilds both lists from accepted entities, so by render time the trip
+        holds only survivors and the comparison agrees with itself by
+        construction. `expected` is for the accepted set recorded upstream;
+        without it this falls back to the trip and says so in `baseline`.
+        """
+        accounted = getattr(self, "_accounted_items", {})
+        if expected is not None:
+            missing = [
+                dict(row) for row in expected
+                if self.render_key(str(row.get("item", "") or ""))
+                and (str(row.get("kind", "") or ""),
+                     self.render_key(str(row.get("item", "") or ""))) not in accounted
+            ]
+            return {
+                "baseline": "accepted_upstream",
+                "examined": len(expected),
+                "accounted": len(expected) - len(missing),
+                "missing": missing,
+            }
+        from_trip = self.unrendered_items(trip)
+        examined = 0
+        for dest in (trip.get("destinations") or []):
+            if not isinstance(dest, dict):
+                continue
+            ai = dest.get("ai_content") or {}
+            for section in ("top_attractions", "dinner_recommendations"):
+                examined += len([x for x in (ai.get(section) or []) if isinstance(x, dict)])
+        return {
+            "baseline": "trip_at_render",
+            "examined": examined,
+            "accounted": examined - len(from_trip),
+            "missing": from_trip,
+        }
+
     def unrendered_items(self, trip: dict[str, Any]) -> list[dict[str, str]]:
         """Items the pipeline kept that no card was drawn for.
 

@@ -182,3 +182,69 @@ class TestTheRecordCannotLeakBetweenRenders:
         reset = src.index("_accounted_items")
         template = src.index("TEMPLATE_PATH.read_text")
         assert reset < template, "reset before anything is drawn"
+
+
+class TestTheCheckReportsItsDenominator:
+    """The defect in the first version of this module, found by spending a build.
+
+    It returned a bare list, and on the 2026-10-08 Old Hickory build it returned
+    `[]` while 7 attractions and 48 restaurants had no card. An empty list cannot
+    tell "nothing missing" from "nothing examined" -- the same class the guard
+    was built to catch, in the guard.
+    """
+
+    def test_it_says_how_many_it_examined(self):
+        a = _assembler()
+        a._note_rendered("attraction", "Old Hickory, Tennessee", "Old Hickory Lake")
+        expected = [
+            {"kind": "attraction", "item": "Old Hickory Lake"},
+            {"kind": "attraction", "item": "Andrew Jackson's Hermitage"},
+        ]
+
+        out = a.render_reconciliation({}, expected)
+
+        assert out["examined"] == 2
+        assert out["accounted"] == 1
+        assert [m["item"] for m in out["missing"]] == ["Andrew Jackson's Hermitage"]
+
+    def test_examining_nothing_is_not_reported_as_nothing_missing(self):
+        """The exact shape that went quiet: zero missing out of zero examined
+        has to be distinguishable from zero missing out of ninety-two."""
+        a = _assembler()
+
+        out = a.render_reconciliation({}, [])
+
+        assert out["missing"] == []
+        assert out["examined"] == 0, "a reader must be able to see it checked nothing"
+
+    def test_the_baseline_is_named(self):
+        """Which baseline was used changes what the number means, so the result
+        says which one it is rather than leaving the caller to infer it."""
+        a = _assembler()
+
+        assert a.render_reconciliation({}, [{"kind": "attraction", "item": "x"}]
+                                       )["baseline"] == "accepted_upstream"
+        assert a.render_reconciliation({"destinations": []})["baseline"] == "trip_at_render"
+
+    def test_the_trip_baseline_is_the_fallback_and_still_counts(self):
+        a = _assembler()
+        trip = _trip({"name": "Two Rivers Mansion"}, {"name": "Cedar Hill Park"})
+        a._note_rendered("attraction", "Old Hickory, Tennessee", "Cedar Hill Park")
+
+        out = a.render_reconciliation(trip)
+
+        assert out["examined"] == 2 and out["accounted"] == 1
+
+    def test_the_upstream_baseline_survives_a_trip_trimmed_after_acceptance(self):
+        """The reason the baseline moved. The per-day cap rewrites the trip's
+        own list before assembly, so an item accepted upstream is absent from
+        the trip by render time -- and measuring against the trip would call it
+        accounted for."""
+        a = _assembler()
+        trimmed_trip = _trip()          # the cap left nothing behind
+        expected = [{"kind": "restaurant", "item": "Cedar City Brewing Company"}]
+
+        out = a.render_reconciliation(trimmed_trip, expected)
+
+        assert out["examined"] == 1
+        assert [m["item"] for m in out["missing"]] == ["Cedar City Brewing Company"]
