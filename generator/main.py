@@ -317,6 +317,23 @@ def _resolve_privacy_redaction(mode: str | None, environment_selected: str) -> b
     return environment_selected == "prod"
 
 
+#: Suffix on the output directory that holds the traveler's own copy.
+#:
+#: Owner decision 2026-10-07: the private render is **its own directory with its
+#: own `index.html`**, not a differently-named file beside the shareable one.
+#: That is better than the companion-filename shape it replaces, and for a
+#: reason worth recording: a consumer that finds guides by looking for
+#: `index.html` cannot see a companion at all, so a directory holding personal
+#: data reported itself as carrying none. Two directories, each judged by its
+#: own page, is correct by construction instead of needing a special case.
+#:
+#: The private directory deliberately gets no run ledger and no reports. With no
+#: ledger a reader falls back to judging the page, and a page with real planning
+#: links shows no redaction pill -- so it reads as unredacted or as unknown, and
+#: both of those fail closed. Copying the shareable run's ledger in would have
+#: asserted `privacy_redacted` about the wrong file.
+PRIVATE_OUTPUT_SUFFIX = "-private"
+
 #: How `_apply_privacy_redaction` hands back what it took, so one paid run can
 #: render both a shareable guide and the traveler's own copy.
 #:
@@ -369,6 +386,53 @@ def _restore_privacy_payload(trip: dict[str, Any], withheld: dict[str, Any]) -> 
         lodging = dest.get("lodging")
         if isinstance(lodging, dict) and lodging_fields:
             lodging.update(copy.deepcopy(lodging_fields))
+
+
+def _write_private_copy(directory: Path, html: str, shareable_dir: Path) -> Path:
+    """Write the traveler's own guide as its own directory's `index.html`.
+
+    Self-contained on purpose. A guide is a directory with an `index.html` in it,
+    and a directory whose page cannot render its own images is not one -- so the
+    images come too, hardlinked where the filesystem allows it and copied where
+    it does not. Hardlinks because the bytes are identical and a guide's images
+    are the largest thing in it; on Windows a hardlink across the same volume is
+    free, and `shutil.copy2` is the fallback rather than the default.
+
+    The PWA pair comes too, for the same reason: the page references them, and a
+    directory that 404s its own manifest is a worse artifact than one that does
+    not.
+
+    What deliberately does NOT come: the run ledger and the reports. They
+    describe the shareable build, and copying them here would make this directory
+    assert `privacy_redacted` about a file that is not this one.
+    """
+    import shutil
+
+    directory.mkdir(parents=True, exist_ok=True)
+    index = directory / "index.html"
+    index.write_text(html, encoding="utf-8")
+
+    for companion in ("manifest.webmanifest", "sw.js"):
+        source = shareable_dir / companion
+        if source.is_file():
+            shutil.copy2(source, directory / companion)
+
+    source_images = shareable_dir / "images"
+    if source_images.is_dir():
+        target_images = directory / "images"
+        target_images.mkdir(exist_ok=True)
+        for image in source_images.iterdir():
+            if not image.is_file():
+                continue
+            destination = target_images / image.name
+            if destination.exists():
+                continue
+            try:
+                os.link(image, destination)
+            except (OSError, AttributeError, NotImplementedError):
+                shutil.copy2(image, destination)
+
+    return index
 
 
 def _privacy_payload_has_content(withheld: Any) -> bool:
@@ -3862,11 +3926,14 @@ def main(
             "privacy_redacted": False,
             "personal_copy": True,
         }
-        personal_file = output_file.with_name("index.personal.html")
-        personal_file.write_text(assembler.assemble(personal_trip), encoding="utf-8")
+        personal_dir = output_dir.with_name(output_dir.name + PRIVATE_OUTPUT_SUFFIX)
+        personal_file = _write_private_copy(
+            personal_dir, assembler.assemble(personal_trip), output_dir
+        )
         click.echo(
-            f"  ✓ Personal copy written, unredacted and not for publishing: "
-            f"{personal_file.name} ({personal_file.stat().st_size:,} bytes)"
+            f"  ✓ Private copy written, unredacted and not for publishing: "
+            f"{personal_file.parent.name}/{personal_file.name} "
+            f"({personal_file.stat().st_size:,} bytes)"
         )
 
     current_output_urls = _read_output_urls(output_file)

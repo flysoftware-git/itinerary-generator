@@ -30,6 +30,7 @@ and the model calls are already paid for by then.
 from __future__ import annotations
 
 import copy
+import os
 
 import pytest
 
@@ -206,3 +207,93 @@ class TestTheSecondRenderIsSkippedWhenItWouldBeIdentical:
     @pytest.mark.parametrize("value", [None, {}, "nonsense", 7])
     def test_nothing_withheld_reads_as_nothing_to_render(self, value):
         assert main_mod._privacy_payload_has_content(value) is False
+
+
+class TestThePrivateCopyIsItsOwnGuideDirectory:
+    """The shape the owner chose, and the properties a consumer relies on."""
+
+    def test_it_is_named_index_html_in_a_sibling_directory(self, tmp_path):
+        shareable = tmp_path / "prod"
+        shareable.mkdir()
+        private = shareable.with_name(shareable.name + main_mod.PRIVATE_OUTPUT_SUFFIX)
+
+        index = main_mod._write_private_copy(private, "<html>private</html>", shareable)
+
+        assert index.name == "index.html", "a guide's page has one name"
+        assert index.parent.name == "prod-private"
+        assert index.parent.parent == shareable.parent, "a sibling, not a child"
+        assert index.read_text(encoding="utf-8") == "<html>private</html>"
+
+    def test_it_brings_its_images_so_the_page_can_render(self, tmp_path):
+        """A directory whose page cannot render its own images is not a guide."""
+        shareable = tmp_path / "prod"
+        (shareable / "images").mkdir(parents=True)
+        (shareable / "images" / "abc.jpg").write_bytes(b"jpegbytes")
+
+        main_mod._write_private_copy(
+            shareable.with_name("prod-private"), "<html></html>", shareable
+        )
+
+        copied = tmp_path / "prod-private" / "images" / "abc.jpg"
+        assert copied.is_file()
+        assert copied.read_bytes() == b"jpegbytes"
+
+    def test_the_images_are_shared_rather_than_duplicated_where_possible(self, tmp_path):
+        """Images are the largest thing in a guide and the bytes are identical."""
+        shareable = tmp_path / "prod"
+        (shareable / "images").mkdir(parents=True)
+        source = shareable / "images" / "abc.jpg"
+        source.write_bytes(b"jpegbytes")
+
+        main_mod._write_private_copy(
+            shareable.with_name("prod-private"), "<html></html>", shareable
+        )
+
+        copied = tmp_path / "prod-private" / "images" / "abc.jpg"
+        if hasattr(os, "link"):
+            assert copied.stat().st_ino == source.stat().st_ino or                 copied.read_bytes() == source.read_bytes()
+
+    def test_the_pwa_pair_comes_too(self, tmp_path):
+        shareable = tmp_path / "prod"
+        shareable.mkdir()
+        (shareable / "manifest.webmanifest").write_text("{}", encoding="utf-8")
+        (shareable / "sw.js").write_text("//sw", encoding="utf-8")
+
+        main_mod._write_private_copy(
+            shareable.with_name("prod-private"), "<html></html>", shareable
+        )
+
+        assert (tmp_path / "prod-private" / "manifest.webmanifest").is_file()
+        assert (tmp_path / "prod-private" / "sw.js").is_file()
+
+    def test_it_carries_no_ledger_and_no_reports(self, tmp_path):
+        """They describe the SHAREABLE build. Copying them here would make this
+        directory assert `privacy_redacted` about a file that is not its own --
+        and a reader with no ledger judges the page instead, which fails closed.
+        """
+        shareable = tmp_path / "prod"
+        shareable.mkdir()
+        for name in ("run_ledger.jsonl", "validation_report.json",
+                     "destination_status_report.md", "build_info.latest.json"):
+            (shareable / name).write_text("{}", encoding="utf-8")
+
+        main_mod._write_private_copy(
+            shareable.with_name("prod-private"), "<html></html>", shareable
+        )
+
+        private = tmp_path / "prod-private"
+        assert sorted(p.name for p in private.iterdir()) == ["index.html"]
+
+    def test_rerunning_is_idempotent(self, tmp_path):
+        """A rebuild into an existing private directory must not fail on the
+        images it already hardlinked."""
+        shareable = tmp_path / "prod"
+        (shareable / "images").mkdir(parents=True)
+        (shareable / "images" / "abc.jpg").write_bytes(b"jpegbytes")
+        private = shareable.with_name("prod-private")
+
+        main_mod._write_private_copy(private, "<html>one</html>", shareable)
+        index = main_mod._write_private_copy(private, "<html>two</html>", shareable)
+
+        assert index.read_text(encoding="utf-8") == "<html>two</html>"
+        assert (private / "images" / "abc.jpg").is_file()
