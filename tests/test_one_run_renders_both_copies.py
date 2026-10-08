@@ -267,9 +267,23 @@ class TestThePrivateCopyIsItsOwnGuideDirectory:
         assert (tmp_path / "prod-private" / "sw.js").is_file()
 
     def test_it_carries_no_ledger_and_no_reports(self, tmp_path):
-        """They describe the SHAREABLE build. Copying them here would make this
-        directory assert `privacy_redacted` about a file that is not its own --
-        and a reader with no ledger judges the page instead, which fails closed.
+        """The guard on a fail-open, not housekeeping.
+
+        A consumer deciding whether a directory holds personal data prefers a
+        LEDGER RECORD over reading the page, on the reasonable ground that the
+        ledger knows more. About disclosure that precedence is now backwards:
+        one run produces two renders with different disclosure, so the run's
+        `privacy_redacted: true` is true of the RUN and false of THIS page.
+
+        Copy the ledger in and the private guide reports itself redacted, a
+        `carries_personal_data` check flips to False, and delivery would send
+        the traveler's confirmations to whoever asked. With no ledger the reader
+        falls back to the page, which shows no redaction pill, and that fails
+        closed.
+
+        So this asserts the absence even though nothing currently copies them:
+        the cost of a later well-meaning "the private copy should have its
+        reports too" is a leak, and this is what refuses it.
         """
         shareable = tmp_path / "prod"
         shareable.mkdir()
@@ -297,3 +311,34 @@ class TestThePrivateCopyIsItsOwnGuideDirectory:
 
         assert index.read_text(encoding="utf-8") == "<html>two</html>"
         assert (private / "images" / "abc.jpg").is_file()
+
+
+class TestTheLedgerNeverLandsInThePrivateDirectory:
+    """The same invariant from the writing side rather than the copying side.
+
+    The test above pins that `_write_private_copy` does not bring a ledger. This
+    pins that the run does not write one there either, which is the other way it
+    could arrive.
+    """
+
+    def test_the_ledger_path_is_the_shareable_directory(self):
+        from pathlib import Path
+
+        for environment in ("prod", "dev", "eval"):
+            ledger = Path("output") / environment / "run_ledger.jsonl"
+
+            assert main_mod.PRIVATE_OUTPUT_SUFFIX not in str(ledger), (
+                "a ledger inside the private directory would let the run's "
+                "privacy_redacted speak for a page it is not true of"
+            )
+
+    def test_the_suffix_cannot_collide_with_an_environment_name(self):
+        """`output/{environment}` and `output/{environment}-private` are siblings,
+        so an environment literally named e.g. `prod-private` would collide and
+        one render would overwrite the other."""
+        from generator.environments import ENVIRONMENTS
+
+        for name in ENVIRONMENTS:
+            assert not str(name).endswith(main_mod.PRIVATE_OUTPUT_SUFFIX), (
+                f"environment {name!r} collides with the private directory suffix"
+            )

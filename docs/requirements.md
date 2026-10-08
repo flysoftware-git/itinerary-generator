@@ -1203,11 +1203,20 @@ never served.**
 
 It is self-contained — its own `images/` and the PWA pair come with it — because
 a directory whose page cannot render its own images is not a guide. It
-deliberately carries **no run ledger and no reports**: those describe the
-shareable build, and copying them in would make this directory assert
-`privacy_redacted` about a different file. With no ledger, a reader judges the
-page, and a page with real planning links shows no redaction pill — so it reads
-as unredacted or as unknown, and both fail closed.
+deliberately carries **no run ledger and no reports**, and that is a safety
+property rather than tidiness. A consumer deciding whether a directory holds
+personal data will prefer a ledger record over reading the page, on the
+reasonable ground that a ledger knows more. About **disclosure** that precedence
+is backwards here: one run produces two renders at different disclosure levels,
+so the run's `privacy_redacted: true` is true of the *run* and false of *this
+page*. A ledger in this directory would therefore make the private guide report
+itself redacted, and a delivery check keyed on that would hand over the
+traveler's confirmations. With no ledger a reader falls back to the page, which
+shows no redaction pill — so it reads as unredacted or as unknown, and both fail
+closed.
+
+Consumers should treat the **directory** as the unit of disclosure, and where a
+ledger and a page disagree about disclosure, prefer the page.
 
 **Both renders come from one run.** Their content is identical and only their
 disclosure differs, because they are two renders of one set of model calls
