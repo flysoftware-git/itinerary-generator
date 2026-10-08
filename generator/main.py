@@ -1047,6 +1047,27 @@ def _enforce_restaurant_per_day_cap(trip: dict, ai_gen) -> dict[str, int]:
         kept = ai_gen.select_diverse_restaurants(restaurants, target=target)
         counts["destinations_trimmed"] += 1
         counts["removed"] += len(restaurants) - len(kept)
+        # Name what the cap took, so the render reconciliation can subtract it.
+        # Without this the reconciliation warns on every build forever -- the cap
+        # trims dozens every time and did exactly that on the 2026-10-08 Old
+        # Hickory run: 48 missing, all 48 the cap's own doing, under a warning
+        # glyph. A warning that is always right about nothing is how a reader
+        # learns to skip the line, and the cap is the one thing that knows which
+        # items it removed.
+        from generator.html_assembler import HTMLAssembler
+
+        kept_keys = {HTMLAssembler.render_key(str((r or {}).get("name", "")))
+                     for r in kept if isinstance(r, dict)}
+        for dropped in restaurants:
+            if not isinstance(dropped, dict):
+                continue
+            name = str(dropped.get("name", "") or "")
+            if name and HTMLAssembler.render_key(name) not in kept_keys:
+                counts.setdefault("trimmed_items", []).append(
+                    {"kind": "restaurant", "item": name,
+                     "destination": str(dest.get("name", "") or ""),
+                     "reason": "restaurant_per_day_cap"}
+                )
         logger.info(
             "  %s: %d dinner recommendations trimmed to %d (%d/day x %d days)",
             dest.get("name", ""), len(restaurants), len(kept), per_day, day_count,
@@ -3959,7 +3980,8 @@ def main(
             if isinstance(entity, dict) and entity.get("item"):
                 expected_on_page.append(entity)
     reconciliation = assembler.render_reconciliation(
-        trip, expected_on_page or None
+        trip, expected_on_page or None,
+        accounted_elsewhere=_restaurant_cap.get("trimmed_items") or [],
     )
     runtime_metrics["render_reconciliation"] = reconciliation
     unrendered = reconciliation["missing"]
@@ -3968,6 +3990,8 @@ def main(
     click.echo(
         f"  ✓ Render reconciliation ({reconciliation['baseline']}): "
         f"{reconciliation['accounted']}/{reconciliation['examined']} accounted for"
+        + (f", {reconciliation['trimmed']} trimmed by a documented rule"
+           if reconciliation.get("trimmed") else "")
     )
     if unrendered:
         seeds_missing = [row for row in unrendered if row.get("is_seed") == "yes"]
