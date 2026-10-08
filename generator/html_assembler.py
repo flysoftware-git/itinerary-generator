@@ -2160,6 +2160,10 @@ class HTMLAssembler:
         "ferry": ("⛴️", "Ferry"),
         "bus": ("\U0001f68c", "Bus"),
         "shuttle": ("\U0001f690", "Shuttle"),
+        # A door-to-door ride the traveler arranged: a taxi, a minicab or
+        # a ride-hailing trip. Entered as `car` before this, which drew an
+        # airport transfer as though they were driving it themselves.
+        "taxi": ("\U0001f695", "Taxi"),
         "other": ("\U0001f9f3", "Travel"),
     }
 

@@ -3907,34 +3907,6 @@ def main(
     output_file.write_text(html, encoding="utf-8")
     click.echo(f"  ✓ index.html written ({output_file.stat().st_size:,} bytes)")
 
-    # The traveler's own copy, from the same run. Owner decision 2026-10-07:
-    # a redacted guide is not a travel document -- it has no transportation
-    # section at all -- and the owner reads their own confirmations off it, so
-    # one run emits both rather than the choice being a flag somebody has to set
-    # correctly every time. `index.html` keeps its meaning (the shareable one)
-    # so every existing consumer, publish step and parity check is untouched;
-    # the personal copy is purely additive and never published.
-    #
-    # Skipped when redaction took nothing: a manifest with no confirmations and
-    # no booked legs renders identical bytes, and a second copy of the same page
-    # is waste rather than a feature.
-    if _privacy_payload_has_content(privacy_withheld):
-        personal_trip = copy.deepcopy(trip)
-        _restore_privacy_payload(personal_trip, privacy_withheld)
-        personal_trip["_meta"] = {
-            **(personal_trip.get("_meta") or {}),
-            "privacy_redacted": False,
-            "personal_copy": True,
-        }
-        personal_dir = output_dir.with_name(output_dir.name + PRIVATE_OUTPUT_SUFFIX)
-        personal_file = _write_private_copy(
-            personal_dir, assembler.assemble(personal_trip), output_dir
-        )
-        click.echo(
-            f"  ✓ Private copy written, unredacted and not for publishing: "
-            f"{personal_file.parent.name}/{personal_file.name} "
-            f"({personal_file.stat().st_size:,} bytes)"
-        )
 
     current_output_urls = _read_output_urls(output_file)
     parity_summary = _latest_direct_batch_parity_summary(output_dir=output_dir)
@@ -3973,6 +3945,44 @@ def main(
 
     _write_pwa_assets(output_dir, trip, build_id=run_id)
     click.echo("  ✓ PWA assets written (manifest.webmanifest, sw.js)")
+
+    # The traveler's own copy, from the same run. Owner decision 2026-10-07:
+    # a redacted guide is not a travel document -- it has no transportation
+    # section at all -- and the owner reads their own confirmations off it, so
+    # one run emits both rather than the choice being a flag somebody has to set
+    # correctly every time. `index.html` keeps its meaning (the shareable one)
+    # so every existing consumer, publish step and parity check is untouched;
+    # the private copy is purely additive and never published.
+    #
+    # **Written HERE, after the PWA pair, and that position is the fix for a
+    # real defect.** It used to sit immediately after `index.html`, which is
+    # before `_write_pwa_assets` runs -- so `_write_private_copy` looked for
+    # `manifest.webmanifest` and `sw.js`, found neither, and silently copied
+    # nothing. Both private directories from the 2026-10-08 Old Hickory and
+    # Southwest builds hold only `index.html` and `images/`. The unit test
+    # passed because it created those two files itself, which is a test proving
+    # the function does what it does rather than that the pipeline does.
+    #
+    # Skipped when redaction took nothing: a manifest with no confirmations and
+    # no booked legs renders identical bytes, and a second copy of the same page
+    # is waste rather than a feature.
+    if _privacy_payload_has_content(privacy_withheld):
+        personal_trip = copy.deepcopy(trip)
+        _restore_privacy_payload(personal_trip, privacy_withheld)
+        personal_trip["_meta"] = {
+            **(personal_trip.get("_meta") or {}),
+            "privacy_redacted": False,
+            "personal_copy": True,
+        }
+        personal_dir = output_dir.with_name(output_dir.name + PRIVATE_OUTPUT_SUFFIX)
+        personal_file = _write_private_copy(
+            personal_dir, assembler.assemble(personal_trip), output_dir
+        )
+        click.echo(
+            f"  ✓ Private copy written, unredacted and not for publishing: "
+            f"{personal_file.parent.name}/{personal_file.name} "
+            f"({personal_file.stat().st_size:,} bytes)"
+        )
 
     # ── Validate ─────────────────────────────────────────────────────────────
     from generator.html_validator import HTMLValidator
