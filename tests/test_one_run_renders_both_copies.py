@@ -387,3 +387,64 @@ class TestTheSuffixIsInterfaceAndNotDecoration:
         assert main_mod.PRIVATE_OUTPUT_SUFFIX in str(nested), (
             "the whole-path match this guards against would fire here"
         )
+
+
+class TestThePrivateCopyWaitsForThePwaPair:
+    """The ordering defect a paid build found and the unit tests did not.
+
+    `_write_private_copy` copies `manifest.webmanifest` and `sw.js` **if they
+    exist**. It used to be called immediately after `index.html` was written,
+    which is before `_write_pwa_assets` runs -- so it looked for both, found
+    neither, and silently copied nothing. The private directories from the
+    2026-10-08 Old Hickory and Southwest builds hold only `index.html` and
+    `images/`.
+
+    Every test above passed throughout, because they each create the PWA pair
+    themselves before calling the function. They pin the function; this pins its
+    place in the pipeline, which is where the defect was.
+    """
+
+    def _source(self):
+        """`main` is a click Command, so the function is its callback."""
+        import inspect
+
+        from generator import main as m
+
+        command = m.main
+        return inspect.getsource(getattr(command, "callback", command))
+
+    def test_the_private_write_comes_after_the_pwa_assets(self):
+        src = self._source()
+        pwa = src.index("_write_pwa_assets(output_dir")
+        private = src.index("_privacy_payload_has_content(privacy_withheld)")
+
+        assert pwa < private, (
+            "the private copy must be written after the PWA pair exists, or it "
+            "copies neither and the directory is not self-contained"
+        )
+
+    def test_the_private_write_still_comes_after_the_page(self):
+        """The other end of the window. It reads the shareable directory, so the
+        page and the images have to be there too."""
+        src = self._source()
+        page = src.index("output_file.write_text(html")
+        private = src.index("_privacy_payload_has_content(privacy_withheld)")
+
+        assert page < private
+
+    def test_a_missing_pwa_pair_is_still_not_fatal(self):
+        """The copy stays conditional. A build that somehow has no PWA assets
+        should still get its private page rather than failing."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            shareable = Path(tmp) / "prod"
+            shareable.mkdir()
+
+            index = main_mod._write_private_copy(
+                shareable.with_name("prod-private"), "<html></html>", shareable
+            )
+
+            assert index.is_file()
+            assert not (index.parent / "sw.js").exists()
