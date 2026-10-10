@@ -248,3 +248,80 @@ class TestTheCheckReportsItsDenominator:
 
         assert out["examined"] == 1
         assert [m["item"] for m in out["missing"]] == ["Cedar City Brewing Company"]
+
+
+class TestADocumentedTrimIsNotAWarning:
+    """The warning that was always right about nothing.
+
+    The 2026-10-08 Old Hickory run printed `48 accepted item(s) have no card`
+    under a warning glyph, and all 48 were the restaurant per-day cap doing its
+    documented job -- it trims dozens on every build. A warning that fires every
+    time and never means anything is how a reader learns to skip the line, so the
+    cap now names what it took and the check subtracts it.
+    """
+
+    EXPECTED = [
+        {"kind": "restaurant", "item": "Noko"},
+        {"kind": "restaurant", "item": "Peninsula"},
+        {"kind": "attraction", "item": "Andrew Jackson's Hermitage"},
+    ]
+
+    def test_a_trimmed_item_is_counted_not_reported_missing(self):
+        a = _assembler()
+        trimmed = [{"kind": "restaurant", "item": "Noko",
+                    "reason": "restaurant_per_day_cap"},
+                   {"kind": "restaurant", "item": "Peninsula",
+                    "reason": "restaurant_per_day_cap"}]
+
+        out = a.render_reconciliation({}, self.EXPECTED, accounted_elsewhere=trimmed)
+
+        assert out["trimmed"] == 2
+        assert [m["item"] for m in out["missing"]] == ["Andrew Jackson's Hermitage"]
+
+    def test_the_denominator_still_adds_up(self):
+        """accounted + trimmed + missing must equal examined, or the line lies."""
+        a = _assembler()
+        a._note_rendered("restaurant", "Nashville, Tennessee", "Noko")
+        trimmed = [{"kind": "restaurant", "item": "Peninsula",
+                    "reason": "restaurant_per_day_cap"}]
+
+        out = a.render_reconciliation({}, self.EXPECTED, accounted_elsewhere=trimmed)
+
+        assert out["accounted"] + out["trimmed"] + len(out["missing"]) == out["examined"]
+        assert out["examined"] == 3
+
+    def test_everything_trimmed_leaves_nothing_to_warn_about(self):
+        """The case from the build: every missing item was the cap's own doing."""
+        a = _assembler()
+        trimmed = [{"kind": "restaurant", "item": "Noko", "reason": "restaurant_per_day_cap"},
+                   {"kind": "restaurant", "item": "Peninsula", "reason": "restaurant_per_day_cap"},
+                   {"kind": "attraction", "item": "Andrew Jackson's Hermitage",
+                    "reason": "restaurant_per_day_cap"}]
+
+        out = a.render_reconciliation({}, self.EXPECTED, accounted_elsewhere=trimmed)
+
+        assert out["missing"] == []
+        assert out["trimmed"] == 3, "and the count is still visible, not silence"
+
+    def test_the_trim_must_match_the_kind_too(self):
+        """A restaurant named like an attraction must not excuse the attraction."""
+        a = _assembler()
+        trimmed = [{"kind": "restaurant", "item": "Andrew Jackson's Hermitage",
+                    "reason": "restaurant_per_day_cap"}]
+
+        out = a.render_reconciliation({}, self.EXPECTED, accounted_elsewhere=trimmed)
+
+        # The ATTRACTION is still missing: a restaurant trim does not excuse it.
+        assert "Andrew Jackson's Hermitage" in [m["item"] for m in out["missing"]]
+        assert out["trimmed"] == 0, "nothing matched on kind, so nothing is excused"
+
+    def test_a_rendered_item_is_never_counted_as_trimmed(self):
+        """Drawn wins over trimmed -- otherwise a cap that changed its mind would
+        make the page look emptier than it is."""
+        a = _assembler()
+        a._note_rendered("restaurant", "Nashville, Tennessee", "Noko")
+        trimmed = [{"kind": "restaurant", "item": "Noko", "reason": "restaurant_per_day_cap"}]
+
+        out = a.render_reconciliation({}, [self.EXPECTED[0]], accounted_elsewhere=trimmed)
+
+        assert out["accounted"] == 1 and out["trimmed"] == 0

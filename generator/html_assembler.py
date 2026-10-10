@@ -3224,7 +3224,11 @@ class HTMLAssembler:
         return _re.sub(r"\s+", " ", text).strip()
 
     def render_reconciliation(
-        self, trip: dict[str, Any], expected: list[dict[str, str]] | None = None
+        self,
+        trip: dict[str, Any],
+        expected: list[dict[str, str]] | None = None,
+        *,
+        accounted_elsewhere: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """What was expected on the page, what was drawn, and what is missing.
 
@@ -3246,17 +3250,37 @@ class HTMLAssembler:
         without it this falls back to the trip and says so in `baseline`.
         """
         accounted = getattr(self, "_accounted_items", {})
+        # Items a documented rule removed on purpose, named by the rule that
+        # removed them. Counted and set aside rather than reported as missing:
+        # the per-day restaurant cap trims dozens on every build, so without
+        # this the check warns every single time and is always right about
+        # nothing -- which is how a reader learns to skip the line. The 2026-10-08
+        # Old Hickory run reported 48 missing, all 48 the cap's own doing.
+        trimmed_keys: dict[tuple[str, str], str] = {}
+        for row in (accounted_elsewhere or []):
+            key = self.render_key(str(row.get("item", "") or ""))
+            if key:
+                trimmed_keys[(str(row.get("kind", "") or ""), key)] = str(
+                    row.get("reason", "") or "trimmed")
         if expected is not None:
-            missing = [
-                dict(row) for row in expected
-                if self.render_key(str(row.get("item", "") or ""))
-                and (str(row.get("kind", "") or ""),
-                     self.render_key(str(row.get("item", "") or ""))) not in accounted
-            ]
+            missing = []
+            trimmed = 0
+            for row in expected:
+                key = self.render_key(str(row.get("item", "") or ""))
+                if not key:
+                    continue
+                pair = (str(row.get("kind", "") or ""), key)
+                if pair in accounted:
+                    continue
+                if pair in trimmed_keys:
+                    trimmed += 1
+                    continue
+                missing.append(dict(row))
             return {
                 "baseline": "accepted_upstream",
                 "examined": len(expected),
-                "accounted": len(expected) - len(missing),
+                "accounted": len(expected) - len(missing) - trimmed,
+                "trimmed": trimmed,
                 "missing": missing,
             }
         from_trip = self.unrendered_items(trip)
@@ -3271,6 +3295,7 @@ class HTMLAssembler:
             "baseline": "trip_at_render",
             "examined": examined,
             "accounted": examined - len(from_trip),
+            "trimmed": 0,
             "missing": from_trip,
         }
 
