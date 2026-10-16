@@ -9,6 +9,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from threading import Lock
 from generator.url_discovery import (
+    DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR,
     DEFAULT_EN_ROUTE_DETOUR_MAX_MILES,
     DEFAULT_EN_ROUTE_DETOUR_MAX_MINUTES,
     URLDiscoverer,
@@ -1532,7 +1533,7 @@ def test_direct_batch_row_match_strength_rejects_scenic_byway_boilerplate_overla
     generic boilerplate) to approach the required token-overlap bar without
     either of the item's real identifying words ("enchanted"/"circle")
     ever matching. This is the exact real row captured in
-    dev/dev/url_discovery_direct_batch_html/pagosa-springs.en-route-stop...html
+    the capture folder as it was then named (dev/), now captures/ -- see DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR
     from that run."""
     row = {
         "name": "Ouray Hot Springs Pool",
@@ -5078,7 +5079,7 @@ def test_zion_attraction_direct_batch_html_integration_round_trip(tmp_path):
     discoverer._attraction_direct_batch_cache = {}
     discoverer._run_output_dir = tmp_path
     discoverer._direct_batch_html_capture_enabled = True
-    discoverer._direct_batch_html_capture_subdir = "dev/url_discovery_direct_batch_html"
+    discoverer._direct_batch_html_capture_subdir = DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR
     discoverer._search = MagicMock()
     discoverer._search.chat_completion.return_value = (
         "<h2>Zion National Park</h2><ul>"
@@ -5094,7 +5095,7 @@ def test_zion_attraction_direct_batch_html_integration_round_trip(tmp_path):
     assert len(rows) == 2
     assert {row["title"] for row in rows} == {"Angels Landing", "The Narrows"}
 
-    capture_dir = tmp_path / "dev" / "url_discovery_direct_batch_html"
+    capture_dir = tmp_path / DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR
     html_files = list(capture_dir.glob("*.html"))
     meta_files = list(capture_dir.glob("*.meta.json"))
     assert len(html_files) == 1
@@ -5113,7 +5114,7 @@ def test_zion_all_trail_items_still_capture_attraction_direct_batch_payload(tmp_
     discoverer._attraction_direct_batch_cache = {}
     discoverer._run_output_dir = tmp_path
     discoverer._direct_batch_html_capture_enabled = True
-    discoverer._direct_batch_html_capture_subdir = "dev/url_discovery_direct_batch_html"
+    discoverer._direct_batch_html_capture_subdir = DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR
     discoverer._attraction_source = "direct_link_batch"
     discoverer._direct_batch_authoritative = True
     discoverer._disable_trails = True
@@ -5139,7 +5140,7 @@ def test_zion_all_trail_items_still_capture_attraction_direct_batch_payload(tmp_
         seed_names=["The Narrows"],
     )
 
-    capture_dir = tmp_path / "dev" / "url_discovery_direct_batch_html"
+    capture_dir = tmp_path / DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR
     meta_files = list(capture_dir.glob("zion-national-park.attraction.*.meta.json"))
     assert len(meta_files) == 1
     meta = json.loads(meta_files[0].read_text(encoding="utf-8"))
@@ -7304,7 +7305,8 @@ def test_build_primary_items_from_direct_batch_replaces_stale_hallucinated_descr
     ~100-mile-distant, unrelated Moab-area landmark.
 
     Root cause, confirmed against the real captured harvest HTML
-    (dev/dev/url_discovery_direct_batch_html/moab.en-route-stop...html from
+    (moab.en-route-stop...html, in the capture folder as it was then named
+    (dev/), now captures/ -- see DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR, from
     that run): the actual harvested rows for both items carry short, correct
     descriptions ("slot canyon hiking access", "dramatic canyon rim views").
     The merge already trusted the row unconditionally for every other field
@@ -7606,7 +7608,7 @@ def test_get_restaurant_direct_batch_rows_persists_html_capture_artifacts(tmp_pa
     discoverer._restaurant_direct_batch_item_count = 4
     discoverer._run_output_dir = tmp_path
     discoverer._direct_batch_html_capture_enabled = True
-    discoverer._direct_batch_html_capture_subdir = "dev/url_discovery_direct_batch_html"
+    discoverer._direct_batch_html_capture_subdir = DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR
     discoverer._search.chat_completion.return_value = (
         "<h2>Moab</h2><ul>"
         "<li>Desert Bistro <a href=\"https://desertbistro.com/\">Source</a> "
@@ -7617,7 +7619,7 @@ def test_get_restaurant_direct_batch_rows_persists_html_capture_artifacts(tmp_pa
     rows = discoverer._get_restaurant_direct_batch_rows_for_destination("Moab", "October 18, 2026")
 
     assert rows
-    capture_dir = tmp_path / "dev" / "url_discovery_direct_batch_html"
+    capture_dir = tmp_path / DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR
     html_files = list(capture_dir.glob("*.html"))
     meta_files = list(capture_dir.glob("*.meta.json"))
     assert len(html_files) == 1

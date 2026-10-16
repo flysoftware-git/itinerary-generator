@@ -832,7 +832,21 @@ DEFAULT_EN_ROUTE_REQUIRE_DETOUR_METADATA = True
 # implausible together -- e.g. "22 mi in 15 min" (88 mph).
 MAX_PLAUSIBLE_EN_ROUTE_DETOUR_MPH = 70.0
 DEFAULT_DIRECT_BATCH_HTML_CAPTURE_ENABLED = True
-DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR = "dev/url_discovery_direct_batch_html"
+#: Where the direct-link batch's raw HTML captures go, relative to the run's
+#: output directory.
+#:
+#: Was `dev/url_discovery_direct_batch_html` until 2026-10-16. A prod run
+#: therefore created `output/prod/dev/`, a folder literally named `dev` nested
+#: inside `prod`, which reads as a dev BUILD rather than a diagnostic dump. The
+#: owner asked where the dev output went twice, and the honest answer both times
+#: was that no dev guide exists and this is not one.
+#:
+#: The published repo's `.gitignore` is what keeps these out of a public Pages
+#: upload -- its own comment says it exists because a publish step runs
+#: `git add -A` with no environment check -- so that rule was given `captures/`
+#: BEFORE this was renamed. Renaming first would have opened a window where the
+#: new path was unprotected.
+DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR = "captures/url_discovery_direct_batch_html"
 
 #: How long a capture file's name may get, before `.html` or `.meta.json`.
 #:
