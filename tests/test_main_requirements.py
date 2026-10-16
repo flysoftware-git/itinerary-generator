@@ -1666,7 +1666,14 @@ def test_direct_batch_parity_summary_identifies_missing_destination_by_name(tmp_
     HTML inputs and a final assembled HTML, the parity summary must report which
     destination(s) lost a captured URL on the way to final output, not just a bare
     count. Zion's captured URL survives into final output; Moab's does not."""
-    capture_dir = tmp_path / "dev" / "url_discovery_direct_batch_html"
+    # The writer's own constant, not a third copy of the path. This read
+    # `tmp_path / "dev" / "url_discovery_direct_batch_html"` until 2026-10-16,
+    # so the capture directory was spelled out in the writer, the reader and
+    # here -- and when the folder was renamed off `dev/` this test was the only
+    # thing that still believed the old location.
+    from generator.url_discovery import DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR
+
+    capture_dir = tmp_path / DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR
     capture_dir.mkdir(parents=True)
 
     (capture_dir / "zion.html").write_text(

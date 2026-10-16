@@ -1965,7 +1965,17 @@ def _read_output_urls(path: Path) -> set[str]:
 
 
 def _latest_direct_batch_parity_summary(*, output_dir: Path) -> dict[str, Any]:
-    capture_dir = output_dir / "dev" / "url_discovery_direct_batch_html"
+    # Read from the same constant the WRITER uses, rather than a second copy of
+    # the path. This was `output_dir / "dev" / "url_discovery_direct_batch_html"`
+    # spelled out here while `url_discovery` held the value in
+    # DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR -- one fact in two places, and
+    # the subdir is CONFIGURABLE (`direct_batch_html_capture_subdir`), so a run
+    # that overrode it wrote to one directory and had its parity checked against
+    # another. The parity line would then report `0 captured HTML inputs` for a
+    # run that captured plenty, which reads as a discovery failure.
+    from generator.url_discovery import DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR
+
+    capture_dir = output_dir / DEFAULT_DIRECT_BATCH_HTML_CAPTURE_SUBDIR
     html_files = sorted(capture_dir.glob("*.html")) if capture_dir.exists() else []
 
     captured_urls: set[str] = set()
