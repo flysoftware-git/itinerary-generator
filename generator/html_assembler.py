@@ -2559,6 +2559,7 @@ class HTMLAssembler:
         website = self._normalize_external_url(str(lodging.get("website", "") or ""))
         confirmation = str(lodging.get("confirmation_number", "") or "").strip()
         checkin = str(lodging.get("checkin_time", "") or "").strip()
+        checkout = str(lodging.get("checkout_time", "") or "").strip()
 
         # checkin_time alone is never enough to justify the card: it survives
         # redaction (it drives arrival-day scheduling), so keying on it would
@@ -2571,6 +2572,14 @@ class HTMLAssembler:
             rows.append(
                 '<div class="lodging-row"><span class="lodging-key">Check-in</span>'
                 f'<span class="lodging-val">{html_escape.escape(checkin)}</span></div>'
+            )
+        # Beside check-in rather than below the confirmation: the two times are
+        # one fact about the stay, and the deadline is the one a reader is
+        # looking for on the morning they leave.
+        if checkout:
+            rows.append(
+                '<div class="lodging-row"><span class="lodging-key">Check-out</span>'
+                f'<span class="lodging-val">{html_escape.escape(checkout)}</span></div>'
             )
         if confirmation:
             rows.append(

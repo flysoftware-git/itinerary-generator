@@ -94,6 +94,7 @@ confirms, each with this shape:
   "website": string,
   "location": string,
   "checkin_time": string,
+  "checkout_time": string,
   "dates": string,
   "city": string,
   "locality": { "city": string, "region": string, "country": string },
@@ -818,8 +819,8 @@ def reservation_to_manifest_fragment(reservation: dict[str, Any]) -> tuple[str, 
         # anchor -- and `locality` says which town that address is in, so no
         # consumer has to treat a street address as a place.
         lodging = _clean(
-            ("location", "dates", "checkin_time", "confirmation_number", "website",
-             "total_cost")
+            ("location", "dates", "checkin_time", "checkout_time",
+             "confirmation_number", "website", "total_cost")
         )
         if (name := _lodging_name(reservation)):
             lodging = {"name": name, **lodging}

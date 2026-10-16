@@ -302,12 +302,18 @@ def _resolve_privacy_redaction(mode: str | None, environment_selected: str) -> b
     the only environment whose output is ever committed/published; `on`/`off`
     override the environment-based default explicitly either direction.
 
-    Deliberately NOT redacted: `lodging.location` and `lodging.checkin_time`.
-    Both are load-bearing well beyond display -- `location` drives
-    geocoding/routing (main.py) and is the search anchor for
-    "restaurants near lodging" (url_discovery.py); `checkin_time` drives
-    arrival-day schedule/prompt construction (ai_content.py). Redacting
-    either would ripple into itinerary content quality, not just privacy.
+    Deliberately NOT redacted: `lodging.location`, `lodging.checkin_time` and
+    `lodging.checkout_time`. The first two are load-bearing well beyond display
+    -- `location` drives geocoding/routing (main.py) and is the search anchor
+    for "restaurants near lodging" (url_discovery.py); `checkin_time` drives
+    arrival-day schedule/prompt construction (ai_content.py). Redacting either
+    would ripple into itinerary content quality, not just privacy.
+
+    `checkout_time` is kept for a different reason, and it is the weaker one:
+    a time of day identifies nobody, and it stays for symmetry with its
+    counterpart rather than because anything downstream reads it. If a shared
+    guide should not carry it, that is a judgement about what a reader is owed
+    rather than a privacy defect, and this is the line to change.
     """
     normalized = (mode or "auto").lower()
     if normalized == "on":
