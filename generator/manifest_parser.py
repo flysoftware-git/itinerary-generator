@@ -682,6 +682,19 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                                                "turns a date into where-they-sleep.",
                             },
                             "checkin_time": {"type": "string"},
+                            #: When the stay ends. The counterpart to
+                            #: `checkin_time`, and missing until 2026-10-16 --
+                            #: a guide could say when a traveler could get into
+                            #: a room and never when they had to be out of it,
+                            #: which is the one of the two with a deadline
+                            #: attached.
+                            #:
+                            #: Free text like `checkin_time`, because a
+                            #: confirmation says "11:00 AM" or "by 11am" and
+                            #: transcribing it is honest where parsing it into
+                            #: a time would invent precision the booking does
+                            #: not have.
+                            "checkout_time": {"type": "string"},
                             "total_cost": {
                                 "type": "string",
                                 "description": "Optional: what the confirmation says the stay "
