@@ -388,14 +388,45 @@ class HTMLAssembler:
         meta = trip.get("_meta", {})
         dev_build = meta.get("development_build", {}) if isinstance(meta.get("development_build", {}), dict) else {}
         dev_fingerprint = str(dev_build.get("fingerprint", "") or "")
+        # `privacy_redacted` and `personal_copy` are stated POSITIVELY, in the
+        # artifact, because every control over who may read a guide currently
+        # rests on where the file sits rather than on what it is.
+        #
+        # A build writes two renders -- `prod/` redacted and `prod-private/`
+        # not -- and the only thing distinguishing them was the directory name.
+        # That survives nothing: a copy, an upload to a flat bucket, or the
+        # owner's own habit of renaming `index.html` to `Utah.html` before
+        # sending it. A serving layer handed the file could not tell which it
+        # had, so "serve the right one" was a procedure rather than a check.
+        #
+        # It also makes a negative statable for the first time. A consumer
+        # inferring disclosure from the page could conclude "redacted" or
+        # "unknown" and never "not redacted", because it keyed on the presence
+        # of a redaction pill and a trip with no planning links renders no pill
+        # either way. Absence was unreadable; this is a declaration.
+        privacy_redacted = bool(meta.get("privacy_redacted"))
+        personal_copy = bool(meta.get("personal_copy"))
         stamp = (
             f"<!-- generator_version={meta.get('generator_version', '')}; "
             f"template_version={meta.get('template_version', '')}; "
             f"provider={meta.get('llm', {}).get('provider', '')}; "
             f"model={meta.get('llm', {}).get('model', '')}; "
             f"generated_at={meta.get('generated_at_utc', '')}; "
+            f"privacy_redacted={'true' if privacy_redacted else 'false'}; "
+            f"personal_copy={'true' if personal_copy else 'false'}; "
             f"development_build={dev_fingerprint} -->\n"
         )
+        # Also as a meta tag, because an HTML comment is invisible to anything
+        # that parses rather than greps -- and a serving layer that has to grep
+        # a comment to decide whether it may serve a file will eventually be
+        # handed a file it greps wrongly.
+        disclosure = (
+            f'<meta name="guide-privacy-redacted" '
+            f'content="{"true" if privacy_redacted else "false"}">\n'
+            f'<meta name="guide-personal-copy" '
+            f'content="{"true" if personal_copy else "false"}">\n'
+        )
+        html = html.replace("</head>", disclosure + "</head>", 1)
         html = stamp + html
 
         # ── Trip-level substitutions ─────────────────────────────────────────
