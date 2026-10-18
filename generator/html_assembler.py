@@ -46,6 +46,7 @@ from generator.multi_site_grouping import (
 )
 
 from generator import date_span
+from generator import partials
 
 logger = logging.getLogger(__name__)
 TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "v2.5_template.html"
@@ -326,10 +327,19 @@ def _tile_layer_js(tiles: TileSettings) -> str:
 
 
 def _verify_checksum(template_text: str) -> None:
-    """Hard fail if template SHA-256 doesn't match stored value."""
-    if not CHECKSUM_PATH.exists():
-        raise FileNotFoundError(f"Checksum file not found: {CHECKSUM_PATH}")
-    stored = CHECKSUM_PATH.read_text(encoding="utf-8").strip().split()[0]
+    """Hard fail if template SHA-256 doesn't match stored value.
+
+    The stored digest is looked up BY PATH rather than taken as the first
+    token of the file. Both read the same value today, but `checksums.txt`
+    now carries a row per partial as well (see generator/partials.py), and
+    `text.split()[0]` only kept working because the main template happened to
+    stay on the first line.
+    """
+    stored = partials.recorded_checksums().get(partials.MAIN_TEMPLATE_ROW)
+    if stored is None:
+        raise RuntimeError(
+            f"{CHECKSUM_PATH.name} has no row for {partials.MAIN_TEMPLATE_ROW}."
+        )
     actual = hashlib.sha256(template_text.encode("utf-8")).hexdigest()
     if actual != stored:
         raise RuntimeError(
