@@ -32,6 +32,7 @@ This directory captures behavior-oriented design notes for major pipeline compon
 - `provider-model-matrix.md`: canonical provider × role (content-gen/batch-search/non-batch-search) matrix — current model ids, which roles each provider is actually approved for, and the evidence behind each assignment.
 - `multi-site-destination-grouping.md`: spec for GH #68 (multi-site destinations, e.g. Moab as a base for Arches + Canyonlands) — manifest `group_with` field, lodging dedup, nav clustering, and route/distance handling for grouped day-trip hops.
 - `the-manifest-is-the-interface.md`: the owner's 2026-10-01 decision approving full implementation of `{name, url}` seeds, and what this engine owes the manifest format — `requirements.md` §3 is the interface another system emits to, this engine renders rather than elaborates, and its obligation is not to lose what it was handed. Manifest round trip itself is not a feature of this repository.
+- `transit-segment-spine.md`: the journey between two stops as a rail in the left margin whose length carries its duration. Why the manifest was the gating problem (a leg could say where it starts, where it ends and how it is travelled, and nothing else, with the shape closed), why `nights` is stated rather than subtracted from two clocks nothing may compare, and why the quiet leg -- the common one -- renders as a bare rail.
 
 ## Conventions
 - Focus on runtime behavior, not just intent.
