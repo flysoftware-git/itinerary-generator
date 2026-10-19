@@ -245,6 +245,45 @@ def booked_arrival_leg(dest: dict[str, Any] | None) -> dict[str, Any] | None:
     return None
 
 
+def resolve_authored_leg(
+    dest: dict[str, Any] | None,
+    *,
+    previous_id: str = "",
+    legs: Any = None,
+) -> dict[str, Any] | None:
+    """The `legs:` entry describing the journey ARRIVING at `dest`, if any.
+
+    Matched exactly the way `resolve_leg_mode` matches it, and by the same
+    rules -- `to` is this destination's id, and `from` is the previous lodging
+    stop's when one is known. Factored out because a leg now carries more than
+    a mode (`duration`, `depart_time`, `arrive_time`, `nights`), and a second
+    matcher written beside the first is how the two would come to disagree
+    about which leg is which.
+
+    Returns the leg dict itself rather than a copy: callers read it, and a copy
+    would hide an accidental write instead of preventing one.
+
+    A grouped entry has no arriving relocation leg at all (see
+    `resolve_leg_mode`), so it never matches one.
+    """
+    if not isinstance(dest, dict):
+        return None
+    if str(dest.get("group_with", "") or "").strip():
+        return None
+    dest_id = str(dest.get("id", "") or "").strip()
+    if not isinstance(legs, list) or not dest_id:
+        return None
+    for leg in legs:
+        if not isinstance(leg, dict):
+            continue
+        if str(leg.get("to", "") or "").strip() != dest_id:
+            continue
+        if previous_id and str(leg.get("from", "") or "").strip() != previous_id:
+            continue
+        return leg
+    return None
+
+
 def resolve_leg_mode(
     dest: dict[str, Any] | None,
     *,
