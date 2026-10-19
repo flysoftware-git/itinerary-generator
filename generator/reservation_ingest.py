@@ -743,6 +743,21 @@ def _locality(reservation: dict[str, Any]) -> dict[str, str]:
 
     A part containing a digit is a street number or a postcode, not a place,
     and is refused -- a city that is one means no city at all.
+
+    **A part the structured object left blank is topped up from the flat
+    string**, and only where the two agree on the town. The split used to be
+    reached only when there was no structured city at all, so an answer giving
+    `{"city": "Hvar", "region": "Split-Dalmatia"}` with `country` empty could
+    never pick up the "Croatia" sitting in its own `city` string: a stay with
+    a city had every part it was ever going to get. What that costs is in
+    `geocoder.town_level_query`, which asks Nominatim for the parts joined --
+    "Hvar, Split-Dalmatia" rather than "Hvar, Split-Dalmatia, Croatia" -- and a
+    town name is not unique across countries.
+
+    The agreement check is the whole of the care here. A flat `city` naming a
+    different town than the structured object is not a fuller version of the
+    same place, and merging the two would file one town's country under
+    another's. Where they disagree, the structured answer stands alone.
     """
     def _part(value: Any) -> str:
         text = str(value or "").strip() if isinstance(value, (str, int, float)) else ""
@@ -758,20 +773,21 @@ def _locality(reservation: dict[str, Any]) -> dict[str, str]:
                     out[part] = value
                     break
 
-    if not out.get("city"):
-        pieces = [p.strip() for p in str(reservation.get("city", "") or "").split(",")]
-        pieces = [p for p in pieces if p]
-        if pieces and _part(pieces[0]):
-            out["city"] = pieces[0]
-            if len(pieces) == 3:
-                if _part(pieces[1]):
-                    out.setdefault("region", pieces[1])
-                if _part(pieces[2]):
-                    out.setdefault("country", pieces[2])
-            elif len(pieces) == 2:
-                second = pieces[1]
-                if len(second) == 2 and second.isalpha() and second.isupper():
-                    out.setdefault("region", second)
+    pieces = [p.strip() for p in str(reservation.get("city", "") or "").split(",")]
+    pieces = [p for p in pieces if p]
+    said = out.get("city", "")
+    agrees = bool(pieces) and (not said or said.casefold() == pieces[0].casefold())
+    if agrees and _part(pieces[0]):
+        out.setdefault("city", pieces[0])
+        if len(pieces) == 3:
+            if _part(pieces[1]):
+                out.setdefault("region", pieces[1])
+            if _part(pieces[2]):
+                out.setdefault("country", pieces[2])
+        elif len(pieces) == 2:
+            second = pieces[1]
+            if len(second) == 2 and second.isalpha() and second.isupper():
+                out.setdefault("region", second)
     return {k: out[k] for k in ("city", "region", "country") if out.get(k)}
 
 
