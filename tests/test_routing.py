@@ -72,6 +72,29 @@ def test_without_a_key_nothing_is_asked(monkeypatch, cache):
     assert transport.requests == []
 
 
+def _remembered(cache):
+    """What is on disk, or {} where nothing was written."""
+    return json.loads(cache.read_text()) if cache.exists() else {}
+
+
+def _assert_only_a_dated_negative(cache):
+    """The cache holds the failure and nothing that could be mistaken for a leg.
+
+    A refusal is remembered now (`ROUTING_UNAVAILABLE_TTL_S`) rather than
+    discarded, so these tests no longer assert an empty file -- but a negative
+    that reads back as a leg would be far worse than either, so what is pinned
+    is that the entry says `unavailable`, says why, says when, and carries no
+    distance or duration.
+    """
+    entries = _remembered(cache)
+    assert entries, "the refusal was not remembered at all"
+    for key, entry in entries.items():
+        assert entry.get("unavailable") is True, f"{key} is not a negative: {entry}"
+        assert entry.get("reason"), f"{key} does not say why"
+        assert isinstance(entry.get("at"), (int, float)), f"{key} is not dated"
+        assert not {"miles", "minutes"} & set(entry), f"{key} looks like a leg"
+
+
 @pytest.mark.parametrize("failure", [
     urllib.error.HTTPError("u", 429, "quota", {}, None),
     urllib.error.URLError("down"),
@@ -79,10 +102,17 @@ def test_without_a_key_nothing_is_asked(monkeypatch, cache):
     http.client.BadStatusLine(""),
     http.client.IncompleteRead(b"{"),
 ])
-def test_a_refusal_is_a_fallback_and_is_not_remembered(monkeypatch, cache, failure):
+def test_a_refusal_is_a_fallback_and_is_remembered_for_a_while(
+        monkeypatch, cache, failure):
+    """The leg is estimated, and the failure is written down with a date on it.
+
+    It used to be written down nowhere, so the next run paid `TIMEOUT_S` for
+    the same dead router all over again -- and the breaker could not help,
+    because the breaker is one process and the next run is another.
+    """
     monkeypatch.setattr(routing.urllib.request, "urlopen", Transport(failure))
     assert routing.route_leg(ISSAQUAH, PORT_TOWNSEND, key="k", cache_path=cache) is None
-    assert not cache.exists() or json.loads(cache.read_text()) == {}
+    _assert_only_a_dated_negative(cache)
 
 
 def test_an_unparsable_reply_is_a_fallback(monkeypatch, cache):
@@ -334,14 +364,15 @@ def test_the_wider_ask_is_made_once_and_then_cached(monkeypatch, cache):
 
 def test_a_point_no_radius_reaches_is_still_a_fallback(monkeypatch, cache):
     """Refused twice is refused: the straight line is then the honest answer,
-    and nothing is remembered so tomorrow's run asks again."""
+    and what is remembered is dated, so a later run asks again rather than
+    carrying this forever."""
     monkeypatch.setenv(routing.MAX_SNAP_RADIUS_ENV, str(routing.WIDE_SNAP_RADIUS_M))
     transport = Sequence(_refusal(routing.NO_ROUTABLE_POINT),
                          _refusal(routing.NO_ROUTABLE_POINT))
     monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
     assert routing.route_leg(ISSAQUAH, SIEBERT_CREEK, key="k", cache_path=cache) is None
     assert len(transport.requests) == 2
-    assert not cache.exists() or json.loads(cache.read_text()) == {}
+    _assert_only_a_dated_negative(cache)
 
 
 def test_a_404_that_is_not_about_a_radius_is_not_asked_again(monkeypatch, cache):
@@ -528,7 +559,7 @@ def test_a_429_that_persists_is_estimated_after_a_bounded_wait(monkeypatch, cach
     counts = routing.stats()
     assert counts["rate_limited_waited"] == routing.MAX_RATE_LIMIT_RETRIES
     assert counts["rate_limited_gave_up"] == 1 and counts["routed"] == 0
-    assert not cache.exists() or json.loads(cache.read_text()) == {}
+    _assert_only_a_dated_negative(cache)
 
 
 @pytest.mark.parametrize("refusal", [
@@ -612,7 +643,7 @@ def test_a_garbled_reply_to_the_wider_ask_is_a_fallback(monkeypatch, cache):
     monkeypatch.setattr(routing.urllib.request, "urlopen", transport)
     assert routing.route_leg(ISSAQUAH, SIEBERT_CREEK, key="k", cache_path=cache) is None
     assert len(transport.requests) == 2
-    assert not cache.exists() or json.loads(cache.read_text()) == {}
+    _assert_only_a_dated_negative(cache)
 
 
 def test_the_public_router_is_not_asked_wider_than_it_will_look(monkeypatch, cache):

@@ -135,27 +135,61 @@ let a reader switch it, reads `chosen`, `chosen_reason` and the route it did
 not choose.
 
 The ferry-avoiding answer is cached under its own key. A 404 from that request
-means no land route exists; unlike a refusal of the ordinary route it is
-remembered (as `{"no_route": true}`), because an island does not grow a bridge
-between runs and asking again would spend quota on every build. A leg without
+means no land route exists, and it is remembered as `{"no_route": true}` with
+no expiry, because an island does not grow a bridge between runs. A leg without
 a ferry makes no second request. A cache entry written before alternatives
 existed is still an ordinary routed leg.
 
-## When the quota runs out: Google Routes, if it is allowed to answer
+## The other kind of nothing: a router that did not answer
 
-A free key's daily allowance is a hard wall. Once it is spent every further
-leg in the run is refused for the quota -- HTTP 403 with a body naming it, or
-a 429 whose reset is hours away -- and every one of them becomes a straight
-line, so a page whose cache was cold comes out with no roads on it at all.
+A failure is remembered too, as
+`{"unavailable": true, "reason": ..., "at": ...}`, and unlike `no_route` it
+expires -- after `ROUTING_UNAVAILABLE_TTL_S` (20 minutes), because it is a fact
+about the router's afternoon and not about the world. While it stands, that leg
+is estimated (or put to the second router) without asking the first again.
 
-So a leg refused **for the quota, and only for the quota** is asked once of
-Google's Routes API (Compute Routes, `GOOGLE_ROUTES_ENDPOINT`), and its
-distance, duration and encoded polyline become a `RoutedLeg` in exactly the
-shape this module returns for OpenRouteService, with `router` set to
-`google_routes` and the reason counted in `stats()` (`google_requests`,
-`google_routes`). A no-route 404, a refused key, a timeout, a per-minute 429
-and the ferry-avoiding ask are never sent there: none of them is the wall
-this exists for, and the second router is metered.
+Until 2026-10-18 only `no_route` was written, so a timeout, a spent quota, a
+per-minute give-up and a 404 each returned None and recorded nothing. The live
+cache that day held 533 entries, every one a success and not one negative --
+which is why a render against a down router paid `TIMEOUT_S` per leg, and paid
+it again on the next run, and the breaker could not help because it lives in
+one process and the next run is another.
+
+An entry with an unreadable or missing `at` reads as expired rather than as
+fresh: a negative nobody can date should send the caller back to the router,
+not silence that leg forever.
+
+## When the router does not answer: Google Routes, if it is allowed to
+
+A free key's daily allowance is a hard wall, and a router can also simply be
+down. Either way every further leg in the run becomes a straight line, so a
+page whose cache was cold comes out with no roads on it at all.
+
+So a leg **the router did not answer** is asked once of Google's Routes API
+(Compute Routes, `GOOGLE_ROUTES_ENDPOINT`), and its distance, duration and
+encoded polyline become a `RoutedLeg` in exactly the shape this module returns
+for OpenRouteService, with `router` set to `google_routes` and the reason
+counted in `stats()` (`google_requests`, `google_routes`). That is the quota
+wall (HTTP 403 naming it, or a 429 whose reset is hours away), a refused key,
+a per-minute limit this module gave up waiting out, a timeout or other
+transport failure, a reply that does not parse, an open breaker, and a
+remembered failure still standing.
+
+Two cases are not sent there. **A 404 is the router answering**: it looked and
+there is no route, which is a fact about the map rather than about the router.
+And **the ferry-avoiding ask** cannot be put to Google at all -- the field mask
+asks for distance, duration and a polyline, and Routes is not being asked to
+avoid ferries -- so an answer from it would not be the land route that was
+wanted.
+
+This was narrower until 2026-10-18, when it was **only** the quota. The outage
+that day was a router answering in about 27 seconds against a `TIMEOUT_S` of
+15: every leg timed out, a timeout is a `URLError` and not an `HTTPError`, and
+the fallback was gated inside the `HTTPError` handler. So the one mechanism
+built for *the roads are gone from this page* could not fire for the outage
+that took the roads off the page. Widening it costs metered requests in a case
+that used to cost none, which is the trade: a request against a page with no
+roads on it.
 
 It is off unless two decisions say otherwise, both in config.yaml: the
 Maps Platform gate (`generator.maps_platform`, which also supplies the key and
@@ -282,6 +316,25 @@ TIMEOUT_S = 15
 #: multiplied by every leg left in the trip.
 ROUTING_BREAKER_THRESHOLD = int(os.environ.get("ROUTING_BREAKER_THRESHOLD", "2"))
 ROUTING_BREAKER_COOLDOWN_S = float(os.environ.get("ROUTING_BREAKER_COOLDOWN_S", "120"))
+
+#: How long a leg the router did not answer is left unasked.
+#:
+#: WHY THIS EXISTS. The cache held successes and exactly one kind of
+#: nothing: `{"no_route": true}`, for an island. A timeout, a spent quota, a
+#: per-minute give-up and a no-route 404 each returned None and wrote
+#: nothing, so a router having a bad afternoon cost the full price again on
+#: every later run -- and the breaker, which is per process, could not help a
+#: later one. Measured on the live cache during the 2026-10-18 outage: 533
+#: entries, every one a success, not one negative.
+#:
+#: It expires because a refusal is a fact about the router's afternoon, not
+#: about the world -- the opposite of `no_route`, which is geography and is
+#: kept forever. Twenty minutes is longer than a render and shorter than a
+#: person's patience with a page of straight lines: the worst it costs is a
+#: leg estimated for up to twenty minutes after the router recovers, against
+#: a render that waits `TIMEOUT_S` per leg for a router that is still down.
+ROUTING_UNAVAILABLE_TTL_S = float(
+    os.environ.get("ROUTING_UNAVAILABLE_TTL_S", "1200"))
 
 _breaker_lock = threading.Lock()
 _breaker_consecutive_failures = 0
@@ -971,10 +1024,47 @@ def _leg_from_cache(entry: dict[str, Any]) -> RoutedLeg:
 
 
 def _remember_no_route(path: str | os.PathLike[str], cache_key: str) -> None:
+    """There is no land route between these two points: a permanent answer.
+
+    Written without an expiry because an island does not grow a bridge
+    between runs. Contrast `_remember_unavailable`, which records the other
+    kind of nothing.
+    """
     with _lock:
         cache = _load_cache(path)
         cache[cache_key] = {"no_route": True}
         _save_cache(path, cache)
+
+
+def _remember_unavailable(path: str | os.PathLike[str], cache_key: str,
+                          reason: str) -> None:
+    """The router did not answer for this leg: an answer about the router.
+
+    Stands for `ROUTING_UNAVAILABLE_TTL_S` and then stops standing. `reason`
+    is for whoever opens the cache file rather than for this module: a
+    `timeout` and a `quota` call for different things from a person, and a
+    bare negative tells them neither.
+    """
+    with _lock:
+        cache = _load_cache(path)
+        cache[cache_key] = {"unavailable": True,
+                            "reason": str(reason or "failed"),
+                            "at": time.time()}
+        _save_cache(path, cache)
+
+
+def _unavailable_is_current(entry: dict[str, Any]) -> bool:
+    """True while a remembered failure still stands.
+
+    A missing or unreadable timestamp reads as expired, not as fresh: an
+    entry nobody can date should send the caller to the router rather than
+    silence that leg forever. `time.time()` and not `monotonic`, because
+    this one outlives the process that wrote it.
+    """
+    try:
+        return (time.time() - float(entry.get("at", 0))) < ROUTING_UNAVAILABLE_TTL_S
+    except (TypeError, ValueError):
+        return False
 
 
 # ── The rate limit ───────────────────────────────────────────────────────────
@@ -1069,11 +1159,23 @@ def limiter() -> RateLimiter:
 #: rest are per leg, except `rate_limited_waited` (one per 429 waited out) and
 #: `throttled_s` (seconds spent waiting in the throttle).
 #: `google_requests` is metered requests sent to Google Routes, and
-#: `google_routes` the legs it answered after OpenRouteService refused them
-#: for the quota -- those legs are roads, so they are not in `quota_refused`.
+#: `google_routes` the legs it answered after OpenRouteService did not --
+#: those legs are roads, so they are not in `quota_refused` or `failed`.
+#: `breaker_open` is legs not asked because the breaker was open, and
+#: `unavailable_cached` legs not asked because a remembered failure was
+#: still standing; both are legs this module declined to spend time on, and
+#: both are worth seeing separately from the `cache_hits` that are answers.
+#:
+#: Every name `_count` is called with has to be here. `_stats` is a plain
+#: dict, so a name that is not raises KeyError out of `route_leg` into
+#: whatever asked for a leg -- which is how the breaker shipped in #229:
+#: `_count("breaker_open")` with no entry turned an open breaker from an
+#: estimated leg into a crashed render. Pinned by
+#: test_the_router_is_left_alone_when_it_stops_answering.
 STAT_NAMES = ("requests", "cache_hits", "routed", "no_route", "rate_limited_waited",
               "rate_limited_gave_up", "quota_refused", "failed", "throttled_s",
-              "google_requests", "google_routes")
+              "google_requests", "google_routes",
+              "breaker_open", "unavailable_cached")
 
 _stats: dict[str, float] = dict.fromkeys(STAT_NAMES, 0)
 _stats_lock = threading.Lock()
@@ -1244,7 +1346,7 @@ def _route_by_google(
     cache_key: str,
     google_key: str | None,
 ) -> RoutedLeg | None:
-    """Ask Google Routes for a leg OpenRouteService refused for its quota.
+    """Ask Google Routes for a leg OpenRouteService did not answer.
 
     None when the fallback is off (`google_routes_key`), and on any failure;
     the caller then estimates exactly as it would have. The answer is kept in
@@ -1290,9 +1392,32 @@ def _route_by_google(
         logger.info("Google Routes had no route for %s; estimating instead.", cache_key)
         return None
     _count("google_routes")
-    logger.info("Routed %s through Google Routes: the OpenRouteService quota is spent.",
+    logger.info("Routed %s through Google Routes: OpenRouteService did not answer.",
                 cache_key)
     return leg
+
+
+def _rescue_by_google(
+    origin: tuple[float, float],
+    dest: tuple[float, float],
+    *,
+    profile: str,
+    cache_key: str,
+    google_key: str | None,
+    rescuable: bool,
+) -> RoutedLeg | None:
+    """`_route_by_google` where this leg is allowed a second router.
+
+    One gate in one place, because `route_leg` now reaches the fallback from
+    five situations and a condition repeated five times is a condition that
+    will differ in one of them. `rescuable` false returns None without a
+    request, so a caller can hand the decision over rather than branch
+    around the call.
+    """
+    if not rescuable:
+        return None
+    return _route_by_google(origin, dest, profile=profile,
+                            cache_key=cache_key, google_key=google_key)
 
 
 def cached_leg(
@@ -1354,12 +1479,15 @@ def route_leg(
 
     None whenever there is no key, or the router did not give a usable answer;
     see the module docstring. Cached by rounded coordinates at `cache_path`
-    (default `DEFAULT_CACHE_PATH`), successful answers only.
+    (default `DEFAULT_CACHE_PATH`). Failures are cached too, as
+    `{"unavailable": true, ...}` and only for `ROUTING_UNAVAILABLE_TTL_S`, so a
+    router that is down is not re-asked at `TIMEOUT_S` a leg by the next run
+    while a recovered one is not shut out for longer than that.
 
     `avoid_ferries` asks for the land route instead, under its own cache key.
     None then also means no land route exists: a 404, or a reply that crosses
-    by ferry anyway. That answer is cached as `{"no_route": true}` so an
-    island is not asked again every run; a refusal or timeout is not.
+    by ferry anyway. That answer is cached as `{"no_route": true}`, with no
+    expiry, so an island is never asked again.
 
     `profile` is one of `PROFILES`, and `driving-car` unless a caller names
     another -- a bike leg routed as a bike leg takes the trail the car cannot,
@@ -1377,8 +1505,9 @@ def route_leg(
     a straight-line fallback. The snapped answer is cached under the ordinary
     key, so the second ask happens once per pair and never again.
 
-    **A refusal for the quota is asked of Google Routes** when config.yaml
-    allows it (`google_routes_key`), and only then; see the module docstring.
+    **A leg the router did not answer is asked of Google Routes** when
+    config.yaml allows it (`google_routes_key`), and only then; see the module
+    docstring for which situations those are and which two are not.
     `google_key` overrides that lookup the way `key` does for
     OpenRouteService -- `""` turns the fallback off. A leg Google answers has
     `router` `google_routes` and is held in memory, never in `cache_path`.
@@ -1404,6 +1533,18 @@ def route_leg(
         if avoid_ferries and cached.get("no_route") is True:
             _count("cache_hits")
             return None
+        if cached.get("unavailable") is True and _unavailable_is_current(cached):
+            _count("unavailable_cached")
+            logger.debug("Routing remembered %s as unavailable (%s); "
+                         "not asking again yet.", cache_key, cached.get("reason"))
+            # Not asking the router that failed is not the same as giving up
+            # on the leg: where a second one is configured it is exactly the
+            # case it exists for, and a road beats a straight line.
+            return _rescue_by_google(origin, dest, profile=profile,
+                                     cache_key=cache_key, google_key=google_key,
+                                     rescuable=not avoid_ferries)
+        # An expired one falls through to the router below: `_leg_from_cache`
+        # raises on it, which is the same path a half-written entry takes.
         try:
             leg = _leg_from_cache(cached)
         except (KeyError, TypeError, ValueError):
@@ -1418,8 +1559,13 @@ def route_leg(
     # already known.
     if circuit_open():
         _count("breaker_open")
-        logger.debug("Routing breaker open; estimating %s without asking.", cache_key)
-        return None
+        logger.debug("Routing breaker open; not asking OpenRouteService for %s.",
+                     cache_key)
+        # The breaker is about the router that stopped answering, not about
+        # the leg. A configured second router is untouched by it.
+        return _rescue_by_google(origin, dest, profile=profile,
+                                 cache_key=cache_key, google_key=google_key,
+                                 rescuable=not avoid_ferries)
 
     request_body: dict[str, Any] = {
         # OpenRouteService takes [lng, lat].
@@ -1509,16 +1655,20 @@ def route_leg(
             _remember_no_route(path, cache_key)
             return None
         outcome = getattr(exc, "_outcome", None)
-        if outcome == "quota" and not avoid_ferries:
-            # The one refusal the second router is for. Nothing else -- a
-            # no-route 404, a refused key, the per-minute limit -- reaches it.
-            rescued = _route_by_google(origin, dest, profile=profile,
-                                       cache_key=cache_key, google_key=google_key)
-            if rescued is not None:
-                return rescued
-        # Counted against the breaker. A spent quota or a refused key does not
-        # recover within a render, so asking the remaining legs is pure cost.
+        # Counted against the breaker BEFORE the fallback is asked, not
+        # after. Recording it only on the unrescued path meant a dead primary
+        # was asked again, at full price, for every remaining leg of a trip
+        # Google was rescuing leg by leg.
         _breaker_record(failed=True)
+        _remember_unavailable(path, cache_key, outcome or f"http_{exc.code}")
+        # A 404 is the router answering -- it looked and there is no route --
+        # so it is not sent to a metered second router. Everything else here
+        # is the router not answering, which is what the fallback is for.
+        rescued = _rescue_by_google(origin, dest, profile=profile,
+                                   cache_key=cache_key, google_key=google_key,
+                                   rescuable=not avoid_ferries and exc.code != 404)
+        if rescued is not None:
+            return rescued
         _count({"rate_limited": "rate_limited_gave_up",
                 "quota": "quota_refused"}.get(outcome, "failed"))
         if outcome == "quota":
@@ -1536,8 +1686,17 @@ def route_leg(
     # request in a row to the same host.
     except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
         # The branch a socket timeout takes, and the one the 2026-10-18 outage
-        # went through nine times in one render.
+        # went through nine times in one render. A timeout is a URLError and
+        # not an HTTPError, which is why the fallback -- once gated inside the
+        # HTTPError handler above -- could never rescue the outage it was
+        # built for.
         _breaker_record(failed=True)
+        _remember_unavailable(path, cache_key, "unavailable")
+        rescued = _rescue_by_google(origin, dest, profile=profile,
+                                   cache_key=cache_key, google_key=google_key,
+                                   rescuable=not avoid_ferries)
+        if rescued is not None:
+            return rescued
         _count("failed")
         logger.info("Routing unavailable for %s (%s); estimating instead.", cache_key, exc)
         return None
@@ -1545,6 +1704,12 @@ def route_leg(
     routed = parse_route(payload)
     if routed is None:
         _breaker_record(failed=True)
+        _remember_unavailable(path, cache_key, "unparseable")
+        rescued = _rescue_by_google(origin, dest, profile=profile,
+                                   cache_key=cache_key, google_key=google_key,
+                                   rescuable=not avoid_ferries)
+        if rescued is not None:
+            return rescued
         _count("failed")
         logger.info("Routing reply for %s did not parse; estimating instead.", cache_key)
         return None

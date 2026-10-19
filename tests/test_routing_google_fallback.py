@@ -2,8 +2,14 @@
 
 When a free key's daily allowance is spent, every further leg in the run is
 refused for the quota and used to become a straight line -- a page with a cold
-cache came out with no roads on it. A refusal for the quota, and only for the
-quota, is now asked of Google Routes when config.yaml allows it.
+cache came out with no roads on it. Such a leg is asked of Google Routes when
+config.yaml allows it.
+
+This file covers the quota -- the case the fallback was built for -- and the two
+cases that still do not reach it. Every *other* way of not answering (a
+timeout, a refused key, a per-minute give-up, an unparseable reply, an open
+breaker, a remembered failure) reaches it as of 2026-10-18 and is covered in
+test_a_router_that_refused_is_remembered.py, with the outage that made the case.
 
 No network. OpenRouteService requests go through `urllib.request.urlopen` and
 Google's through `routing._google_urlopen`, and each test replaces the one it
@@ -121,7 +127,14 @@ def test_a_google_leg_is_not_written_to_the_route_cache(monkeypatch, cache, goog
     Google leg written to `cache_path` beside the OpenRouteService ones."""
     monkeypatch.setattr(routing.urllib.request, "urlopen", Sequence(_quota_403()))
     routing.route_leg(ISSAQUAH, PORT_TOWNSEND, key="k", cache_path=cache, google_key="g")
-    assert not cache.exists() or json.loads(cache.read_text()) == {}
+
+    # The file is no longer empty -- OpenRouteService's refusal is remembered
+    # there, dated -- so what is pinned is that nothing Google said is in it.
+    entries = json.loads(cache.read_text()) if cache.exists() else {}
+    for key, entry in entries.items():
+        assert entry.get("unavailable") is True, f"{key} holds an answer: {entry}"
+        assert not {"miles", "minutes", "geometry"} & set(entry), (
+            f"{key} holds what Google said")
 
 
 def test_a_google_leg_is_held_for_the_run_and_drawn_from_memory(monkeypatch, cache, google):
@@ -237,24 +250,28 @@ def test_an_explicitly_empty_google_key_is_off(monkeypatch, cache):
     assert google.requests == []
 
 
-# ── Only the quota reaches the second router ─────────────────────────────────
+# ── What still does not reach the second router ──────────────────────────────
 
 
 @pytest.mark.parametrize("refusals, avoid_ferries", [
     ([_refusal(404, b'{"error": {"code": 2009, "message": "Route could not be found"}}')], False),
-    ([_refusal(403, b'{"error": "Access to this API has been disallowed"}')], False),
-    ([_refusal(429, headers={"Retry-After": "2"})
-      for _ in range(routing.MAX_RATE_LIMIT_RETRIES + 1)], False),
-    ([urllib.error.URLError("timed out")], False),
     ([_refusal(404, b'{"error": {"code": 2009}}')], True),
     ([_quota_403()], True),
-], ids=["no-route-404", "refused-key-403", "per-minute-429", "timeout",
-        "no-land-route", "ferry-avoiding-ask-on-quota"])
-def test_a_refusal_that_is_not_the_quota_never_reaches_google(
+], ids=["no-route-404", "no-land-route", "ferry-avoiding-ask-on-quota"])
+def test_an_answer_and_the_ferry_ask_never_reach_google(
         monkeypatch, cache, refusals, avoid_ferries):
-    """Red with the fallback asked for every refusal rather than only the
-    quota (the first four), and with it asked for the ferry-avoiding request
-    too (the last)."""
+    """The two cases that are not *the router did not answer*.
+
+    A 404 is the router answering: it looked, and there is no route. That is a
+    fact about the map, so paying a metered router to be told it again buys
+    nothing. And the ferry-avoiding ask cannot be put to Google at all -- it is
+    not asked to avoid ferries and the field mask would not say whether it did
+    -- so an answer from it would not be the land route that was wanted.
+
+    Red with the gate widened to every failure without these two exceptions.
+    A refused key, a per-minute give-up and a timeout DO reach Google now; see
+    test_a_router_that_refused_is_remembered.py.
+    """
     google = Sequence(GOOGLE_REPLY)
     monkeypatch.setattr(routing, "_google_urlopen", google)
     monkeypatch.setattr(routing.urllib.request, "urlopen", Sequence(*refusals))
