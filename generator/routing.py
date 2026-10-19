@@ -263,6 +263,89 @@ ENDPOINT = f"{ENDPOINT_BASE}/{DEFAULT_PROFILE}"
 #: estimated instead; a slow router must not become a slow build.
 TIMEOUT_S = 15
 
+#: Consecutive failures before this module stops asking the router, and how
+#: long it stays stopped.
+#:
+#: WHY THIS EXISTS. On 2026-10-18 a trip page answered Cloudflare 524 twice, at
+#: 125.2s and 125.1s, with every stack sample in `_send` -> `urlopen`. The
+#: router host was taking about 27s to answer a driving call against a
+#: TIMEOUT_S of 15, so every leg timed out and nine legs made a ~140s render.
+#:
+#: The timeout was doing its job. What was missing is the thing every other
+#: outbound dependency in this package already has: `llm_client`,
+#: `grok_search`, `claude_search` and `openai_search` all carry a breaker, and
+#: routing was the only one without. After two timeouts the remaining legs are
+#: known hopeless and were asked anyway, at full price each.
+#:
+#: Sized smaller than the LLM breaker's three. A build routes many legs in a
+#: burst, so being wrong costs one extra estimated leg while being slow is
+#: multiplied by every leg left in the trip.
+ROUTING_BREAKER_THRESHOLD = int(os.environ.get("ROUTING_BREAKER_THRESHOLD", "2"))
+ROUTING_BREAKER_COOLDOWN_S = float(os.environ.get("ROUTING_BREAKER_COOLDOWN_S", "120"))
+
+_breaker_lock = threading.Lock()
+_breaker_consecutive_failures = 0
+_breaker_open_until = 0.0
+_breaker_trips = 0
+
+
+def circuit_open() -> bool:
+    """True while the router is being left alone after repeated failures."""
+    with _breaker_lock:
+        return _breaker_open_until > time.monotonic()
+
+
+def _breaker_record(*, failed: bool) -> None:
+    """One success closes it; `ROUTING_BREAKER_THRESHOLD` failures open it.
+
+    A success clears the count outright rather than decrementing it: what this
+    guards against is an endpoint that is down or crawling, not one that is
+    flaky, and a router answering again is the only evidence that matters.
+    """
+    global _breaker_consecutive_failures, _breaker_open_until, _breaker_trips
+    with _breaker_lock:
+        if not failed:
+            _breaker_consecutive_failures = 0
+            _breaker_open_until = 0.0
+            return
+        _breaker_consecutive_failures += 1
+        if _breaker_consecutive_failures >= ROUTING_BREAKER_THRESHOLD:
+            was_open = _breaker_open_until > time.monotonic()
+            _breaker_open_until = time.monotonic() + ROUTING_BREAKER_COOLDOWN_S
+            if not was_open:
+                _breaker_trips += 1
+                logger.warning(
+                    "Routing circuit breaker opened after %d consecutive failures; "
+                    "estimating for the next %.0fs instead of asking %s again.",
+                    _breaker_consecutive_failures, ROUTING_BREAKER_COOLDOWN_S,
+                    ENDPOINT_BASE,
+                )
+
+
+def breaker_state() -> dict:
+    """What the breaker did this run, for the build's own report.
+
+    Reported rather than inferred: a run where routing was skipped looks, in the
+    output, exactly like a run where every leg happened to be straight.
+    """
+    with _breaker_lock:
+        remaining = max(0.0, _breaker_open_until - time.monotonic())
+        return {
+            "open": remaining > 0,
+            "seconds_remaining": round(remaining, 1),
+            "consecutive_failures": _breaker_consecutive_failures,
+            "trips": _breaker_trips,
+        }
+
+
+def reset_breaker() -> None:
+    """Module state is process-wide, so tests must be able to clear it."""
+    global _breaker_consecutive_failures, _breaker_open_until, _breaker_trips
+    with _breaker_lock:
+        _breaker_consecutive_failures = 0
+        _breaker_open_until = 0.0
+        _breaker_trips = 0
+
 #: How far either side of a given coordinate OpenRouteService may look for a
 #: road to start or finish on, in metres. A geocoder answers with the *place*,
 #: and a place is not always on a road: a creek is its stream, a trailhead its
@@ -1329,6 +1412,15 @@ def route_leg(
             _count("cache_hits")
             return leg
 
+    # After the cache and before the network: a cached answer is free and must
+    # still be served while the breaker is open -- the breaker is about not
+    # ASKING a router that is not answering, not about withholding what is
+    # already known.
+    if circuit_open():
+        _count("breaker_open")
+        logger.debug("Routing breaker open; estimating %s without asking.", cache_key)
+        return None
+
     request_body: dict[str, Any] = {
         # OpenRouteService takes [lng, lat].
         "coordinates": [[origin[1], origin[0]], [dest[1], dest[0]]],
@@ -1409,6 +1501,10 @@ def route_leg(
     except urllib.error.HTTPError as exc:
         if avoid_ferries and exc.code == 404:
             logger.info("No land route for %s; the ferry is the only way.", cache_key)
+            # An answer, not a failure: the router replied, and what it said is
+            # that there is no land route. Counting this against the breaker
+            # would trip it on an island.
+            _breaker_record(failed=False)
             _count("no_route")
             _remember_no_route(path, cache_key)
             return None
@@ -1420,6 +1516,9 @@ def route_leg(
                                        cache_key=cache_key, google_key=google_key)
             if rescued is not None:
                 return rescued
+        # Counted against the breaker. A spent quota or a refused key does not
+        # recover within a render, so asking the remaining legs is pure cost.
+        _breaker_record(failed=True)
         _count({"rate_limited": "rate_limited_gave_up",
                 "quota": "quota_refused"}.get(outcome, "failed"))
         if outcome == "quota":
@@ -1436,21 +1535,27 @@ def route_leg(
     # than an estimate. Seen on the wider snap retry, which is the second
     # request in a row to the same host.
     except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
+        # The branch a socket timeout takes, and the one the 2026-10-18 outage
+        # went through nine times in one render.
+        _breaker_record(failed=True)
         _count("failed")
         logger.info("Routing unavailable for %s (%s); estimating instead.", cache_key, exc)
         return None
 
     routed = parse_route(payload)
     if routed is None:
+        _breaker_record(failed=True)
         _count("failed")
         logger.info("Routing reply for %s did not parse; estimating instead.", cache_key)
         return None
     if avoid_ferries and (routed.has_ferry or routed.ferry_spans):
         # Asked to avoid ferries and crossed by one anyway: not a land route.
         logger.info("Land route for %s still takes a ferry; treating as none.", cache_key)
+        _breaker_record(failed=False)
         _count("no_route")
         _remember_no_route(path, cache_key)
         return None
+    _breaker_record(failed=False)
     _count("routed")
     with _lock:
         cache = _load_cache(path)
