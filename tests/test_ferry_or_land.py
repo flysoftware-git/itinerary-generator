@@ -214,13 +214,25 @@ def test_no_land_route_means_the_ferry_and_says_so(monkeypatch, cache):
     assert json.loads(cache.read_text())[key] == {"no_route": True}
 
 
-def test_a_refused_land_request_is_not_remembered(monkeypatch, cache):
+def test_a_refused_land_request_is_not_remembered_as_no_land_route(monkeypatch, cache):
+    """It is remembered, with a date on it, and not as `no_route`.
+
+    These are the two kinds of nothing and they must not collapse into one. A
+    refusal says the router did not answer; `{"no_route": true}` says this is
+    an island, and it is written with no expiry -- so recording a 429 that way
+    would tell every later run, for good, that a crossing with a perfectly
+    good land route has none.
+    """
     transport = Transport(_fixture("ors_port_townsend_oak_harbor"),
                           urllib.error.HTTPError("u", 429, "quota", {}, None))
     leg = _estimate(monkeypatch, cache, transport, PORT_TOWNSEND, OAK_HARBOR)
     assert leg.chosen == "ferry" and leg.land is None
     key = routing._cache_key(PORT_TOWNSEND, OAK_HARBOR, avoid_ferries=True)
-    assert key not in json.loads(cache.read_text())
+
+    entry = json.loads(cache.read_text())[key]
+
+    assert "no_route" not in entry, "a refusal was remembered as an island"
+    assert entry["unavailable"] is True and entry["at"] > 0
 
 
 def test_a_land_reply_that_still_takes_a_ferry_is_not_a_land_route(monkeypatch, cache):

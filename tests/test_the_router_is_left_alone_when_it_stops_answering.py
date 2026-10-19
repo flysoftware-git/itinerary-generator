@@ -114,7 +114,7 @@ class TestTheTimeoutPathCountsAgainstIt:
         import inspect
 
         src = inspect.getsource(routing.route_leg)
-        handler = src.split("except (urllib.error.URLError", 1)[1][:400]
+        handler = src.split("except (urllib.error.URLError", 1)[1][:900]
 
         assert "_breaker_record(failed=True)" in handler
 
