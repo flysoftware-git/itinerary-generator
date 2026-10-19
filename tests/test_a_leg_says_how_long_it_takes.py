@@ -13,10 +13,11 @@ Three journeys a real itinerary contains, and what each needs:
 
   1. A drive inside one day -- Venice to Pula, 2h40. Needs `duration`.
   2. A sailing across a night -- Venice (Fusina) 18:00 to Koper 08:00 the next
-     morning. Needs the two times AND `nights`, because the times alone are
-     the same pair of strings whether the arrival is next morning or the same
-     day read off two clocks, and the difference is whether the traveler needs
-     a bed ashore.
+     morning. Needs `depart_time`, `arrive_time` and `duration`. It needs NO
+     count of nights: the destinations' `dates` are the authority on how long
+     anything lasts, and a number on the leg would be a second answer free to
+     disagree with them. `transit_spine.nights_in_transit` derives it, and
+     `tests/test_a_journey_is_as_long_as_it_takes.py` pins what it derives.
   3. A drive with things on it -- Trieste to Rijeka past Skocjan Caves and
      Opatija. This one needs no new leg field: `en_route_seeds` on the
      ARRIVING destination already nominates them and discovery already
@@ -32,12 +33,17 @@ means the fact could not be carried at all.
 
 WHAT THIS WAS SEEN TO FAIL AGAINST
 ----------------------------------
-Run against the schema before the fields were added, every case-1, case-2 and
-`nights` assertion here fails at parse time with
-"Additional properties are not allowed ('duration' was unexpected)" /
-"('arrive_time', 'depart_time', 'nights' were unexpected)" -- i.e. the
-manifest was refused, not quietly degraded. `test_a_leg_may_still_be_only_a_mode`
-passes both before and after, which is the point of it.
+Run against the schema before the fields were added, every case-1 and case-2
+assertion here fails at parse time with "Additional properties are not allowed
+('duration' was unexpected)" -- i.e. the manifest was refused, not quietly
+degraded. `test_a_leg_may_still_be_only_a_mode` passes both before and after,
+which is the point of it.
+
+`test_a_leg_may_not_state_a_count_of_nights` is the opposite shape: it fails
+against the schema as it shipped on 2026-10-18, which accepted `nights` as an
+integer 0-30. That field came back out on 2026-10-19, because a length
+expressed as a number beside `dates` is a second answer to a question `dates`
+already answers -- see docs/design/transit-segment-spine.md §2.2.
 """
 
 from __future__ import annotations
@@ -109,7 +115,7 @@ def test_the_required_three_are_unchanged():
     assert LEG_ITEM_SCHEMA["required"] == ["from", "to", "mode"]
 
 
-@pytest.mark.parametrize("field", ["duration", "depart_time", "arrive_time", "nights"])
+@pytest.mark.parametrize("field", ["duration", "depart_time", "arrive_time"])
 def test_each_journey_field_is_accepted(field):
     assert field in LEG_ITEM_SCHEMA["properties"]
 
@@ -136,11 +142,10 @@ def test_a_leg_may_still_be_only_a_mode(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_case_one_a_leg_inside_one_day_states_its_duration(tmp_path):
-    """Drive Venice to Pula, 2h40: mode, duration, and no night on it.
+    """Drive Venice to Pula, 2h40: mode and duration, and nothing else needed.
 
-    `nights` omitted is the claim that it lands the same day. The duration is
-    the author's figure, not a build's: it survives a rebuild, which the
-    AI-generated `travel_time` on the arriving stop does not.
+    The duration is the author's figure, not a build's: it survives a rebuild,
+    which the AI-generated `travel_time` on the arriving stop does not.
     """
     data = _load(tmp_path, _manifest(
         "legs:\n"
@@ -159,12 +164,19 @@ def test_case_one_a_leg_inside_one_day_states_its_duration(tmp_path):
 # Case 2 -- spans a night
 # --------------------------------------------------------------------------
 
-def test_case_two_an_overnight_leg_states_the_night_it_spends(tmp_path):
-    """Sail Venice 18:00 to Koper 08:00 next morning, one night aboard.
+def test_case_two_an_overnight_leg_states_its_times_and_its_length(tmp_path):
+    """Sail Venice 18:00 to Koper 08:00 next morning, fourteen hours.
 
-    All four fields at once, which is the case that could not be expressed in
-    any form before: `nights: 1` is what lets a guide say no bed ashore is
-    needed, and it is stated because it cannot be read off the two times.
+    Three fields, and NOT a fourth saying how many nights that is. The stops'
+    `dates` already say the traveler leaves on one day and arrives on the
+    next; a count here would be a second answer to that, free to disagree
+    with it and with nothing to say which wins.
+
+    What the leg contributes is where the journey starts on the departure
+    day's clock and how long it runs. That plus the dates is enough to derive
+    the night -- see `transit_spine.nights_in_transit` -- and the derivation
+    is pinned by the page-level tests, where it belongs, because it is the
+    guide's claim rather than the schema's.
     """
     data = _load(tmp_path, _manifest(
         "legs:\n"
@@ -174,49 +186,61 @@ def test_case_two_an_overnight_leg_states_the_night_it_spends(tmp_path):
         "    duration: 14 hours\n"
         "    depart_time: '18:00'\n"
         "    arrive_time: '08:00'\n"
-        "    nights: 1\n"
     ))
     leg = data["legs"][0]
     assert leg["duration"] == "14 hours"
     assert leg["depart_time"] == "18:00"
     assert leg["arrive_time"] == "08:00"
-    assert leg["nights"] == 1
 
 
-def test_zero_nights_is_distinguishable_from_omitting_nights(tmp_path):
-    """`0` is an author saying 'same day'; absent is an author not saying.
+@pytest.mark.parametrize("value", ["1", "0", "2"])
+def test_a_leg_may_not_state_a_count_of_nights(tmp_path, value):
+    """The manifest expresses length through `dates` and nowhere else.
 
-    They render the same today. They are kept distinguishable because the
-    first is a fact a renderer may repeat and the second is not, and
-    collapsing them now would make that unrecoverable later.
+    `nights` shipped on the leg on 2026-10-18 as an integer 0-30 and came back
+    out on 2026-10-19. The rule it broke is about the format rather than about
+    any one field: the destinations' `dates` are the authority on how long
+    anything lasts, so a number beside them answering the same question is a
+    second answer with no mechanism to keep the two in step and no rule for
+    which wins.
+
+    Refused rather than ignored, which is what `additionalProperties: False`
+    buys: an author who writes it finds out, instead of writing a figure the
+    guide silently drops.
+
+    `duration` is deliberately NOT caught by this and is tested above. It is a
+    transcribed display string like `dates` itself -- "2h40", "about fifty
+    minutes" -- never computed, summed or compared. The rule is about numbers
+    that express a length, not about saying what a ticket says.
     """
-    data = _load(tmp_path, _manifest(
-        "legs:\n"
-        "  - from: venice\n"
-        "    to: koper\n"
-        "    mode: auto\n"
-        "    nights: 0\n"
-        "  - from: koper\n"
-        "    to: rijeka\n"
-        "    mode: auto\n"
-    ))
-    assert data["legs"][0]["nights"] == 0
-    assert "nights" not in data["legs"][1]
-
-
-@pytest.mark.parametrize("bad", ["one", "'1'", "1.5", "-1", "31"])
-def test_nights_refuses_what_is_not_a_count_of_nights(tmp_path, bad):
-    """A quoted '1' included: YAML quoting is how this field would be got
-    wrong, and a count that silently became text would compare false against
-    every integer a renderer tests it with."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError) as exc_info:
         _load(tmp_path, _manifest(
             "legs:\n"
             "  - from: venice\n"
             "    to: koper\n"
             "    mode: transit\n"
-            f"    nights: {bad}\n"
+            "    duration: 14 hours\n"
+            f"    nights: {value}\n"
         ))
+    message = str(exc_info.value)
+    assert "nights" in message
+    assert "Additional properties are not allowed" in message
+
+
+def test_the_leg_schema_names_no_length_in_days_or_nights():
+    """Stated against the schema as a whole, not one spelling of it.
+
+    `nights` was the field that existed; `days`, `duration_days` and
+    `nights_aboard` are the ones someone reaches for next. All of them are the
+    same mistake, and a test naming only the first would not notice.
+    """
+    forbidden = {"nights", "days", "duration_days", "nights_aboard", "length_days"}
+    present = forbidden & set(LEG_ITEM_SCHEMA["properties"])
+    assert not present, (
+        f"{sorted(present)} express a length as a number on a leg. The "
+        "destinations' `dates` are the authority on length -- see "
+        "docs/design/transit-segment-spine.md §2.2."
+    )
 
 
 # --------------------------------------------------------------------------

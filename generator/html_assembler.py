@@ -1258,6 +1258,14 @@ class HTMLAssembler:
             arrival_name=self._short_place_name(arrival_name),
             leg=leg,
             en_route_stops=getting_here.get("en_route_stops"),
+            # Both stops' dates, because they are the authority on how long
+            # the journey between them is -- `transit_spine.nights_in_transit`
+            # reads them rather than a count stated on the leg. `previous` is
+            # the previous LODGING stop, which is the one whose last night
+            # matters: a run of grouped day trips is not where the traveler
+            # slept before leaving.
+            from_dates=str((previous or {}).get("dates", "") or ""),
+            to_dates=str(dest.get("dates", "") or ""),
         )
 
     def _build_single_section(

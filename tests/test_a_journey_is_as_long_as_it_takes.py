@@ -22,6 +22,23 @@ the page at all, no component CSS, no duration, no night, nothing on the way.
 rendering did, one bar height for every journey -- and gives
 `[56, 56, 56, 56, 56]`, one distinct value where five are required.
 
+The nights derivation (2026-10-19, replacing a `nights` field on the leg) was
+run against BOTH of the shapes it has to beat, and each one fails a different
+test here:
+
+  * **Reading a `nights` integer off the leg**, as the first version did.
+    `test_case_two_an_overnight_leg_shows_the_night_and_needs_no_bed_ashore`
+    and `test_several_nights_aboard_are_counted_from_the_dates` both fail --
+    the trips no longer carry such a field, so nothing renders. That is the
+    point: the night on the page now comes from the dates.
+  * **Reading the dates alone**, which is the obvious way to get it wrong.
+    Stubbing `nights_in_transit` to return the date gap fails
+    `test_a_night_between_two_stays_is_not_a_night_spent_travelling`,
+    `test_a_night_is_never_said_on_the_strength_of_two_clock_times` and
+    `test_a_leg_with_nothing_to_say_is_a_bare_rail` -- a gap between two
+    stays is where the traveler slept SOMEWHERE, and only the leg can say
+    whether that somewhere was the journey.
+
 EVERYTHING HERE GOES THROUGH `assemble`
 ---------------------------------------
 Deliberately, and it is the expensive lesson this repository has already paid
@@ -126,10 +143,12 @@ def _three_case_trip() -> dict:
         legs=[
             # 1 -- within one day
             {"from": "venice", "to": "pula", "mode": "auto", "duration": "2h40"},
-            # 2 -- spans a night
+            # 2 -- spans a night. No count of nights here: Pula's dates end on
+            # the 3rd and Koper's begin on the 4th, and 18:00 + 14 hours is
+            # still running when they turn over. The guide derives it.
             {"from": "pula", "to": "koper", "mode": "transit",
              "duration": "14 hours", "depart_time": "18:00",
-             "arrive_time": "08:00", "nights": 1},
+             "arrive_time": "08:00"},
             # 3 -- things on the way
             {"from": "koper", "to": "rijeka", "mode": "auto", "duration": "1h50"},
         ],
@@ -174,6 +193,10 @@ def test_case_one_a_leg_inside_one_day_shows_mode_and_duration():
 
 
 def test_case_two_an_overnight_leg_shows_the_night_and_needs_no_bed_ashore():
+    """The owner's requirement, and it did not change when `nights` came off
+    the leg: this must render exactly as it did. Only where the number comes
+    from changed -- the stops' `dates` plus the leg's own departure time and
+    duration, rather than a count typed beside them."""
     html = _assemble(_three_case_trip())
     assert "14 hours" in html
     assert "18:00 → 08:00" in html, (
@@ -267,9 +290,12 @@ def test_a_leg_with_no_legs_block_at_all_still_draws_its_rail():
 def test_a_night_is_never_said_on_the_strength_of_two_clock_times():
     """`depart_time` and `arrive_time` are on two different clocks by design.
 
-    18:00 to 08:00 with no `nights` is an author who has not said a night was
-    spent. Subtracting them would produce a precise-looking wrong answer, so
-    the page says nothing.
+    Rijeka ends on the 6th and Zagreb begins on the 7th, so the DATES do leave
+    a night between them, and 18:00 to 08:00 looks overnight to anyone willing
+    to subtract. Nothing here is willing: the two times are on two clocks and
+    differencing them gives a precise-looking wrong answer. Without a
+    `duration`, the leg has said nothing about where its traveler slept, and
+    the page says nothing either.
     """
     trip = _trip(
         legs=[{"from": "rijeka", "to": "zagreb", "mode": "transit",
@@ -280,24 +306,100 @@ def test_a_night_is_never_said_on_the_strength_of_two_clock_times():
         ],
     )
     html = _assemble(trip)
-    assert "18:00 → 08:00" in html
+    assert "18:00 \u2192 08:00" in html
     assert "spent in transit" not in html
     assert 'class="spine-daybreak"' not in html
 
 
-def test_nights_zero_says_nothing_either():
+def test_a_night_between_two_stays_is_not_a_night_spent_travelling():
+    """The false positive the dates alone would produce, and the reason the
+    leg has to account for the night as well as the dates.
+
+    Koper is dated the 4th and Rijeka the 5th, so there is a night between
+    them. The leg joining them is a 1h50 coast road leaving at nine in the
+    morning: the traveler slept in a bed somewhere, and a guide saying "no
+    lodging needed at either end" would be telling them not to book one.
+    """
     trip = _trip(
-        legs=[{"from": "rijeka", "to": "zagreb", "mode": "auto", "nights": 0}],
+        legs=[{"from": "koper", "to": "rijeka", "mode": "auto",
+               "depart_time": "09:00", "duration": "1h50"}],
         destinations=[
+            _stop("koper", "Koper, Slovenia", "May 4, 2026"),
             _stop("rijeka", "Rijeka, Croatia", "May 5-6, 2026"),
-            _stop("zagreb", "Zagreb, Croatia", "May 7, 2026"),
+        ],
+    )
+    html = _assemble(trip)
+    assert "1h50" in html
+    assert "spent in transit" not in html
+    assert 'class="spine-daybreak"' not in html
+
+
+def test_the_dates_can_veto_a_night_the_journey_claims():
+    """The dates are the authority, so they cap the count and the journey
+    cannot overrule them.
+
+    A twenty-hour sailing leaving at 18:00 runs past one midnight. If the two
+    stays share a day -- the manifest saying the traveler was in both places
+    on the 3rd -- then whatever the clock says, the dates say no night was
+    spent between them, and the dates win.
+    """
+    trip = _trip(
+        legs=[{"from": "pula", "to": "koper", "mode": "transit",
+               "depart_time": "18:00", "duration": "20 hours"}],
+        destinations=[
+            _stop("pula", "Pula, Croatia", "May 1-3, 2026"),
+            _stop("koper", "Koper, Slovenia", "May 3-5, 2026"),
         ],
     )
     assert "spent in transit" not in _assemble(trip)
 
 
-# --------------------------------------------------------------------------
-# The partial's CSS reaches the page, once, and only when it is used
+def test_dates_that_do_not_parse_assert_no_night_at_all():
+    """`date_span.span` returns None rather than guessing, and a guide must
+    not assert a night aboard off a typo."""
+    trip = _trip(
+        legs=[{"from": "pula", "to": "koper", "mode": "transit",
+               "depart_time": "18:00", "duration": "14 hours"}],
+        destinations=[
+            _stop("pula", "Pula, Croatia", "sometime in spring"),
+            _stop("koper", "Koper, Slovenia", "May 4, 2026"),
+        ],
+    )
+    assert "spent in transit" not in _assemble(trip)
+
+
+def test_several_nights_aboard_are_counted_from_the_dates():
+    """A sailing that is days rather than hours. The count is the gap the
+    dates leave, not a number anybody typed."""
+    trip = _trip(
+        legs=[{"from": "pula", "to": "koper", "mode": "transit",
+               "depart_time": "17:00", "duration": "60 hours"}],
+        destinations=[
+            _stop("pula", "Pula, Croatia", "June 12-14, 2026"),
+            _stop("koper", "Koper, Slovenia", "June 17-19, 2026"),
+        ],
+    )
+    html = _assemble(trip)
+    assert "3 nights spent in transit" in html
+    assert 'class="spine-daybreak"' in html
+
+
+@pytest.mark.parametrize("text,minutes", [
+    ("18:00", 18 * 60),
+    ("6:00 PM", 18 * 60),
+    ("9am", 9 * 60),
+    ("12:30 AM", 30),
+    ("08.15", 8 * 60 + 15),
+    ("", None),
+    ("evening", None),
+    ("25:00", None),
+])
+def test_a_departure_clock_time_is_read_on_its_own(text, minutes):
+    """One clock, read to know where the journey starts on the departure
+    day. It never meets `arrive_time`, so no two zones are ever summed."""
+    assert transit_spine._minutes_into_day(text) == minutes
+
+
 # --------------------------------------------------------------------------
 
 def test_the_component_css_is_in_the_page_exactly_once():

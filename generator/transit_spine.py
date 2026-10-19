@@ -40,10 +40,17 @@ Two rules, both from `docs/design/transit-segment-spine.md`:
    its text and takes the default length -- the figure is never dropped
    because the scaler could not read it.
 
-2. **A night in transit is said only where `nights` says so.** It is never
-   derived from `depart_time` and `arrive_time`: those are on two different
-   clocks by design (`manifest_parser.TRANSPORTATION_ITEM_SCHEMA` carries the
-   rule), so subtracting them produces a precise-looking wrong answer.
+2. **The number of nights in transit comes from the destinations' `dates`.**
+   They are the authority on how long anything lasts, so nothing carries a
+   second count that could disagree with them -- there is no `nights` field on
+   a leg. `nights_in_transit` reads the dates and asks the leg only whether it
+   accounts for occupying them.
+
+   It is still never derived from `depart_time` and `arrive_time` together:
+   those are on two different clocks by design
+   (`manifest_parser.TRANSPORTATION_ITEM_SCHEMA` carries the rule), so
+   subtracting them produces a precise-looking wrong answer. `arrive_time` is
+   displayed and never computed with.
 
 Markup and CSS live in `templates/partials/transit_spine.html`, loaded through
 `generator/partials.py`, so a second consumer of this engine draws the same
@@ -185,12 +192,101 @@ def _fact(text: str, extra_class: str = "") -> str:
     )
 
 
+#: Clock times a leg states, read for ONE purpose: where the journey starts on
+#: the departure day's clock. Never compared with `arrive_time` -- see the
+#: module docstring.
+_CLOCK_RE = re.compile(
+    r"^\s*(?P<h>\d{1,2})[:.]?(?P<m>\d{2})?\s*(?P<ampm>am|pm)?\s*$", re.IGNORECASE
+)
+
+
+def _minutes_into_day(text: Any) -> int | None:
+    """"18:00" -> 1080. None when the string is not a clock time.
+
+    One clock only. This never meets `arrive_time`, so no two zones are ever
+    brought into the same sum.
+    """
+    match = _CLOCK_RE.match(str(text or ""))
+    if not match:
+        return None
+    hour = int(match.group("h"))
+    minute = int(match.group("m") or 0)
+    ampm = (match.group("ampm") or "").lower()
+    if ampm == "pm" and hour < 12:
+        hour += 12
+    elif ampm == "am" and hour == 12:
+        hour = 0
+    if hour > 23 or minute > 59:
+        return None
+    return hour * 60 + minute
+
+
+def nights_in_transit(
+    leg: dict[str, Any] | None,
+    from_dates: str = "",
+    to_dates: str = "",
+) -> int:
+    """Nights the traveler spends ON this leg rather than in a bed.
+
+    **The dates are the authority.** A manifest expresses how long anything
+    lasts through the destinations' `dates` and nowhere else, so this reads
+    them rather than a number stated beside them. A leg carries no `nights`
+    field, and could not be given one without creating a second answer free to
+    disagree with the first.
+
+    Two things have to be true, and the dates alone are not enough:
+
+    1. **The dates must leave a night between the two stays.** The last day
+       `from` claims and the first day `to` claims, differenced. Adjacent
+       stays usually share a day -- you leave one place and reach the next on
+       the same date -- and that is nought nights. Either span failing to
+       parse is nought too: `date_span.span` returns None rather than guessing,
+       and a guide must not assert a night aboard off a typo.
+
+    2. **The leg must itself account for occupying that night.** Koper on the
+       4th and Rijeka on the 5th leaves a night between them, but the leg
+       joining them is a 1h50 coast road and the traveler slept in a bed
+       somewhere. So the leg's own `depart_time` plus its `duration` must
+       still be running when the date turns over. That is arithmetic on ONE
+       clock -- a departure time and an elapsed duration -- and never touches
+       `arrive_time`, which is on the other end's clock and is only ever
+       displayed.
+
+    The smaller of the two wins. The dates can veto what the duration claims
+    and cannot be overridden by it, which is what "the dates are the
+    authority" means in practice.
+
+    A leg that states neither a departure time nor a duration says nothing
+    about where its traveler slept, and this returns 0 rather than reading the
+    dates alone.
+    """
+    from generator import date_span
+
+    from_span = date_span.span(str(from_dates or ""))
+    to_span = date_span.span(str(to_dates or ""))
+    if not from_span or not to_span:
+        return 0
+    by_dates = (to_span[0] - from_span[1]).days
+    if by_dates <= 0:
+        return 0
+
+    leg = leg if isinstance(leg, dict) else {}
+    start = _minutes_into_day(leg.get("depart_time"))
+    minutes = duration_minutes(leg.get("duration"))
+    if start is None or not minutes:
+        return 0
+    by_journey = (start + minutes) // (24 * 60)
+    if by_journey <= 0:
+        return 0
+
+    return min(by_dates, by_journey)
+
+
 def _overnight_sentence(nights: Any) -> str:
     """What a guide may say about nights in transit, and only that.
 
-    `nights` is an integer the author stated. The second clause -- that no bed
-    is needed at either end of the leg -- is the reason the field exists, and
-    it follows from the field alone: a night spent in transit is a night not
+    The second clause -- that no bed is needed at either end of the leg --
+    follows from the count alone: a night spent in transit is a night not
     spent ashore.
     """
     if not isinstance(nights, int) or isinstance(nights, bool) or nights <= 0:
@@ -240,8 +336,15 @@ def render_segment(
     arrival_name: str,
     leg: dict[str, Any] | None = None,
     en_route_stops: Any = None,
+    from_dates: str = "",
+    to_dates: str = "",
 ) -> str:
     """One transit segment: the journey arriving at `dest`.
+
+    `from_dates` and `to_dates` are the two stops' `dates` strings. They are
+    passed in rather than read off `dest`, because half of the pair lives on
+    the previous stop and the authority on how long this journey is belongs to
+    both of them together -- see `nights_in_transit`.
 
     Returns "" only when there is no journey to draw at all -- no previous
     stop. A journey with nothing said about it still renders, as a bare rail:
@@ -267,7 +370,7 @@ def render_segment(
     minutes = duration_minutes(duration)
     depart = str(leg.get("depart_time", "") or "").strip()
     arrive = str(leg.get("arrive_time", "") or "").strip()
-    nights = leg.get("nights")
+    nights = nights_in_transit(leg, from_dates, to_dates)
     overnight = _overnight_sentence(nights)
     stop_lines = en_route_lines(en_route_stops)
 
@@ -321,7 +424,7 @@ def render_segment(
             + "\n"
         )
 
-    # A date boundary is drawn only where `nights` says one is crossed. It
+    # A date boundary is drawn only where the dates say one is crossed. It
     # marks THAT the boundary is crossed, not when: the two clock times cannot
     # say where midnight falls between them, and placing the rule by
     # arithmetic over them would be the invented precision this component
