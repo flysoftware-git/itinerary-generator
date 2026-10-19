@@ -230,6 +230,13 @@ SIDE_TRIP_END_SCHEMA: dict[str, Any] = {
 #: destination `id`s, never display names -- the issue's free-text matching
 #: fails silently, and a silently-ignored leg ships a traveler an itinerary
 #: telling them to drive a leg they have no car for (multimodal-routing.md 3.2).
+#:
+#: A leg used to carry only where it starts, where it ends and how it is
+#: travelled, which made every journey the same size: a nine-mile drive and a
+#: fourteen-hour sailing held exactly the same fields, so no renderer could
+#: tell them apart. `duration`, `depart_time`, `arrive_time` and `nights` are
+#: additive (2026-10-18) and all optional -- a leg authored before them parses
+#: and renders unchanged. See docs/design/transit-segment-spine.md.
 LEG_ITEM_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["from", "to", "mode"],
@@ -254,6 +261,61 @@ LEG_ITEM_SCHEMA: dict[str, Any] = {
             "description": "Travel mode for this leg. Same values as "
                            "`transport_mode`; naming the same leg in both places "
                            "is allowed only when they agree.",
+        },
+        "duration": {
+            "type": "string",
+            "description": "How long the journey takes, as the author states it "
+                           "('2h40', '14 hours', 'about 50 minutes'). A string "
+                           "like `dates` and `depart`: transcribed from a "
+                           "timetable or a booking, not computed, so nothing "
+                           "here does arithmetic on it. This is the one "
+                           "property of a journey that had nowhere to live. "
+                           "`distance_miles` and `travel_time` exist, but they "
+                           "are AI-generated figures on the arriving stop's "
+                           "getting-here content -- a build's guess, revised "
+                           "every run -- and an author who knows the sailing is "
+                           "fourteen hours could not say so. Absent where the "
+                           "author does not know; never inferred from "
+                           "`depart_time` and `arrive_time`, which may be on "
+                           "two different clocks.",
+        },
+        "depart_time": {
+            "type": "string",
+            "description": "Clock time the journey leaves, LOCAL TO `from`, "
+                           "exactly as the timetable states it ('18:00', "
+                           "'6:00 PM'). Identical in meaning to "
+                           "`transportation[].depart_time`, deliberately: a leg "
+                           "nobody has booked yet states its times the same way "
+                           "a booked one does, and NOTHING NORMALIZES EITHER TO "
+                           "A SINGLE ZONE. A sailing leaving Venice at 18:00 and "
+                           "reaching Koper at 08:00 is naming two clocks, and "
+                           "rewriting one into the other -- or into UTC -- "
+                           "produces a time no document says, which is a wrong "
+                           "answer that looks precise.",
+        },
+        "arrive_time": {
+            "type": "string",
+            "description": "Clock time the journey arrives, local to `to`. See "
+                           "`depart_time`.",
+        },
+        "nights": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 30,
+            "description": "Nights the traveler spends IN TRANSIT on this leg -- "
+                           "aboard the ship, on the sleeper -- and therefore "
+                           "needs no bed at either end of it. Stated rather than "
+                           "derived, and this is the field's whole point: "
+                           "`depart_time: '18:00'` with `arrive_time: '08:00'` "
+                           "is the same pair of strings whether the arrival is "
+                           "the next morning or fourteen hours of the same day "
+                           "read off two clocks, and the two differ by whether "
+                           "the traveler is sleeping somewhere. Deriving it "
+                           "would mean a guide asserting a night aboard on the "
+                           "strength of arithmetic over times it was told not to "
+                           "compare. Omitted means the journey lands the day it "
+                           "left, which is every leg authored before this field "
+                           "existed; `0` says so explicitly.",
         },
     },
     "additionalProperties": False,
@@ -595,11 +657,14 @@ MANIFEST_SCHEMA: dict[str, Any] = {
         },
         "legs": {
             "type": "array",
-            "description": "Optional per-leg travel modes, addressed by destination "
+            "description": "Optional per-leg journeys, addressed by destination "
                            "id. An alternative to per-destination `transport_mode` for "
                            "authors who think in journeys rather than in stops; both "
-                           "may be used, but not to disagree about one leg. See "
-                           "docs/design/multimodal-routing.md 3.2.",
+                           "may be used, but not to disagree about one leg. Beyond "
+                           "`mode`, a leg may state how long it takes, when it leaves "
+                           "and arrives, and how many nights are spent on it. See "
+                           "docs/design/multimodal-routing.md 3.2 and "
+                           "docs/design/transit-segment-spine.md.",
             "items": LEG_ITEM_SCHEMA,
         },
         "destinations": {

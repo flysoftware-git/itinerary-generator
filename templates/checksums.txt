@@ -1,1 +1,2 @@
-e8bbcf1430086e54d388f3de9cca5f719b5526fe7f1c3c25d7d579651327ffc7  templates/v2.5_template.html
+a72cbb4ae2537de9fda3cf69fda9bd1f0e10a562cf21acd74013e57bc919ec74  templates/v2.5_template.html
+284a1e099536a881171da111e93bf5e9c5d7663e7c858aa32c3e762813b20b68  templates/partials/transit_spine.html

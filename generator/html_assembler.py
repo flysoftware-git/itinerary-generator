@@ -30,6 +30,7 @@ from generator.transit_routing import (
     RESOLVED_MODE_KEY,
     booked_arrival_type,
     leg_mode,
+    resolve_authored_leg,
     resolved_mode,
 )
 from generator.multi_site_grouping import (
@@ -46,6 +47,8 @@ from generator.multi_site_grouping import (
 )
 
 from generator import date_span
+from generator import partials
+from generator import transit_spine
 
 logger = logging.getLogger(__name__)
 TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "v2.5_template.html"
@@ -326,10 +329,19 @@ def _tile_layer_js(tiles: TileSettings) -> str:
 
 
 def _verify_checksum(template_text: str) -> None:
-    """Hard fail if template SHA-256 doesn't match stored value."""
-    if not CHECKSUM_PATH.exists():
-        raise FileNotFoundError(f"Checksum file not found: {CHECKSUM_PATH}")
-    stored = CHECKSUM_PATH.read_text(encoding="utf-8").strip().split()[0]
+    """Hard fail if template SHA-256 doesn't match stored value.
+
+    The stored digest is looked up BY PATH rather than taken as the first
+    token of the file. Both read the same value today, but `checksums.txt`
+    now carries a row per partial as well (see generator/partials.py), and
+    `text.split()[0]` only kept working because the main template happened to
+    stay on the first line.
+    """
+    stored = partials.recorded_checksums().get(partials.MAIN_TEMPLATE_ROW)
+    if stored is None:
+        raise RuntimeError(
+            f"{CHECKSUM_PATH.name} has no row for {partials.MAIN_TEMPLATE_ROW}."
+        )
     actual = hashlib.sha256(template_text.encode("utf-8")).hexdigest()
     if actual != stored:
         raise RuntimeError(
@@ -608,6 +620,21 @@ class HTMLAssembler:
             previous_name, previous_route_target, previous_point = _previous_context(index)
             current_route_target = self._destination_route_target(dest)
 
+            # The journey into this stop, drawn BETWEEN the two sections
+            # rather than inside either of them -- which is what makes
+            # consecutive segments line up into one rail down the page. A
+            # grouped day trip is skipped above, so a run of them does not
+            # break the rail: the segment joins the two lodging stops the
+            # traveler actually relocated between, the same pair
+            # `_previous_context` already resolves.
+            sections_html += self._build_transit_spine(
+                dest,
+                trip,
+                destinations,
+                index,
+                previous_name=previous_name,
+            )
+
             group_children = children_by_base.get(dest_id, [])
             group_children_html = ""
             for child in group_children:
@@ -680,6 +707,16 @@ class HTMLAssembler:
         if 'class="hide-on-error"' in sections_html:
             sections_html = self._image_error_handler_script() + sections_html
         html = html.replace("<!--DESTINATION_SECTIONS-->", sections_html)
+
+        # ── Component CSS from templates/partials/ ───────────────────────────
+        # Emitted once, and only for a component the page actually drew. A
+        # guide with no transit segments carries none of its CSS, which is
+        # what keeps a partial from being a tax on every page that does not
+        # use it.
+        html = html.replace(
+            "<!--PARTIAL_STYLES-->",
+            transit_spine.styles() if 'class="spine' in sections_html else "",
+        )
 
         # ── Trip-wide travel chips under the route overview map ──────────────
         html = html.replace(
@@ -1171,6 +1208,56 @@ class HTMLAssembler:
         return (
             f'<a href="{gmaps_url}" target="_blank" rel="noopener" class="map-tab-btn">'
             f'🗺️ Full Route Map</a>'
+        )
+
+    def _build_transit_spine(
+        self,
+        dest: dict[str, Any],
+        trip: dict[str, Any],
+        destinations: list[dict[str, Any]],
+        index: int,
+        *,
+        previous_name: str = "",
+    ) -> str:
+        """The journey arriving at this stop, as a rail in the left margin.
+
+        Replaces nothing yet: the Getting Here card below is unchanged, and
+        the en-route stops still render there with their verified links. What
+        this adds is the one thing that card cannot carry -- length. A card is
+        the same height whatever is in it, so a nine-mile drive and a
+        fourteen-hour sailing drew identically, and duration is the property a
+        reader plans around.
+
+        The leg is resolved HERE rather than read off a stamp, because
+        `trip["legs"]` is trip-level and `assemble(trip)` is the only place
+        with both the legs and the itinerary order. `resolve_authored_leg` is
+        the same matcher `resolve_leg_mode` uses, so the segment and the
+        stamped mode cannot disagree about which leg they are describing.
+        """
+        previous = self._previous_lodging_stop(destinations, index)
+        previous_id = str((previous or {}).get("id", "") or "").strip()
+        leg = resolve_authored_leg(
+            dest, previous_id=previous_id, legs=trip.get("legs")
+        )
+
+        ai = dest.get("ai_content") or {}
+        getting_here = ai.get("getting_here") or {}
+        if not isinstance(getting_here, dict):
+            getting_here = {}
+
+        # Where the journey finishes: a day out that does not come back ends
+        # at its `end`, not at the entry it is filed under. Same reasoning as
+        # _build_getting_here's `arrival_name`.
+        outing_end = side_trip_end(dest)
+        arrival_name = (str(outing_end.get("name", "")).strip() if outing_end is not None
+                        else str(dest.get("name", "") or ""))
+
+        return transit_spine.render_segment(
+            dest=dest,
+            previous_name=self._short_place_name(str(previous_name or "")),
+            arrival_name=self._short_place_name(arrival_name),
+            leg=leg,
+            en_route_stops=getting_here.get("en_route_stops"),
         )
 
     def _build_single_section(

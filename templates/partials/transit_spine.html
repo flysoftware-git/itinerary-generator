@@ -1,0 +1,241 @@
+<!--
+  transit_spine.html -- the journey between two stops, as a rail in the left
+  margin whose length carries its duration.
+
+  Loaded by generator/partials.py and filled by generator/transit_spine.py.
+  See docs/design/transit-segment-spine.md.
+
+  Placeholders are `__NAME__` and are filled with str.replace, not by a
+  template language: a consumer of this engine written in another language has
+  to be able to draw this component, and a Jinja dependency would stop it.
+
+  Every class name here is prefixed `spine-`. The main template's CSS is one
+  long block with no namespacing, and an unprefixed `.rail` or `.node` would
+  collide with it silently the next time either file grows.
+-->
+
+<!--PARTIAL:styles-->
+      /* ── Transit segment spine ──────────────────────────────────────────
+         The journey between two stops. Length carries duration, which is the
+         property the previous rendering -- a short bar under a day rule --
+         threw away: a nine-mile drive and a fourteen-hour sailing drew the
+         same. `--spine-length` is computed per segment in Python and set
+         inline; nothing here assumes a value for it.
+
+         The common leg has nothing to say beyond its mode, and renders as a
+         bare rail with its marker: no card, no header, no empty rows. That
+         case is why this is not a card. */
+      .spine {
+        display: grid;
+        grid-template-columns: 2rem 1fr;
+        gap: 0 0.9rem;
+        align-items: stretch;
+        margin: 0 0 0.25rem;
+      }
+      .spine-rail {
+        position: relative;
+        width: 2rem;
+        min-height: var(--spine-length, 4.5rem);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      /* The continuous line. Centred in the margin column so consecutive
+         segments line up into one rail down the page even though each is
+         emitted by its own stop's section. */
+      .spine-track {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 50%;
+        width: 3px;
+        margin-left: -1.5px;
+        background: var(--sandstone);
+        border-radius: 3px;
+      }
+      /* A journey nobody has quantified should not look like a measured one.
+         Dashed track, same as the map's unrouted polylines. */
+      .spine[data-measured="no"] .spine-track {
+        background: repeating-linear-gradient(
+          to bottom,
+          var(--sandstone) 0 7px,
+          transparent 7px 13px
+        );
+      }
+      .spine-node {
+        position: absolute;
+        left: 50%;
+        width: 11px;
+        height: 11px;
+        margin-left: -5.5px;
+        border-radius: 50%;
+        background: #fff;
+        border: 3px solid var(--terracotta);
+        box-sizing: content-box;
+      }
+      .spine-node-from { top: -6px; }
+      .spine-node-to { bottom: -6px; }
+      /* The mode rides ON the rail rather than being a word in a sentence. */
+      .spine-mode {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 1.75rem;
+        height: 1.75rem;
+        border-radius: 50%;
+        background: var(--offwhite);
+        border: 2px solid var(--sandstone);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.9rem;
+        line-height: 1;
+      }
+      /* A date boundary CROSSES the rail rather than interrupting it: one
+         journey with a day rule drawn over it is what the traveler has. The
+         old rendering had to cut the journey in two or lose the night. */
+      .spine-daybreak {
+        position: absolute;
+        /* Wider than the rail on both sides, and wider still on the body
+           side, so it reads as a line crossing the journey rather than as a
+           tick on it. */
+        left: -0.5rem;
+        right: -1.5rem;
+        /* Below the mode marker rather than through it. The position says
+           only THAT a boundary is crossed, not when -- see
+           transit_spine.render_segment -- so it is free to sit wherever it
+           is legible, and under the marker it was neither. */
+        top: 68%;
+        border-top: 1px dashed #b9a98e;
+        pointer-events: none;
+      }
+      .spine-body {
+        padding: 0.1rem 0 0.9rem;
+        min-width: 0;
+      }
+      .spine-route {
+        margin: 0;
+        font-family: Georgia, Cambria, serif;
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: var(--canyon);
+      }
+      .spine-facts {
+        list-style: none;
+        margin: 0.3rem 0 0;
+        padding: 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem 0.5rem;
+        font-size: 0.8rem;
+      }
+      .spine-fact {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 2px 10px;
+        border-radius: 9999px;
+        background: var(--sandstone);
+        color: var(--dark);
+        font-weight: 600;
+      }
+      .spine-fact-duration { background: var(--terracotta); color: #fff; }
+      /* The one line a reader of an overnight leg is looking for. Said in
+         words, not inferred from the badge: the claim is that no bed is
+         needed ashore, and that is worth stating. */
+      .spine-overnight {
+        margin: 0.4rem 0 0;
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--sage);
+      }
+      .spine-stops {
+        margin: 0.5rem 0 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 0.3rem;
+      }
+      /* On the way, not a stop of the itinerary: offset and un-bulleted so it
+         reads as hanging off the rail rather than as another node on it. See
+         the open question in docs/design/transit-segment-spine.md §5. */
+      .spine-stop {
+        position: relative;
+        padding-left: 0.85rem;
+        font-size: 0.82rem;
+        line-height: 1.45;
+      }
+      .spine-stop::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.5em;
+        width: 0.45rem;
+        height: 1px;
+        background: #b9a98e;
+      }
+      .spine-stop-adds {
+        color: #6b5e50;
+        font-weight: 600;
+      }
+      .spine-stops-head {
+        margin: 0.6rem 0 0;
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #6b5e50;
+      }
+      @media (max-width: 480px) {
+        .spine { grid-template-columns: 1.5rem 1fr; gap: 0 0.6rem; }
+        .spine-rail { width: 1.5rem; }
+      }
+      @media print {
+        .spine-rail { min-height: 3rem; }
+      }
+<!--/PARTIAL:styles-->
+
+<!--PARTIAL:segment-->
+<div class="spine" data-mode="__MODE__" data-measured="__MEASURED__" style="--spine-length:__LENGTH__">
+  <div class="spine-rail">
+    <span class="spine-track"></span>
+    <span class="spine-node spine-node-from"></span>
+    <span class="spine-mode" title="__MODE_LABEL__" aria-hidden="true">__MODE_ICON__</span>
+    __DAYBREAK__
+    <span class="spine-node spine-node-to"></span>
+  </div>
+  <div class="spine-body">
+__BODY__
+  </div>
+</div>
+<!--/PARTIAL:segment-->
+
+<!--PARTIAL:daybreak-->
+<span class="spine-daybreak"></span>
+<!--/PARTIAL:daybreak-->
+
+<!--PARTIAL:route-->
+    <p class="spine-route">__ROUTE__</p>
+<!--/PARTIAL:route-->
+
+<!--PARTIAL:facts-->
+    <ul class="spine-facts">__FACTS__</ul>
+<!--/PARTIAL:facts-->
+
+<!--PARTIAL:fact-->
+<li class="spine-fact __FACT_CLASS__">__FACT__</li>
+<!--/PARTIAL:fact-->
+
+<!--PARTIAL:overnight-->
+    <p class="spine-overnight">__OVERNIGHT__</p>
+<!--/PARTIAL:overnight-->
+
+<!--PARTIAL:stops-->
+    <p class="spine-stops-head">__STOPS_HEAD__</p>
+    <ul class="spine-stops">__STOPS__</ul>
+<!--/PARTIAL:stops-->
+
+<!--PARTIAL:stop-->
+<li class="spine-stop">__STOP__</li>
+<!--/PARTIAL:stop-->
