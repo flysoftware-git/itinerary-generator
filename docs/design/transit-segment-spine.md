@@ -47,15 +47,14 @@ the shape is closed, an author could not add one by writing an extra key. The
 manifest was **refused**, not quietly degraded. That is the better of the two
 failures, but the fact still could not be carried.
 
-Four fields were added (2026-10-18), all optional, all additive. A leg authored
-before them parses and renders exactly as it did.
+Three fields were added (2026-10-18), all optional, all additive. A leg
+authored before them parses and renders exactly as it did.
 
 | Field | What it carries |
 |---|---|
 | `duration` | How long the journey takes, as the author states it |
 | `depart_time` | Clock time it leaves, local to `from` |
 | `arrive_time` | Clock time it arrives, local to `to` |
-| `nights` | Nights spent **in transit** on this leg |
 
 ### 2.1 Why `duration` is not `travel_time`
 
@@ -68,23 +67,61 @@ showed the guess instead.
 `duration` is a display string, like `dates` and `depart`: transcribed, not
 computed. Nothing does arithmetic on it.
 
-### 2.2 Why `nights` is stated rather than derived
+### 2.2 Why a leg carries no count of nights
 
-`depart_time: "18:00"` with `arrive_time: "08:00"` is the same pair of strings
-whether the arrival is the next morning or fourteen hours of the same day read
-off two different clocks. The two differ by whether the traveler is sleeping
-somewhere, which is the whole question a reader is asking.
+A `nights: 1` integer shipped on the leg in the first version of this and was
+taken off again (2026-10-19). It was the wrong shape, and the reason is a rule
+about the format rather than about this component:
 
-Nothing may close that gap by arithmetic, because
-`transportation[].depart_time` — whose meaning these two deliberately copy —
-carries an explicit rule that the clocks are never normalized to one zone. A
-guide asserting a night aboard on the strength of subtracting two times it was
-told not to compare would be inventing a fact that looks precise.
+> **The dates are the authority in the manifest.** How long anything lasts is
+> expressed through the destinations' `dates` and nowhere else.
 
-So `nights` is the author's statement. Omitted means the journey lands the day
-it left, which is every leg authored before this field existed. `0` says so
-explicitly, and the two are kept distinguishable: the first is a fact a
-renderer may repeat, the second is an author not having said.
+A number on a leg saying how many nights it spans is a second answer to a
+question `dates` already answers, and two answers to one question diverge. This
+format has no mechanism that would keep them in step, and no way to say which
+one wins when they disagree -- so the only safe number of such fields is none.
+
+`duration` is not an exception, and the distinction is worth stating because it
+is the one a reviewer will press on. `duration` is a **transcribed display
+string**, like `dates` and `depart` -- "2h40", "about fifty minutes" -- read off
+a ticket and never computed, summed or compared. It states what a document
+says. `nights` was an integer expressing a length, which is the thing the rule
+is about.
+
+**So it is derived, and the capability is not lost.** `nights_in_transit` in
+`generator/transit_spine.py` requires two things to agree:
+
+1. **The dates must leave a night between the two stays.** The last day `from`
+   claims and the first day `to` claims, differenced. Adjacent stays usually
+   share a day -- you leave one place and reach the next on the same date --
+   and that is nought nights. Either span failing to parse is nought too:
+   `date_span.span` returns None rather than guessing, and a guide must not
+   assert a night aboard off a typo.
+
+2. **The leg must account for occupying that night.** Koper on the 4th and
+   Rijeka on the 5th leaves a night between them, but the leg joining them is
+   a 1h50 coast road and the traveler slept in a bed. So the leg's own
+   `depart_time` plus its `duration` must still be running when the date turns
+   over.
+
+The smaller of the two wins. The dates can veto what the duration claims and
+cannot be overridden by it, which is what "the dates are the authority" means
+in practice.
+
+**What is still never done.** `depart_time` and `arrive_time` are not
+subtracted from each other. They are on two different clocks by design --
+`transportation[].depart_time` carries the rule that neither is normalized to
+one zone -- so a sailing leaving Venice at 18:00 and reaching Koper at 08:00
+states two clocks, and differencing them gives a precise-looking wrong answer.
+Condition 2 above uses a departure time and an **elapsed duration**: one clock
+and a length, never two clocks. `arrive_time` is displayed and never computed
+with.
+
+**What this costs.** A leg that states no `depart_time` or no `duration` says
+nothing about where its traveler slept, and renders no night even where the
+dates leave one -- correctly, because the dates alone cannot tell an overnight
+sailing from a morning drive the day after a hotel. An author who wants the
+night shown states the journey's duration, which is a string and allowed.
 
 ### 2.3 Why there is no `see_on_the_way` on a leg
 
@@ -139,11 +176,12 @@ case that decides whether the page reads calmer or busier than before.
 
 | File | Role |
 |---|---|
-| `generator/manifest_parser.py` | `LEG_ITEM_SCHEMA` — the four fields |
-| `generator/transit_routing.py` | `stamp_resolved_leg` — resolves the leg once and stamps it on the arriving stop, the same pattern and for the same reason as `RESOLVED_MODE_KEY` |
+| `generator/manifest_parser.py` | `LEG_ITEM_SCHEMA` — the three journey fields |
+| `generator/transit_routing.py` | `resolve_authored_leg` — matches a `legs:` entry to the stop it arrives at, exactly as `resolve_leg_mode` does, so the segment and the stamped mode cannot disagree about which leg they describe |
 | `generator/partials.py` | Loads a template partial, checksum-verified |
 | `templates/partials/transit_spine.html` | The segment's markup template and CSS |
-| `generator/transit_spine.py` | Renders one segment from a leg plus its arriving stop |
+| `generator/transit_spine.py` | Renders one segment; `nights_in_transit` derives nights from the two stops' `dates` |
+| `generator/date_span.py` | `span` — the dates, parsed. The authority on length |
 | `generator/html_assembler.py` | Emits the partial's CSS once, and a segment per stop |
 
 ### 4.1 Why a partial

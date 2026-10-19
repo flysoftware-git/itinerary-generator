@@ -234,9 +234,15 @@ SIDE_TRIP_END_SCHEMA: dict[str, Any] = {
 #: A leg used to carry only where it starts, where it ends and how it is
 #: travelled, which made every journey the same size: a nine-mile drive and a
 #: fourteen-hour sailing held exactly the same fields, so no renderer could
-#: tell them apart. `duration`, `depart_time`, `arrive_time` and `nights` are
-#: additive (2026-10-18) and all optional -- a leg authored before them parses
-#: and renders unchanged. See docs/design/transit-segment-spine.md.
+#: tell them apart. `duration`, `depart_time` and `arrive_time` are additive
+#: (2026-10-18) and all optional -- a leg authored before them parses and
+#: renders unchanged.
+#:
+#: A leg does NOT carry a count of nights. How long anything lasts is a
+#: question for the destinations' `dates`, which are the authority on it;
+#: a number here would be a second answer free to disagree with them.
+#: `transit_spine.nights_in_transit` derives it instead. See
+#: docs/design/transit-segment-spine.md.
 LEG_ITEM_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["from", "to", "mode"],
@@ -297,25 +303,6 @@ LEG_ITEM_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": "Clock time the journey arrives, local to `to`. See "
                            "`depart_time`.",
-        },
-        "nights": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 30,
-            "description": "Nights the traveler spends IN TRANSIT on this leg -- "
-                           "aboard the ship, on the sleeper -- and therefore "
-                           "needs no bed at either end of it. Stated rather than "
-                           "derived, and this is the field's whole point: "
-                           "`depart_time: '18:00'` with `arrive_time: '08:00'` "
-                           "is the same pair of strings whether the arrival is "
-                           "the next morning or fourteen hours of the same day "
-                           "read off two clocks, and the two differ by whether "
-                           "the traveler is sleeping somewhere. Deriving it "
-                           "would mean a guide asserting a night aboard on the "
-                           "strength of arithmetic over times it was told not to "
-                           "compare. Omitted means the journey lands the day it "
-                           "left, which is every leg authored before this field "
-                           "existed; `0` says so explicitly.",
         },
     },
     "additionalProperties": False,
@@ -661,8 +648,10 @@ MANIFEST_SCHEMA: dict[str, Any] = {
                            "id. An alternative to per-destination `transport_mode` for "
                            "authors who think in journeys rather than in stops; both "
                            "may be used, but not to disagree about one leg. Beyond "
-                           "`mode`, a leg may state how long it takes, when it leaves "
-                           "and arrives, and how many nights are spent on it. See "
+                           "`mode`, a leg may state how long it takes and when it "
+                           "leaves and arrives. It does not state how many nights "
+                           "it spans: that is derived from the destinations' "
+                           "`dates`, which are the authority on length. See "
                            "docs/design/multimodal-routing.md 3.2 and "
                            "docs/design/transit-segment-spine.md.",
             "items": LEG_ITEM_SCHEMA,

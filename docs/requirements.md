@@ -398,11 +398,11 @@ provider and was missing from this list until 2026-09-22.
 | Block | Required | Description |
 |---|---|---|
 | `categories` | ❌ optional | Per-trip answers for the four priced discovery categories — `trails`, `cultural_events`, `en_route_stops`, `restaurants` — each a boolean or an object carrying `enabled`. The answer is sticky per trip, so enabling trails for the Southwest trip does not also buy them for Europe. Accepted nested under `trip` as well, and beaten by the paired CLI flags (`--trails`/`--no-trails` and friends) |
-| `legs` | ❌ optional | Per-leg journeys addressed by destination id, each `{from, to, mode}` plus the optional journey facts in §3.1.2. An alternative to per-destination `transport_mode` for authors who think in journeys rather than stops; both may be used, but not to disagree about one leg. See `docs/design/multimodal-routing.md` §3.2 |
+| `legs` | ❌ optional | Per-leg journeys addressed by destination id, each `{from, to, mode}` plus the optional journey facts in §3.1.2. A leg states no length in days or nights — `dates` are the authority on that (§3.1.2). An alternative to per-destination `transport_mode` for authors who think in journeys rather than stops; both may be used, but not to disagree about one leg. See `docs/design/multimodal-routing.md` §3.2 |
 
 ### 3.1.2 Authored Leg Shape (`legs[]`)
 
-`from`, `to` and `mode` are required and unchanged. The four fields below are
+`from`, `to` and `mode` are required and unchanged. The three fields below are
 additive and optional: a manifest written before them parses and renders
 exactly as it did.
 
@@ -411,6 +411,15 @@ travelled, and nothing else — so a nine-mile drive and a fourteen-hour
 overnight sailing carried identical fields, and no renderer could tell them
 apart. See `docs/design/transit-segment-spine.md`.
 
+**A leg does not state a length in days or nights.** `dates` on the
+destinations are this format's only expression of how long anything lasts,
+and they are the authority on it; a count on a leg would be a second answer
+free to disagree with them. Whether a leg spans a night is derived from the
+two stops' `dates` together with the leg's own `depart_time` and `duration`
+— see `transit_spine.nights_in_transit`. `duration` is not an exception: it
+is a transcribed display string like `dates` itself, never computed and never
+summed.
+
 | Field | Required | Description |
 |---|---|---|
 | `from` / `to` | ✅ | Destination `id`s, never display names. `to` must be the destination immediately after `from` in itinerary order |
@@ -418,7 +427,6 @@ apart. See `docs/design/transit-segment-spine.md`.
 | `duration` | ❌ optional | How long the journey takes, as the author states it (`2h40`, `14 hours`). A display string like `dates`, transcribed rather than computed. Distinct from the AI-generated `travel_time` on the arriving stop's getting-here content, which is a build's guess revised every run; this is what the author knows. Never inferred from `depart_time`/`arrive_time`, which may be on two clocks |
 | `depart_time` | ❌ optional | Clock time the journey leaves, **local to `from`**, exactly as the timetable states it. Same meaning and same no-normalization rule as `transportation[].depart_time` (§3.3.1) |
 | `arrive_time` | ❌ optional | Clock time the journey arrives, **local to `to`**. See `depart_time` |
-| `nights` | ❌ optional | Nights spent **in transit** on this leg — aboard the ship, on the sleeper — and so needing no bed at either end. Stated, never derived: `18:00` to `08:00` is the same pair of strings whether the arrival is next morning or the same day read off two clocks, and the two differ by whether the traveler sleeps somewhere. Omitted means the journey lands the day it left; `0` says so explicitly. Integer, 0–30 |
 
 ### 3.2 Auto-Resolved Fields (NOT in manifest)
 
