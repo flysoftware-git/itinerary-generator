@@ -35,7 +35,7 @@
       .spine-rail {
         position: relative;
         width: 2rem;
-        min-height: var(--spine-length, 3.5rem);
+        min-height: var(--spine-length, 4.5rem);
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -97,9 +97,16 @@
          old rendering had to cut the journey in two or lose the night. */
       .spine-daybreak {
         position: absolute;
-        left: -0.35rem;
-        right: -0.35rem;
-        top: 50%;
+        /* Wider than the rail on both sides, and wider still on the body
+           side, so it reads as a line crossing the journey rather than as a
+           tick on it. */
+        left: -0.5rem;
+        right: -1.5rem;
+        /* Below the mode marker rather than through it. The position says
+           only THAT a boundary is crossed, not when -- see
+           transit_spine.render_segment -- so it is free to sit wherever it
+           is legible, and under the marker it was neither. */
+        top: 68%;
         border-top: 1px dashed #b9a98e;
         pointer-events: none;
       }
@@ -143,11 +150,6 @@
         font-weight: 600;
         color: var(--sage);
       }
-      .spine-note {
-        margin: 0.4rem 0 0;
-        font-size: 0.85rem;
-        line-height: 1.5;
-      }
       .spine-stops {
         margin: 0.5rem 0 0;
         padding: 0;
@@ -157,7 +159,7 @@
       }
       /* On the way, not a stop of the itinerary: offset and un-bulleted so it
          reads as hanging off the rail rather than as another node on it. See
-         the open question in docs/design/transit-segment-spine.md §5.2. */
+         the open question in docs/design/transit-segment-spine.md §5. */
       .spine-stop {
         position: relative;
         padding-left: 0.85rem;
@@ -228,10 +230,6 @@ __BODY__
 <!--PARTIAL:overnight-->
     <p class="spine-overnight">__OVERNIGHT__</p>
 <!--/PARTIAL:overnight-->
-
-<!--PARTIAL:note-->
-    <p class="spine-note">__NOTE__</p>
-<!--/PARTIAL:note-->
 
 <!--PARTIAL:stops-->
     <p class="spine-stops-head">__STOPS_HEAD__</p>

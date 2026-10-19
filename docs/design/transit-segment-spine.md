@@ -159,25 +159,48 @@ component rather than its own copy of the idea.
 
 Not settled. Listed so they are argued rather than inherited.
 
-1. **What the rail carries per mode beyond an icon.** Today a marker and a
+1. **The spine duplicates the getting-here card's en-route stops.** Both
+   render the same places: the spine as a compact list hanging off the rail,
+   the card below as linked cards. The follow-up is for the spine to take
+   them over, which is not done here because the per-leg Google Maps URL is
+   derived from that card's own selection (`visible_stops` in
+   `_build_getting_here`) -- moving the stops means moving that derivation,
+   which is a change to link behaviour rather than to rendering.
+
+   `stretch_note` went the other way and is deliberately NOT drawn on the
+   segment, though it is the author's note about exactly this leg.
+   `requirements.md` §3.3 says it renders verbatim on the getting-here card,
+   and it still does. Whether it should move to the segment instead is the
+   open part; drawing it in both places is the one option that is wrong
+   whichever way that is settled.
+
+2. **A rail is at least as long as what is said about the journey.** The
+   segment is a two-column grid, so the row is as tall as its taller side.
+   On a leg with several en-route stops the body wins and the rail stops
+   carrying duration for that segment. Capping the body instead would mean
+   hiding content to protect a visual metaphor, which is the wrong trade --
+   but it does mean length is a reliable signal only while the bodies are
+   short.
+
+3. **What the rail carries per mode beyond an icon.** Today a marker and a
    glyph. A sailing, a train and a drive differ in ways a reader plans around —
    whether there is a cabin, whether you can leave your seat — and none of that
    is on the rail.
 
-2. **Whether an en-route suggestion is a node on the rail or a block beside
+4. **Whether an en-route suggestion is a node on the rail or a block beside
    it.** Currently a block beside it: the rail's nodes are stops the itinerary
    is built from, and promoting a suggestion to a node would say the traveler
    is stopping there when the point is that they might. The counter-argument is
    that a thing on the road genuinely is on the road, and a reader scanning the
    rail for "what happens between these two places" will not look to the side.
 
-3. **Whether the length scale should be per-trip rather than fixed.** A
+5. **Whether the length scale should be per-trip rather than fixed.** A
    cruise's legs are all long and a road trip's are all short, so a fixed scale
    makes one guide's rails uniformly tall and another's uniformly flat, which
    is the opposite of carrying duration. Normalizing per trip would make
    lengths comparable within a guide and meaningless across guides.
 
-4. **Whether `see_on_the_way` belongs on a leg after all** (§2.3). The
+6. **Whether `see_on_the_way` belongs on a leg after all** (§2.3). The
    argument against is the drift class. The argument for is that
    `en_route_seeds` is name-hints-only by rule, so an author who knows *why* a
    stop is worth it still cannot say so — only discovery can, and it is
