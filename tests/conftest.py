@@ -108,3 +108,24 @@ def no_real_dns_rechecks(monkeypatch):
         url_discovery_mod, "_host_resolves",
         lambda host: host in url_discovery_mod.DNS_HEALTH_CANARIES,
     )
+
+
+@pytest.fixture(autouse=True)
+def routing_breaker_starts_closed():
+    """Every test begins with the routing circuit breaker closed.
+
+    The breaker is module-level state -- one process, one build, one router --
+    which is right for a build and for the long-running app that imports this,
+    and wrong for a suite that exercises failure paths deliberately.
+
+    Without this, 60 tests failed on the breaker's first run: a test that
+    induces routing failures leaves the circuit open, and every later test that
+    routes a leg gets an immediate None from a breaker it never asked for. The
+    tests were correct and the shared state was invisible to them, which is the
+    kind of failure that gets blamed on the wrong change.
+    """
+    import generator.routing as routing_mod
+
+    routing_mod.reset_breaker()
+    yield
+    routing_mod.reset_breaker()
