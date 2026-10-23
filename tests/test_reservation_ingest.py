@@ -541,7 +541,7 @@ def test_gmail_login_failure_names_the_two_common_misconfigurations(monkeypatch)
 
     with pytest.raises(RuntimeError) as excinfo:
         mod.fetch_unseen_messages(
-            host="imap.gmail.com", user="TripTips.Reservations", password="x" * 23,
+            host="imap.gmail.com", user="reservations.inbox", password="x" * 23,
         )
 
     message = str(excinfo.value)
