@@ -59,34 +59,32 @@ template:
 # archive has usually done so to stop sending traffic to OSMF.
 map:
   tiles:
-    # Our own PMTiles archive, not OSMF's volunteer tile servers.
+    # OSMF's volunteer tile servers, which is the default a fresh clone should
+    # get: no account, no bucket, no bill, and it draws.
     #
-    # WHY IT MOVED. A guide opened from disk -- which is what a guide emailed to
-    # somebody is -- had every tile replaced by OSM's "App is not following the
-    # tile usage policy" image. Measured 2026-10-16: the published pages were
-    # fine (https origin, real Referer) and a local file was refused. The policy
-    # this section's comment warns about above is aimed at exactly that case,
-    # and no amount of configuration makes a distributed file comply.
+    # BUT READ THIS BEFORE YOU DISTRIBUTE A GUIDE AS A FILE. A guide opened
+    # from disk -- which is what a guide emailed to somebody is -- has every
+    # tile replaced by OSM's "App is not following the tile usage policy"
+    # image. Measured 2026-10-16: a page served over https with a real Referer
+    # was fine and the same page opened as `file://` was refused. The policy
+    # the comment above warns about is aimed at exactly that case, and no
+    # amount of configuration makes a distributed file comply.
     #
-    # The archive is three regions cut from Protomaps' planet build at z0-12 --
-    # the US Southwest, Tennessee/North Carolina and the Low Countries through
-    # Czechia -- in ONE file rather than one per region. PMTiles is range
-    # addressed, so a reader fetches only the bytes its map needs and a larger
-    # archive costs storage, not load time. One file also means one URL here,
-    # with no per-build config and no way to point a Europe guide at a US
-    # archive. `scripts/` has no cutter; it lives beside the archive in the
-    # owner's sandbox, because cutting is a once-a-year act, not a build step.
+    # So if you publish guides as files rather than as pages, serve your own
+    # basemap: set `kind: pmtiles` and point `url` at a PMTiles archive you
+    # host. The renderer supports it (see `kind` above) and a worked setup is
+    # three regions cut from Protomaps' planet build at z0-12 in ONE file --
+    # PMTiles is range addressed, so a reader fetches only the bytes its map
+    # needs and a larger archive costs storage rather than load time. Keep the
+    # bucket public and keyless: a key in a guide that gets emailed is a key
+    # given away.
     #
-    # The bucket is public and needs no key. A key in a guide that gets emailed
-    # is a key given away, which is why this is not a commercial tile provider.
-    kind: pmtiles
-    url: "https://maps.chosenroutes.com/basemap.pmtiles"
-    flavor: light
-    lang: en
+    # The default is deliberately NOT a hosted archive. A URL here is a service
+    # every clone of this project would fetch from, and this repository should
+    # not point at one it does not operate.
+    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
     attribution: "© OpenStreetMap contributors"
-    # 12, not 13: the archive stops there. Asking for a zoom the data does not
-    # have draws nothing at the deepest level, and the renderer does not say so.
-    max_zoom: 12
+    max_zoom: 13
 
 # ── Azure OpenAI ─────────────────────────────────────────────────────────────
 ai:

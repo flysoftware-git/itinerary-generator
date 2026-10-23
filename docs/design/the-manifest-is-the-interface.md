@@ -121,9 +121,14 @@ content, not an attachment. The owner, 2026-10-01, on an earlier draft that
 argued otherwise:
 
 > *"the security issue is not relevant as suppression of content already
-> provided, at generator via -private or upstream by planner, is entirely
-> dependent upon security of generated manifests themselves, which should remain
-> as an asset of potential long-term value for the endeavor."*
+> provided […] is entirely dependent upon security of generated manifests
+> themselves […]"*
+
+**Quoted in part.** The two elisions drop deployment specifics and a remark on
+the manifests' longer-term value; neither bears on the question this section
+answers, which is whether bookings are part of the format. They are marked
+rather than silently closed up, because a quotation that reads more fluently
+than the original is the one nobody thinks to check.
 
 The draft had confused ingestion hygiene with the format: the reservations
 sidecar exists so that *ingested confirmation emails* do not land in a file an
