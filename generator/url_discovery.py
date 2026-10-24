@@ -10656,8 +10656,12 @@ class URLDiscoverer:
 
         That single rule is the difference between reporting trails that meet
         the criteria and reporting trails that could not be measured. On the
-        Springdale bake-off it is why the archive-read scores were 2 and 1
-        where the shipped filter would have said 5 and 6. Elevation gain is
+        Springdale bake-off it is why the archive-read scores were 1 and 1
+        where the shipped filter would have said 5 and 6 -- and the first of
+        those was 2 until the grading of one trail was re-read: the harness
+        folded `moderately challenging` into `moderate`, through a duplicate
+        dict key, and so counted a trail the shipped
+        `["easy", "moderate"]` excludes. Elevation gain is
         the binding criterion and it is unknown far more often than it is
         present -- only a snapshot carrying the full *"covers X, with an
         elevation gain of Y"* sentence has it -- so expect this to withhold
