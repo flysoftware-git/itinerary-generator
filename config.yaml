@@ -709,6 +709,36 @@ url_discovery:
   restaurant_passes: 2
   max_trail_miles: 3
   allow_blocked_alltrails: true
+  # Withhold an AllTrails trail link that archive.org has never crawled, and
+  # read this trail's length, elevation gain and difficulty off that snapshot
+  # instead of off the live page.
+  #
+  # WHY THIS EXISTS. AllTrails answers 403 for every trail page through
+  # DataDome -- measured 2026-10-22 on six URLs, three real and three
+  # fabricated, byte-identical at 773 bytes, on this app's User-Agent and on a
+  # browser's, while `alltrails.com/` itself answered 200. So the live page
+  # cannot say which of the two it is holding, `allow_blocked_alltrails` above
+  # let the blocked one publish, and the four `alltrails_filter_*` settings
+  # below fetched that page for their metadata and passed on failure. **An
+  # invented slug reached a card exactly like a real trail, and the filters
+  # never executed on any path, because every path is blocked.**
+  #
+  # The archive is a different requester at a different domain, so DataDome
+  # does not reach it; it is free and needs no key; and a page that was never
+  # crawled was never a page. Perfect discrimination on the same six URLs, and
+  # confirmed end to end 2026-10-23: `parus-trail` published at 3.3 mi / 141 ft
+  # / easy, while `pa-rus-trail` -- a near-miss slug for that same real trail
+  # -- was withheld along with the three fabrications.
+  #
+  # TWO THINGS TO KNOW BEFORE TURNING IT OFF. It fails OPEN whenever the
+  # archive could not be ASKED: a throttle, a timeout or an unreadable answer
+  # keeps today's behaviour, because "could not ask" is not "never existed".
+  # And an unknown criterion is never a pass, so a real trail whose archived
+  # page does not state its elevation gain loses its link -- gain was unknown
+  # on 3 of 5 and 5 of 6 valid results in the Springdale bake-off. That is the
+  # intended direction: a link the engine cannot stand behind is not published
+  # as though it could. `false` restores the old fail-open behaviour whole.
+  require_alltrails_archive_validation: true
   alltrails_min_confidence_for_publish: "medium"
   alltrails_request_delay_seconds: 0.8
   alltrails_block_cooldown_seconds: 8
