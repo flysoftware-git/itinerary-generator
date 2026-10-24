@@ -288,6 +288,89 @@ A configurable frozenset of known-invalid AllTrails URL slugs, populated from
 - Intended for slugs that return 404/redirect-to-different-entity in browser but
   return 403 to bots, making automated detection impossible.
 
+## AllTrails Archive Validation — the gate that decides whether a trail exists
+**Landed 2026-10-23.** `require_alltrails_archive_validation` in
+`config.yaml`, on by default. Every figure below was measured; this section is
+self-contained on purpose, so it carries them rather than pointing at them.
+
+**The defect.** AllTrails answers **403 for every trail page, real or
+invented, byte-identical at 773 bytes**, on this app's User-Agent and on a
+browser's, while `alltrails.com/` itself answers 200 — the same DataDome
+protection the Wayback section below already documents, seen from the
+validity side rather than the geo side. Two shipped behaviours followed:
+
+- `classify_link_liveness` calls a 403 `unchecked`, `unchecked` publishes, and
+  `allow_blocked_alltrails: true` is set — so **a slug a model invented
+  reached a card on exactly the same footing as a real trail.** The slug
+  denylist above is the manual version of this problem: *"slugs that return
+  404 in a browser but 403 to bots, making automated detection impossible."*
+  It is no longer impossible, and the denylist is no longer the only answer.
+- `_passes_alltrails_post_search_filters` fetched the page for its metadata
+  and returned True on failure to *"preserve fail-open behavior"*, with each
+  of its four tests guarded by `if <value> is not None`. So **the
+  `alltrails_filter_*` settings could not bind on a path that is blocked,
+  which is every path.** They were not wrong; they were unreachable.
+
+**The gate.** `_alltrails_archive_verdict` asks the Wayback CDX lookup below
+— a different requester at a different domain, so DataDome does not reach it,
+free and keyless — and answers one of three things:
+
+| Verdict | Meaning | Effect |
+|---|---|---|
+| `archived` | a `statuscode:200` snapshot exists | the link is real; its criteria are read from that snapshot |
+| `never_archived` | the lookup **answered** and named no snapshot | **withheld.** A page that was never crawled was never a page |
+| `unknown` | the lookup could not be **asked** — 429, 5xx, timeout, unreadable answer, or an archived snapshot whose playback failed | today's behaviour stands: publishes, marked `unchecked` |
+
+**That third row is the load-bearing one.** *Could not ask* is not *never
+existed*, and the Wayback section below measures archive.org answering 429 on
+20 of 20 real trail URLs under humble, correctly-paced volume. Conflating them
+would strip a guide of good links during an ordinary archive.org wobble. Only
+`WAYBACK_NO_SNAPSHOT` — set when CDX answered and had no usable rows, as
+distinct from `WAYBACK_CDX_UNREADABLE` — withholds anything.
+
+**The criteria, read from the snapshot** (`_parse_alltrails_page_criteria`),
+and **an unknown criterion is never a pass.** That one rule is the difference
+between reporting trails that meet the criteria and reporting trails that
+could not be measured, and it is why three of the four filter settings now
+execute while `alltrails_filter_min_reviews` does not. The parser is
+`scripts/trail_bakeoff.py`'s, re-used rather than re-derived, because four of
+its defects each produced a confident wrong value rather than a blank:
+patterns must run against **tag-stripped** text (a `<span>` sits between every
+number and its unit); the grading comes from a **sentence**, never the
+`difficulty-*` class, which appears **26 to 39 times per page across four
+gradings**; units are **parsed**, since snapshots come in both systems; and a
+page that **grades itself twice and disagrees** is read at its harder grading.
+
+**What it costs in TIME, which is the question three sections of this
+project's cost work keep asking.** Money: nothing. archive.org is free and
+keyless, and no search provider or model is called. Time is the real figure,
+and most of it is **moved rather than added**: the gate and
+`_alltrails_geo_maps_url` call `_fetch_wayback_alltrails_text` with the same
+original trail URL, so they share one cache entry, and for a trail that passes
+the gate the geo lookup that follows is a **cache hit** rather than a second
+round trip. What is genuinely new is a CDX lookup for each trail that is
+WITHHELD — a request that previously never happened, because the link
+published unexamined.
+
+The bound is the pacing rather than the volume: `wayback_request_delay_seconds`
+is 1.0 and the fetch holds a lock, so the archive work for a destination is
+serial. **This has not been measured on a real build**, and saying so is the
+point — a per-build figure needs a paid run, and the only honest statement
+without one is the shape: one extra serialized request per withheld trail, on
+a path whose accepted trails were already paying for the same fetch.
+
+A seed is exempt from the criteria — the traveller named that trail — and
+not from existing: `_alltrails_url_meets_seed_relaxed_standard` asks the same
+validity question, and a withheld seed keeps its place on the page and loses
+only a link that was never one.
+
+Guarded by `tests/test_an_alltrails_link_is_validated_through_the_archive.py`.
+Confirmed end to end against the live archive 2026-10-23: `parus-trail`
+published at 3.3 mi / 141 ft / easy; `angels-landing-trail` archived at 4.8 mi
+with its gain genuinely unreadable, so withheld; `emerald-pools-trail`
+archived and grading itself twice; and four slugs withheld — three
+fabrications plus `pa-rus-trail`, a near-miss on that same real trail.
+
 ## AllTrails Trailhead Geo Maps Link
 Project owner ask: "a map link for each AllTrails trail that will take you to
 the trail" — AllTrails' own "Get Directions" button is client-JS-driven with no

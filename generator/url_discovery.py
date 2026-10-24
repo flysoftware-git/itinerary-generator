@@ -378,6 +378,32 @@ DEFAULT_SKI_ATTRACTION_KEYWORDS = (
 DEFAULT_SKI_IN_SEASON_MONTHS = (11, 12, 1, 2, 3, 4)
 DEFAULT_MAX_TRAIL_MILES = 3.0
 DEFAULT_ALLOW_BLOCKED_ALLTRAILS = True
+#: Withhold an AllTrails trail link that archive.org has never crawled.
+#:
+#: AllTrails answers 403 for every trail page, real or invented, through
+#: DataDome -- measured 2026-10-22 on six URLs, three real and three
+#: fabricated, byte-identical at 773 bytes on this app's User-Agent and on
+#: a browser's. `alltrails.com/` itself answers 200, so it is page-level
+#: bot protection rather than a network block. Two things followed from
+#: that, and both were shipped behaviour: `classify_link_liveness` calls a
+#: 403 `unchecked` rather than `dead`, `unchecked` publishes, and
+#: `allow_blocked_alltrails` is set -- so a slug an LLM invented reached a
+#: card on exactly the same footing as a real trail; and
+#: `_passes_alltrails_post_search_filters` fetched the page for its
+#: metadata and returned True on failure, so the filter settings below it
+#: could never bind on a path that is blocked, which is every path.
+#:
+#: The archive answers what the page will not. A trail that has never been
+#: archived has never been a page: perfect discrimination on the same six
+#: URLs. archive.org is a different requester at a different domain, so
+#: DataDome does not reach it, and it costs nothing and needs no key.
+#:
+#: Fails OPEN whenever the archive could not be ASKED -- a CDX transport
+#: error, a timeout, an unreadable response -- because `could not ask` is
+#: not `never existed`, and archive.org is measured (see
+#: `_fetch_wayback_alltrails_text`) to go through stretches of 429s. Only
+#: an answered lookup that found no snapshot withholds a link.
+DEFAULT_REQUIRE_ALLTRAILS_ARCHIVE_VALIDATION = True
 DEFAULT_ALLTRAILS_MIN_CONFIDENCE_FOR_PUBLISH = "high"
 DEFAULT_ALLTRAILS_REQUEST_DELAY_SECONDS = 0.8
 DEFAULT_ALLTRAILS_BLOCK_COOLDOWN_SECONDS = 8.0
@@ -563,6 +589,13 @@ LINK_REDIRECT_UNCHECKED = "unchecked"
 # nonprofit resource, not a target to hammer, and this path only fires when
 # the (already-throttled) direct AllTrails fetch has already failed.
 DEFAULT_WAYBACK_REQUEST_DELAY_SECONDS = 1.0
+#: `_fetch_wayback_alltrails_text`'s status when the CDX lookup SUCCEEDED
+#: and named no snapshot. The only status that means a URL was never a
+#: page, and so the only one `_alltrails_is_archived` withholds on.
+WAYBACK_NO_SNAPSHOT = "no_snapshot"
+#: And when CDX answered with something this cannot read. A malfunction,
+#: not an absence -- see the comment beside `readable` in that function.
+WAYBACK_CDX_UNREADABLE = "cdx_unreadable"
 # Route distance/time already has a solid Haversine-estimate fallback that
 # costs zero network calls -- the live Google Maps directions HTML scrape is
 # a pure accuracy enhancement on top of it, not a correctness gate, and (like
@@ -1208,6 +1241,9 @@ class URLDiscoverer:
         self._ski_in_season_months: tuple[int, ...] = DEFAULT_SKI_IN_SEASON_MONTHS
         self._max_trail_miles: float = DEFAULT_MAX_TRAIL_MILES
         self._allow_blocked_alltrails: bool = DEFAULT_ALLOW_BLOCKED_ALLTRAILS
+        self._require_alltrails_archive_validation: bool = (
+            DEFAULT_REQUIRE_ALLTRAILS_ARCHIVE_VALIDATION
+        )
         self._alltrails_min_confidence_for_publish: str = DEFAULT_ALLTRAILS_MIN_CONFIDENCE_FOR_PUBLISH
         self._alltrails_request_delay_seconds: float = DEFAULT_ALLTRAILS_REQUEST_DELAY_SECONDS
         self._alltrails_block_cooldown_seconds: float = DEFAULT_ALLTRAILS_BLOCK_COOLDOWN_SECONDS
@@ -1408,6 +1444,13 @@ class URLDiscoverer:
 
             allow_blocked = url_cfg.get("allow_blocked_alltrails", DEFAULT_ALLOW_BLOCKED_ALLTRAILS)
             self._allow_blocked_alltrails = bool(allow_blocked)
+
+            self._require_alltrails_archive_validation = bool(
+                url_cfg.get(
+                    "require_alltrails_archive_validation",
+                    DEFAULT_REQUIRE_ALLTRAILS_ARCHIVE_VALIDATION,
+                )
+            )
 
             min_conf = str(
                 url_cfg.get(
@@ -10126,6 +10169,16 @@ class URLDiscoverer:
         if not self._alltrails_slug_matches_item(url, item_name):
             return False
 
+        # A seed is exempt from the length/gain/difficulty gate, because the
+        # traveller named that trail. It is not exempt from EXISTING: the slug
+        # on a seed's link was still found by a search or proposed by a model,
+        # and a fabricated one answers 403 exactly like a real one. Withholding
+        # it costs the seed its link and nothing else -- the item stays, and
+        # renders unverified -- which is the right trade against publishing a
+        # URL that has never been a page under a trail the traveller asked for.
+        if self._alltrails_link_is_fabricated(url, item_name):
+            return False
+
         return True
 
     def _passes_alltrails_post_search_filters(self, url: str | None, item_name: str, dest_name: str) -> bool:
@@ -10144,8 +10197,36 @@ class URLDiscoverer:
         if not ok or not text:
             if self._is_definitively_dead_status(status):
                 return False
-            # Preserve fail-open behavior for bot-blocked/transient fetch failures.
-            return True
+            # The direct fetch failed, which in production is not the rare
+            # case but every case: DataDome answers 403 for every trail page.
+            # This used to return True here -- "preserve fail-open behavior
+            # for bot-blocked/transient fetch failures" -- and that one line
+            # is why the ten `alltrails_filter_*` settings never executed and
+            # why an invented slug published like a real trail. Ask the
+            # archive instead, which answers both halves of the question.
+            if not bool(
+                getattr(
+                    self,
+                    "_require_alltrails_archive_validation",
+                    DEFAULT_REQUIRE_ALLTRAILS_ARCHIVE_VALIDATION,
+                )
+            ):
+                return True
+            verdict, snapshot_html = self._alltrails_archive_verdict(url)
+            if verdict == "never_archived":
+                logger.info(
+                    "AllTrails URL withheld for '%s': archive.org has never "
+                    "crawled %s, so it has never been a page",
+                    item_name,
+                    url,
+                )
+                return False
+            if verdict != "archived":
+                # The archive could not be ASKED. Not the same answer, and
+                # not grounds to withhold -- today's behaviour stands and the
+                # link publishes marked unchecked.
+                return True
+            return self._alltrails_snapshot_meets_criteria(url, snapshot_html, item_name)
 
         meta = self._extract_alltrails_candidate_metadata(
             {
@@ -10326,6 +10407,396 @@ class URLDiscoverer:
         if re.search(r"\b(hard|difficult|challenging|strenuous)\b", t):
             return "hard"
         return None
+
+    # ------------------------------------------------------------------
+    # Reading a trail's criteria off an archived snapshot.
+    #
+    # NOT `_extract_alltrails_candidate_metadata`, which is tuned for a
+    # search result's title-and-snippet blob. Run against a whole trail
+    # PAGE its sub-extractors produce confident wrong values rather than
+    # blanks, which is the one direction that matters here: on the shipped
+    # filter an unknown criterion is scored as a pass. Four such defects
+    # were measured on 2026-10-22 while building `scripts/trail_bakeoff.py`
+    # against real snapshots, and each is answered by one of the patterns
+    # below. This is that harness's logic, re-used rather than re-derived.
+    # ------------------------------------------------------------------
+
+    _MI_PER_KM = 0.621371
+    _FT_PER_M = 3.28084
+
+    #: AllTrails' own gradings -> the words
+    #: `alltrails_filter_allowed_difficulties` is written in.
+    #:
+    #: Deliberately keeps "moderately challenging" as ITSELF rather than
+    #: folding it into "moderate", which is what the bake-off harness does.
+    #: `_extract_alltrails_difficulty` has always returned it as a fourth
+    #: bucket and the shipped `["easy", "moderate"]` therefore rejects it;
+    #: folding it in here would quietly admit a grade the configuration has
+    #: been excluding, which is a policy change and not a parser fix.
+    _ALLTRAILS_DIFFICULTY_WORDS = {
+        "easy": "easy",
+        "moderate": "moderate",
+        "moderately challenging": "moderately challenging",
+        "hard": "hard",
+        "very hard": "hard",
+        "difficult": "hard",
+        "challenging": "hard",
+        "highly challenging": "hard",
+        # Measured: Angels Landing's snapshot says "strenuous", which no map
+        # had. It failed the filter correctly by accident -- "strenuous" is
+        # in no allowed list -- but an unmapped word reads as a difficulty of
+        # its own rather than as hard.
+        "strenuous": "hard",
+    }
+
+    #: The summary sentence, which is the only place all three criteria appear
+    #: together, e.g. *"moderate hike that covers 3.3 mi, with an elevation
+    #: gain of 141 ft"*. Units are PARSED, not assumed: the 2026-10-07
+    #: Delicate Arch snapshot is metric ("covers 5.1 km ... gain of 193 m").
+    _ALLTRAILS_SUMMARY_RE = re.compile(
+        r"covers\s*([\d.,]+)\s*(km|kilometers?|mi|miles?)\s*,?\s*"
+        r"with an elevation gain of\s*([\d.,]+)\s*(m|meters?|ft|feet)",
+        re.I,
+    )
+    #: A second, independent reading of the length, for a snapshot whose
+    #: summary sentence is absent. Deliberately NOT "Length" followed by a
+    #: number: on the Delicate Arch snapshot the markup renders `Length` and
+    #: `193 m` adjacently, where 193 m is the elevation GAIN, so a
+    #: label-proximity parse reads the gain as the length.
+    _ALLTRAILS_DESC_LEN_RE = re.compile(
+        r"this\s+([\d.,]+)[\s-]*(km|kilometers?|mi|miles?)\b", re.I
+    )
+    #: **The difficulty is a SENTENCE, and only a sentence.** A trail page
+    #: carries cards for NEIGHBOURING trails and a row of filter controls,
+    #: each with its own `difficulty-*` class, so the first class on the page
+    #: need not be this trail's: the class-first read called Lower Emerald
+    #: Pool `hard` where its own page says *"Generally considered an easy
+    #: route"*, and an 8.9-mile challenging route `moderate`. A sentence is
+    #: inside this trail's own description and cannot belong to another card.
+    #: See the note below on why the class is not kept even as a fallback.
+    _ALLTRAILS_DIFFICULTY_SENTENCE_RE = re.compile(
+        r"considered\s+an?\s+([a-z][a-z ]{2,28}?)\s+(?:route|hike|trail|ride)", re.I
+    )
+    #: And the grading often sits inside the SUMMARY sentence instead --
+    #: measured on the Pa'rus snapshot, which reads *"moderate hike that
+    #: covers 3.3 mi, with an elevation gain of 141 ft"* and carries no
+    #: "considered a ..." clause at all. Safe for the same reason as the
+    #: sentence above and not for a weaker one: the words are inside this
+    #: trail's own summary, so they cannot be a neighbouring card's grading.
+    #: Without this a metric snapshot read length and gain correctly and then
+    #: failed on difficulty unknown, which is the rule working on a blank the
+    #: page had actually filled in.
+    _ALLTRAILS_DIFFICULTY_SUMMARY_RE = re.compile(
+        r"\b(easy|moderately challenging|moderate|very hard|highly challenging"
+        r"|challenging|difficult|strenuous|hard)\s+(?:hike|route|trail|ride)\s+"
+        r"that\s+covers\b",
+        re.I,
+    )
+    #: **THE DIFFICULTY CSS CLASS IS NOT READ, AND NOT BECAUSE THE PATTERN
+    #: WAS LOOSE.** A loose `difficulty-([a-z]+)` matched a neighbouring class
+    #: and read `difficulty=and` on five of eight snapshots, which looks like a
+    #: pattern defect and was fixed as one -- constrained to the actual
+    #: gradings. Measured live 2026-10-23, that fix was answering the wrong
+    #: question. The constrained pattern matches real AllTrails markup
+    #: perfectly well, **26 times on the Emerald Pools snapshot and 39 on
+    #: Angels Landing, spanning `easy`, `moderate`, `strenuous` and `hard` on
+    #: ONE page** -- the cards for neighbouring trails and the filter controls.
+    #: So `re.search` returns whichever grading the markup happens to put
+    #: first, and a tighter pattern makes that coin flip better spelled rather
+    #: than likelier to be this trail's.
+    #:
+    #: There is nothing to salvage, so the class is gone rather than
+    #: constrained. All three snapshots that were read end to end carried the
+    #: grading in a sentence, so the fallback never had to answer; where no
+    #: sentence says, difficulty is UNKNOWN, and an unknown criterion is never
+    #: a pass. That withholds a link, which is the safe direction, instead of
+    #: publishing a strenuous hike to somebody who filtered for easy ones
+    #: because a filter button appeared earlier in the HTML.
+    #: Increasing hardness, for the case below where a page grades itself
+    #: twice and the two gradings disagree.
+    _ALLTRAILS_DIFFICULTY_ORDER = ("easy", "moderate", "moderately challenging", "hard")
+
+    _ALLTRAILS_PAGE_ENTITIES = {
+        "&amp;": "&", "&#x27;": "'", "&quot;": '"', "&nbsp;": " ",
+        "&#39;": "'", "&lt;": "<", "&gt;": ">",
+    }
+
+    @classmethod
+    def _alltrails_page_text(cls, html: str) -> str:
+        """Tags out, entities in, whitespace collapsed -- and this is
+        load-bearing rather than tidying.
+
+        Measured on the 2025-09-24 Pa'rus Trail snapshot: the summary sentence
+        is real and reads *"covers 3.3 mi, with an elevation gain of 141 ft"*,
+        but in the MARKUP each number is separated from its unit by a
+        `<span class="TrailStats_statVal...">`, so a pattern run over raw HTML
+        matches nothing at all. The bake-off's first run read **gain as
+        unknown on all four valid trails** for exactly that reason. The
+        Delicate Arch snapshot happens to have them contiguous, which is why
+        the pattern passed its first check and failed on the next five.
+        """
+        text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", str(html or ""))
+        text = re.sub(r"<[^>]+>", " ", text)
+        for entity, char in cls._ALLTRAILS_PAGE_ENTITIES.items():
+            text = text.replace(entity, char)
+        return re.sub(r"\s+", " ", text)
+
+    @classmethod
+    def _parse_alltrails_page_criteria(cls, html: str) -> dict[str, Any]:
+        """Length, elevation gain and difficulty out of a trail page or an
+        archived snapshot of one. **Unknown stays unknown** -- never a
+        default, never the nearest readable number.
+        """
+        text = cls._alltrails_page_text(html)
+        out: dict[str, Any] = {
+            "miles": None,
+            "gain_feet": None,
+            "difficulty": None,
+            "difficulty_said": None,
+            "difficulty_from": None,
+            "raw": "",
+        }
+
+        def _num(value: str) -> float | None:
+            try:
+                return float(str(value).replace(",", ""))
+            except (TypeError, ValueError):
+                return None
+
+        match = cls._ALLTRAILS_SUMMARY_RE.search(text)
+        if match:
+            length, length_unit, gain, gain_unit = match.groups()
+            value = _num(length)
+            if value is not None:
+                out["miles"] = round(
+                    value * cls._MI_PER_KM
+                    if length_unit.lower().startswith("k")
+                    else value,
+                    2,
+                )
+            gain_value = _num(gain)
+            if gain_value is not None:
+                out["gain_feet"] = int(
+                    round(
+                        gain_value * cls._FT_PER_M
+                        if gain_unit.lower().startswith("m")
+                        else gain_value
+                    )
+                )
+            out["raw"] = re.sub(r"\s+", " ", match.group(0))[:120]
+        else:
+            fallback = cls._ALLTRAILS_DESC_LEN_RE.search(text)
+            if fallback:
+                value = _num(fallback.group(1))
+                if value is not None:
+                    out["miles"] = round(
+                        value * cls._MI_PER_KM
+                        if fallback.group(2).lower().startswith("k")
+                        else value,
+                        2,
+                    )
+                out["raw"] = re.sub(r"\s+", " ", fallback.group(0))[:120]
+
+        # A TRAIL PAGE CAN GRADE ITSELF TWICE AND DISAGREE WITH ITSELF.
+        # Measured live 2026-10-23 on the Emerald Pools Trail snapshot, which
+        # says *"Generally considered a moderately challenging route"* in its
+        # lede AND *"is considered a moderate hike that covers 3 mi, with an
+        # elevation gain of 580 ft"* further down. Both are this trail's own
+        # prose, so the provenance argument that rules out a neighbouring
+        # card's grading does not settle which to believe -- it is true and
+        # insufficient. Neither sentence is more canonical than the other on
+        # inspection, so this takes the HARDER, which needs no such claim: a
+        # page saying both means the trail is at least that hard, and the two
+        # errors are not symmetric. Reading it too hard withholds a link;
+        # reading it too easy publishes a hike the configured policy excludes,
+        # to a traveller who filtered for easy ones. Same direction as the
+        # rule that an unknown criterion is never a pass.
+        #
+        # `scripts/trail_bakeoff.py` folds "moderately challenging" into
+        # "moderate" and so scored this trail as QUALIFYING. Against the
+        # shipped `["easy", "moderate"]` it does not -- and it is one of only
+        # two trails that harness found to meet all three criteria in the
+        # Springdale measurement, so the fold is the whole of that result.
+        readings: list[tuple[str, str, str]] = []
+        sentence = cls._ALLTRAILS_DIFFICULTY_SENTENCE_RE.search(text)
+        if sentence:
+            phrase = re.sub(r"\s+", " ", sentence.group(1).strip().lower())
+            graded = cls._ALLTRAILS_DIFFICULTY_WORDS.get(phrase)
+            if graded:
+                readings.append((graded, phrase, "sentence"))
+            else:
+                # An ungraded phrase stays UNKNOWN rather than being coerced.
+                # A word this map has not seen is not evidence of a grade.
+                out["difficulty_said"] = phrase
+                out["difficulty_from"] = f"sentence (unmapped: {phrase!r})"
+        summary_grade = cls._ALLTRAILS_DIFFICULTY_SUMMARY_RE.search(text)
+        if summary_grade:
+            phrase = summary_grade.group(1).strip().lower()
+            graded = cls._ALLTRAILS_DIFFICULTY_WORDS.get(phrase)
+            if graded:
+                readings.append((graded, phrase, "summary sentence"))
+        if readings:
+            order = cls._ALLTRAILS_DIFFICULTY_ORDER
+            graded, said, source = max(readings, key=lambda r: order.index(r[0]))
+            out["difficulty"] = graded
+            out["difficulty_said"] = said
+            out["difficulty_from"] = source
+            if len({r[0] for r in readings}) > 1:
+                out["difficulty_from"] = (
+                    f"{source}; hardest of "
+                    + ", ".join(f"{r[1]!r} ({r[2]})" for r in readings)
+                )
+        return out
+
+    def _alltrails_snapshot_meets_criteria(
+        self, url: str, snapshot_html: str, item_name: str
+    ) -> bool:
+        """The three criteria the owner asked to filter on, against the only
+        channel that answers -- and **an unknown criterion is never a pass.**
+
+        That single rule is the difference between reporting trails that meet
+        the criteria and reporting trails that could not be measured. On the
+        Springdale bake-off it is why the archive-read scores were 2 and 1
+        where the shipped filter would have said 5 and 6. Elevation gain is
+        the binding criterion and it is unknown far more often than it is
+        present -- only a snapshot carrying the full *"covers X, with an
+        elevation gain of Y"* sentence has it -- so expect this to withhold
+        real trails whose archived page does not say. That is the intended
+        direction: a link the engine cannot stand behind is not published as
+        though it could.
+
+        `alltrails_filter_min_reviews` is NOT enforced here, and that is the
+        one of the four settings that stays dead. Nothing measured says a
+        snapshot carries THIS trail's review count distinguishably from a
+        neighbouring card's, and the whole point of the rule above is to stop
+        acting on a number whose provenance is not established.
+        """
+        meta = self._parse_alltrails_page_criteria(snapshot_html)
+
+        filter_max_miles = float(
+            getattr(self, "_alltrails_filter_max_miles", DEFAULT_ALLTRAILS_FILTER_MAX_MILES) or 0
+        )
+        publish_max_miles = float(
+            getattr(self, "_max_trail_miles", DEFAULT_MAX_TRAIL_MILES) or 0
+        )
+        candidates = [v for v in (filter_max_miles, publish_max_miles) if v and v > 0]
+        effective_max_miles = min(candidates) if candidates else 0.0
+
+        max_gain = int(
+            getattr(self, "_alltrails_filter_max_gain_feet", DEFAULT_ALLTRAILS_FILTER_MAX_GAIN_FEET)
+            or 0
+        )
+        allowed = {
+            str(item or "").strip().lower()
+            for item in getattr(
+                self,
+                "_alltrails_filter_allowed_difficulties",
+                DEFAULT_ALLTRAILS_FILTER_ALLOWED_DIFFICULTIES,
+            )
+            if str(item or "").strip()
+        }
+
+        miles = meta.get("miles")
+        gain_feet = meta.get("gain_feet")
+        difficulty = str(meta.get("difficulty") or "").strip().lower()
+
+        failures: list[str] = []
+        if effective_max_miles > 0:
+            if miles is None:
+                failures.append("length unknown")
+            elif float(miles) > effective_max_miles:
+                failures.append(f"{miles} mi over {effective_max_miles} mi")
+        if max_gain > 0:
+            if gain_feet is None:
+                failures.append("elevation gain unknown")
+            elif int(gain_feet) > max_gain:
+                failures.append(f"{gain_feet} ft over {max_gain} ft")
+        if allowed:
+            if not difficulty:
+                failures.append("difficulty unknown")
+            elif difficulty not in allowed:
+                failures.append(f"difficulty {difficulty}")
+
+        if failures:
+            logger.info(
+                "AllTrails snapshot criteria not met for '%s' (%s): %s [read: %s | difficulty from %s]",
+                item_name,
+                url,
+                "; ".join(failures),
+                meta.get("raw") or "nothing",
+                meta.get("difficulty_from") or "nothing",
+            )
+            return False
+        logger.info(
+            "AllTrails snapshot criteria met for '%s' (%s): %s mi, %s ft, %s (from %s)",
+            item_name,
+            url,
+            miles,
+            gain_feet,
+            difficulty,
+            meta.get("difficulty_from"),
+        )
+        return True
+
+    def _alltrails_archive_verdict(self, url: str) -> tuple[str, str]:
+        """Did archive.org ever crawl this trail page?
+
+        Returns one of `archived`, `never_archived` or `unknown`, and the
+        snapshot HTML when there is any. **`unknown` is not `never_archived`**
+        -- see `DEFAULT_REQUIRE_ALLTRAILS_ARCHIVE_VALIDATION`. A CDX transport
+        failure, a timeout, a response this cannot read, or an archived
+        snapshot whose playback fetch failed all answer `unknown`, and a link
+        the archive could not be asked about keeps today's behaviour: it
+        publishes, marked unchecked.
+
+        Reuses `_fetch_wayback_alltrails_text` whole rather than asking a
+        second endpoint. That function's own docstring records why: the
+        `archive.org/wayback/available` helper is a separate, much lower-quota
+        service that answered 429 on 20 of 20 real trail URLs under humble,
+        correctly-paced volume while CDX answered every one of them, and the
+        helper's "closest" snapshot can be an archived DataDome BLOCK page
+        rather than trail content, which `filter=statuscode:200` excludes. So
+        the oracle here is the CDX lookup, not the availability API the
+        bake-off used -- same question, measured channel. It also brings this
+        call inside the existing pacing, the in-memory cache and the on-disk
+        `wayback_geo_fetch_results` section, whose TTL
+        (`persistent_wayback_cache_ttl_hours`, 720h) is already generous --
+        which is right, since whether a trail ever existed does not go stale.
+        A MISS is cached for the run only and never persisted, deliberately:
+        a 429 storm that got written to disk as "never archived" would
+        withhold real trails for thirty days.
+        """
+        ok, status, text = self._fetch_wayback_alltrails_text(url, timeout=20)
+        if ok and text:
+            return "archived", str(text)
+        if status == WAYBACK_NO_SNAPSHOT:
+            return "never_archived", ""
+        return "unknown", ""
+
+    def _alltrails_link_is_fabricated(self, url: str, item_name: str) -> bool:
+        """True only when the archive ANSWERED and had never seen this page.
+
+        The one question the live page cannot be asked, because AllTrails
+        answers 403 for a real trail and an invented slug alike.
+        """
+        if not bool(
+            getattr(
+                self,
+                "_require_alltrails_archive_validation",
+                DEFAULT_REQUIRE_ALLTRAILS_ARCHIVE_VALIDATION,
+            )
+        ):
+            return False
+        verdict, _html = self._alltrails_archive_verdict(url)
+        if verdict != "never_archived":
+            return False
+        logger.info(
+            "AllTrails URL withheld for '%s': archive.org has never crawled %s, "
+            "so it has never been a page",
+            item_name,
+            url,
+        )
+        return True
 
     @staticmethod
     def _extract_elevation_gain_feet(text: str) -> int | None:
@@ -16046,11 +16517,21 @@ class URLDiscoverer:
             ok, status, body = _paced_fetch(cdx_url)
 
             snapshot_url = ""
+            # Whether the CDX answer was INTELLIGIBLE, as distinct from whether
+            # it named a snapshot. CDX reports "no matches" as a 200 with an
+            # empty body or a rows list with nothing after the header, and that
+            # is the one answer that means a URL was never a page -- which is
+            # what _alltrails_is_archived publishes or withholds on. A body
+            # that will not parse, or a header missing the columns this reads,
+            # is archive.org malfunctioning; reporting that as "never archived"
+            # would withhold real trails on the strength of a broken response.
+            readable = True
             if ok and body:
                 try:
                     rows = json.loads(body)
                 except (json.JSONDecodeError, TypeError):
                     rows = None
+                    readable = False
                 if isinstance(rows, list) and len(rows) >= 2 and isinstance(rows[0], list):
                     header = rows[0]
                     try:
@@ -16058,6 +16539,7 @@ class URLDiscoverer:
                         orig_idx = header.index("original")
                     except ValueError:
                         ts_idx = orig_idx = -1
+                        readable = False
                     if ts_idx >= 0 and orig_idx >= 0:
                         last_row = rows[-1]
                         if isinstance(last_row, list) and len(last_row) > max(ts_idx, orig_idx):
@@ -16065,6 +16547,12 @@ class URLDiscoverer:
                             original = str(last_row[orig_idx] or "").strip()
                             if timestamp and original:
                                 snapshot_url = f"https://web.archive.org/web/{timestamp}/{original}"
+                            else:
+                                readable = False
+                        else:
+                            readable = False
+                elif rows is not None and not isinstance(rows, list):
+                    readable = False
 
             if not snapshot_url:
                 # No archived snapshot (or the CDX lookup itself failed) --
@@ -16072,7 +16560,13 @@ class URLDiscoverer:
                 # persisted to disk, see _save_persistent_caches), since it
                 # may be a transient archive.org hiccup rather than a
                 # durable "never archived" answer.
-                result: tuple[bool, int | str, str] = (False, status if not ok else "no_snapshot", "")
+                if not ok:
+                    detail: int | str = status
+                elif readable:
+                    detail = WAYBACK_NO_SNAPSHOT
+                else:
+                    detail = WAYBACK_CDX_UNREADABLE
+                result: tuple[bool, int | str, str] = (False, detail, "")
                 self._wayback_fetch_cache[url] = result
                 self._mark_persistent_cache_dirty()
                 return result
