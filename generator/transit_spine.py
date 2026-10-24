@@ -282,17 +282,37 @@ def nights_in_transit(
     return min(by_dates, by_journey)
 
 
-def _overnight_sentence(nights: Any) -> str:
+def overnight_sentence(nights: Any) -> str:
     """What a guide may say about nights in transit, and only that.
 
     The second clause -- that no bed is needed at either end of the leg --
     follows from the count alone: a night spent in transit is a night not
     spent ashore.
+
+    PART OF THIS MODULE'S PUBLIC SURFACE, and named without an underscore for
+    that reason. A second consumer of this engine renders its own markup for
+    the same journey and calls this for the wording, so that the two surfaces
+    cannot word the same fact differently -- which is the whole point of
+    sharing it rather than each writing the sentence out. That makes the
+    EXACT STRING part of the contract, not an implementation detail: changing
+    it changes what a reader is told on more than one page.
+
+    See `docs/design/transit-segment-spine.md` §4.2.
     """
     if not isinstance(nights, int) or isinstance(nights, bool) or nights <= 0:
         return ""
     label = "1 night" if nights == 1 else f"{nights} nights"
     return f"{label} spent in transit — no lodging needed at either end"
+
+
+#: The name this was published under until 2026-10-23, kept so that a consumer
+#: already calling it does not break the moment it takes this change.
+#:
+#: It is a compatibility shim and nothing in this repository uses it. Removable
+#: once no consumer does either -- which is a thing to go and check rather than
+#: assume, since the reason the rename happened is that an upstream rename of a
+#: private name breaks a caller nothing here knows about.
+_overnight_sentence = overnight_sentence
 
 
 def en_route_lines(stops: Any) -> list[str]:
@@ -371,7 +391,7 @@ def render_segment(
     depart = str(leg.get("depart_time", "") or "").strip()
     arrive = str(leg.get("arrive_time", "") or "").strip()
     nights = nights_in_transit(leg, from_dates, to_dates)
-    overnight = _overnight_sentence(nights)
+    overnight = overnight_sentence(nights)
     stop_lines = en_route_lines(en_route_stops)
 
     # ── body ──

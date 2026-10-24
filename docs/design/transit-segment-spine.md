@@ -193,6 +193,44 @@ thing that makes a component addressable — a named file, loaded and
 checksum-verified like the main template, so a consumer draws the same
 component rather than its own copy of the idea.
 
+### 4.2 Two ways to share it, and the public surface
+
+§4.1 assumed a second consumer would draw the **partial**. One does not: it
+renders its own markup for the same journey, and calls this module for the
+arithmetic and the wording instead. That is a legitimate second way to share a
+component and the cheaper half of it — the two surfaces can look different and
+still never disagree about a fact.
+
+What it needs is a surface to call. Measured 2026-10-23, that consumer was
+calling `rail_length_px`, which is public, and `_overnight_sentence`, which was
+not. A leading underscore tells a caller the name may be renamed without
+notice, so sharing through one is the drift class this component exists to
+avoid: a rename here breaks a caller nothing here knows about, nothing in this
+repository fails, and the break surfaces on the other consumer's page.
+
+So the sentence was renamed to `overnight_sentence` (2026-10-23), the old name
+kept as a shim, and the surface pinned by
+`tests/test_a_component_can_be_drawn_by_more_than_one_consumer.py`:
+
+| Published | What it is for |
+|---|---|
+| `render_segment` | The whole segment, for a consumer drawing the partial |
+| `styles` | The partial's CSS, emitted once per page |
+| `rail_length_px` | Pixel height for a journey of N minutes |
+| `duration_minutes` | An authored duration string, read for scaling |
+| `nights_in_transit` | Nights derived from the two stops' `dates` |
+| `overnight_sentence` | The wording, so two surfaces cannot word it differently |
+| `en_route_lines` | What is on the way, as text |
+
+**The wording is part of the contract, not an implementation detail.** Two
+surfaces render that sentence by calling one function precisely so a reader is
+told the same thing on both. Changing the string changes what more than one
+page says, which is why a test pins the string and not merely the function.
+
+Anything still spelled with an underscore — `_minutes_into_day`, `_marker`,
+`_fact` — is genuinely private and may move. A consumer wanting one of those
+should ask for it to be published rather than reach for it.
+
 ## 5. Open
 
 Not settled. Listed so they are argued rather than inherited.

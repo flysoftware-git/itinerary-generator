@@ -173,3 +173,76 @@ def test_the_checksum_file_is_read_by_path_not_by_position():
         _verify_checksum(template)
     finally:
         partials.CHECKSUM_PATH.write_text(monkey, encoding="utf-8")
+
+
+# --------------------------------------------------------------------------
+# What a second consumer may call
+# --------------------------------------------------------------------------
+#
+# The partial exists so a second consumer can draw the same MARKUP. A consumer
+# that draws its own markup for the same journey still wants the same
+# arithmetic and the same wording, and reaches into this module for them --
+# which is fine, and is the cheaper half of sharing a component.
+#
+# What is not fine is reaching past the public surface to do it. A name with a
+# leading underscore says "this may be renamed without notice", and renaming it
+# breaks a caller no test here knows about: nothing in this repository fails,
+# and the break surfaces on whatever page that consumer renders. These pin the
+# surface so the rename happens here, loudly, instead of there, silently.
+
+#: Everything outside this repository is expected to call. Adding to this list
+#: is a promise; it is not a list to grow casually.
+PUBLIC_SURFACE = (
+    "render_segment",
+    "styles",
+    "rail_length_px",
+    "duration_minutes",
+    "nights_in_transit",
+    "overnight_sentence",
+    "en_route_lines",
+)
+
+
+@pytest.mark.parametrize("name", PUBLIC_SURFACE)
+def test_the_spine_publishes_what_another_consumer_calls(name):
+    from generator import transit_spine
+
+    assert hasattr(transit_spine, name), (
+        f"transit_spine.{name} is published surface and is missing"
+    )
+    assert not name.startswith("_"), (
+        f"{name} is in PUBLIC_SURFACE but spelled private. A leading "
+        "underscore tells a consumer the name may move without notice, which "
+        "is the opposite of what this list says about it."
+    )
+
+
+def test_the_overnight_wording_is_the_shared_contract():
+    """The exact string, not just the function's existence.
+
+    Two surfaces render this same fact, and they share the function precisely
+    so they cannot word it differently. That makes the wording the contract:
+    changing it changes what a reader is told in more than one place, and this
+    test is where that gets noticed.
+    """
+    from generator import transit_spine
+
+    assert transit_spine.overnight_sentence(1) == (
+        "1 night spent in transit — no lodging needed at either end"
+    )
+    assert transit_spine.overnight_sentence(3) == (
+        "3 nights spent in transit — no lodging needed at either end"
+    )
+    assert transit_spine.overnight_sentence(0) == ""
+
+
+def test_the_name_this_was_published_under_before_still_resolves():
+    """`_overnight_sentence` was the only name until 2026-10-23.
+
+    A consumer was already calling it under that name, so renaming it without
+    a shim would have broken that consumer on the merge that delivered the
+    fix. The shim is why this change is safe to take in either order.
+    """
+    from generator import transit_spine
+
+    assert transit_spine._overnight_sentence is transit_spine.overnight_sentence
