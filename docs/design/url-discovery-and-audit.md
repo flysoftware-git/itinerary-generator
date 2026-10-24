@@ -341,6 +341,24 @@ number and its unit); the grading comes from a **sentence**, never the
 gradings**; units are **parsed**, since snapshots come in both systems; and a
 page that **grades itself twice and disagrees** is read at its harder grading.
 
+**What it costs in TIME, which is the question three sections of this
+project's cost work keep asking.** Money: nothing. archive.org is free and
+keyless, and no search provider or model is called. Time is the real figure,
+and most of it is **moved rather than added**: the gate and
+`_alltrails_geo_maps_url` call `_fetch_wayback_alltrails_text` with the same
+original trail URL, so they share one cache entry, and for a trail that passes
+the gate the geo lookup that follows is a **cache hit** rather than a second
+round trip. What is genuinely new is a CDX lookup for each trail that is
+WITHHELD — a request that previously never happened, because the link
+published unexamined.
+
+The bound is the pacing rather than the volume: `wayback_request_delay_seconds`
+is 1.0 and the fetch holds a lock, so the archive work for a destination is
+serial. **This has not been measured on a real build**, and saying so is the
+point — a per-build figure needs a paid run, and the only honest statement
+without one is the shape: one extra serialized request per withheld trail, on
+a path whose accepted trails were already paying for the same fetch.
+
 A seed is exempt from the criteria — the traveller named that trail — and
 not from existing: `_alltrails_url_meets_seed_relaxed_standard` asks the same
 validity question, and a withheld seed keeps its place on the page and loses
